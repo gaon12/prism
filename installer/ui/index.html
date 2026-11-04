@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Prism Setup</title>
+    <link rel="stylesheet" href="setup.css" />
+  </head>
+  <body>
+    <!-- The whole window. `data-screen` switches between the screens below (see setup.js). -->
+    <main class="setup" data-screen="loading">
+      <!-- Upper half: brand art. Also the drag area, because the window has no title bar. -->
+      <section class="hero" data-tauri-drag-region>
+        <div class="window-buttons">
+          <button class="window-button" id="minimize" type="button" data-label="minimize">
+            <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M1 5h8" /></svg>
+          </button>
+          <button class="window-button" id="close" type="button" data-label="close">
+            <svg viewBox="0 0 10 10" aria-hidden="true"><path d="m1.5 1.5 7 7m0-7-7 7" /></svg>
+          </button>
+        </div>
+
+        <!-- A beam of light enters the prism on the left and leaves as a spectrum on the right.
+             While installing, the spectrum brightens with the progress (CSS variable --done). -->
+        <svg class="art" viewBox="0 0 760 270" aria-hidden="true" data-tauri-drag-region>
+          <defs>
+            <linearGradient id="beam" x1="0" x2="1">
+              <stop offset="0" stop-color="#fff" stop-opacity="0" />
+              <stop offset="1" stop-color="#fff" stop-opacity=".85" />
+            </linearGradient>
+          </defs>
+          <path class="beam" d="M0 172 L427 114" stroke="url(#beam)" />
+          <!-- inside the glass the light bends once more before it splits -->
+          <path class="beam inner" d="M427 114 L502 124" />
+          <g class="rays">
+            <path d="M502 124 L760 26 L760 58 Z" fill="#e7a07c" />
+            <path d="M502 124 L760 58 L760 92 Z" fill="#e6c97a" />
+            <path d="M502 124 L760 92 L760 128 Z" fill="#93c8a2" />
+            <path d="M502 124 L760 128 L760 166 Z" fill="#7fb2d6" />
+            <path d="M502 124 L760 166 L760 206 Z" fill="#a79bd4" />
+          </g>
+          <g class="prism-shape">
+            <path d="M462 46 532 182 392 182Z" />
+            <path d="M462 46v93l70 43M462 139l-70 43" />
+          </g>
+        </svg>
+
+        <div class="title">
+          <h1>Prism</h1>
+          <p class="tagline" data-text="tagline"></p>
+          <p class="version" id="version"></p>
+        </div>
+      </section>
+
+      <!-- Lower half: one of four screens. -->
+      <section class="panel">
+        <!-- Choose folder and shortcuts -->
+        <form class="screen screen-options" id="options-form">
+          <label class="field-label" for="folder" data-text="folderLabel"></label>
+          <div class="folder-row">
+            <input id="folder" spellcheck="false" autocomplete="off" />
+            <button type="button" class="secondary" id="browse" data-text="browse"></button>
+          </div>
+          <p class="hint" id="folder-hint" aria-live="polite"></p>
+          <div class="bottom-row">
+            <div class="checks">
+              <label
+                ><input type="checkbox" id="start-menu" /> <span data-text="startMenu"></span
+              ></label>
+              <label
+                ><input type="checkbox" id="desktop" /> <span data-text="desktop"></span
+              ></label>
+            </div>
+            <button type="submit" class="primary" id="install"></button>
+          </div>
+        </form>
+
+        <!-- Uninstall question -->
+        <form class="screen screen-uninstall" id="uninstall-form">
+          <p class="lead" data-text="uninstallLead"></p>
+          <p class="hint" id="uninstall-folder"></p>
+          <div class="bottom-row">
+            <div class="checks">
+              <label
+                ><input type="checkbox" id="remove-data" /> <span data-text="removeData"></span
+              ></label>
+            </div>
+            <button type="submit" class="danger" data-text="uninstall"></button>
+          </div>
+        </form>
+
+        <!-- Progress -->
+        <div class="screen screen-progress">
+          <div class="progress-text">
+            <span id="stage" aria-live="polite"></span>
+            <span id="percent"></span>
+          </div>
+          <div class="track" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="track">
+            <div class="fill" id="fill"></div>
+          </div>
+        </div>
+
+        <!-- Finished (or failed) -->
+        <form class="screen screen-done" id="done-form">
+          <p class="lead" id="done-title"></p>
+          <p class="hint" id="done-detail"></p>
+          <div class="bottom-row">
+            <div class="checks">
+              <label id="launch-option"
+                ><input type="checkbox" id="launch" checked /> <span data-text="launch"></span
+              ></label>
+            </div>
+            <button type="submit" class="primary" id="finish" data-text="finish"></button>
+          </div>
+        </form>
+      </section>
+    </main>
+    <script src="messages.js"></script>
+    <script src="setup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,302 @@
+/* Prism setup window (760 x 480, no title bar).
+ * Top: dark "light box" with the prism art. Bottom: a calm light panel with the choices.
+ * Colours follow the app (sage accent #426557); the spectrum is the one bold element. */
+
+:root {
+  --ink: #15211c; /* hero background */
+  --ink-soft: #1f2e27;
+  --paper: #f7f8f6; /* panel background */
+  --text: #202826;
+  --muted: #6b746f;
+  --line: #dfe3e1;
+  --accent: #426557;
+  --accent-hover: #345647;
+  --danger: #a24242;
+  --focus: #7fb2d6;
+  font-family:
+    'Segoe UI Variable Text', 'Segoe UI', 'Malgun Gothic', 'Microsoft YaHei', 'Yu Gothic UI',
+    sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--paper);
+  user-select: none;
+}
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+.setup {
+  display: grid;
+  grid-template-rows: 270px 1fr;
+  height: 100vh;
+}
+
+/* ---------- Hero ---------- */
+.hero {
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(120% 140% at 62% 45%, var(--ink-soft), var(--ink) 60%);
+  color: #eef3f0;
+}
+.art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.beam {
+  stroke-width: 2.2;
+  fill: none;
+}
+.beam.inner {
+  stroke: #ffffffb0;
+  stroke-width: 1.6;
+}
+.prism-shape path {
+  fill: none;
+  stroke: #eef3f0;
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+}
+.prism-shape path:first-child {
+  fill: #ffffff0d;
+}
+/* --done goes from 0 to 1 while installing; the spectrum brightens with it. */
+.rays {
+  opacity: calc(0.22 + 0.58 * var(--done, 0));
+  transition: opacity 0.4s ease;
+}
+.setup[data-screen='done'] .rays {
+  opacity: 0.85;
+}
+
+.title {
+  position: absolute;
+  left: 40px;
+  bottom: 34px;
+  pointer-events: none;
+}
+.title h1 {
+  margin: 0;
+  font-family: 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
+  font-size: 46px;
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.tagline {
+  margin: 10px 0 0;
+  max-width: 330px;
+  color: #c4d0ca;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.version {
+  margin: 6px 0 0;
+  color: #8e9c95;
+  font-size: 12px;
+}
+
+.window-buttons {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  z-index: 2;
+}
+.window-button {
+  width: 46px;
+  height: 34px;
+  border: 0;
+  background: transparent;
+  color: #c4d0ca;
+  display: grid;
+  place-items: center;
+}
+.window-button svg {
+  width: 10px;
+  height: 10px;
+  stroke: currentColor;
+  stroke-width: 1.2;
+}
+.window-button:hover {
+  background: #ffffff1a;
+  color: #fff;
+}
+#close:hover {
+  background: #c42b1c;
+}
+.window-button:disabled {
+  opacity: 0.35;
+  background: transparent;
+}
+
+/* ---------- Panel ---------- */
+.panel {
+  position: relative;
+  padding: 22px 40px 24px;
+}
+.screen {
+  display: none;
+  height: 100%;
+  flex-direction: column;
+}
+.setup[data-screen='options'] .screen-options,
+.setup[data-screen='uninstall'] .screen-uninstall,
+.setup[data-screen='progress'] .screen-progress,
+.setup[data-screen='done'] .screen-done {
+  display: flex;
+}
+
+.field-label {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.folder-row {
+  display: flex;
+  gap: 8px;
+}
+.folder-row input {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  user-select: text;
+}
+.folder-row input:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: -1px;
+  border-color: transparent;
+}
+.hint {
+  min-height: 18px;
+  margin: 8px 0 0;
+  color: var(--muted);
+}
+.hint.error {
+  color: var(--danger);
+}
+.lead {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.bottom-row {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.checks {
+  display: flex;
+  gap: 18px;
+}
+.checks label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.checks input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+button.primary,
+button.danger,
+button.secondary {
+  height: 34px;
+  border-radius: 6px;
+  padding: 0 16px;
+  border: 1px solid transparent;
+  cursor: default;
+}
+button.primary,
+button.danger {
+  min-width: 132px;
+  height: 40px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+}
+button.primary:hover {
+  background: var(--accent-hover);
+}
+button.danger {
+  background: var(--danger);
+}
+button.danger:hover {
+  background: #8a3535;
+}
+button.secondary {
+  background: #fff;
+  border-color: var(--line);
+}
+button.secondary:hover {
+  background: #eef1ef;
+}
+button:disabled {
+  opacity: 0.5;
+}
+button:focus-visible,
+.checks input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Progress: the bar is the same spectrum as the art, revealed from left to right. */
+.screen-progress {
+  justify-content: center;
+}
+.progress-text {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+#percent {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+.fill {
+  height: 100%;
+  width: calc(100% * var(--done, 0));
+  background: linear-gradient(90deg, #e7a07c, #e6c97a 25%, #93c8a2 50%, #7fb2d6 75%, #a79bd4);
+  /* The gradient spans the full track, so the colours stay put while the bar grows. */
+  background-size: 680px 100%;
+  background-repeat: no-repeat;
+  transition: width 0.25s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rays,
+  .fill {
+    transition: none;
+  }
+}

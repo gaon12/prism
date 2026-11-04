@@ -9,6 +9,7 @@ mod dictionary_provider;
 mod dictionary_service;
 mod dictionary_store;
 mod document_extract;
+mod document_service;
 mod embedding_runtime;
 mod filename_pattern;
 mod generation_runtime;

@@ -87,6 +87,8 @@ Requires Node.js 22.12+, Rust 1.94+, and the [Tauri Windows prerequisites](https
 
 Desktop builds link an `rlib` into the executable to keep intermediate disk usage manageable.
 
+`npm run version:check` checks the application version in both manifests and lockfiles. Use `npm run version:bump -- patch` (or `minor`, `major`, an explicit SemVer) to update them together without changing dependency versions or file formatting. The command validates all five files before writing and attempts to restore earlier writes if a write fails; it is not a crash-safe multi-file transaction. Commit the version files together. `npm run test:version` verifies the command against temporary fixtures without changing this checkout's version.
+
 The native LanceDB build also requires `protoc`. Install a compatible [official Protocol Buffers release](https://github.com/protocolbuffers/protobuf/releases) and put its executable on PATH, or set `PROTOC` for the build shell. The Windows vector tests were verified with protoc 34.1.
 
 ```powershell

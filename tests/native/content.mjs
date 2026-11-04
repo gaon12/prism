@@ -62,6 +62,44 @@ try {
   }, 'only authorized documents indexed');
   const status = await invoke('content_status');
   assert(status.issues.some((issue) => issue.path.endsWith('손상.pdf')));
+  await main.getByRole('button', { name: '자동', exact: true }).click();
+  await input.fill('120000');
+  await main
+    .locator('.automatic-search-notice')
+    .filter({ hasText: '자연어 모델이 실행 중이 아닙니다.' })
+    .waitFor();
+  await main.getByRole('option').filter({ hasText: '제주 출장.md' }).waitFor();
+  assert.equal(
+    (await invoke('model_status')).phase,
+    'notInstalled',
+    'Automatic search must not install or start a model',
+  );
+  await input.fill(Array.from({ length: 33 }, (_, index) => `autoword${index}`).join(' '));
+  await main
+    .getByRole('heading', { name: '키워드 검색을 실행하지 못했습니다.', exact: true })
+    .waitFor();
+  await input.fill('제주 출장');
+  await main
+    .locator('.file-result-list')
+    .getByRole('option')
+    .filter({ hasText: '제주 출장.md' })
+    .waitFor();
+  assert.equal(
+    await main.locator('.content-panel').count(),
+    0,
+    'Filename matches remain the fast primary result',
+  );
+  await input.fill('ext:pdf 없는항목');
+  await until(
+    async () => (await invoke('get_search_session')).query === 'ext:pdf 없는항목',
+    'file filter query saved',
+  );
+  assert.equal(
+    await main.locator('.content-panel').count(),
+    0,
+    'Explicit filename filters never fall back to body search',
+  );
+  await main.getByRole('button', { name: '본문', exact: true }).click();
   await input.fill('privatecanary');
   await main
     .getByRole('heading', { name: '일치하는 본문을 찾지 못했습니다.', exact: true })
@@ -125,15 +163,23 @@ try {
   await main.evaluate(() => {
     const original = window.fetch.bind(window);
     window.__hybridEvidence = [];
+    window.__automaticEvidence = [];
     window.fetch = async (input, options) => {
       const response = await original(input, options);
       const url = new URL(typeof input === 'string' ? input : (input.url ?? input.href));
-      if (url.hostname === 'ipc.localhost' && url.pathname === '/search_hybrid') {
+      if (
+        url.hostname === 'ipc.localhost' &&
+        ['/search_hybrid', '/search_automatic'].includes(url.pathname)
+      ) {
         void response
           .clone()
           .json()
           .then((value) => {
-            if (Array.isArray(value?.hits)) window.__hybridEvidence.push(value);
+            if (Array.isArray(value?.hits))
+              (url.pathname === '/search_hybrid'
+                ? window.__hybridEvidence
+                : window.__automaticEvidence
+              ).push(value);
           });
       }
       return response;
@@ -210,6 +256,65 @@ try {
     'hybrid results return to the requested Korean question',
     60_000,
   );
+  await main.getByRole('button', { name: '자동', exact: true }).click();
+  await until(
+    async () =>
+      main.evaluate(() =>
+        window.__automaticEvidence.some(
+          (value) => value.semanticState === 'used' && value.ranking === 'hybrid',
+        ),
+      ),
+    'automatic routing uses the real running model',
+    60_000,
+  );
+  await main.getByRole('option').filter({ hasText: '변경된 출장.md' }).first().waitFor();
+  await main.screenshot({ path: join(evidence, 'automatic-main.png'), animations: 'disabled' });
+  await input.fill('변경된 출장.md');
+  await main
+    .locator('.file-result-list')
+    .getByRole('option')
+    .filter({ hasText: '변경된 출장.md' })
+    .waitFor();
+  assert.equal(await main.locator('.content-panel').count(), 0);
+  await input.fill('130000');
+  await main.locator('.automatic-search-notice').waitFor();
+  await main.getByRole('button', { name: '필터', exact: true }).click();
+  await main.getByLabel('확장자', { exact: true }).fill('pdf,md');
+  await main.getByRole('option').filter({ hasText: '변경된 출장.md' }).first().waitFor();
+  await main.getByRole('button', { name: '필터', exact: true }).click();
+  const openAutoSettings = async () => {
+    await main.getByRole('button', { name: '설정', exact: true }).click();
+    await main.getByRole('button', { name: 'AI·모델', exact: true }).click();
+  };
+  await openAutoSettings();
+  await main.getByLabel('자동 모드에서 자연어 검색 사용', { exact: true }).uncheck();
+  await main.getByRole('dialog').getByRole('button', { name: '저장', exact: true }).click();
+  await main
+    .locator('.automatic-search-notice')
+    .filter({ hasText: '설정에서 꺼져 있습니다.' })
+    .waitFor();
+  await main.getByRole('option').filter({ hasText: '변경된 출장.md' }).first().waitFor();
+  assert.equal((await invoke('model_status')).phase, 'running');
+  await openAutoSettings();
+  await main.getByLabel('자동 모드에서 자연어 검색 사용', { exact: true }).check();
+  await main.getByLabel('자연어 검색에 본문 키워드 결과 결합', { exact: true }).uncheck();
+  await main.getByRole('dialog').getByRole('button', { name: '저장', exact: true }).click();
+  await until(
+    async () => main.evaluate(() => window.__automaticEvidence.at(-1)?.ranking === 'cosine'),
+    'automatic mode respects semantic-only ranking',
+    60_000,
+  );
+  await openAutoSettings();
+  await main.getByLabel('자연어 검색에 본문 키워드 결과 결합', { exact: true }).check();
+  await main.getByRole('dialog').getByRole('button', { name: '저장', exact: true }).click();
+  await input.fill('제주도 출장을 가려면 돈이 얼마나 들까?');
+  await main
+    .locator('.automatic-search-notice')
+    .filter({ hasText: '로컬 자연어 모델로 검색했습니다.' })
+    .waitFor();
+  await main.getByRole('button', { name: '필터', exact: true }).click();
+  await main.getByLabel('확장자', { exact: true }).fill('');
+  await main.getByRole('button', { name: '필터', exact: true }).click();
   await main.screenshot({ path: join(evidence, 'semantic-main.png') });
   await main.getByRole('button', { name: '빠른 검색', exact: true }).click();
   assert.equal(

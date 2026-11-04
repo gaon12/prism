@@ -58,6 +58,8 @@
       chooseFolder: (current) => invoke('choose_folder', { current }),
       install: (options) => invoke('run_install', { options }),
       uninstall: (removeData) => invoke('run_uninstall', { removeData }),
+      restore: (installDir, expectedVersion) =>
+        invoke('run_restore', { installDir, expectedVersion }),
       finish: (launch) => invoke('finish', { launch }),
       onProgress: (handler) =>
         tauri.event.listen('setup://progress', (event) => handler(event.payload)),
@@ -101,6 +103,7 @@
       chooseFolder: async () => null,
       install: fakeRun,
       uninstall: fakeRun,
+      restore: fakeRun,
       finish: async () => {},
       onProgress: async (handler) => {
         listener = handler;
@@ -135,18 +138,80 @@
     // While files are being written, closing the window would leave a half-done install.
     const busy = screen === 'progress';
     $('close').disabled = busy;
-    const focusTarget = { options: 'install', uninstall: 'remove-data', done: 'finish' }[screen];
+    const focusTarget = {
+      options: 'install',
+      uninstall: 'remove-data',
+      restore: 'restore-ack',
+      done: 'finish',
+    }[screen];
     if (focusTarget) $(focusTarget).focus();
   }
 
   // ---------- Screens ----------
   let info = null;
   let folderOk = true;
+  let previous = null;
+  let previousPath = '';
+  let previousFree = null;
+  function updatePrevious(value, path, free) {
+    previous = value;
+    previousPath = path;
+    previousFree = free;
+    $('previous-options').hidden = !value;
+    $('previous-uninstall').hidden = !value;
+  }
+  function showRestore() {
+    if (!previous) return;
+    $('restore-title').textContent = t('restoreTitle', {
+      from: previous.currentVersion,
+      to: previous.version,
+    });
+    const enough = previousFree == null || previousFree >= previous.requiredBytes;
+    $('restore-space').textContent =
+      previousFree == null
+        ? ''
+        : t(enough ? 'space' : 'spaceShort', {
+            need: formatBytes(previous.requiredBytes),
+            free: formatBytes(previousFree),
+          });
+    $('restore-ack').checked = false;
+    $('restore').disabled = true;
+    $('restore-ack').disabled = !enough;
+    show('restore');
+  }
+  async function runRestore() {
+    if (!previous || !$('restore-ack').checked) return;
+    const target = previous.version;
+    show('progress');
+    setProgress(0);
+    try {
+      await backend.restore(previousPath, target);
+      setProgress(1);
+      $('done-title').textContent = t('restored');
+      $('version').textContent = t('version', { v: target });
+      $('done-detail').textContent = t('version', { v: target });
+      $('done-detail').classList.remove('error');
+      // Older code may not support newer data. Launch requires a fresh choice.
+      $('launch').checked = false;
+      $('launch-option').hidden = false;
+      $('finish').textContent = t('finish');
+      $('finish').onclick = null;
+      show('done');
+    } catch (error) {
+      showFailure(t('restoreFailed'), error, 'restore');
+    }
+  }
 
   async function checkFolder() {
     const path = $('folder').value;
     const hint = $('folder-hint');
     const check = await backend.checkFolder(path);
+    if ($('folder').value !== path) return;
+    updatePrevious(
+      check.recoveryPending ? null : check.previousVersion,
+      path.trim(),
+      check.freeBytes,
+    );
     const free = check.freeBytes;
     const need = check.requiredBytes ?? info.requiredBytes;
     let message = '';
@@ -164,6 +229,7 @@
       folderOk = false;
       message = t('noPayload');
     }
+    if (check.previousError) message += ' ' + t('previousUnavailable');
     hint.textContent = message;
     hint.classList.toggle('error', !folderOk);
     $('install').disabled = !folderOk;
@@ -259,8 +325,24 @@
         : t('version', { v: info.version });
 
     if (info.mode === 'uninstall') {
+      updatePrevious(
+        info.recoveryPending ? null : info.previousVersion,
+        info.installDir,
+        info.freeBytes,
+      );
       $('uninstall-folder').textContent = info.installDir;
+      if (info.previousError) $('uninstall-folder').textContent += ' · ' + t('previousUnavailable');
       show('uninstall');
+      return;
+    }
+    if (info.mode === 'restore') {
+      updatePrevious(
+        info.recoveryPending ? null : info.previousVersion,
+        info.installDir,
+        info.freeBytes,
+      );
+      if (!previous) throw new Error(t('restoreFailed'));
+      showRestore();
       return;
     }
     $('folder').value = info.installDir;
@@ -295,6 +377,19 @@
   $('uninstall-form').addEventListener('submit', (event) => {
     event.preventDefault();
     runUninstall();
+  });
+  for (const id of ['previous-options', 'previous-uninstall'])
+    $(id).addEventListener('click', showRestore);
+  $('restore-back').addEventListener('click', () => {
+    if (info.mode === 'restore') backend.finish(false);
+    else show(info.mode === 'uninstall' ? 'uninstall' : 'options');
+  });
+  $('restore-ack').addEventListener('change', () => {
+    $('restore').disabled = !$('restore-ack').checked;
+  });
+  $('restore-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    runRestore();
   });
   $('done-form').addEventListener('submit', (event) => {
     event.preventDefault();

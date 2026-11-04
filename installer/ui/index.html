@@ -71,7 +71,16 @@
                 ><input type="checkbox" id="desktop" /> <span data-text="desktop"></span
               ></label>
             </div>
-            <button type="submit" class="primary" id="install"></button>
+            <div class="action-pair">
+              <button
+                type="button"
+                class="secondary"
+                id="previous-options"
+                data-text="previous"
+                hidden
+              ></button>
+              <button type="submit" class="primary" id="install"></button>
+            </div>
           </div>
         </form>
 
@@ -85,7 +94,37 @@
                 ><input type="checkbox" id="remove-data" /> <span data-text="removeData"></span
               ></label>
             </div>
-            <button type="submit" class="danger" data-text="uninstall"></button>
+            <div class="action-pair">
+              <button
+                type="button"
+                class="secondary"
+                id="previous-uninstall"
+                data-text="previous"
+                hidden
+              ></button>
+              <button type="submit" class="danger" data-text="uninstall"></button>
+            </div>
+          </div>
+        </form>
+
+        <form class="screen screen-restore" id="restore-form">
+          <p class="lead" id="restore-title"></p>
+          <p class="hint" data-text="restoreData"></p>
+          <p class="hint" id="restore-space"></p>
+          <div class="bottom-row">
+            <label class="restore-ack"
+              ><input type="checkbox" id="restore-ack" /><span data-text="restoreAck"></span
+            ></label>
+            <div class="action-pair">
+              <button type="button" class="secondary" id="restore-back" data-text="back"></button>
+              <button
+                type="submit"
+                class="danger"
+                id="restore"
+                data-text="restore"
+                disabled
+              ></button>
+            </div>
           </div>
         </form>
 

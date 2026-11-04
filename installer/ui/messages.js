@@ -2,6 +2,57 @@
 // Order in every array: ko, en, zh-CN, zh-TW, ja (same order as the app's i18n.ts).
 // `{x}` placeholders are filled in by setup.js.
 window.SETUP_MESSAGES = {
+  previousUnavailable: [
+    '이전 버전 백업을 확인하지 못했습니다. 백업은 보존됩니다.',
+    'The previous-version backup could not be checked. It was preserved.',
+    '无法检查先前版本备份，备份已保留。',
+    '無法檢查先前版本備份，備份已保留。',
+    '以前のバージョンのバックアップを確認できません。バックアップは保持されます。',
+  ],
+  previous: [
+    '이전 버전 복구',
+    'Previous version',
+    '恢复先前版本',
+    '復原先前版本',
+    '以前のバージョン',
+  ],
+  restore: ['복구', 'Restore', '恢复', '復原', '復元'],
+  back: ['뒤로', 'Back', '返回', '返回', '戻る'],
+  restoreTitle: [
+    '{from}에서 {to}(으)로 복구합니다',
+    'Restore {to} from {from}',
+    '从{from}恢复到{to}',
+    '從{from}復原至{to}',
+    '{from}から{to}に復元します',
+  ],
+  restoreData: [
+    '앱 파일과 바로가기만 복구합니다. 설정·문서·색인은 유지되며, 이전 버전에서 현재 데이터를 읽지 못할 수 있습니다. Prism을 종료한 뒤 진행하세요.',
+    'Restores app files and shortcuts. Settings, documents and indexes stay as they are; the older version may not read current data. Close Prism first.',
+    '仅恢复应用文件和快捷方式。设置、文档和索引保持不变；旧版本可能无法读取当前数据。请先关闭Prism。',
+    '僅復原應用程式檔案和捷徑。設定、文件和索引保持不變；舊版本可能無法讀取目前資料。請先關閉Prism。',
+    'アプリとショートカットを復元します。設定・文書・索引はそのままで、以前の版では現在のデータを読めない場合があります。先にPrismを終了してください。',
+  ],
+  restoreAck: [
+    '데이터는 복구되지 않음을 확인했습니다',
+    'I understand data is not restored',
+    '我了解数据不会回退',
+    '我了解資料不會回復',
+    'データは戻らないことを確認しました',
+  ],
+  restored: [
+    '이전 버전으로 복구됐어요',
+    'Previous version restored',
+    '已恢复先前版本',
+    '已復原先前版本',
+    '以前のバージョンに復元しました',
+  ],
+  restoreFailed: [
+    '이전 버전으로 복구하지 못했어요',
+    'Could not restore the previous version',
+    '无法恢复先前版本',
+    '無法復原先前版本',
+    '以前のバージョンを復元できませんでした',
+  ],
   tagline: [
     '파일, 문서, 클립보드를 한곳에서 찾으세요.',
     'Find files, documents and clipboard items in one place.',

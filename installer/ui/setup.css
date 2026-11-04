@@ -156,6 +156,7 @@ input {
 }
 .setup[data-screen='options'] .screen-options,
 .setup[data-screen='uninstall'] .screen-uninstall,
+.setup[data-screen='restore'] .screen-restore,
 .setup[data-screen='progress'] .screen-progress,
 .setup[data-screen='done'] .screen-done {
   display: flex;
@@ -204,6 +205,25 @@ input {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+.action-pair {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.restore-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  max-width: 310px;
+}
+.restore-ack input {
+  accent-color: var(--accent);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.screen-restore .hint {
+  line-height: 1.5;
 }
 .checks {
   display: flex;

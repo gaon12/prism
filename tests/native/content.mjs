@@ -119,6 +119,97 @@ try {
     60_000,
   );
   assert((await main.getByRole('option').first().innerText()).includes('변경된 출장.md'));
+  // Observe actual IPC responses without replacing the model, stores or transport.
+  // Driving the UI avoids racing its window-scoped search cancellation with a
+  // second direct invoke for the same window.
+  await main.evaluate(() => {
+    const original = window.fetch.bind(window);
+    window.__hybridEvidence = [];
+    window.fetch = async (input, options) => {
+      const response = await original(input, options);
+      const url = new URL(typeof input === 'string' ? input : (input.url ?? input.href));
+      if (url.hostname === 'ipc.localhost' && url.pathname === '/search_hybrid') {
+        void response
+          .clone()
+          .json()
+          .then((value) => {
+            if (Array.isArray(value?.hits)) window.__hybridEvidence.push(value);
+          });
+      }
+      return response;
+    };
+  });
+  await input.fill('출장');
+  await until(
+    async () =>
+      main.evaluate(() =>
+        window.__hybridEvidence.some(
+          (value) => value.keywordCandidates > 0 && value.semanticCandidates > 0,
+        ),
+      ),
+    'actual keyword and vector branches combined',
+    60_000,
+  );
+  const combined = await main.evaluate(() => window.__hybridEvidence.at(-1));
+  assert.equal(combined.keywordSkipped, false);
+  assert.equal(new Set(combined.hits.map((hit) => hit.chunk.id)).size, combined.hits.length);
+  assert(combined.hits.some((hit) => hit.keywordRank && hit.semanticRank));
+  for (const hit of combined.hits) {
+    const expected =
+      (hit.keywordRank ? 1 / (60 + hit.keywordRank) : 0) +
+      (hit.semanticRank ? 1 / (60 + hit.semanticRank) : 0);
+    assert(Math.abs(hit.score - expected) < 1e-10);
+    assert(!hit.chunk.filePath.includes('파일명만'));
+  }
+  await main.getByText('키워드·의미 일치', { exact: true }).first().waitFor();
+  await main.locator('.content-score').filter({ hasText: '결합 순위 점수' }).first().waitFor();
+  await main.screenshot({ path: join(evidence, 'hybrid-main.png'), animations: 'disabled' });
+  await main.getByRole('button', { name: '필터', exact: true }).click();
+  await main.evaluate(() => {
+    window.__hybridEvidence = [];
+  });
+  await main.getByLabel('확장자', { exact: true }).fill('pdf');
+  await until(
+    async () =>
+      main.evaluate(() =>
+        window.__hybridEvidence.some(
+          (value) => value.hits.length === 0 && value.keywordCandidates === 0,
+        ),
+      ),
+    'extension filter applies to both hybrid branches',
+    60_000,
+  );
+  assert.equal(await main.getByRole('option').count(), 0);
+  await main.getByLabel('확장자', { exact: true }).fill('');
+  await main.getByRole('button', { name: '필터', exact: true }).click();
+  await main.getByText('키워드·의미 일치', { exact: true }).first().waitFor();
+  await main.getByRole('button', { name: 'AI·모델 설정', exact: true }).click();
+  const combine = main.getByLabel('자연어 검색에 본문 키워드 결과 결합', { exact: true });
+  await combine.uncheck();
+  await main.getByRole('dialog').getByRole('button', { name: '취소', exact: true }).click();
+  assert.equal((await invoke('get_settings')).hybridSearch, true);
+  await main.getByRole('button', { name: 'AI·모델 설정', exact: true }).click();
+  await combine.uncheck();
+  await main.getByRole('dialog').getByRole('button', { name: '저장', exact: true }).click();
+  await main.locator('.content-score').filter({ hasText: '코사인 유사도' }).first().waitFor();
+  assert.equal((await invoke('get_settings')).hybridSearch, false);
+  await main.getByRole('button', { name: 'AI·모델 설정', exact: true }).click();
+  await combine.check();
+  await main.getByRole('dialog').getByRole('button', { name: '저장', exact: true }).click();
+  await main.locator('.content-score').filter({ hasText: '결합 순위 점수' }).first().waitFor();
+  await input.fill(Array.from({ length: 33 }, (_, index) => `syntheticword${index}`).join(' '));
+  await main
+    .getByText(
+      '키워드 검색의 입력 한도를 넘어 자연어 검색 순위만 표시합니다. 검색어를 줄이면 두 결과를 결합할 수 있습니다.',
+      { exact: true },
+    )
+    .waitFor();
+  await input.fill('제주도 출장을 가려면 돈이 얼마나 들까?');
+  await until(
+    async () => (await main.getByRole('option').first().innerText()).includes('변경된 출장.md'),
+    'hybrid results return to the requested Korean question',
+    60_000,
+  );
   await main.screenshot({ path: join(evidence, 'semantic-main.png') });
   await main.getByRole('button', { name: '빠른 검색', exact: true }).click();
   assert.equal(

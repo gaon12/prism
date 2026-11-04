@@ -1,10 +1,10 @@
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
+use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
 use std::path::Path;
-use std::{io, iter};
 
 use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
@@ -15,8 +15,34 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use crate::util;
 
-fn to_utf16(s: &Path) -> Vec<u16> {
-    s.as_os_str().encode_wide().chain(iter::once(0)).collect()
+fn to_utf16(s: &Path) -> io::Result<Vec<u16>> {
+    // Rust's std::fs handles long paths, but the direct Win32 calls below do not
+    // expand them. In particular Lance persists transaction files past MAX_PATH.
+    // Normalize to an absolute backslash path before adding the extended prefix.
+    let absolute = std::path::absolute(s)?;
+    let wide: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+    let mut value = if wide.len() >= 260
+        && !wide.starts_with(&[92, 92, 63, 92]) // \\?\ namespace already supplied
+        && !wide.starts_with(&[92, 92, 46, 92])
+    // \\.\ device namespace
+    {
+        if wide.starts_with(&[92, 92]) {
+            "\\\\?\\UNC\\"
+                .encode_utf16()
+                .chain(wide[2..].iter().copied())
+                .collect()
+        } else {
+            "\\\\?\\"
+                .encode_utf16()
+                .chain(wide.iter().copied())
+                .collect()
+        }
+    } else {
+        // Keep existing short and explicitly namespaced path semantics.
+        s.as_os_str().encode_wide().collect::<Vec<_>>()
+    };
+    value.push(0);
+    Ok(value)
 }
 
 fn not_supported<T>(msg: &str) -> io::Result<T> {
@@ -80,7 +106,7 @@ pub fn reopen(file: &File, _path: &Path) -> io::Result<File> {
 
 pub fn keep(path: &Path) -> io::Result<()> {
     unsafe {
-        let path_w = to_utf16(path);
+        let path_w = to_utf16(path)?;
         if SetFileAttributesW(path_w.as_ptr(), FILE_ATTRIBUTE_NORMAL) == 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -91,8 +117,8 @@ pub fn keep(path: &Path) -> io::Result<()> {
 
 pub fn persist(old_path: &Path, new_path: &Path, overwrite: bool) -> io::Result<()> {
     unsafe {
-        let old_path_w = to_utf16(old_path);
-        let new_path_w = to_utf16(new_path);
+        let old_path_w = to_utf16(old_path)?;
+        let new_path_w = to_utf16(new_path)?;
 
         // Don't succeed if this fails. We don't want to claim to have successfully persisted a file
         // still marked as temporary because this file won't have the same consistency guarantees.
@@ -115,5 +141,49 @@ pub fn persist(old_path: &Path, new_path: &Path, overwrite: bool) -> io::Result<
         } else {
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod long_path_tests {
+    use super::*;
+    use std::{io::Write, iter};
+
+    #[test]
+    fn long_unicode_persistence_preserves_contents_and_non_overwrite_semantics() {
+        let root = crate::tempdir().unwrap();
+        let parent = root.path().join("a".repeat(120)).join("b".repeat(120));
+        std::fs::create_dir_all(&parent).unwrap();
+        let destination = parent.join("완료-🙂.tmp");
+        let mut source = crate::NamedTempFile::new_in(&parent).unwrap();
+        source.write_all(b"synthetic persisted bytes").unwrap();
+        source.persist(&destination).unwrap();
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"synthetic persisted bytes"
+        );
+        let source = crate::NamedTempFile::new_in(&parent).unwrap();
+        let error = source.persist_noclobber(&destination).unwrap_err();
+        assert!(error.file.path().exists());
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"synthetic persisted bytes"
+        );
+    }
+
+    #[test]
+    fn short_paths_stay_unchanged_and_long_unc_paths_keep_their_share() {
+        assert_eq!(
+            to_utf16(Path::new("relative.tmp")).unwrap(),
+            "relative.tmp"
+                .encode_utf16()
+                .chain(iter::once(0))
+                .collect::<Vec<_>>()
+        );
+        let unc = format!("\\\\server\\share\\{}\\file.tmp", "segment\\".repeat(40));
+        let value = to_utf16(Path::new(&unc)).unwrap();
+        assert!(String::from_utf16(&value[..value.len() - 1])
+            .unwrap()
+            .starts_with("\\\\?\\UNC\\server\\share\\"));
     }
 }

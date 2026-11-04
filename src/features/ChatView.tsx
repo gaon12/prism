@@ -194,7 +194,10 @@ function Turn({
                           <span className="chat-source-name">
                             {basename(citation.source.filePath)}
                           </span>
-                          <code className="chat-source-path">{citation.source.filePath}</code>
+                          <details className="chat-source-details">
+                            <summary>{t('sourceDetails')}</summary>
+                            <code className="chat-source-path">{citation.source.filePath}</code>
+                          </details>
                           <span className="chat-source-location">
                             {citation.source.page !== null
                               ? chatText(language, 'page', { value: citation.source.page })
@@ -276,6 +279,7 @@ function ConversationWorkspace({
   onDeleted: () => void;
 }) {
   const fieldId = useId();
+  const previewDialog = useRef<HTMLDialogElement>(null);
   const t = (key: ChatMessage) => chatText(language, key);
   const alive = useRef(false);
   const loadEpoch = useRef(0);
@@ -349,10 +353,6 @@ function ConversationWorkspace({
     let disposed = false;
     setLoading(true);
     setLoadError(null);
-    setPreview(null);
-    setPreviewError(false);
-    setPreviewLoading(false);
-    previewEpoch.current++;
     void rag
       .conversation(id)
       .then((next) => {
@@ -372,6 +372,12 @@ function ConversationWorkspace({
       disposed = true;
     };
   }, [id, policyKey, revision]);
+  useEffect(() => {
+    setPreview(null);
+    setPreviewError(false);
+    setPreviewLoading(false);
+    previewEpoch.current++;
+  }, [id, policyKey]);
   useEffect(() => {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -649,6 +655,12 @@ function ConversationWorkspace({
     setPreviewError(false);
     setPreviewLoading(false);
   };
+  const previewVisible = Boolean(
+    previewLoading || previewError || preview?.policyKey === policyKey,
+  );
+  useEffect(() => {
+    if (previewVisible && !previewDialog.current?.open) previewDialog.current?.showModal();
+  }, [previewVisible]);
   return (
     <section className="chat-workspace" aria-label={view?.conversation.title ?? t('loading')}>
       <header className="chat-conversation-heading">
@@ -815,11 +827,16 @@ function ConversationWorkspace({
           ))}
         </ol>
       </div>
-      {previewLoading || previewError || preview?.policyKey === policyKey ? (
-        <aside
+      {previewVisible ? (
+        <dialog
+          ref={previewDialog}
           className="chat-preview"
           aria-labelledby={`${fieldId}-preview`}
           aria-busy={previewLoading}
+          onCancel={(event) => {
+            event.preventDefault();
+            closePreview();
+          }}
         >
           <header>
             <h3 id={`${fieldId}-preview`}>{t('previewTitle')}</h3>
@@ -859,67 +876,73 @@ function ConversationWorkspace({
               </button>
             </>
           ) : null}
-        </aside>
+        </dialog>
       ) : null}
       <div className="chat-composer">
-        <div className="chat-mode">
-          <label htmlFor={`${fieldId}-mode`}>{t('mode')}</label>
-          <select
-            id={`${fieldId}-mode`}
-            value={mode}
-            onChange={(event) => setMode(event.target.value as 'documents' | 'general')}
-          >
-            <option value="documents">{t('documents')}</option>
-            <option value="general">{t('general')}</option>
-          </select>
-        </div>
-        {mode === 'general' ? (
-          <p className="chat-note">{t('generalHelp')}</p>
-        ) : (
-          <fieldset className="chat-scope-picker">
-            <legend>{t('selectedScopes')}</legend>
-            {scopes.map((scope) => (
-              <label key={scope.id} className="chat-check">
-                <input
-                  type="checkbox"
-                  checked={usableScopeIds.includes(scope.id)}
-                  onChange={(event) =>
-                    onScopes(
-                      event.target.checked
-                        ? [...usableScopeIds, scope.id]
-                        : usableScopeIds.filter((value) => value !== scope.id),
-                    )
-                  }
-                />
-                <span>
-                  {scope.name}
-                  <small title={scope.path}>{scope.path}</small>
-                  <small>{t(scope.externalAllowed ? 'externalYes' : 'externalNo')}</small>
-                </span>
-              </label>
-            ))}
-            <p className="chat-note">{t('scopesHelp')}</p>
-            {!usableScopeIds.length ? (
-              <p className="chat-scope-warning" role="status">
-                {t('noScopes')}{' '}
-                <button type="button" className="text-button" onClick={onSettings}>
-                  {t('scopes')}
-                </button>
-              </p>
-            ) : null}
-          </fieldset>
-        )}
-        <p className="chat-note">{t(allowExternalQuestions ? 'questionsYes' : 'questionsNo')}</p>
-        <p className="chat-note">{t('permissions')}</p>
-        <label className="chat-check">
-          <input
-            type="checkbox"
-            checked={sourcesHidden}
-            onChange={(event) => setSourcesHidden(event.target.checked)}
-          />
-          <span>{t('hideSources')}</span>
-        </label>
-        <p className="chat-note">{t('hiddenHelp')}</p>
+        <details className="chat-retrieval-options">
+          <summary>
+            {t('retrievalOptions')} · {t(mode)} ·{' '}
+            {chatText(language, 'folderCount', { count: usableScopeIds.length })}
+          </summary>
+          <div className="chat-mode">
+            <label htmlFor={`${fieldId}-mode`}>{t('mode')}</label>
+            <select
+              id={`${fieldId}-mode`}
+              value={mode}
+              onChange={(event) => setMode(event.target.value as 'documents' | 'general')}
+            >
+              <option value="documents">{t('documents')}</option>
+              <option value="general">{t('general')}</option>
+            </select>
+          </div>
+          {mode === 'general' ? (
+            <p className="chat-note">{t('generalHelp')}</p>
+          ) : (
+            <fieldset className="chat-scope-picker">
+              <legend>{t('selectedScopes')}</legend>
+              {scopes.map((scope) => (
+                <label key={scope.id} className="chat-check">
+                  <input
+                    type="checkbox"
+                    checked={usableScopeIds.includes(scope.id)}
+                    onChange={(event) =>
+                      onScopes(
+                        event.target.checked
+                          ? [...usableScopeIds, scope.id]
+                          : usableScopeIds.filter((value) => value !== scope.id),
+                      )
+                    }
+                  />
+                  <span>
+                    {scope.name}
+                    <small title={scope.path}>{scope.path}</small>
+                    <small>{t(scope.externalAllowed ? 'externalYes' : 'externalNo')}</small>
+                  </span>
+                </label>
+              ))}
+              <p className="chat-note">{t('scopesHelp')}</p>
+              {!usableScopeIds.length ? (
+                <p className="chat-scope-warning" role="status">
+                  {t('noScopes')}{' '}
+                  <button type="button" className="text-button" onClick={onSettings}>
+                    {t('scopes')}
+                  </button>
+                </p>
+              ) : null}
+            </fieldset>
+          )}
+          <p className="chat-note">{t(allowExternalQuestions ? 'questionsYes' : 'questionsNo')}</p>
+          <p className="chat-note">{t('permissions')}</p>
+          <label className="chat-check">
+            <input
+              type="checkbox"
+              checked={sourcesHidden}
+              onChange={(event) => setSourcesHidden(event.target.checked)}
+            />
+            <span>{t('hideSources')}</span>
+          </label>
+          <p className="chat-note">{t('hiddenHelp')}</p>
+        </details>
         <label htmlFor={`${fieldId}-question`}>{t('question')}</label>
         <textarea
           id={`${fieldId}-question`}

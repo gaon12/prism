@@ -1,6 +1,21 @@
 import type { Language } from '../../lib/types';
 
 const messages = {
+  sourceDetails: ['출처 상세', 'Source details', '来源详情', '出處詳情', '出典の詳細'],
+  retrievalOptions: [
+    '참조 범위·전송 설정',
+    'Retrieval & sending settings',
+    '检索与发送设置',
+    '檢索與傳送設定',
+    '参照・送信設定',
+  ],
+  folderCount: [
+    '선택 폴더 {count}개',
+    '{count} selected folders',
+    '已选{count}个文件夹',
+    '已選{count}個資料夾',
+    '選択フォルダー{count}件',
+  ],
   incompleteEvidence: [
     '출처를 다시 확인해야 하는 미검증 답변',
     'Unverified answer — source references need review',

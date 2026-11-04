@@ -5,6 +5,7 @@ Windows-first desktop search workspace built with Tauri 2, Rust, React and TypeS
 ## Current milestone
 
 - Native main window and Spotlight-style quick-search window, with a tray menu and configurable global shortcut.
+- First-run language/theme, shortcut, folder and privacy choices, with deferred saving and preserved legacy profiles.
 - Search, chat and document tabs; persistent settings, independent filename/content scopes, and recent query state shared between windows.
 - Korean, English, Simplified Chinese, Traditional Chinese and Japanese UI, light/dark/system themes, and adjustable text size.
 - A local Markdown draft editor with autosave and Markdown export.
@@ -117,6 +118,8 @@ After building this standalone debug executable, run `npm run test:standalone`, 
 `npm run test:rag` uses generated files, an isolated profile, synthetic credentials and a loopback generation fixture. It checks current evidence, permission/credential boundaries, persisted conversations, cancellation and the actual chat UI without a real provider key or external request.
 
 `npm run test:documents` uses the same isolated native services and a synthetic loopback generator. It verifies explicit outline review, structured blocks, manual edits, Unicode selection rewrites, long drafts, invalid/cancelled response preservation, source changes, immutable restore/export/restart and actual document controls. It does not verify a real model's structured-output quality or operate the OS save dialog.
+
+`npm run test:onboarding` verifies actual bundled first-run completion, shortcut/settings persistence, clipboard opt-out, skip without applying draft choices and restart. Recommended user folders are explicitly unchecked, and the isolated profile uses MemoryClipboard. Existing profiles missing the new completion marker bypass setup; fresh profiles see the tour. Theme/language choices are saved only on completion.
 
 ## Native smoke tests
 

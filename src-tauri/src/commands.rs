@@ -45,6 +45,9 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> Result<Client
             .settings
             .lock()
             .map_err(|_| "Settings are unavailable.")? = restored.clone();
+        if let Ok(content) = &state.content {
+            let _ = content.configure(restored.scopes.clone());
+        }
         state.index.configure(restored.scopes);
         state.clipboard.apply_settings(restored.clipboard)?;
         *config_error = None;
@@ -140,7 +143,22 @@ pub fn save_settings(
             .iter()
             .map(|scope| (&scope.id, &scope.path, scope.filename_enabled))
             .collect::<Vec<_>>();
+    let changed_content = current
+        .scopes
+        .iter()
+        .map(|scope| (&scope.id, &scope.path, scope.content_enabled))
+        .collect::<Vec<_>>()
+        != settings
+            .scopes
+            .iter()
+            .map(|scope| (&scope.id, &scope.path, scope.content_enabled))
+            .collect::<Vec<_>>();
     *current = settings.clone();
+    if changed_content {
+        if let Ok(content) = &state.content {
+            let _ = content.configure(settings.scopes.clone());
+        }
+    }
     // The persisted settings are authoritative. Runtime storage errors are reported by
     // clipboard_status; do not report a failed settings save after its atomic commit.
     let _ = state.clipboard.apply_settings(settings.clipboard.clone());

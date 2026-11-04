@@ -1,6 +1,7 @@
 mod clipboard_commands;
 mod clipboard_history;
 mod commands;
+mod content_commands;
 mod content_service;
 mod content_store;
 mod dictionary_commands;
@@ -13,6 +14,7 @@ mod filename_pattern;
 mod generation_runtime;
 mod index;
 mod keyboard_pattern;
+mod model_commands;
 mod process_job;
 mod secret_store;
 mod settings;
@@ -39,6 +41,8 @@ pub struct AppState {
     index: index::FileIndex,
     clipboard: clipboard_history::ClipboardService,
     dictionary: Result<dictionary_service::DictionaryService, dictionary_service::DictionaryError>,
+    embedding: Result<embedding_runtime::EmbeddingRuntime, String>,
+    content: Result<content_service::ContentService, content_service::ContentError>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -143,8 +147,44 @@ pub fn run() {
                     clipboard_history::system_source(app.handle().clone()),
                 );
             }
+            // Keep large local caches out of the roaming settings profile. Tests always use
+            // their explicit isolated directory for every service and model asset.
+            let asset_dir = if isolated_test {
+                data_dir.clone()
+            } else {
+                app.path().app_local_data_dir()?
+            };
+            let embedding = embedding_runtime::EmbeddingRuntime::new(asset_dir.clone());
+            let content = content_service::ContentService::open(
+                &asset_dir.join("content"),
+                embedding.clone(),
+                {
+                    let app = app.handle().clone();
+                    move |status| {
+                        let _ = app.emit("prism:content", status);
+                    }
+                },
+            );
+            if let Ok(content) = &content {
+                content.exclude_paths(&[
+                    asset_dir.join("embedding"),
+                    asset_dir.join("dictionary"),
+                    data_dir.join("clipboard"),
+                    data_dir.join("settings.json"),
+                    data_dir.join("session.json"),
+                    data_dir.join("chats"),
+                    data_dir.join("credentials"),
+                    asset_dir.join("credentials"),
+                    asset_dir.join("chats"),
+                ]);
+            }
+            if config_error.is_none() {
+                if let Ok(content) = &content {
+                    let _ = content.configure(settings.scopes.clone());
+                }
+            }
             let dictionary =
-                dictionary_service::DictionaryService::open(&data_dir.join("dictionary"));
+                dictionary_service::DictionaryService::open(&asset_dir.join("dictionary"));
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 session: Mutex::new(session),
@@ -155,6 +195,8 @@ pub fn run() {
                 index,
                 clipboard,
                 dictionary,
+                embedding,
+                content,
             });
             windows::build_quick(app.handle())?;
             let open = MenuItem::with_id(app, "open", "Prism 열기", true, None::<&str>)?;
@@ -255,10 +297,36 @@ pub fn run() {
             dictionary_commands::dictionary_download,
             dictionary_commands::dictionary_remove,
             dictionary_commands::dictionary_open_source,
+            model_commands::model_status,
+            model_commands::model_cancel,
+            model_commands::model_download,
+            model_commands::model_import,
+            model_commands::model_start,
+            model_commands::model_stop,
+            content_commands::content_status,
+            content_commands::content_refresh,
+            content_commands::content_cancel_index,
+            content_commands::content_cancel_search,
+            content_commands::search_content,
+            content_commands::search_semantic,
+            content_commands::content_chunks,
+            content_commands::content_file_action,
             commands::window_action,
             commands::quit_app,
             commands::write_markdown
         ])
-        .run(tauri::generate_context!())
-        .expect("Prism could not start");
+        .build(tauri::generate_context!())
+        .expect("Prism could not start")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(content) = &state.content {
+                        content.shutdown();
+                    }
+                    if let Ok(embedding) = &state.embedding {
+                        let _ = embedding.stop();
+                    }
+                }
+            }
+        });
 }

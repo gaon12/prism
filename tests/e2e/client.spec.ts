@@ -153,7 +153,14 @@ test('keeps filename and AI scopes independent', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '설정', exact: true }).click();
   await page.getByRole('button', { name: '검색 범위', exact: true }).click();
+  await expect(page.getByLabel('이 폴더 본문 외부 AI 전송 허용', { exact: true })).toBeDisabled();
   await page.getByLabel('본문·AI 색인', { exact: true }).check();
+  await page.getByLabel('이 폴더 본문 외부 AI 전송 허용', { exact: true }).check();
+  await page.getByLabel('본문·AI 색인', { exact: true }).uncheck();
+  await page.getByLabel('본문·AI 색인', { exact: true }).check();
+  await expect(
+    page.getByLabel('이 폴더 본문 외부 AI 전송 허용', { exact: true }),
+  ).not.toBeChecked();
   await expect(page.getByLabel('파일명 검색', { exact: true })).toBeChecked();
   await page.getByRole('button', { name: '저장', exact: true }).click();
   await expect
@@ -168,6 +175,77 @@ test('keeps filename and AI scopes independent', async ({ page }) => {
   await expect(page.getByText('파일명을 입력하세요', { exact: true })).toBeVisible();
 });
 
+test('saves generation connection preferences without contacting a provider or storing keys', async ({
+  page,
+}) => {
+  const providerRequests: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().startsWith('https://api.openai.com')) providerRequests.push(request.url());
+  });
+  await page.goto('/');
+  const settings = async () => {
+    await page.getByRole('button', { name: '설정', exact: true }).click();
+    await page.getByRole('button', { name: 'AI·모델', exact: true }).click();
+  };
+  await settings();
+  const panel = page.locator('.generation-panel');
+  await expect(panel.getByLabel('사용 모드', { exact: true })).toHaveValue('local');
+  await expect(panel.getByLabel('실패 시 다른 서버 사용 허용', { exact: true })).not.toBeChecked();
+  await expect(panel.getByLabel('외부 서버에 질문 전송 허용', { exact: true })).not.toBeChecked();
+  await panel.getByLabel('사용 모드', { exact: true }).selectOption('auto');
+  await panel.getByLabel('자동 선택 우선순위', { exact: true }).selectOption('externalFirst');
+  await panel.getByLabel('외부 서버에 질문 전송 허용', { exact: true }).check();
+  const external = panel.getByRole('group', { name: '외부 서버', exact: true });
+  await external.getByLabel('이 서버 연결 설정', { exact: true }).check();
+  await external.getByRole('button', { name: 'OpenAI', exact: true }).click();
+  await external.getByLabel('모델 이름', { exact: true }).fill('synthetic-user-chosen-model');
+  await expect(external.getByLabel('토큰 제한 파라미터', { exact: true })).toHaveValue(
+    'maxCompletionTokens',
+  );
+  await expect(
+    external.getByText('API 키 상태 확인·저장은 데스크톱 앱에서만 사용할 수 있습니다.', {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: '취소', exact: true }).click();
+  await settings();
+  await expect(panel.getByLabel('사용 모드', { exact: true })).toHaveValue('local');
+  await expect(external.getByLabel('이 서버 연결 설정', { exact: true })).not.toBeChecked();
+  const local = panel.getByRole('group', { name: '로컬 서버', exact: true });
+  await local.getByLabel('이 서버 연결 설정', { exact: true }).check();
+  await local.getByRole('button', { name: 'LM Studio', exact: true }).click();
+  await local.getByLabel('모델 이름', { exact: true }).fill('synthetic-local-model');
+  await expect(local.getByLabel('서버 URL', { exact: true })).toHaveValue(
+    'http://127.0.0.1:1234/v1',
+  );
+  await panel.getByLabel('문맥 최대 문자 수', { exact: true }).fill('12000');
+  await page.getByRole('dialog').getByRole('button', { name: '저장', exact: true }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          JSON.parse(localStorage.getItem('prism.settings.v1') ?? '{}').generation?.local?.model,
+      ),
+    )
+    .toBe('synthetic-local-model');
+  const saved = await page.evaluate(
+    () => JSON.parse(localStorage.getItem('prism.settings.v1') ?? '{}').generation,
+  );
+  expect(saved).toMatchObject({
+    mode: 'local',
+    fallback: false,
+    allowExternalQuestions: false,
+    maxContextChars: 12000,
+    external: null,
+    local: { temperature: null, tokenParameter: 'maxTokens' },
+  });
+  expect(JSON.stringify(saved)).not.toMatch(/apiKey|secret|Bearer/);
+  expect(providerRequests).toEqual([]);
+  await settings();
+  await panel.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: join(evidence, 'generation-settings.png') });
+});
+
 test('edits, persists and exports a real Markdown draft', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '문서', exact: true }).click();
@@ -176,7 +254,9 @@ test('edits, persists and exports a real Markdown draft', async ({ page }) => {
     .getByRole('textbox', { name: 'Markdown', exact: true })
     .fill('# 첫 단계\n\n- 두 창\n- 설정 저장');
   await page.getByRole('button', { name: '채팅', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '내 문서를 근거로 대화하세요' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'RAG 대화', exact: true })).toBeVisible();
+  await expect(page.locator('.chat-native-only')).toContainText('데스크톱 앱');
+  await expect(page.getByRole('textbox', { name: '질문', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '문서', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Markdown', exact: true })).toContainText(
     '- 설정 저장',

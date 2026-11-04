@@ -16,6 +16,7 @@
     "test:clipboard": "node tests/native/clipboard.mjs",
     "test:content": "node tests/native/content.mjs",
     "test:dictionary": "node tests/native/dictionary.mjs",
+    "test:rag": "node tests/native/rag.mjs",
     "format:check": "prettier --check src tests vite.config.ts playwright.config.ts package.json tsconfig*.json index.html .prettierrc.json README.md"
   },
   "dependencies": {

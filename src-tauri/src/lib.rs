@@ -1,3 +1,4 @@
+mod clipboard_history;
 mod commands;
 mod filename_pattern;
 mod index;

@@ -1,0 +1,45 @@
+# Prism's own setup program (Windows). Independent from the app's Cargo project on purpose:
+# it is built after the app, and `build.rs` packs the built app into this setup's .exe.
+[package]
+name = "prism-setup"
+version = "0.1.0"
+description = "Prism setup"
+edition = "2021"
+publish = false
+
+[build-dependencies]
+serde_json = "1"
+tauri-build = { version = "2", features = [] }
+flate2 = "1"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+flate2 = "1"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+windows = { version = "0.62", features = [
+  "Win32_System_Com",
+  "Win32_UI_Shell",
+  "Win32_UI_Shell_Common",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Variant",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+
+# Small setup file: optimise for size, the work is mostly disk I/O anyway.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[workspace]

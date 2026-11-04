@@ -22,6 +22,7 @@ import { DocumentsView } from './features/DocumentsView';
 import { Onboarding } from './features/onboarding/Onboarding';
 import { QuickWindow } from './features/QuickWindow';
 import { ClipboardNotice } from './features/clipboard/ClipboardPanel';
+import { UpdateBanner } from './features/updates/UpdatePanel';
 import { bridge, native } from './lib/bridge';
 import {
   useClient,
@@ -247,6 +248,7 @@ export default function App() {
               onAddFolder={add}
             />
             <main className="main-content">
+              <UpdateBanner blocked={needsOnboarding || documentDirty} />
               {!needsOnboarding ? <ClipboardNotice /> : null}
               {tab === 'search' ? (
                 <SearchView
@@ -291,7 +293,11 @@ export default function App() {
         />
       ) : null}
       {settingsTab ? (
-        <SettingsDialog initialTab={settingsTab} onClose={() => setSettingsTab(null)} />
+        <SettingsDialog
+          initialTab={settingsTab}
+          onClose={() => setSettingsTab(null)}
+          allowUpdateInstall={!documentDirty}
+        />
       ) : null}
       {recommended ? (
         <RecommendedDialog folders={recommended} onClose={() => setRecommended(null)} />

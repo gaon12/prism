@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { X, Plus, Trash2, Folder, Settings2, Keyboard, Folders, LogOut, Cpu } from 'lucide-react';
 import { EmbeddingPanel } from '../features/models/EmbeddingPanel';
 import { GenerationPanel } from '../features/generation/GenerationPanel';
+import { UpdatePanel } from '../features/updates/UpdatePanel';
 import { generationCredentials } from '../lib/rag';
 import { bridge } from '../lib/bridge';
 import { useClient, saveSettings, scopesFromPaths, showToast, errorMessage } from '../lib/store';
@@ -12,9 +13,11 @@ export type SettingsTab = 'general' | 'scopes' | 'shortcuts' | 'ai';
 export function SettingsDialog({
   initialTab,
   onClose,
+  allowUpdateInstall = true,
 }: {
   initialTab: SettingsTab;
   onClose: () => void;
+  allowUpdateInstall?: boolean;
 }) {
   const { settings, runtime } = useClient();
   const [draft, setDraft] = useState(() => structuredClone(settings));
@@ -239,6 +242,13 @@ export function SettingsDialog({
                 ) : runtime.development ? (
                   <p className="setting-footnote">{t('developmentStartup')}</p>
                 ) : null}
+                <UpdatePanel
+                  autoCheck={draft.updates.autoCheck}
+                  onAutoCheck={(autoCheck) => setDraft({ ...draft, updates: { autoCheck } })}
+                  installBlocked={
+                    !allowUpdateInstall || JSON.stringify(draft) !== JSON.stringify(settings)
+                  }
+                />
               </>
             ) : null}
             {tab === 'scopes' ? (

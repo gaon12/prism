@@ -358,6 +358,7 @@ fn crash_fixture_process() {
     struct CrashAfterRegistration<'a> {
         inner: &'a dyn System,
         crash: bool,
+        root: &'a Path,
     }
     impl System for CrashAfterRegistration<'_> {
         fn folders(&self) -> io::Result<Folders> {
@@ -378,7 +379,7 @@ fn crash_fixture_process() {
         fn write_uninstall_entry(&self, entry: &UninstallEntry) -> io::Result<()> {
             self.inner.write_uninstall_entry(entry)?;
             if self.crash {
-                std::process::exit(73);
+                crash_boundary(self.root);
             }
             Ok(())
         }
@@ -392,6 +393,7 @@ fn crash_fixture_process() {
     let system = CrashAfterRegistration {
         inner: &system,
         crash: phase == "registration",
+        root: &root,
     };
     let new = payload::pack(&[("prism.exe", b"new"), ("res/new.txt", b"new resource")]).unwrap();
     install::install(
@@ -405,7 +407,7 @@ fn crash_fixture_process() {
                 || (phase == "files" && stage == Stage::Shortcuts)
                 || (phase == "completed" && stage == Stage::Done)
             {
-                std::process::exit(73);
+                crash_boundary(&root);
             }
         },
     )
@@ -413,9 +415,25 @@ fn crash_fixture_process() {
     panic!("Fixture did not reach its requested interruption point");
 }
 
+#[cfg(windows)]
+fn crash_boundary(root: &Path) -> ! {
+    if std::env::var_os("PRISM_RECOVERY_TEST_WAIT_FOR_KILL").is_some_and(|value| value == "1") {
+        fs::write(
+            root.join("boundary-ready.txt"),
+            b"Ready for owned-process termination",
+        )
+        .unwrap();
+        // The parent forcibly terminates this exact child. A finite fallback avoids an
+        // orphan if the test runner itself disappears before it can send termination.
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        std::process::exit(74);
+    }
+    std::process::exit(73);
+}
+
 #[test]
 #[cfg(windows)]
-fn actual_process_exit_keeps_a_recoverable_or_committed_installation() {
+fn actual_process_termination_keeps_a_recoverable_or_committed_installation() {
     use std::os::windows::process::CommandExt;
     for phase in ["preparing", "files", "registration", "completed"] {
         let root = tempfile::Builder::new()
@@ -427,7 +445,7 @@ fn actual_process_exit_keeps_a_recoverable_or_committed_installation() {
             b"Prism isolated recovery fixture",
         )
         .unwrap();
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "recovery_tests::crash_fixture_process",
@@ -436,15 +454,35 @@ fn actual_process_exit_keeps_a_recoverable_or_committed_installation() {
             ])
             .env("PRISM_RECOVERY_TEST_ROOT", root.path())
             .env("PRISM_RECOVERY_TEST_PHASE", phase)
+            .env("PRISM_RECOVERY_TEST_WAIT_FOR_KILL", "1")
             .creation_flags(0x0800_0000)
-            .output()
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
             .unwrap();
-        assert_eq!(
-            status.status.code(),
-            Some(73),
-            "{phase}: {}",
-            String::from_utf8_lossy(&status.stderr)
-        );
+        struct OwnedChild(std::process::Child);
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = OwnedChild(child);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !root.path().join("boundary-ready.txt").exists() {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "Fixture exited before {phase}"
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Fixture did not reach {phase}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        child.0.kill().unwrap();
+        let status = child.0.wait().unwrap();
+        assert!(!status.success() && status.code() != Some(73) && status.code() != Some(74));
         let system = crate::system::SandboxSystem {
             root: root.path().into(),
         };

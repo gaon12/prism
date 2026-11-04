@@ -348,11 +348,32 @@ fn crash_fixture_process() {
     let phase = std::env::var("PRISM_RECOVERY_TEST_PHASE").unwrap();
     let system = crate::system::SandboxSystem { root: root.clone() };
     let setup = root.join("fixture-setup.exe");
-    fs::write(&setup, b"inert setup; never executed").unwrap();
+    if phase == "previous-ready" {
+        // Native QA supplied its own actual setup copy inside this marked sandbox.
+        crate::safe_path::no_links(&setup).unwrap();
+        assert!(setup.is_file());
+    } else {
+        fs::write(&setup, b"inert setup; never executed").unwrap();
+    }
     let app = root.join("app");
     let old = payload::pack(&[("prism.exe", b"old"), ("res/old.txt", b"old resource")]).unwrap();
-    install::install(&system, &old, "0.1.0", &options(&app), &setup, |_, _| {}).unwrap();
+    install::install(
+        &system,
+        &old,
+        if phase == "previous-ready" {
+            "0.0.1"
+        } else {
+            "0.1.0"
+        },
+        &options(&app),
+        &setup,
+        |_, _| {},
+    )
+    .unwrap();
     fs::write(app.join("personal.txt"), b"user file").unwrap();
+    if phase == "previous-ready" {
+        return;
+    }
     // The wrapper stops after the real sandbox registration adapter has written its file,
     // but before the installer can record completion or run its ordinary rollback path.
     struct CrashAfterRegistration<'a> {
@@ -412,6 +433,25 @@ fn crash_fixture_process() {
         },
     )
     .unwrap();
+    if phase.starts_with("restore-") {
+        crate::previous::restore(
+            &CrashAfterRegistration {
+                inner: &system,
+                crash: phase == "restore-registration",
+                root: &root,
+            },
+            &app,
+            "0.1.0",
+            |stage, _| {
+                if (phase == "restore-files" && stage == Stage::Shortcuts)
+                    || (phase == "restore-completed" && stage == Stage::Done)
+                {
+                    crash_boundary(&root);
+                }
+            },
+        )
+        .unwrap();
+    }
     panic!("Fixture did not reach its requested interruption point");
 }
 
@@ -435,7 +475,15 @@ fn crash_boundary(root: &Path) -> ! {
 #[cfg(windows)]
 fn actual_process_termination_keeps_a_recoverable_or_committed_installation() {
     use std::os::windows::process::CommandExt;
-    for phase in ["preparing", "files", "registration", "completed"] {
+    for phase in [
+        "preparing",
+        "files",
+        "registration",
+        "completed",
+        "restore-files",
+        "restore-registration",
+        "restore-completed",
+    ] {
         let root = tempfile::Builder::new()
             .prefix("prism-recovery-test-")
             .tempdir()
@@ -491,9 +539,16 @@ fn actual_process_termination_keeps_a_recoverable_or_committed_installation() {
         let count = recovery::recover(&system, &app).unwrap();
         assert_eq!(
             count,
-            usize::from(matches!(phase, "files" | "registration"))
+            usize::from(matches!(
+                phase,
+                "files" | "registration" | "restore-files" | "restore-registration"
+            ))
         );
-        let expected: &[u8] = if phase == "completed" { b"new" } else { b"old" };
+        let new = matches!(
+            phase,
+            "completed" | "restore-files" | "restore-registration"
+        );
+        let expected: &[u8] = if new { b"new" } else { b"old" };
         assert_eq!(
             fs::read(app.join("prism.exe")).unwrap(),
             expected,
@@ -502,11 +557,7 @@ fn actual_process_termination_keeps_a_recoverable_or_committed_installation() {
         assert_eq!(fs::read(app.join("personal.txt")).unwrap(), b"user file");
         assert_eq!(
             system.existing_install().unwrap().1.as_deref(),
-            Some(if phase == "completed" {
-                "0.2.0"
-            } else {
-                "0.1.0"
-            })
+            Some(if new { "0.2.0" } else { "0.1.0" })
         );
         assert_eq!(recovery::recover(&system, &app).unwrap(), 0);
         assert!(!recovery::has_workspaces(&app));

@@ -16,7 +16,7 @@ const outsideDir = join(dataDir, '외부');
 await mkdir(outsideDir);
 await writeFile(join(outsideDir, '외부비밀.txt'), 'Outside the authorized scope');
 await symlink(outsideDir, join(filesDir, '연결폴더'), 'junction');
-for (const name of ['공문서 계획.hwpx', '회의 계획.txt', '프로젝트 계획.pdf'])
+for (const name of ['공문서 계획.hwpx', '회의 계획.txt', '프로젝트 계획.pdf', 'Prism-guide.txt'])
   await writeFile(join(filesDir, name), 'Prism filename test');
 await Promise.all(
   Array.from({ length: 240 }, (_, i) =>
@@ -121,6 +121,43 @@ try {
     'extension and date syntax',
   );
   assert.match(await main.getByRole('option').innerText(), /공문서 계획.hwpx/);
+  await mainInput.fill('ㄱㅁㅅ ext:hwpx');
+  await until(
+    async () => (await main.getByRole('option').count()) === 1,
+    'initial-consonant search',
+  );
+  assert.match(await main.getByRole('option').innerText(), /공문서 계획.hwpx/);
+  await main.screenshot({ path: join(evidence, 'initials-main.png') });
+  await mainInput.fill('rhdanstj ext:hwpx');
+  await until(async () => (await main.getByRole('option').count()) === 1, 'keyboard fallback');
+  await main.locator('.keyboard-notice').waitFor();
+  assert.equal(await mainInput.inputValue(), 'rhdanstj ext:hwpx');
+  await main.getByRole('button', { name: '빠른 검색', exact: true }).click();
+  await quick.locator('.keyboard-notice').waitFor();
+  await quick.screenshot({ path: join(evidence, 'keyboard-quick.png') });
+  await quickInput.press('Control+Enter');
+  await main.getByRole('button', { name: '설정', exact: true }).click();
+  await main.getByLabel('한·영 키보드 오입력 보정', { exact: true }).uncheck();
+  await main.getByRole('button', { name: '저장', exact: true }).click();
+  await main.getByRole('heading', { name: '검색 결과가 없어요' }).waitFor();
+  assert.equal(
+    JSON.parse(await readFile(join(dataDir, 'settings.json'), 'utf8')).keyboardCorrection,
+    false,
+  );
+  await main.getByRole('button', { name: '설정', exact: true }).click();
+  await main.getByLabel('한·영 키보드 오입력 보정', { exact: true }).check();
+  await main.getByRole('button', { name: '저장', exact: true }).click();
+  await until(
+    async () => (await main.getByRole('option').count()) === 1,
+    're-enabled keyboard fallback',
+  );
+  await mainInput.fill('ㅖㄱㅑ느');
+  await until(
+    async () => (await main.getByRole('option').first().innerText()).includes('Prism-guide.txt'),
+    'reverse keyboard fallback prioritizes filename over parent-path matches',
+  );
+  assert.match(await main.getByRole('option').first().innerText(), /Prism-guide.txt/);
+  await main.screenshot({ path: join(evidence, 'keyboard-main.png') });
   await mainInput.fill('샘플');
   await until(async () => (await main.getByRole('option').count()) === 200, 'bounded results');
   assert.match(await main.locator('.results-heading').innerText(), /240/);
@@ -143,6 +180,14 @@ try {
     async () => (await main.locator('.utility-value').textContent()) === '0.3',
     'bundled calculator worker and CSP',
   );
+  assert.equal(await main.locator('.accuracy-note').count(), 0);
+  await mainInput.fill('=1/3');
+  await until(
+    async () => (await main.locator('.utility-value').textContent()) === '0.333333333333',
+    'rounded decimal answer',
+  );
+  assert.match(await main.locator('.accuracy-note').innerText(), /유효숫자 12자리로 반올림/);
+  await main.screenshot({ path: join(evidence, 'rounded-native.png') });
   await mainInput.fill('=48/2(9+3)');
   await until(
     async () => (await main.locator('.utility-value').textContent()) === '2',
@@ -166,11 +211,18 @@ try {
   await main.getByRole('button', { name: '설정', exact: true }).click();
   await main.getByLabel('테마', { exact: true }).selectOption('dark');
   await main.getByLabel('글자 크기', { exact: true }).fill('16');
+  await main.getByLabel('계산 유효 자릿수', { exact: true }).fill('6');
   await main.getByRole('button', { name: '단축키', exact: true }).click();
   await main.getByRole('textbox', { name: '단축키', exact: true }).fill('Ctrl+Alt+Shift+F11');
   await main.getByRole('button', { name: '저장', exact: true }).click();
   await main.getByRole('dialog', { name: '설정', exact: true }).waitFor({ state: 'hidden' });
   assert.equal(JSON.parse(await readFile(join(dataDir, 'settings.json'), 'utf8')).fontSize, 16);
+  await mainInput.fill('=1/3');
+  await until(
+    async () => (await main.locator('.utility-value').textContent()) === '0.333333',
+    'configured rounding precision',
+  );
+  assert.match(await main.locator('.accuracy-note').innerText(), /유효숫자 6자리로 반올림/);
   await main.getByRole('textbox', { name: '검색어', exact: true }).fill('독립 실행 확인');
   await main.getByRole('button', { name: '빠른 검색', exact: true }).click();
   await quick.getByRole('heading', { name: '검색 결과가 없어요' }).waitFor();
@@ -212,6 +264,9 @@ try {
           'junction isolation and out-of-scope open rejection',
           'bundled calculator and unit workers under production CSP',
           'implicit multiplication priority with displayed interpretation',
+          'initial and mixed-script keyboard search in both directions',
+          'keyboard correction notice, original query and saved opt-out',
+          'rounded answer labels and live precision changes',
         ],
       },
       null,

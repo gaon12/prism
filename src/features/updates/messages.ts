@@ -1,5 +1,12 @@
 import type { Language } from '../../lib/types';
 const messages = {
+  packaged: [
+    'MSIX 버전은 Microsoft Store 또는 설치에 사용한 Windows 배포 경로에서 업데이트하세요.',
+    'Update the MSIX version through Microsoft Store or the Windows distribution source used to install it.',
+    '请通过Microsoft Store或安装时使用的Windows分发来源更新MSIX版本。',
+    '請透過Microsoft Store或安裝時使用的Windows發佈來源更新MSIX版本。',
+    'MSIX版はMicrosoft Store、またはインストールに使ったWindowsの配布元から更新してください。',
+  ],
   changed: [
     '확인하던 업데이트가 바뀌었습니다. 새 버전 정보를 확인한 뒤 다시 선택하세요.',
     'The selected update changed. Review the new version and select it again.',

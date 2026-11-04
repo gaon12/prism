@@ -240,6 +240,44 @@ try {
   const metadata = JSON.parse(await readFile(join(directory, 'updates/state.json'), 'utf8'));
   assert.equal(metadata.dismissedVersion, '0.3.0');
   assert(metadata.lastCheckMs > 0);
+  // Rendering contract only: this isolated process is not a registered MSIX package.
+  // Even an inconsistent event must not offer an ordinary installer for a package.
+  await main.getByRole('button', { name: '설정', exact: true }).click();
+  settings = main.getByRole('dialog', { name: '설정', exact: true });
+  panel = settings.getByRole('region', { name: '업데이트', exact: true });
+  const realView = await status();
+  await invoke('plugin:event|emit', {
+    event: 'prism:updates',
+    payload: {
+      ...realView,
+      available: { version: '0.4.0', notes: 'Synthetic MSIX presentation check' },
+      dismissedVersion: null,
+      canInstall: true,
+      installDisabledReason: 'packaged',
+    },
+  });
+  await panel.getByText('MSIX 버전은 Microsoft Store', { exact: false }).waitFor();
+  assert.equal(
+    await panel.getByRole('button', { name: '설치하고 다시 시작', exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await panel.getByRole('button', { name: '다운로드 페이지 열기', exact: true }).count(),
+    0,
+  );
+  await panel.screenshot({ path: join(evidence, 'updates-msix-policy.png') });
+  await settings.getByRole('button', { name: '취소', exact: true }).click();
+  const packagedBanner = main.locator('.update-banner');
+  await packagedBanner.getByText('MSIX 버전은 Microsoft Store', { exact: false }).waitFor();
+  assert.equal(
+    await packagedBanner.getByRole('button', { name: '설치하고 다시 시작', exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await packagedBanner.getByRole('button', { name: '다운로드 페이지 열기', exact: true }).count(),
+    0,
+  );
+  await invoke('plugin:event|emit', { event: 'prism:updates', payload: realView });
   assert.deepEqual(instance.errors, []);
   await shutdown(instance);
   instance = null;

@@ -101,8 +101,9 @@ function DownloadAction() {
   );
 }
 export function UpdateBanner({ blocked = false }: { blocked?: boolean }) {
-  const { settings } = useClient();
+  const { settings, runtime } = useClient();
   const { view } = useUpdates();
+  const packaged = runtime.installKind === 'packaged' || view?.installDisabledReason === 'packaged';
   const t = (key: Parameters<typeof updateText>[1]) => updateText(settings.language, key);
   if (!native || blocked || !view?.available || view.dismissedVersion === view.available.version)
     return null;
@@ -112,7 +113,13 @@ export function UpdateBanner({ blocked = false }: { blocked?: boolean }) {
         {t('available')} · {view.available.version}
       </strong>
       <div className="update-actions">
-        {view.canInstall ? <InstallAction /> : <DownloadAction />}
+        {packaged ? (
+          <span>{t('packaged')}</span>
+        ) : view.canInstall ? (
+          <InstallAction />
+        ) : (
+          <DownloadAction />
+        )}
         <button
           type="button"
           className="text-button"
@@ -134,8 +141,9 @@ export function UpdatePanel({
   onAutoCheck: (value: boolean) => void;
   installBlocked?: boolean;
 }) {
-  const { settings } = useClient();
+  const { settings, runtime } = useClient();
   const { view, error } = useUpdates();
+  const packaged = runtime.installKind === 'packaged' || view?.installDisabledReason === 'packaged';
   const t = (key: Parameters<typeof updateText>[1]) => updateText(settings.language, key);
   const [busy, setBusy] = useState(false);
   const [checked, setChecked] = useState<'ok' | 'failed' | null>(null);
@@ -171,6 +179,7 @@ export function UpdatePanel({
         />
       </label>
       <p className="setting-footnote">{t('schedule')}</p>
+      {packaged ? <p className="setting-footnote">{t('packaged')}</p> : null}
       {!native ? <p className="muted">{translate(settings.language, 'nativeOnly')}</p> : null}
       {error || view?.stateError ? (
         <p className="inline-error" role="alert">
@@ -197,7 +206,7 @@ export function UpdatePanel({
             </strong>
           </p>
           <p className="update-notes">{view.available.notes}</p>
-          {!view.canInstall ? <p className="muted">{t('manual')}</p> : null}
+          {!view.canInstall && !packaged ? <p className="muted">{t('manual')}</p> : null}
         </>
       ) : null}
       <div className="update-actions">
@@ -210,7 +219,7 @@ export function UpdatePanel({
           <RefreshCw size={15} />
           {busy || view?.checking ? t('checking') : t('check')}
         </button>
-        {view?.available ? (
+        {packaged ? null : view?.available ? (
           view.canInstall ? (
             <InstallAction blocked={installBlocked} />
           ) : (

@@ -14,6 +14,8 @@ mod document_commands;
 mod document_extract;
 mod document_service;
 mod document_store;
+mod embedding_assets;
+mod embedding_package;
 mod embedding_runtime;
 mod filename_pattern;
 mod foreground_tracker;

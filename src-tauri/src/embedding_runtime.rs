@@ -1,5 +1,7 @@
 //! App-owned EmbeddingGemma 2 CPU server. No document is sent to a remote service.
 //! Public methods block: invoke them from a worker, never the WebView/UI thread.
+pub use crate::embedding_assets::RUNTIME_VERSION;
+use crate::embedding_assets::{self, Asset};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -19,22 +21,13 @@ use std::{
 
 pub const MODEL_ID: &str = "google/embeddinggemma-2";
 pub const MODEL_REVISION: &str = "6ea3e3a309d12a4779cfda98b8c19800d2d5da71";
-pub const RUNTIME_VERSION: &str = "b11960";
 pub const NATIVE_DIMENSIONS: usize = 768;
 const PREFIX_VERSION: &str = "search-result-document-v1";
 const CANCELLED: &str = "Embedding operation cancelled";
 const MAX_INPUT_BYTES: usize = 24_000;
 const MAX_DOCUMENTS: usize = 64;
-const MAX_ARCHIVE_BYTES: u64 = 400 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
 
-#[derive(Clone, Copy)]
-struct Asset {
-    filename: &'static str,
-    url: &'static str,
-    bytes: u64,
-    sha256: &'static str,
-}
 const MODEL: Asset = Asset {
     filename: "embeddinggemma-2-Q8_0.gguf",
     url: "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/6ea3e3a309d12a4779cfda98b8c19800d2d5da71/embeddinggemma-2-Q8_0.gguf",
@@ -46,12 +39,6 @@ const BF16: Asset = Asset {
     url: "",
     bytes: 557_950_176,
     sha256: "68bae29d62fb8c7d23e98d21fd4662753ddd636e6b62b8a70dfe059a9844f216",
-};
-const RUNTIME: Asset = Asset {
-    filename: "llama-b11960-bin-win-cpu-x64.zip",
-    url: "https://github.com/ggml-org/llama.cpp/releases/download/b11960/llama-b11960-bin-win-cpu-x64.zip",
-    bytes: 24_407_745,
-    sha256: "73f962f82850d244db47eaacb9d913637027b82399124324298576d58c5f4287",
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -73,6 +60,9 @@ pub struct EmbeddingStatus {
     pub model_id: String,
     pub model_revision: String,
     pub runtime_version: String,
+    pub runtime_target: Option<String>,
+    pub runtime_filename: Option<String>,
+    pub runtime_bytes: Option<u64>,
     pub quantization: Option<String>,
     pub model_ready: bool,
     pub runtime_ready: bool,
@@ -118,12 +108,19 @@ impl ModelInstall {
 struct RuntimeInstall {
     version: String,
     directory: String,
+    #[serde(default)]
+    target: Option<String>,
 }
 impl RuntimeInstall {
     fn valid(&self) -> bool {
         self.version == RUNTIME_VERSION
             && self.directory.starts_with("runtime-b11960-")
             && safe_flat_name(Path::new(&self.directory))
+            && embedding_assets::host().is_ok_and(|package| match &self.target {
+                Some(target) => target == package.target,
+                // Existing Windows installs predate the target field.
+                None => package.target == "windows-x86_64",
+            })
     }
 }
 
@@ -181,6 +178,15 @@ impl EmbeddingRuntime {
                     model_id: MODEL_ID.into(),
                     model_revision: MODEL_REVISION.into(),
                     runtime_version: RUNTIME_VERSION.into(),
+                    runtime_target: embedding_assets::host()
+                        .ok()
+                        .map(|package| package.target.into()),
+                    runtime_filename: embedding_assets::host()
+                        .ok()
+                        .map(|package| package.asset.filename.into()),
+                    runtime_bytes: embedding_assets::host()
+                        .ok()
+                        .map(|package| package.asset.bytes),
                     quantization: None,
                     model_ready: false,
                     runtime_ready: false,
@@ -216,18 +222,18 @@ impl EmbeddingRuntime {
     }
 
     pub fn download_assets(&self) -> Result<EmbeddingStatus, String> {
-        ensure_platform()?;
+        let runtime = embedding_assets::host()?.asset;
         self.run_operation(EmbeddingPhase::Downloading, || {
             self.ensure_stopped()?;
             {
                 let mut state = lock(&self.inner.state);
                 state.downloaded_bytes = 0;
-                state.total_bytes = MODEL.bytes + RUNTIME.bytes;
+                state.total_bytes = MODEL.bytes + runtime.bytes;
             }
             self.download_asset(MODEL)?;
             self.register_model(MODEL)?;
-            self.download_asset(RUNTIME)?;
-            self.install_runtime(&self.inner.root.join(RUNTIME.filename))
+            self.download_asset(runtime)?;
+            self.install_runtime(&self.inner.root.join(runtime.filename))
         })
     }
 
@@ -252,19 +258,19 @@ impl EmbeddingRuntime {
     }
 
     pub fn import_runtime(&self, path: &Path) -> Result<EmbeddingStatus, String> {
-        ensure_platform()?;
+        let runtime = embedding_assets::host()?.asset;
         self.run_operation(EmbeddingPhase::Downloading, || {
             self.ensure_stopped()?;
             if !path.is_absolute() {
-                return Err("Choose an absolute runtime ZIP path".into());
+                return Err("Choose an absolute CPU runtime archive path".into());
             }
-            self.copy_asset(path, RUNTIME)?;
-            self.install_runtime(&self.inner.root.join(RUNTIME.filename))
+            self.copy_asset(path, runtime)?;
+            self.install_runtime(&self.inner.root.join(runtime.filename))
         })
     }
 
     pub fn start(&self) -> Result<EmbeddingStatus, String> {
-        ensure_platform()?;
+        let package = embedding_assets::host()?;
         if self.status().phase == EmbeddingPhase::Running {
             return Ok(self.status());
         }
@@ -278,7 +284,7 @@ impl EmbeddingRuntime {
             let runtime = lock(&self.inner.runtime)
                 .clone()
                 .filter(|item| item.valid())
-                .ok_or("Download or import the Windows CPU runtime first")?;
+                .ok_or("Download or import the CPU runtime for this platform first")?;
             let runtime_dir = self.inner.root.join(&runtime.directory);
             self.verify_runtime(&runtime_dir)?;
             let client = local_client(Duration::from_secs(2))?;
@@ -292,7 +298,7 @@ impl EmbeddingRuntime {
                     .port();
                 let endpoint = format!("http://127.0.0.1:{port}");
                 let token = random_hex()?;
-                let mut command = Command::new(runtime_dir.join("llama-server.exe"));
+                let mut command = Command::new(runtime_dir.join(package.executable));
                 command
                     .current_dir(&runtime_dir)
                     .args([
@@ -337,7 +343,7 @@ impl EmbeddingRuntime {
                 let job = crate::process_job::OwnedJobGuard::new()
                     .map_err(|_| "Cannot create the embedding process owner".to_string())?;
                 let mut child = command.spawn().map_err(|_| {
-                    "Cannot launch embedding CPU runtime; check Windows runtime dependencies"
+                    "Cannot launch embedding CPU runtime; check this platform's runtime dependencies"
                         .to_string()
                 })?;
                 if job.assign(&child).is_err() {
@@ -560,9 +566,18 @@ impl EmbeddingRuntime {
                     .inner
                     .root
                     .join(&item.directory)
-                    .join("llama-server.exe")
+                    .join(
+                        embedding_assets::host()
+                            .map(|p| p.executable)
+                            .unwrap_or("unsupported"),
+                    )
                     .is_file()
-                && has_size(&self.inner.root.join(RUNTIME.filename), RUNTIME.bytes)
+                && embedding_assets::host().is_ok_and(|package| {
+                    has_size(
+                        &self.inner.root.join(package.asset.filename),
+                        package.asset.bytes,
+                    )
+                })
         });
         let mut state = lock(&self.inner.state);
         state.model_ready = model_ready;
@@ -697,7 +712,8 @@ impl EmbeddingRuntime {
     }
 
     fn install_runtime(&self, archive: &Path) -> Result<(), String> {
-        self.verify_asset(archive, RUNTIME)?;
+        let package = embedding_assets::host()?;
+        self.verify_asset(archive, package.asset)?;
         let installed = lock(&self.inner.runtime)
             .clone()
             .filter(RuntimeInstall::valid);
@@ -714,90 +730,33 @@ impl EmbeddingRuntime {
         let destination = self.inner.root.join(&directory);
         fs::create_dir(&destination).map_err(|_| "Cannot create runtime directory".to_string())?;
         let result = (|| {
-            let file = File::open(archive).map_err(|_| "Cannot open runtime ZIP".to_string())?;
-            let mut zip =
-                zip::ZipArchive::new(file).map_err(|_| "Invalid runtime ZIP".to_string())?;
-            let mut expanded = 0u64;
-            if zip.len() > 128 {
-                return Err("Unexpected runtime archive entry count".into());
-            }
-            for index in 0..zip.len() {
-                self.check_cancel()?;
-                let mut entry = zip
-                    .by_index(index)
-                    .map_err(|_| "Cannot read runtime ZIP entry".to_string())?;
-                let relative = entry.enclosed_name().ok_or("Unsafe runtime archive path")?;
-                if !safe_flat_name(&relative) || entry.is_symlink() || !entry.is_file() {
-                    return Err("Unsafe runtime archive entry".into());
-                }
-                expanded += entry.size();
-                if expanded > MAX_ARCHIVE_BYTES {
-                    return Err("Runtime archive expands beyond its size limit".into());
-                }
-                let mut output = File::create(destination.join(relative))
-                    .map_err(|_| "Cannot extract CPU runtime".to_string())?;
-                let copied = std::io::copy(&mut entry, &mut output)
-                    .map_err(|_| "Cannot extract CPU runtime".to_string())?;
-                if copied != entry.size() {
-                    return Err("Truncated runtime archive entry".into());
-                }
-            }
-            if !destination.join("llama-server.exe").is_file() {
-                return Err("Runtime archive has no server executable".into());
-            }
+            crate::embedding_package::inspect(archive, &destination, package, true, &|| {
+                self.check_cancel()
+            })?;
             self.verify_runtime(&destination)?;
             let install = RuntimeInstall {
                 version: RUNTIME_VERSION.into(),
                 directory,
+                target: Some(package.target.into()),
             };
             write_manifest(&self.inner.root.join("runtime.json"), &install)?;
             *lock(&self.inner.runtime) = Some(install);
             Ok(())
         })();
-        if result.is_err() {
-            // Generated direct child, never a user path; archive symlinks are rejected above.
-            if destination.parent() == Some(self.inner.root.as_path()) {
-                let _ = fs::remove_dir_all(&destination);
-            }
+        if result.is_err() && destination.parent() == Some(self.inner.root.as_path()) {
+            // A generated, private child; package extraction never creates links.
+            let _ = fs::remove_dir_all(&destination);
         }
         result
     }
 
     fn verify_runtime(&self, directory: &Path) -> Result<(), String> {
-        let archive = self.inner.root.join(RUNTIME.filename);
-        self.verify_asset(&archive, RUNTIME)?;
-        let mut zip = zip::ZipArchive::new(
-            File::open(archive).map_err(|_| "Cannot read CPU runtime archive".to_string())?,
-        )
-        .map_err(|_| "Invalid CPU runtime archive".to_string())?;
-        for index in 0..zip.len() {
-            let mut entry = zip
-                .by_index(index)
-                .map_err(|_| "Cannot inspect CPU runtime archive".to_string())?;
-            let relative = entry
-                .enclosed_name()
-                .ok_or("Unsafe CPU runtime archive path")?;
-            if !safe_flat_name(&relative) || entry.is_symlink() || !entry.is_file() {
-                return Err("Unsafe CPU runtime archive entry".into());
-            }
-            let path = directory.join(relative);
-            if fs::symlink_metadata(&path)
-                .map_err(|_| "CPU runtime file is missing".to_string())?
-                .file_type()
-                .is_symlink()
-                || !has_size(&path, entry.size())
-            {
-                return Err("CPU runtime file is missing or modified".into());
-            }
-            let expected = self.hash_reader(&mut entry)?;
-            let actual = self.hash_reader(
-                File::open(path).map_err(|_| "Cannot verify CPU runtime file".to_string())?,
-            )?;
-            if actual != expected {
-                return Err("CPU runtime SHA-256 mismatch; import or download it again".into());
-            }
-        }
-        Ok(())
+        let package = embedding_assets::host()?;
+        let archive = self.inner.root.join(package.asset.filename);
+        self.verify_asset(&archive, package.asset)?;
+        crate::embedding_package::inspect(&archive, directory, package, false, &|| {
+            self.check_cancel()
+        })
     }
 }
 
@@ -890,13 +849,6 @@ impl Read for DownloadReader {
     }
 }
 
-fn ensure_platform() -> Result<(), String> {
-    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Ok(())
-    } else {
-        Err("The bundled CPU runtime currently supports Windows x64; other operating systems need a matching runtime package".into())
-    }
-}
 fn local_client(timeout: Duration) -> Result<Client, String> {
     Client::builder()
         .no_proxy()

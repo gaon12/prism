@@ -20,6 +20,8 @@
     "test:rag": "node tests/native/rag.mjs",
     "test:documents": "node tests/native/documents.mjs",
     "test:onboarding": "node tests/native/onboarding.mjs",
+    "test:portable": "node tests/native/portable.mjs",
+    "package:portable": "node scripts/package-portable.mjs",
     "format:check": "prettier --check src tests vite.config.ts playwright.config.ts package.json tsconfig*.json index.html .prettierrc.json README.md"
   },
   "dependencies": {

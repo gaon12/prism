@@ -13,20 +13,26 @@ export async function until(check, label, timeout = 25_000) {
   }
   throw new Error(`Timed out: ${label}`);
 }
-export async function launch(dataDir) {
+export async function launch(dataDir, options = {}) {
   const reservation = createServer();
   await new Promise((done) => reservation.listen(0, '127.0.0.1', done));
   const port = reservation.address().port;
   await new Promise((done) => reservation.close(done));
-  const child = spawn(resolve('src-tauri/target/debug/prism.exe'), [], {
+  const environment = {
+    ...process.env,
+    PRISM_DEV_DATA_DIR: dataDir,
+    WEBVIEW2_USER_DATA_FOLDER: join(dataDir, 'webview'),
+    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1`,
+  };
+  if (options.portable) {
+    delete environment.PRISM_DEV_DATA_DIR;
+    delete environment.WEBVIEW2_USER_DATA_FOLDER;
+    environment.PRISM_DEV_TEST_MODE = '1';
+  }
+  const child = spawn(resolve(options.executable ?? 'src-tauri/target/debug/prism.exe'), [], {
     windowsHide: true,
     stdio: 'ignore',
-    env: {
-      ...process.env,
-      PRISM_DEV_DATA_DIR: dataDir,
-      WEBVIEW2_USER_DATA_FOLDER: join(dataDir, 'webview'),
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1`,
-    },
+    env: environment,
   });
   let browser;
   try {

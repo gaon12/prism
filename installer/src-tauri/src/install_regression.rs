@@ -200,6 +200,10 @@ fn incomplete_recovery_is_reported_and_backups_are_kept() {
         .file_name()
         .to_string_lossy()
         .starts_with(".prism-setup-")));
+    crate::recovery::recover(&system, &dir).unwrap();
+    assert_eq!(fs::read(dir.join("prism.exe")).unwrap(), b"old app");
+    assert_eq!(system.entry.borrow().as_ref().unwrap().version, "0.1.0");
+    assert!(!crate::recovery::has_workspaces(&dir));
 }
 
 #[test]

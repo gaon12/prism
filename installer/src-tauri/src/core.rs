@@ -13,3 +13,5 @@ pub mod transaction;
 
 #[cfg(test)]
 mod install_regression;
+#[cfg(test)]
+mod recovery_tests;

@@ -15,11 +15,13 @@ mod args;
 mod folder_lock;
 mod install;
 mod journal;
+mod recovery;
 #[cfg(test)]
 mod install_regression;
+#[cfg(test)]
+mod recovery_tests;
 mod operation;
 mod payload;
-mod recovery;
 mod safe_path;
 mod system;
 mod temp_cleanup;

@@ -55,11 +55,20 @@ export default function App() {
   const state = useClient();
   const { settings, runtime } = state;
   const [tab, setTab] = useState<Tab>('search');
+  const [documentDirty, setDocumentDirty] = useState(false);
   const [recent, setRecent] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   const [recommended, setRecommended] = useState<RecommendedFolder[] | null>(null);
   const quick = useQuickMode();
   const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
+  const changeTab = (next: Tab) => {
+    if (tab === 'documents' && next !== tab && documentDirty) {
+      showToast(t('documentUnsaved'));
+      return false;
+    }
+    setTab(next);
+    return true;
+  };
   useEffect(() => {
     void initialize();
   }, []);
@@ -189,7 +198,7 @@ export default function App() {
                   key={item.id}
                   className={`main-tab ${tab === item.id ? 'active' : ''}`}
                   aria-current={tab === item.id ? 'page' : undefined}
-                  onClick={() => setTab(item.id)}
+                  onClick={() => changeTab(item.id)}
                 >
                   <item.icon size={19} />
                   {t(item.id)}
@@ -228,8 +237,7 @@ export default function App() {
             <Sidebar
               recent={recent}
               onRecent={(value) => {
-                setTab('search');
-                setRecent(value);
+                if (changeTab('search')) setRecent(value);
               }}
               onSettings={() => setSettingsTab('general')}
               onAddFolder={add}
@@ -247,7 +255,7 @@ export default function App() {
               ) : tab === 'chat' ? (
                 <ChatView onSettings={() => setSettingsTab('scopes')} />
               ) : (
-                <DocumentsView />
+                <DocumentsView onDirtyChange={setDocumentDirty} />
               )}
             </main>
           </div>

@@ -2,6 +2,21 @@ import type { Language } from './types';
 
 // Each entry is Korean, English, Simplified Chinese, Traditional Chinese, Japanese.
 const messages = {
+  aiDocuments: ['AI 문서', 'AI documents', 'AI文档', 'AI文件', 'AI文書'],
+  documentUnsaved: [
+    '작성 중인 문서를 먼저 저장하거나 편집을 버리세요. 새 문서 입력 중이면 취소한 뒤 이동하세요.',
+    'Save or discard document edits before leaving. Cancel the new-document form to leave it.',
+    '离开前请保存或放弃文档编辑。如正在新建文档，请先取消。',
+    '離開前請儲存或捨棄文件編輯。如正在新增文件，請先取消。',
+    '移動する前に文書の編集を保存または破棄してください。新規文書の入力中は先にキャンセルしてください。',
+  ],
+  localDraftKept: [
+    '이 로컬 메모는 유지됩니다. AI 문서는 별도의 문서·버전 이력으로 저장합니다.',
+    'This local note is kept. AI documents have separate document and revision histories.',
+    '此本地笔记会保留。AI文档及其版本历史单独保存。',
+    '此本機筆記會保留。AI文件及其版本歷程另外儲存。',
+    'このローカルメモは保持されます。AI文書とその版履歴は別に保存します。',
+  ],
   externalScope: [
     '이 폴더 본문 외부 AI 전송 허용',
     'Allow sending this folder’s content to external AI',

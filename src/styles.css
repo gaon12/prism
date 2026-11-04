@@ -635,6 +635,12 @@ p {
   align-items: center;
   gap: 20px;
 }
+.document-view-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .editor-shell {
   display: flex;
   flex: 1;

@@ -10,41 +10,12 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium } from '@playwright/test';
 import { until } from './harness.mjs';
+import { recoveryFixture } from './setup-fixture.mjs';
 
 const executable = resolve(
   process.env.PRISM_SETUP_EXE ?? 'installer/src-tauri/target/debug/prism-setup.exe',
 );
-let fixture = process.env.PRISM_RECOVERY_FIXTURE;
-if (!fixture) {
-  const built = spawnSync(
-    'cargo',
-    [
-      'test',
-      '--manifest-path',
-      'installer/core/Cargo.toml',
-      '--no-run',
-      '--message-format=json',
-      '--locked',
-    ],
-    {
-      env: {
-        ...process.env,
-        CARGO_TARGET_DIR: process.env.PRISM_SETUP_CORE_TARGET ?? resolve('installer/core/target'),
-      },
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 180000,
-    },
-  );
-  assert.equal(built.status, 0, 'Could not build the isolated recovery fixture.');
-  const artifacts = built.stdout
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => JSON.parse(line))
-    .filter((item) => item.reason === 'compiler-artifact' && item.profile?.test && item.executable);
-  assert.equal(artifacts.length, 1, 'Expected one installer/core test executable.');
-  fixture = artifacts[0].executable;
-}
+const fixture = recoveryFixture();
 const root = await mkdtemp(join(tmpdir(), 'prism-recovery-test-'));
 await writeFile(join(root, 'fixture-owner.txt'), 'Prism isolated recovery fixture');
 const crash = spawnSync(
@@ -152,6 +123,14 @@ try {
   assert.equal(await readFile(join(root, 'uninstall-entry.json'), 'utf8'), before);
   await page.evaluate(async () => {
     window.__recoveryEvents = [];
+    window.__recoveryLabels = [];
+    window.__recoveryObserver = new MutationObserver((records) => {
+      for (const record of records)
+        for (const node of record.addedNodes) {
+          if (node.nodeType === Node.TEXT_NODE) window.__recoveryLabels.push(node.textContent);
+        }
+    });
+    window.__recoveryObserver.observe(document.getElementById('stage'), { childList: true });
     window.__recoveryUnlisten = await window.__TAURI__.event.listen(
       'setup://progress',
       ({ payload }) => {
@@ -171,16 +150,18 @@ try {
   const events = await page.evaluate(() => window.__recoveryEvents);
   const recovery = events.find((event) => event.stage === 'recovering');
   assert(recovery, 'actual recovery stage must be emitted before the new copy');
-  assert(
-    [
-      '중단된 설치 복구 중',
-      'Recovering interrupted setup',
-      '正在恢复中断的安装',
-      '正在復原中斷的安裝',
-      '中断したインストールを復旧中',
-    ].includes(recovery.label),
-    recovery.label,
-  );
+  const labels = await page.evaluate(() => window.__recoveryLabels);
+  const recoveryLabels = [
+    '중단된 설치 복구 중',
+    'Recovering interrupted setup',
+    '正在恢复中断的安装',
+    '正在復原中斷的安裝',
+    '中断したインストールを復旧中',
+  ];
+  // Independent event listeners may run before or after the UI listener. Observe
+  // actual DOM writes instead of assuming event delivery implies synchronous paint.
+  const renderedRecovery = labels.find((label) => recoveryLabels.includes(label));
+  assert(renderedRecovery, 'localized recovery stage must be rendered');
   const expected = resolve(
     process.env.PRISM_SETUP_EXPECTED_EXE ?? 'src-tauri/target/debug/prism.exe',
   );
@@ -206,7 +187,7 @@ try {
       passed: true,
       root,
       actualCrashExit: 73,
-      recoveredStage: recovery.label,
+      recoveredStage: renderedRecovery,
       userFilePreserved: true,
       appLaunches: 0,
       registration: 'sandbox JSON',

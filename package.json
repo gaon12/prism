@@ -15,6 +15,7 @@
     "test:standalone": "node tests/native/standalone.mjs",
     "test:clipboard": "node tests/native/clipboard.mjs",
     "test:clipboard-ui": "node tests/native/clipboard-ui.mjs",
+    "test:paste": "node tests/native/paste.mjs",
     "test:content": "node tests/native/content.mjs",
     "test:dictionary": "node tests/native/dictionary.mjs",
     "test:rag": "node tests/native/rag.mjs",

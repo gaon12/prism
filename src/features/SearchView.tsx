@@ -60,7 +60,7 @@ export function SearchView({
           ref={input}
           aria-label={t('searchTerm')}
           aria-controls={
-            search.request.kind === 'files' && session.mode !== 'filename'
+            search.request.kind === 'files' && search.bodyActive
               ? search.body.data?.hits.length
                 ? search.body.listId
                 : undefined
@@ -93,6 +93,17 @@ export function SearchView({
       </div>
       <div className="search-toolbar">
         <div className="search-modes">
+          <button
+            className={`mode ${search.request.kind === 'files' && session.mode === 'auto' ? 'active' : ''}`}
+            onClick={() =>
+              setSession({
+                mode: 'auto',
+                ...(search.request.kind !== 'files' ? { query: search.request.input } : {}),
+              })
+            }
+          >
+            {t('autoSearch')}
+          </button>
           <button
             className={`mode ${search.request.kind === 'files' && session.mode === 'filename' ? 'active' : ''}`}
             onClick={() => {
@@ -148,13 +159,16 @@ export function SearchView({
             onChange={(event) => setSession({ extension: event.target.value.replace(/^\./, '') })}
           />
           <span className="muted">
-            {t(session.mode === 'filename' ? 'filenameSyntax' : 'contentSyntax')}
+            {t(!search.bodyActive ? 'filenameSyntax' : 'contentSyntax')}
           </span>
         </div>
       ) : null}
+      {session.mode === 'auto' && search.request.kind === 'files' && !search.bodyActive ? (
+        <p className="setting-footnote automatic-search-note">{t('automaticSearchHint')}</p>
+      ) : null}
       <IndexSummary search={search} />
       {search.request.kind === 'files' &&
-      session.mode === 'filename' &&
+      (!search.bodyActive || session.mode === 'auto') &&
       search.status.warnings.length ? (
         <details className="index-warning">
           <summary>
@@ -196,7 +210,7 @@ export function SearchView({
               <p>{t('searchPlaceholder')}</p>
             </EmptyState>
           )
-        ) : search.request.kind === 'files' && session.mode !== 'filename' ? (
+        ) : search.request.kind === 'files' && search.bodyActive ? (
           <ContentResults
             controller={search.body}
             onSettings={() =>
@@ -212,6 +226,13 @@ export function SearchView({
           <ClipboardPanel controller={search.clips} />
         ) : search.request.kind !== 'files' ? (
           <UtilityResult search={search} />
+        ) : session.mode === 'auto' &&
+          search.body.scopes.length &&
+          !scopes.length &&
+          !session.query.trim() ? (
+          <EmptyState icon={<FileText size={54} />} title={t('typeToSearch')}>
+            <p>{t('automaticSearchHint')}</p>
+          </EmptyState>
         ) : scopes.length && (native || session.query.trim()) ? (
           <FileResults search={search} />
         ) : scopes.length ? (

@@ -105,7 +105,12 @@ export function UtilityResult({ search }: { search: SearchController }) {
 
 export function IndexSummary({ search }: { search: SearchController }) {
   const { t, status } = search;
-  if (!native || search.request.kind !== 'files' || search.session.mode !== 'filename') return null;
+  if (
+    !native ||
+    search.request.kind !== 'files' ||
+    (search.bodyActive && search.session.mode !== 'auto')
+  )
+    return null;
   return (
     <div className="index-summary">
       <span>

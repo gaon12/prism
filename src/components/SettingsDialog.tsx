@@ -105,6 +105,20 @@ export function SettingsDialog({
               <>
                 <EmbeddingPanel />
                 <label className="setting-check">
+                  <span>{t('automaticSemantic')}</span>
+                  <input
+                    type="checkbox"
+                    checked={draft.automaticSemantic}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        automaticSemantic: event.target.checked,
+                      }))
+                    }
+                  />
+                </label>
+                <p className="setting-footnote">{t('automaticSemanticHint')}</p>
+                <label className="setting-check">
                   <span>{t('hybridSearch')}</span>
                   <input
                     type="checkbox"

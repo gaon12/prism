@@ -80,15 +80,18 @@ export function ContentResults({
   const t = (key: MessageKey, values?: Record<string, string | number>) =>
     contentText(language, key, values);
   const { data, status, selected } = controller;
-  const semantic = controller.mode === 'semantic';
+  const automatic = controller.mode === 'auto';
+  const semantic = controller.mode === 'semantic' || data?.automatic?.semanticState === 'used';
   const hybrid = data?.hybrid === true;
-  const title = t(semantic ? 'semanticTitle' : 'contentTitle');
+  const title = t(automatic ? 'automaticTitle' : semantic ? 'semanticTitle' : 'contentTitle');
   const list = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<{ key: string; message: string } | null>(null);
   const viewKey = JSON.stringify([
     controller.mode,
     settings.hybridSearch,
+    settings.automaticSemantic,
+    data?.automatic?.ranking,
     controller.query,
     controller.scopes.map((scope) => [scope.id, scope.path]),
   ]);
@@ -101,6 +104,8 @@ export function ContentResults({
     indexing ? 'indexing' : paused ? 'paused' : status.phase === 'error' ? 'indexError' : 'ready',
   );
   const hardLimitReached = data?.diagnostics.hardLimitReached === true;
+  const automaticKeywordLimited =
+    automatic && data?.keywordSkipped === true && data.automatic?.semanticState !== 'used';
   const queryEmpty = !controller.query.trim();
   const needsModel = semantic && Boolean(controller.error?.code.toLowerCase().includes('model'));
   const modelNotRunning = semantic && controller.error?.code.toLowerCase() === 'modelnotrunning';
@@ -200,6 +205,30 @@ export function ContentResults({
         <p className="content-scope-hint" title={t('scopeHint')}>
           {t('scopeCount', { count: numeric.format(controller.scopes.length) })}
         </p>
+        {automatic && data?.automatic ? (
+          <div className="content-alert automatic-search-notice" role="status">
+            <div>
+              <p>
+                {t(
+                  data.keywordSkipped && !data.hybrid
+                    ? 'automaticKeywordLimit'
+                    : data.automatic.semanticState === 'used'
+                      ? 'automaticUsed'
+                      : data.automatic.semanticState === 'disabled'
+                        ? 'automaticDisabled'
+                        : data.automatic.semanticState === 'failed'
+                          ? 'automaticFailed'
+                          : 'automaticNotRunning',
+                )}
+              </p>
+              {data.automatic.semanticState !== 'used' ? (
+                <button type="button" className="text-button" onClick={onModels}>
+                  {t('models')}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
         <div className="content-index" aria-label={indexLabel}>
           <span className={`content-index-state ${indexing ? 'busy' : ''}`} role="status">
             <span aria-hidden="true" />
@@ -362,13 +391,23 @@ export function ContentResults({
         ) : data.hits.length === 0 ? (
           <div className="content-empty" role="status">
             <Search size={compact ? 30 : 42} strokeWidth={1.4} aria-hidden="true" />
-            <h2>{t(hardLimitReached ? 'limitedEmpty' : 'noHits')}</h2>
+            <h2>
+              {t(
+                automaticKeywordLimited
+                  ? 'automaticKeywordLimitTitle'
+                  : hardLimitReached
+                    ? 'limitedEmpty'
+                    : 'noHits',
+              )}
+            </h2>
             <p>
-              {indexing
-                ? t('indexingHint')
-                : hardLimitReached
-                  ? t('candidateLimit')
-                  : t('changeQuery')}
+              {automaticKeywordLimited
+                ? t('automaticKeywordLimit')
+                : indexing
+                  ? t('indexingHint')
+                  : hardLimitReached
+                    ? t('candidateLimit')
+                    : t('changeQuery')}
             </p>
           </div>
         ) : (

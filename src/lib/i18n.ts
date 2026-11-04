@@ -90,6 +90,28 @@ const messages = {
     '自然語言搜尋結合內文關鍵字結果',
     '自然言語検索に本文キーワードの結果を組み合わせる',
   ],
+  autoSearch: ['자동', 'Automatic', '自动', '自動', '自動'],
+  automaticSearchHint: [
+    '파일명을 먼저 찾고, 일치 항목이 없으면 허용된 본문·AI 범위에서 이어서 검색합니다. 파일 필터와 경로 입력은 파일명 검색을 유지합니다.',
+    'Find filenames first, then search permitted content and AI scopes if nothing matches. File filters and paths stay in filename search.',
+    '先搜索文件名，无匹配时继续搜索已允许的正文与AI范围。文件筛选条件和路径仍使用文件名搜索。',
+    '先搜尋檔名，沒有符合項目時繼續搜尋已允許的內文與AI範圍。檔案篩選條件和路徑仍使用檔名搜尋。',
+    'まずファイル名を探し、一致がなければ許可された本文・AI範囲を検索します。ファイル条件やパスはファイル名検索を使います。',
+  ],
+  automaticSemantic: [
+    '자동 모드에서 자연어 검색 사용',
+    'Use natural-language search in automatic mode',
+    '自动模式使用自然语言搜索',
+    '自動模式使用自然語言搜尋',
+    '自動モードで自然言語検索を使う',
+  ],
+  automaticSemanticHint: [
+    '기본으로 켜져 있습니다. 실행 중인 로컬 모델만 사용하며 자동으로 설치·시작하지 않습니다. 끄면 자동 모드는 파일명과 본문 키워드로 찾습니다.',
+    'On by default. Uses an already running local model without installing or starting one. Turn off to use filenames and content keywords in automatic mode.',
+    '默认开启，仅使用已运行的本地模型，不会自动安装或启动。关闭后自动模式使用文件名和正文关键词。',
+    '預設開啟，僅使用已執行的本機模型，不會自動安裝或啟動。關閉後自動模式使用檔名和內文關鍵字。',
+    '初期設定はオンです。起動済みのローカルモデルだけを使い、自動インストールや起動はしません。オフの場合はファイル名と本文キーワードで探します。',
+  ],
   hybridSearchHint: [
     '기본으로 켜져 있습니다. 켜면 두 검색의 순위를 합치고, 끄면 자연어 검색은 의미 순위만 사용합니다. 모델 설치·시작은 별도입니다.',
     'On by default. Combine both result rankings, or turn off to use semantic ranking alone. Model installation and startup remain separate actions.',

@@ -2,6 +2,49 @@ import type { Language } from '../../lib/types';
 
 // Korean, English, Simplified Chinese, Traditional Chinese, Japanese.
 const messages = {
+  automaticTitle: ['자동 검색', 'Automatic search', '自动搜索', '自動搜尋', '自動検索'],
+  automaticKeywordLimitTitle: [
+    '키워드 검색을 실행하지 못했습니다.',
+    'Keyword search could not run.',
+    '无法执行关键词搜索。',
+    '無法執行關鍵字搜尋。',
+    'キーワード検索を実行できませんでした。',
+  ],
+  automaticUsed: [
+    '파일명이 일치하지 않아 허용된 본문·AI 범위를 로컬 자연어 모델로 검색했습니다.',
+    'No filename matched, so a local natural-language model searched the permitted content and AI scopes.',
+    '文件名无匹配，已使用本地自然语言模型搜索允许的正文与AI范围。',
+    '檔名沒有符合項目，已使用本機自然語言模型搜尋允許的內文與AI範圍。',
+    'ファイル名が一致しなかったため、許可された本文・AI範囲をローカル自然言語モデルで検索しました。',
+  ],
+  automaticDisabled: [
+    '파일명이 일치하지 않아 본문 키워드로 검색했습니다. 자동 모드의 자연어 검색은 설정에서 꺼져 있습니다.',
+    'No filename matched, so content keywords were searched. Natural-language search in automatic mode is disabled in settings.',
+    '文件名无匹配，已搜索正文关键词。设置中已关闭自动模式的自然语言搜索。',
+    '檔名沒有符合項目，已搜尋內文關鍵字。設定中已關閉自動模式的自然語言搜尋。',
+    'ファイル名が一致しなかったため本文キーワードで検索しました。自動モードの自然言語検索は設定でオフになっています。',
+  ],
+  automaticNotRunning: [
+    '파일명이 일치하지 않아 본문 키워드로 검색했습니다. 자연어 모델이 실행 중이 아닙니다. AI·모델 설정에서 직접 시작할 수 있습니다.',
+    'No filename matched, so content keywords were searched. The natural-language model is not running; start it from AI/model settings.',
+    '文件名无匹配，已搜索正文关键词。自然语言模型尚未运行，可在AI与模型设置中手动启动。',
+    '檔名沒有符合項目，已搜尋內文關鍵字。自然語言模型尚未執行，可在AI與模型設定中手動啟動。',
+    'ファイル名が一致しなかったため本文キーワードで検索しました。自然言語モデルは未起動です。AI・モデル設定から起動できます。',
+  ],
+  automaticFailed: [
+    '로컬 자연어 검색에 실패해 본문 키워드 결과를 표시합니다. AI·모델 설정과 색인 상태를 확인하세요.',
+    'Local natural-language search failed; content keyword results are shown. Check AI/model settings and the index status.',
+    '本地自然语言搜索失败，现显示正文关键词结果。请检查AI与模型设置及索引状态。',
+    '本機自然語言搜尋失敗，現顯示內文關鍵字結果。請檢查AI與模型設定及索引狀態。',
+    'ローカル自然言語検索に失敗したため本文キーワードの結果を表示します。AI・モデル設定と索引の状態を確認してください。',
+  ],
+  automaticKeywordLimit: [
+    '키워드 검색의 입력 한도를 넘었습니다. 검색어를 줄이거나 AI·모델 설정을 확인하세요.',
+    'The query exceeds the keyword input limit. Shorten it or check AI/model settings.',
+    '查询超出关键词输入上限。请缩短查询或检查AI与模型设置。',
+    '查詢超出關鍵字輸入上限。請縮短查詢或檢查AI與模型設定。',
+    '検索語がキーワード検索の入力上限を超えています。検索語を短くするかAI・モデル設定を確認してください。',
+  ],
   contentTitle: ['본문 검색', 'Content search', '正文搜索', '內文搜尋', '本文検索'],
   semanticTitle: [
     '자연어 검색',

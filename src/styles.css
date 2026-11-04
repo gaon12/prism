@@ -393,6 +393,7 @@ p {
 }
 .search-toolbar {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   margin-top: 15px;
@@ -400,6 +401,7 @@ p {
 }
 .search-modes {
   display: flex;
+  flex-wrap: wrap;
   gap: 9px;
 }
 .mode {

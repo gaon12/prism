@@ -50,7 +50,7 @@ export function QuickWindow() {
             ref={input}
             aria-label={t('searchTerm')}
             aria-controls={
-              search.request.kind === 'files' && session.mode !== 'filename'
+              search.request.kind === 'files' && search.bodyActive
                 ? search.body.data?.hits.length
                   ? search.body.listId
                   : undefined
@@ -83,9 +83,11 @@ export function QuickWindow() {
             <div className="quick-meta">
               <span>
                 {search.request.kind === 'files'
-                  ? session.mode === 'filename'
-                    ? t('filenameScope')
-                    : t(session.mode)
+                  ? session.mode === 'auto'
+                    ? t('autoSearch')
+                    : session.mode === 'filename'
+                      ? t('filenameScope')
+                      : t(session.mode)
                   : t(search.request.kind)}
               </span>
               <button
@@ -97,8 +99,9 @@ export function QuickWindow() {
                 <kbd>Esc</kbd> {t('close')}
               </button>
             </div>
-            {search.request.kind === 'files' && session.mode !== 'filename' ? (
+            {search.request.kind === 'files' && search.bodyActive ? (
               <div className="quick-results">
+                {session.mode === 'auto' ? <IndexSummary search={search} /> : null}
                 <ContentResults
                   controller={search.body}
                   compact

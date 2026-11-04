@@ -20,6 +20,7 @@ import { SearchView } from './features/SearchView';
 import { ChatView } from './features/ChatView';
 import { DocumentsView } from './features/DocumentsView';
 import { QuickWindow } from './features/QuickWindow';
+import { ClipboardNotice } from './features/clipboard/ClipboardPanel';
 import { bridge, native } from './lib/bridge';
 import {
   useClient,
@@ -217,6 +218,7 @@ export default function App() {
               onAddFolder={add}
             />
             <main className="main-content">
+              <ClipboardNotice />
               {tab === 'search' ? (
                 <SearchView
                   recent={recent}

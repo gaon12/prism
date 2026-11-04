@@ -6,6 +6,7 @@ import { useClient, setSession, switchWindow, showToast, errorMessage } from '..
 import { isComposing } from '../lib/types';
 import { useSearch } from '../lib/use-search';
 import { FileResults, IndexSummary, UtilityResult } from './SearchResults';
+import { ClipboardPanel } from './clipboard/ClipboardPanel';
 
 export function QuickWindow() {
   const { settings, session, focusTick } = useClient();
@@ -46,7 +47,13 @@ export function QuickWindow() {
           <input
             ref={input}
             aria-label={t('searchTerm')}
-            aria-controls={search.data?.total ? search.listId : undefined}
+            aria-controls={
+              search.request.kind === 'clipboard'
+                ? search.clips.listId
+                : search.data?.total
+                  ? search.listId
+                  : undefined
+            }
             aria-activedescendant={search.selectedId}
             aria-autocomplete="list"
             placeholder={t('quickPlaceholder')}
@@ -80,7 +87,11 @@ export function QuickWindow() {
                 <kbd>Esc</kbd> {t('close')}
               </button>
             </div>
-            {search.request.kind !== 'files' ? (
+            {search.request.kind === 'clipboard' ? (
+              <div className="quick-results">
+                <ClipboardPanel controller={search.clips} compact />
+              </div>
+            ) : search.request.kind !== 'files' ? (
               <div className="quick-results">
                 <UtilityResult search={search} />
               </div>
@@ -101,14 +112,16 @@ export function QuickWindow() {
             )}
             <footer className="quick-footer">
               <span>
-                {search.request.kind === 'files' ? (
+                {search.request.kind === 'files' || search.request.kind === 'clipboard' ? (
                   <>
                     <kbd>↑ ↓</kbd> {t('move')}
                   </>
                 ) : null}
                 <kbd>Enter</kbd>{' '}
                 {t(
-                  search.request.kind === 'calculator' || search.request.kind === 'units'
+                  search.request.kind === 'calculator' ||
+                    search.request.kind === 'units' ||
+                    search.request.kind === 'clipboard'
                     ? 'copy'
                     : search.request.kind === 'web'
                       ? 'web'

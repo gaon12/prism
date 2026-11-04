@@ -16,6 +16,7 @@ import { translate } from '../lib/i18n';
 import { useSearch } from '../lib/use-search';
 import { FileResults, IndexSummary, UtilityResult } from './SearchResults';
 import { native } from '../lib/bridge';
+import { ClipboardPanel } from './clipboard/ClipboardPanel';
 
 export function SearchView({
   recent,
@@ -55,7 +56,13 @@ export function SearchView({
         <input
           ref={input}
           aria-label={t('searchTerm')}
-          aria-controls={search.data?.total ? search.listId : undefined}
+          aria-controls={
+            search.request.kind === 'clipboard'
+              ? search.clips.listId
+              : search.data?.total
+                ? search.listId
+                : undefined
+          }
           aria-activedescendant={search.selectedId}
           aria-autocomplete="list"
           value={session.query}
@@ -79,7 +86,14 @@ export function SearchView({
       </div>
       <div className="search-toolbar">
         <div className="search-modes">
-          <button className="mode active">{t('filename')}</button>
+          <button
+            className={`mode ${search.request.kind === 'files' ? 'active' : ''}`}
+            onClick={() => {
+              if (search.request.kind !== 'files') setSession({ query: '' });
+            }}
+          >
+            {t('filename')}
+          </button>
           <button className="mode" disabled title={t('nextSearch')}>
             {t('content')}
           </button>
@@ -111,7 +125,7 @@ export function SearchView({
         </div>
       ) : null}
       <IndexSummary search={search} />
-      {search.status.warnings.length ? (
+      {search.request.kind === 'files' && search.status.warnings.length ? (
         <details className="index-warning">
           <summary>
             {search.status.warnings.length} · {t('searchFolders')}
@@ -152,6 +166,8 @@ export function SearchView({
               <p>{t('searchPlaceholder')}</p>
             </EmptyState>
           )
+        ) : search.request.kind === 'clipboard' ? (
+          <ClipboardPanel controller={search.clips} />
         ) : search.request.kind !== 'files' ? (
           <UtilityResult search={search} />
         ) : scopes.length && (native || session.query.trim()) ? (
@@ -205,6 +221,16 @@ export function SearchView({
         <span>
           <code>= 2+3</code> · <code>unit: 10 inch to cm</code> · <code>web: Prism</code>
         </span>
+        <button
+          className="text-button"
+          onClick={() => {
+            setSession({ query: 'clip:' });
+            onRecent(false);
+            input.current?.focus();
+          }}
+        >
+          {t('clipboard')}
+        </button>
       </div>
     </section>
   );

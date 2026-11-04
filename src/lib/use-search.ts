@@ -7,6 +7,7 @@ import { isComposing } from './types';
 import type { IndexStatus, SearchResponse } from './types';
 import { parseInput } from './utilities';
 import type { UtilityAnswer } from './utilities';
+import { clipboard, useClipboard } from './clipboard';
 
 const emptyStatus: IndexStatus = {
   scanning: false,
@@ -21,6 +22,7 @@ export function useSearch(quick = false) {
   const { settings, session } = useClient();
   const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
   const request = parseInput(session.query);
+  const clips = useClipboard(request.kind === 'clipboard', request.input);
   const [status, setStatus] = useState(emptyStatus);
   const [response, setResponse] = useState<{ key: string; data: SearchResponse } | null>(null);
   const [failure, setFailure] = useState<{ key: string; message: string } | null>(null);
@@ -192,7 +194,10 @@ export function useSearch(quick = false) {
     await submitSearch();
     if (request.kind === 'web' && request.input)
       await bridge.webSearch(request.provider!, request.input);
-    else if (utility?.answer) await copy(utility.answer.value);
+    else if (request.kind === 'clipboard' && clips.selected) {
+      await clipboard.copy(clips.selected.id);
+      showToast(t('copied'));
+    } else if (utility?.answer) await copy(utility.answer.value);
     else if (request.kind === 'files' && (path || selected) && !error)
       await bridge.fileAction(path ?? selected!.path);
     else return;
@@ -201,6 +206,11 @@ export function useSearch(quick = false) {
   const keyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (isComposing(event.nativeEvent) || event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (request.kind === 'clipboard') {
+        event.preventDefault();
+        clips.move(event.key === 'ArrowDown' ? 1 : -1);
+        return;
+      }
       const files = data?.results ?? [];
       if (!files.length) return;
       event.preventDefault();
@@ -214,7 +224,15 @@ export function useSearch(quick = false) {
   };
   return {
     listId,
-    selectedId: selected && data ? `${listId}-${data.results.indexOf(selected)}` : undefined,
+    selectedId:
+      request.kind === 'clipboard'
+        ? clips.selected
+          ? `${clips.listId}-${clips.selected.id}`
+          : undefined
+        : selected && data
+          ? `${listId}-${data.results.indexOf(selected)}`
+          : undefined,
+    clips,
     request,
     status: data?.status.revision && data.status.revision > status.revision ? data.status : status,
     data,

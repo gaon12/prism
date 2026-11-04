@@ -2,6 +2,13 @@ import type { Language } from './types';
 
 // Each entry is Korean, English, Simplified Chinese, Traditional Chinese, Japanese.
 const messages = {
+  clipboard: [
+    '클립보드 기록',
+    'Clipboard history',
+    '剪贴板历史',
+    '剪貼簿記錄',
+    'クリップボード履歴',
+  ],
   keyboardCorrection: [
     '한·영 키보드 오입력 보정',
     'Korean / English keyboard correction',

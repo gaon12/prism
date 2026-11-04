@@ -105,7 +105,7 @@ export function UtilityResult({ search }: { search: SearchController }) {
 
 export function IndexSummary({ search }: { search: SearchController }) {
   const { t, status } = search;
-  if (!native) return null;
+  if (!native || search.request.kind !== 'files') return null;
   return (
     <div className="index-summary">
       <span>

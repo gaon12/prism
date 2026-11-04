@@ -503,6 +503,7 @@ p {
 }
 .phase-note {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 17px;
   padding: 15px 18px;
@@ -525,6 +526,11 @@ p {
 .phase-note span {
   font-size: 0.82rem;
   line-height: 1.6;
+}
+.phase-note .text-button {
+  margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .statusbar {
   height: 32px;

@@ -71,9 +71,21 @@ On Windows, the clipboard panel's paste action, double-click and search-input En
 
 The separate Copy action stays available. Missing/closed targets, focus restrictions, held keys, blocked/partial input and unsupported platforms produce an explicit result while preserving a successful clipboard copy. Partial input never retries the paste chord; only missing synthetic key releases receive bounded cleanup. Windows foreground and integrity restrictions still apply; Prism does not simulate Alt to bypass them. macOS/Linux currently retain copy with an automatic-paste-unavailable message.
 
+## Updates
+
+Normal desktop profiles check the public GitHub release manifest 30 seconds after startup and then at most once a day. General settings can disable automatic checks or request a manual check. Dismissal is remembered per version; failed automatic checks stay quiet, while a manual check reports connection failures. Requests carry a generic Prism version User-Agent and no document contents, questions or user identifiers. Browser preview does not check or invent releases.
+
+Installation requires an explicit confirmation. The package download is bounded, and Tauri verifies both the signature and its bound version before Prism saves settings, cancels AI generation and pauses search work. Failed preparation/installation restores search scopes, clipboard pause state and a previously running search model; cancelled AI generation is not replayed. Unsaved document/settings changes block restart. Corrupt settings are never replaced with defaults during update preparation.
+
+Portable copies, development builds and release builds without an update verification key offer the download page. For installed release builds, supply the public key content through `PRISM_UPDATER_PUBLIC_KEY` when compiling. Keep the signing private key outside the repository. Updater signatures are required independently of Windows Authenticode. Custom Windows update artifacts must be signed with `tauri signer sign --app-version <version>`; `requireSignedVersion` rejects older unbound signatures and a manifest that pairs a new version with an older signed artifact. See the [official Tauri updater guide](https://v2.tauri.app/plugin/updater/).
+
+The current local preview has no production verification key and does not self-install updates. Actual signed installer execution, restart, rollback and release publication remain separate integration work.
+
 ## Development
 
 Requires Node.js 22.12+, Rust 1.94+, and the [Tauri Windows prerequisites](https://v2.tauri.app/start/prerequisites/), including Rust, MSVC C++ Build Tools and WebView2.
+
+Desktop builds link an `rlib` into the executable to keep intermediate disk usage manageable.
 
 The native LanceDB build also requires `protoc`. Install a compatible [official Protocol Buffers release](https://github.com/protocolbuffers/protobuf/releases) and put its executable on PATH, or set `PROTOC` for the build shell. The Windows vector tests were verified with protoc 34.1.
 
@@ -140,6 +152,8 @@ After building this standalone debug executable, run `npm run test:standalone`, 
 `npm run test:clipboard-ui` checks retention input validation, filtered/global unpinned counts, pinned-only clear controls and keyboard selection scrolling in both windows using 40 generated entries and MemoryClipboard. Clipboard retention fields accept whole item/day/MiB values; invalid input stays editable and cannot be submitted.
 
 `npm run test:paste` exercises real clipboard services, IPC and both bundled windows with a synthetic foreground/input backend. It verifies copy-preserving failures, concurrent request rejection, text/link/image restoration, paste/copy buttons, row double-click, Spotlight Enter, window recovery and restart expiry. Rust tests cover partial key batches and bounded release cleanup. Isolated profiles never install the foreground hook or send physical keys. Real Windows hook delivery, focus restrictions and target-application acceptance remain manual integration checks.
+
+`npm run test:updates` uses public synthetic signatures with Tauri's actual verifier to reject changed bytes, wrong keys, version mismatch and unbound signatures. Native settings, release notices, dismissal, offline behavior, bookkeeping exclusion, failed-install recovery and restart persistence use a synthetic transport. It downloads no package and launches no installer; test private keys were deleted after fixture creation. Isolated profiles disable the automatic update worker and use MemoryClipboard.
 
 `npm run test:portable` requires the same pinned model/runtime and standalone debug executable. It packages and extracts the actual executable, checks copy-specific single-instance behavior, and performs real EmbeddingGemma 2/Lance retrieval before and after moving the application to a Unicode path. It also checks persisted settings, notes, documents, conversations, synthetic clipboard data, account-bound credentials and blocked startup paths. Its debug-only test flag injects MemoryClipboard while retaining actual portable path selection; ordinary isolated native tests continue to use `PRISM_DEV_DATA_DIR`. It does not exercise physical paste, installer/update behavior or actual external generation.
 

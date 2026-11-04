@@ -46,6 +46,13 @@ fn address(data: &Value) -> SocketAddr {
 fn connects(data: &Value) -> bool {
     TcpStream::connect_timeout(&address(data), Duration::from_millis(100)).is_ok()
 }
+fn process_exists(pid: u64) -> bool {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "pid="])
+        .output()
+        .unwrap();
+    output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+}
 fn server_command(directory: &Path, ready: &str) -> Command {
     let mut command = Command::new(EXE);
     command
@@ -199,6 +206,32 @@ fn an_already_closed_parent_pipe_cannot_leave_a_started_server_behind() {
 }
 
 #[test]
+fn an_unresponsive_launcher_cannot_make_startup_cleanup_wait_forever() {
+    use std::{io, os::unix::fs::PermissionsExt};
+    let directory = tempfile::tempdir().unwrap();
+    let launcher = directory.path().join("unresponsive-launcher.sh");
+    let pid_path = directory.path().join("unresponsive.pid");
+    // This inert test-owned process deliberately ignores both the internal
+    // protocol and stdin EOF. No user shell text or executable is involved.
+    fs::write(
+        &launcher,
+        "#!/bin/sh\nprintf '%s' \"$$\" > \"$PRISM_UNRESPONSIVE_PID_FILE\"\nexec /bin/sleep 60\n",
+    )
+    .unwrap();
+    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+    let before = Instant::now();
+    let mut command = Command::new("/bin/true");
+    command.env("PRISM_UNRESPONSIVE_PID_FILE", &pid_path);
+    let error = OwnedRuntimeProcess::spawn(command, &launcher)
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(before.elapsed() < Duration::from_secs(18));
+    let pid = fs::read_to_string(pid_path).unwrap().parse().unwrap();
+    until(|| !process_exists(pid));
+}
+
+#[test]
 #[ignore = "Requires PRISM_TEST_MODEL and PRISM_TEST_RUNTIME pinned host-platform assets"]
 fn real_embedding_server_is_reaped_after_the_app_parent_is_killed() {
     use std::os::unix::process::ExitStatusExt;
@@ -239,17 +272,10 @@ fn real_embedding_server_is_reaped_after_the_app_parent_is_killed() {
     assert_eq!(status["phase"], "running");
     assert_eq!(status["modelId"], "google/embeddinggemma-2");
     let pid = status["pid"].as_u64().unwrap();
-    let process_exists = || {
-        let output = Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "pid="])
-            .output()
-            .unwrap();
-        output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
-    };
-    assert!(process_exists());
+    assert!(process_exists(pid));
     parent.0.kill().unwrap();
     assert_eq!(parent.0.wait().unwrap().signal(), Some(9));
-    until(|| !process_exists());
+    until(|| !process_exists(pid));
     println!(
         "Actual {} embedding server {pid} was reaped after SIGKILL of its owning app fixture",
         std::env::consts::OS

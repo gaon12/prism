@@ -6300,6 +6300,7 @@ dependencies = [
  "getrandom 0.3.4",
  "keyring-core",
  "lancedb",
+ "libc",
  "notify",
  "pdf-extract",
  "png",

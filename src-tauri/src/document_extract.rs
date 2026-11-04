@@ -224,6 +224,7 @@ pub fn is_supported_extension(extension: &str) -> bool {
             | "vue"
             | "svelte"
             | "pptx"
+            | "xlsx"
             | "docx"
             | "hwpx"
             | "pdf"
@@ -272,7 +273,7 @@ pub fn extract_document(
     let mut output = Collector::new(options, cancel);
     match extension.as_str() {
         "docx" | "hwpx" => extract_zip(&bytes, &extension, &mut output)?,
-        "pptx" => extract_office(&bytes, &extension, &mut output)?,
+        "pptx" | "xlsx" => extract_office(&bytes, &extension, &mut output)?,
         "hwp" => extract_hwp(&bytes, &mut output)?,
         "pdf" => extract_pdf(&bytes, &mut output)?,
         "html" | "htm" => extract_html(&decode_text(&bytes)?, &mut output)?,
@@ -1476,9 +1477,12 @@ fn relationship_id(node: &XmlNode) -> Option<&str> {
         .map(|(_, v)| v.as_str())
         .or_else(|| attr(node, "id"))
 }
-fn extract_office(bytes: &[u8], _format: &str, out: &mut Collector<'_>) -> Result<()> {
+fn extract_office(bytes: &[u8], format: &str, out: &mut Collector<'_>) -> Result<()> {
     let mut package = OfficePackage::new(bytes, out)?;
-    extract_pptx(&mut package, out)
+    match format {
+        "pptx" => extract_pptx(&mut package, out),
+        _ => extract_xlsx(&mut package, out),
+    }
 }
 fn presentation_text(
     node: &XmlNode,
@@ -1564,6 +1568,438 @@ fn extract_pptx(package: &mut OfficePackage<'_>, out: &mut Collector<'_>) -> Res
     Ok(())
 }
 #[derive(Default)]
+struct SheetStyles {
+    formats: Vec<(u32, String)>,
+}
+fn sheet_styles(root: Option<&XmlNode>) -> Result<SheetStyles> {
+    let Some(root) = root else {
+        return Ok(SheetStyles::default());
+    };
+    let formats: BTreeMap<u32, String> = descendants(root, "numFmt")
+        .map(|n| {
+            Ok((
+                attr(n, "numFmtId")
+                    .ok_or_else(corrupt)?
+                    .parse()
+                    .map_err(|_| corrupt())?,
+                attr(n, "formatCode").unwrap_or("").into(),
+            ))
+        })
+        .collect::<Result<_>>()?;
+    let mut styles = SheetStyles::default();
+    if let Some(xfs) = descendants(root, "cellXfs").next() {
+        for xf in xfs.children.iter().filter(|n| n.name == "xf") {
+            let id = attr(xf, "numFmtId")
+                .unwrap_or("0")
+                .parse()
+                .map_err(|_| corrupt())?;
+            styles
+                .formats
+                .push((id, formats.get(&id).cloned().unwrap_or_default()));
+        }
+    }
+    Ok(styles)
+}
+fn format_kind(id: u32, code: &str) -> &'static str {
+    match id {
+        9 | 10 => return "percent",
+        14..=17 => return "date",
+        18..=21 | 45 | 47 => return "time",
+        22 => return "datetime",
+        46 => return "duration",
+        _ => {}
+    }
+    let mut clean = String::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut bracket = false;
+    for c in code.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if matches!(c, '\\' | '_' | '*') {
+            escaped = true;
+            continue;
+        }
+        if c == '"' {
+            quoted = !quoted;
+            continue;
+        }
+        if quoted {
+            continue;
+        }
+        if c == '[' {
+            bracket = true;
+            continue;
+        }
+        if c == ']' {
+            bracket = false;
+            continue;
+        }
+        if bracket {
+            continue;
+        }
+        clean.push(c.to_ascii_lowercase());
+    }
+    // Multi-section, conditions and elapsed-time patterns are preserved as raw
+    // formats instead of pretending to implement Excel's complete renderer.
+    if code.contains(';')
+        || code.to_ascii_lowercase().contains("[h")
+        || code.to_ascii_lowercase().contains("[m")
+        || code.to_ascii_lowercase().contains("[s")
+    {
+        return "raw";
+    }
+    if clean.contains('%') {
+        "percent"
+    } else {
+        let date = clean.contains(['y', 'd']);
+        let time = clean.contains(['h', 's']);
+        match (date, time) {
+            (true, true) => "datetime",
+            (true, false) => "date",
+            (false, true) => "time",
+            _ => "raw",
+        }
+    }
+}
+fn excel_number(raw: &str, style: Option<&(u32, String)>, date1904: bool) -> Result<String> {
+    let Some((id, code)) = style else {
+        return Ok(format!("[number] {raw}"));
+    };
+    let value = raw.parse::<f64>().map_err(|_| corrupt())?;
+    if !value.is_finite() {
+        return Err(corrupt());
+    }
+    let kind = format_kind(*id, code);
+    let rendered = match kind {
+        "percent" => format!("{}%", value * 100.0),
+        "date" | "datetime" | "time" => {
+            if value < 0.0 || value > 2_958_465.99999 {
+                return Ok(format!("[number; formatId={id}; format={code}] {raw}"));
+            }
+            let whole = value.floor() as i64;
+            let seconds = ((value - value.floor()) * 86400.0).round() as i64;
+            let carry = seconds / 86400;
+            let seconds = seconds % 86400;
+            let time = format!(
+                "{:02}:{:02}:{:02}",
+                seconds / 3600,
+                (seconds % 3600) / 60,
+                seconds % 60
+            );
+            if kind == "time" {
+                time
+            } else {
+                let day = whole + carry;
+                let date = if !date1904 && day == 60 {
+                    "1900-02-29 [Excel compatibility day]".into()
+                } else {
+                    let base = chrono::NaiveDate::from_ymd_opt(
+                        if date1904 { 1904 } else { 1899 },
+                        if date1904 { 1 } else { 12 },
+                        if date1904 { 1 } else { 31 },
+                    )
+                    .ok_or_else(corrupt)?;
+                    let days = if !date1904 && day > 60 { day - 1 } else { day };
+                    base.checked_add_signed(chrono::Duration::days(days))
+                        .ok_or_else(corrupt)?
+                        .format("%Y-%m-%d")
+                        .to_string()
+                };
+                if kind == "datetime" {
+                    format!("{date}T{time} [timezone unspecified]")
+                } else {
+                    date
+                }
+            }
+        }
+        "duration" => format!("{} hours", value * 24.0),
+        _ => return Ok(format!("[number; formatId={id}; format={code}] {raw}")),
+    };
+    Ok(format!("[{kind}; raw={raw}] {rendered}"))
+}
+fn cell_reference(reference: &str) -> Result<(usize, u32)> {
+    let reference = reference.trim_matches('$');
+    let mut column = 0usize;
+    let mut split = 0;
+    for (i, c) in reference.char_indices() {
+        if c.is_ascii_uppercase() {
+            column = column
+                .checked_mul(26)
+                .and_then(|v| v.checked_add((c as u8 - b'A' + 1) as usize))
+                .ok_or_else(limit)?;
+            split = i + 1;
+        } else {
+            break;
+        }
+    }
+    if column == 0 || column > 16384 {
+        return Err(corrupt());
+    }
+    let row = reference
+        .get(split..)
+        .ok_or_else(corrupt)?
+        .trim_start_matches('$')
+        .parse::<u32>()
+        .map_err(|_| corrupt())?;
+    if row == 0 || row > 1_048_576 {
+        return Err(corrupt());
+    }
+    Ok((column - 1, row))
+}
+fn cell_value(
+    cell: &XmlNode,
+    strings: &[String],
+    styles: &SheetStyles,
+    date1904: bool,
+) -> Result<(String, String)> {
+    let kind = attr(cell, "t").unwrap_or("n");
+    let raw = cell
+        .children
+        .iter()
+        .find(|n| n.name == "v")
+        .map(|n| n.text.as_str());
+    let formula = cell.children.iter().any(|n| n.name == "f");
+    let (plain, rendered) = match kind {
+        "s" => {
+            let index = raw
+                .ok_or_else(corrupt)?
+                .parse::<usize>()
+                .map_err(|_| corrupt())?;
+            let s = strings.get(index).ok_or_else(corrupt)?.clone();
+            (s.clone(), format!("[text] {s}"))
+        }
+        "inlineStr" => {
+            let mut text = String::new();
+            if let Some(inline) = cell.children.iter().find(|n| n.name == "is") {
+                xml_inline(inline, &mut text);
+            }
+            (text.clone(), format!("[text] {text}"))
+        }
+        "str" => {
+            let s = raw.unwrap_or("").to_owned();
+            (s.clone(), format!("[text] {s}"))
+        }
+        "b" => {
+            let s = match raw {
+                Some("1") => "true",
+                Some("0") => "false",
+                _ => return Err(corrupt()),
+            }
+            .to_owned();
+            (s.clone(), format!("[boolean] {s}"))
+        }
+        "e" => {
+            let s = raw.unwrap_or("").to_owned();
+            (s.clone(), format!("[error] {s}"))
+        }
+        "d" => {
+            let s = raw.unwrap_or("").to_owned();
+            (s.clone(), format!("[ISO date/time] {s}"))
+        }
+        "n" => {
+            let s = raw.unwrap_or("").to_owned();
+            let style = attr(cell, "s")
+                .map(|s| s.parse::<usize>().map_err(|_| corrupt()))
+                .transpose()?
+                .map(|i| styles.formats.get(i).ok_or_else(corrupt))
+                .transpose()?;
+            let display = if s.is_empty() {
+                String::new()
+            } else {
+                excel_number(&s, style, date1904)?
+            };
+            (s, display)
+        }
+        _ => return Err(corrupt()),
+    };
+    Ok((
+        plain,
+        if formula {
+            if raw.is_none() {
+                "[formula; cached result unavailable; not recalculated]".into()
+            } else {
+                format!("[formula cached result; not recalculated] {rendered}")
+            }
+        } else {
+            rendered
+        },
+    ))
+}
+struct DeclaredSheetTable {
+    first_col: usize,
+    last_col: usize,
+    first_row: u32,
+    last_row: u32,
+    headers: Vec<String>,
+    name: String,
+}
+fn extract_xlsx(package: &mut OfficePackage<'_>, out: &mut Collector<'_>) -> Result<()> {
+    let root = package.xml("xl/workbook.xml", out)?;
+    let relations = package.relations("xl/workbook.xml", out)?;
+    let date1904 =
+        descendants(&root, "workbookPr").any(|n| matches!(attr(n, "date1904"), Some("1" | "true")));
+    let strings = if let Some(strings) = package.optional("xl/sharedStrings.xml", out)? {
+        descendants(&strings, "si")
+            .map(|n| {
+                let mut s = String::new();
+                xml_inline(n, &mut s);
+                s
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let style_root = package.optional("xl/styles.xml", out)?;
+    let styles = sheet_styles(style_root.as_ref())?;
+    for sheet in descendants(&root, "sheet") {
+        let name = attr(sheet, "name").ok_or_else(corrupt)?;
+        let (path, kind) = relations
+            .get(relationship_id(sheet).ok_or_else(corrupt)?)
+            .ok_or_else(corrupt)?;
+        if !kind.ends_with("/worksheet") {
+            return Err(corrupt());
+        }
+        let xml = package.xml(path, out)?;
+        let sheet_relations = package.relations(path, out)?;
+        let mut tables = Vec::new();
+        for table in descendants(&xml, "tablePart") {
+            let (target, kind) = sheet_relations
+                .get(relationship_id(table).ok_or_else(corrupt)?)
+                .ok_or_else(corrupt)?;
+            if !kind.ends_with("/table") {
+                return Err(corrupt());
+            }
+            let table_xml = package.xml(target, out)?;
+            let table = descendants(&table_xml, "table")
+                .next()
+                .ok_or_else(corrupt)?;
+            if attr(table, "headerRowCount") == Some("0") {
+                continue;
+            }
+            let range = attr(table, "ref").ok_or_else(corrupt)?;
+            let (start, end) = range.split_once(':').unwrap_or((range, range));
+            let (a, r1) = cell_reference(start)?;
+            let (b, r2) = cell_reference(end)?;
+            let headers = descendants(table, "tableColumn")
+                .map(|n| attr(n, "name").unwrap_or("").to_owned())
+                .collect();
+            if b < a || r2 < r1 {
+                return Err(corrupt());
+            }
+            tables.push(DeclaredSheetTable {
+                first_col: a,
+                last_col: b,
+                first_row: r1,
+                last_row: r2,
+                headers,
+                name: attr(table, "displayName").unwrap_or("Table").into(),
+            });
+        }
+        let mut inferred = Vec::new();
+        let mut next_row = 1u32;
+        for row in descendants(&xml, "row") {
+            check_cancel(out.cancel)?;
+            let row_index = attr(row, "r")
+                .map(|s| s.parse().map_err(|_| corrupt()))
+                .transpose()?
+                .unwrap_or(next_row);
+            if row_index == 0 || row_index > 1_048_576 {
+                return Err(corrupt());
+            }
+            next_row = row_index.checked_add(1).ok_or_else(limit)?;
+            let mut values = Vec::new();
+            let mut plain = Vec::new();
+            let mut next_column = 0usize;
+            for cell in row.children.iter().filter(|n| n.name == "c") {
+                let column = if let Some(reference) = attr(cell, "r") {
+                    let (c, r) = cell_reference(reference)?;
+                    if r != row_index {
+                        return Err(corrupt());
+                    }
+                    c
+                } else {
+                    next_column
+                };
+                if column >= 16384 || column < next_column {
+                    return Err(corrupt());
+                }
+                next_column = column + 1;
+                let (p, v) = cell_value(cell, &strings, &styles, date1904)?;
+                values.resize(next_column, String::new());
+                plain.resize(next_column, String::new());
+                values[column] = v;
+                plain[column] = p;
+            }
+            if plain.iter().all(|s| s.trim().is_empty())
+                && values.iter().all(|s| s.trim().is_empty())
+            {
+                continue;
+            }
+            if inferred.is_empty() {
+                inferred = plain.clone();
+            }
+            // Emit separate fields to preserve sparse A1 addresses and per-table headers.
+            for column in 0..values.len() {
+                if values[column].is_empty() {
+                    continue;
+                }
+                let table = tables.iter().find(|t| {
+                    column >= t.first_col
+                        && column <= t.last_col
+                        && row_index >= t.first_row
+                        && row_index <= t.last_row
+                });
+                let generic = format!("Column {}", column_name(column));
+                let label = if let Some(t) = table {
+                    t.headers.get(column - t.first_col)
+                } else {
+                    inferred.get(column)
+                }
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&generic);
+                let context = if let Some(t) = table {
+                    format!("Sheet {name}; table={}; header=declared", t.name)
+                } else {
+                    format!("Sheet {name}; header=first-row inferred")
+                };
+                let key = plain
+                    .iter()
+                    .find(|s| !s.is_empty())
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let address = format!("{}{}", column_name(column), row_index);
+                emit_cell(
+                    &values[column],
+                    label,
+                    key,
+                    &address,
+                    &context,
+                    row_index,
+                    None,
+                    out,
+                )?;
+            }
+        }
+        // Merged ranges are metadata, not duplicated invented values.
+        for merged in descendants(&xml, "mergeCell") {
+            let range = attr(merged, "ref").ok_or_else(corrupt)?;
+            let (start, end) = range.split_once(':').ok_or_else(corrupt)?;
+            let (_, r) = cell_reference(start)?;
+            cell_reference(end)?;
+            out.heading = Some(format!("Sheet {name}; merged cells {range}"));
+            out.push(
+                &format!("Merged range {range}; value belongs to anchor {start}"),
+                None,
+                r,
+            )?;
+        }
+        out.heading = None;
+    }
+    Ok(())
+}
 fn emit_cell(
     value: &str,
     label: &str,
@@ -2074,6 +2510,21 @@ mod tests {
             ExtractErrorCode::LimitExceeded
         );
     }
+    fn xlsx_parts(sheet: &str, extra: &[(&str, &str)], props: &str) -> Vec<u8> {
+        let workbook = format!(
+            r#"<workbook xmlns:r="urn:rel"><workbookPr date1904="{props}"/><sheets><sheet name="분기 매출" sheetId="7" r:id="rSheet"/></sheets></workbook>"#
+        );
+        let mut parts = vec![
+            ("xl/workbook.xml", workbook.as_str()),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<Relationships><Relationship Id="rSheet" Type="urn:office/worksheet" Target="worksheets/sheet7.xml"/></Relationships>"#,
+            ),
+            ("xl/worksheets/sheet7.xml", sheet),
+        ];
+        parts.extend_from_slice(extra);
+        zip_file(&parts)
+    }
     #[test]
     fn pptx_uses_relationship_order_and_distinct_notes() {
         let bytes = zip_file(&[
@@ -2112,6 +2563,88 @@ mod tests {
             doc.fingerprint.sha256,
             format!("{:x}", Sha256::digest(&bytes))
         );
+    }
+    #[test]
+    fn xlsx_shared_inline_typed_values_dates_and_cached_formulas() {
+        let sheet = r#"<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="inlineStr"><is><t>증가율</t></is></c><c r="C1" t="inlineStr"><is><t>날짜</t></is></c></row><row r="4"><c r="A4" t="s"><v>1</v></c><c r="B4" s="1"><v>0.25</v></c><c r="C4" s="2"><v>61</v></c><c r="D4" t="b"><v>1</v></c><c r="E4"><f>1+1</f><v>2</v></c><c r="F4" t="e"><v>#DIV/0!</v></c><c r="G4"><f>RAND()</f></c></row></sheetData><mergeCells><mergeCell ref="A6:C6"/></mergeCells></worksheet>"#;
+        let bytes = xlsx_parts(
+            sheet,
+            &[
+                (
+                    "xl/sharedStrings.xml",
+                    "<sst><si><t>상품</t></si><si><r><t>한국</t></r><r><t>차</t></r></si></sst>",
+                ),
+                (
+                    "xl/styles.xml",
+                    r#"<styleSheet><cellXfs count="3"><xf numFmtId="0"/><xf numFmtId="9"/><xf numFmtId="14"/></cellXfs></styleSheet>"#,
+                ),
+            ],
+            "0",
+        );
+        let doc = extract("book.xlsx", &bytes).unwrap();
+        let rate = doc
+            .sections
+            .iter()
+            .find(|s| s.text.contains("25%"))
+            .unwrap();
+        assert!(rate.text.contains("증가율"));
+        assert!(rate.text.contains("key=한국차"));
+        assert_eq!(rate.paragraph, Some(4));
+        assert!(rate.heading.as_deref().unwrap().contains("cell=B4"));
+        assert!(doc.sections.iter().any(|s| s.text.contains("1900-03-01")));
+        assert!(doc
+            .sections
+            .iter()
+            .any(|s| s.text.contains("[boolean] true")));
+        assert!(doc
+            .sections
+            .iter()
+            .any(|s| s.text.contains("cached result; not recalculated")));
+        assert!(doc
+            .sections
+            .iter()
+            .any(|s| s.text.contains("cached result unavailable")));
+        assert!(doc
+            .sections
+            .iter()
+            .any(|s| s.text.contains("Merged range A6:C6")));
+        assert!(doc.sections.iter().all(|s| s.page.is_none()));
+    }
+    #[test]
+    fn xlsx_declared_headers_and_both_date_systems() {
+        let sheet = r#"<worksheet xmlns:r="urn:r"><sheetData><row r="3"><c r="C3" t="inlineStr"><is><t>다른 제목</t></is></c></row><row r="8"><c r="B8" t="inlineStr"><is><t>계약</t></is></c><c r="C8" s="0"><v>0</v></c></row></sheetData><tableParts><tablePart r:id="t"/></tableParts></worksheet>"#;
+        let bytes = xlsx_parts(
+            sheet,
+            &[
+                (
+                    "xl/styles.xml",
+                    r#"<styleSheet><cellXfs><xf numFmtId="14"/></cellXfs></styleSheet>"#,
+                ),
+                (
+                    "xl/worksheets/_rels/sheet7.xml.rels",
+                    r#"<Relationships><Relationship Id="t" Type="urn:office/table" Target="../tables/table1.xml"/></Relationships>"#,
+                ),
+                (
+                    "xl/tables/table1.xml",
+                    r#"<table displayName="계약표" ref="B7:C9"><tableColumns><tableColumn name="품목"/><tableColumn name="체결일"/></tableColumns></table>"#,
+                ),
+            ],
+            "1",
+        );
+        let doc = extract("dates.xlsx", &bytes).unwrap();
+        let date = doc
+            .sections
+            .iter()
+            .find(|s| s.text.contains("1904-01-01"))
+            .unwrap();
+        assert!(date.text.contains("체결일"));
+        assert!(date.heading.as_deref().unwrap().contains("header=declared"));
+        assert!(excel_number("60", Some(&(14, String::new())), false)
+            .unwrap()
+            .contains("1900-02-29 [Excel compatibility day]"));
+        assert!(excel_number("0.5", Some(&(20, String::new())), false)
+            .unwrap()
+            .contains("12:00:00"));
     }
     #[test]
     fn tables_repeat_header_and_row_key_in_long_unicode_fragments() {

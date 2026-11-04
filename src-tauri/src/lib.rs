@@ -1,3 +1,4 @@
+mod dictionary_provider;
 mod content_store;
 mod clipboard_commands;
 mod clipboard_history;

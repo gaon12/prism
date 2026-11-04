@@ -228,6 +228,7 @@ pub fn run() {
             commands::runtime_info,
             commands::show_quick,
             commands::show_main,
+            commands::open_settings,
             commands::hide_quick,
             commands::resize_quick,
             commands::index_status,

@@ -375,6 +375,15 @@ pub fn show_main(app: AppHandle) -> Result<(), String> {
     windows::show_main_window(&app)
 }
 #[tauri::command]
+pub fn open_settings(app: AppHandle, tab: String) -> Result<(), String> {
+    if !["general", "scopes", "shortcuts", "ai"].contains(&tab.as_str()) {
+        return Err("Unknown settings page.".into());
+    }
+    windows::show_main_window(&app)?;
+    app.emit_to("main", "prism:open-settings", tab)
+        .map_err(|_| "Could not open settings.".into())
+}
+#[tauri::command]
 pub fn hide_quick(app: AppHandle) -> Result<(), String> {
     app.get_webview_window("quick")
         .ok_or("Quick window is unavailable.")?

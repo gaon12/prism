@@ -12,6 +12,7 @@ mod filename_pattern;
 mod index;
 mod keyboard_pattern;
 mod process_job;
+mod secret_store;
 mod settings;
 mod vector_store;
 mod windows;

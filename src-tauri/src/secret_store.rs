@@ -3,6 +3,9 @@
 use serde::Serialize;
 use std::{fmt, path::PathBuf, sync::Arc};
 use zeroize::Zeroizing;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[path = "native_secrets.rs"]
+mod native;
 
 const MAX_SECRET_BYTES: usize = 8192;
 
@@ -86,7 +89,12 @@ impl SecretStore {
         let provider: Arc<dyn SecretProvider> = Arc::new(windows::DpapiProvider::new(
             directory.join("generation-secrets"),
         ));
-        #[cfg(not(windows))]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let provider: Arc<dyn SecretProvider> = {
+            let _ = directory;
+            Arc::new(native::NativeProvider::new())
+        };
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         let provider: Arc<dyn SecretProvider> = {
             let _ = directory;
             Arc::new(UnsupportedProvider)

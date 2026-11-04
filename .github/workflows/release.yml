@@ -146,14 +146,16 @@ jobs:
           if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'Microsoft bootstrapper signature verification failed.' }
           $process = Start-Process -FilePath $bootstrapper -ArgumentList '/silent', '/install' -WindowStyle Hidden -Wait -PassThru
           if ($process.ExitCode -notin @(0, 3010)) { throw "WebView2 setup failed: $($process.ExitCode)" }
-      - name: Verify release setup recovery in an isolated sandbox
+      - name: Verify release setup recovery and previous-version restoration
         # Native recovery uses inert crash fixtures and never starts the embedded app.
         if: matrix.platform == 'windows'
         shell: bash
         env:
           PRISM_SETUP_EXE: ${{ github.workspace }}/installer/src-tauri/target/release/prism-setup.exe
           PRISM_SETUP_EXPECTED_EXE: ${{ github.workspace }}/src-tauri/target/release/prism.exe
-        run: npm run test:setup-recovery
+        run: |
+          npm run test:setup-recovery
+          npm run test:setup-previous
       - name: Collect Windows setup
         if: matrix.platform == 'windows'
         shell: pwsh

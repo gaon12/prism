@@ -19,6 +19,7 @@ mod journal;
 mod install_regression;
 mod operation;
 mod payload;
+mod recovery;
 mod safe_path;
 mod system;
 mod temp_cleanup;

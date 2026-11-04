@@ -5,6 +5,7 @@ pub mod install;
 pub mod journal;
 pub mod operation;
 pub mod payload;
+pub mod recovery;
 pub mod safe_path;
 pub mod system;
 pub mod temp_cleanup;

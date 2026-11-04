@@ -91,6 +91,7 @@ pub struct InstallRecord {
 #[serde(rename_all = "camelCase")]
 pub enum Stage {
     Preparing,
+    Recovering,
     Copying,
     Shortcuts,
     Registering,
@@ -127,7 +128,7 @@ pub fn validate_install_dir(dir: &Path) -> Result<(), String> {
     if let Ok(mut entries) = fs::read_dir(dir) {
         let has_files = entries.next().is_some();
         let is_prism = dir.join(APP_EXE).exists() || dir.join(RECORD_FILE).exists();
-        if has_files && !is_prism {
+        if has_files && !is_prism && !crate::recovery::has_workspaces(dir) {
             return Err("This folder is not empty. Choose an empty folder or a new one.".into());
         }
     }
@@ -160,6 +161,10 @@ fn checked_record(dir: &Path) -> Result<InstallRecord, String> {
     }
     let record: InstallRecord = serde_json::from_slice(&bytes)
         .map_err(|_| "The installation record is damaged; no files were removed.".to_string())?;
+    validate_record(record)
+}
+
+fn validate_record(record: InstallRecord) -> Result<InstallRecord, String> {
     if record.files.len() > 10_000 || record.shortcuts.len() > 2 || record.version.len() > 128 {
         return Err("The installation record exceeds allowed limits.".into());
     }
@@ -199,6 +204,15 @@ pub fn required_free_bytes(
     payload_bytes: u64,
     setup_bytes: u64,
 ) -> Result<u64, String> {
+    if crate::recovery::has_workspaces(dir) {
+        if let Some(backup_bytes) = crate::recovery::pending_backup_bytes(dir)? {
+            return payload_bytes
+                .checked_add(setup_bytes)
+                .and_then(|bytes| bytes.checked_add(backup_bytes))
+                .and_then(|bytes| bytes.checked_add(1024 * 1024))
+                .ok_or_else(|| "The installation size exceeds allowed limits.".into());
+        }
+    }
     let record = checked_record(dir)?;
     let mut names: std::collections::HashSet<String> = record.files.into_iter().collect();
     names.extend([
@@ -245,6 +259,10 @@ pub fn install(
     validate_install_dir(dir)?;
     fs::create_dir_all(dir).map_err(|error| format!("Could not create the folder: {error}"))?;
     let _lock = crate::folder_lock::FolderLock::acquire(dir).map_err(|error| error.to_string())?;
+    if crate::recovery::has_workspaces(dir) {
+        progress(Stage::Recovering, 0.0);
+        crate::recovery::recover(system, dir)?;
+    }
     let previous = checked_record(dir)?;
     let folders = system
         .folders()
@@ -474,6 +492,10 @@ pub fn uninstall(
     let dir = safe_path::root(dir).map_err(|_| "The installation folder is unsafe.".to_string())?;
     let dir = dir.as_path();
     let _lock = crate::folder_lock::FolderLock::acquire(dir).map_err(|error| error.to_string())?;
+    if crate::recovery::has_workspaces(dir) {
+        progress(Stage::Recovering, 0.0);
+        crate::recovery::recover(system, dir)?;
+    }
     let record = checked_record(dir)?;
     let folders = system
         .folders()

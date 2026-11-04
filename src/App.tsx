@@ -19,12 +19,14 @@ import { RecommendedDialog } from './components/RecommendedDialog';
 import { SearchView } from './features/SearchView';
 import { ChatView } from './features/ChatView';
 import { DocumentsView } from './features/DocumentsView';
+import { Onboarding } from './features/onboarding/Onboarding';
 import { QuickWindow } from './features/QuickWindow';
 import { ClipboardNotice } from './features/clipboard/ClipboardPanel';
 import { bridge, native } from './lib/bridge';
 import {
   useClient,
   initialize,
+  saveSettings,
   addFolders,
   showToast,
   clearToast,
@@ -60,6 +62,7 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   const [recommended, setRecommended] = useState<RecommendedFolder[] | null>(null);
   const quick = useQuickMode();
+  const needsOnboarding = settings.onboardingVersion < 1;
   const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
   const changeTab = (next: Tab) => {
     if (tab === 'documents' && next !== tab && documentDirty) {
@@ -122,7 +125,8 @@ export default function App() {
         event.altKey &&
         event.code === 'Space' &&
         !settingsTab &&
-        !recommended
+        !recommended &&
+        !needsOnboarding
       ) {
         event.preventDefault();
         void (quick ? switchWindow('main') : switchWindow('quick')).catch((cause) =>
@@ -132,7 +136,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [quick, settingsTab, recommended]);
+  }, [quick, settingsTab, recommended, needsOnboarding]);
   const add = () => {
     void addFolders()
       .then((added) => {
@@ -243,7 +247,7 @@ export default function App() {
               onAddFolder={add}
             />
             <main className="main-content">
-              <ClipboardNotice />
+              {!needsOnboarding ? <ClipboardNotice /> : null}
               {tab === 'search' ? (
                 <SearchView
                   recent={recent}
@@ -276,6 +280,15 @@ export default function App() {
           </footer>
         </div>
       )}
+      {!quick && needsOnboarding ? (
+        <Onboarding
+          settings={settings}
+          loadRecommended={bridge.recommendedFolders}
+          pickFolders={bridge.chooseFolders}
+          onFinish={(next) => saveSettings({ ...next, onboardingVersion: 1 })}
+          onSkip={() => saveSettings({ ...settings, onboardingVersion: 1 })}
+        />
+      ) : null}
       {settingsTab ? (
         <SettingsDialog initialTab={settingsTab} onClose={() => setSettingsTab(null)} />
       ) : null}

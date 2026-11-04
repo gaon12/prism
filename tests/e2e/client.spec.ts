@@ -8,6 +8,11 @@ test.beforeAll(async () => {
   await mkdir(evidence, { recursive: true });
 });
 test.beforeEach(async ({ page }) => {
+  // These are established-profile regressions; first-run setup has its own spec.
+  await page.addInitScript(() => {
+    if (!localStorage.getItem('prism.settings.v1'))
+      localStorage.setItem('prism.settings.v1', JSON.stringify({ onboardingVersion: 1 }));
+  });
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
@@ -315,6 +320,9 @@ test('captures desktop reference states', async ({ browser }) => {
     colorScheme: 'light',
   });
   const page = await context.newPage();
+  await page.addInitScript(() =>
+    localStorage.setItem('prism.settings.v1', JSON.stringify({ onboardingVersion: 1 })),
+  );
   await page.goto('http://127.0.0.1:1420');
   await expect(page.getByRole('heading', { name: '검색할 폴더를 추가하세요' })).toBeVisible();
   await page.screenshot({ path: join(evidence, 'main-reference.png') });

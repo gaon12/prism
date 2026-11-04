@@ -31,6 +31,8 @@
     "test:onboarding": "node tests/native/onboarding.mjs",
     "test:portable": "node tests/native/portable.mjs",
     "package:portable": "node scripts/package-portable.mjs",
+    "package:msix": "node scripts/package-msix.mjs",
+    "test:msix": "node --test tests/scripts/msix.test.mjs",
     "format:check": "prettier --check src tests vite.config.ts playwright.config.ts package.json tsconfig*.json index.html .prettierrc.json README.md"
   },
   "dependencies": {

@@ -193,6 +193,41 @@ fn folder_size_kib(dir: &Path, files: &[String]) -> u32 {
     (bytes / 1024).min(u32::MAX as u64) as u32
 }
 
+/// Additional free space needed while old files and staged replacements coexist.
+pub fn required_free_bytes(
+    dir: &Path,
+    payload_bytes: u64,
+    setup_bytes: u64,
+) -> Result<u64, String> {
+    let record = checked_record(dir)?;
+    let mut names: std::collections::HashSet<String> = record.files.into_iter().collect();
+    names.extend([
+        APP_EXE.to_owned(),
+        UNINSTALLER_EXE.to_owned(),
+        RECORD_FILE.to_owned(),
+    ]);
+    let mut required = payload_bytes
+        .checked_add(setup_bytes)
+        .and_then(|bytes| bytes.checked_add(1024 * 1024))
+        .ok_or("The installation size exceeds allowed limits.")?;
+    if dir.exists() {
+        for name in names {
+            let path = safe_path::file(dir, &name)
+                .map_err(|_| "An installation backup path is unsafe.".to_string())?;
+            match fs::metadata(path) {
+                Ok(metadata) => {
+                    required = required
+                        .checked_add(metadata.len())
+                        .ok_or("The installation size exceeds allowed limits.")?
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(_) => return Err("Could not estimate the installation backup size.".into()),
+            }
+        }
+    }
+    Ok(required)
+}
+
 /// Installs (or updates) Prism.
 ///
 /// `setup_exe` is the running setup file; it is copied as `uninstall.exe`.
@@ -720,5 +755,29 @@ pub mod tests {
         );
         assert!(!dir.join(APP_EXE).exists() && !dir.join("res").exists());
         assert!(!data.exists(), "data removed when asked");
+    }
+
+    #[test]
+    fn required_space_includes_staging_uninstaller_and_old_file_backups_once() {
+        let temporary = tempfile::tempdir().unwrap();
+        let dir = temporary.path().join("app");
+        assert_eq!(
+            required_free_bytes(&dir, 100, 20).unwrap(),
+            1024 * 1024 + 120
+        );
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join(APP_EXE), b"old").unwrap();
+        fs::write(dir.join(UNINSTALLER_EXE), b"setup").unwrap();
+        let record = InstallRecord {
+            version: "0.1.0".into(),
+            files: vec![APP_EXE.into(), APP_EXE.into(), UNINSTALLER_EXE.into()],
+            shortcuts: vec![],
+        };
+        let bytes = serde_json::to_vec(&record).unwrap();
+        fs::write(dir.join(RECORD_FILE), &bytes).unwrap();
+        assert_eq!(
+            required_free_bytes(&dir, 100, 20).unwrap(),
+            1024 * 1024 + 120 + 3 + 5 + bytes.len() as u64
+        );
     }
 }

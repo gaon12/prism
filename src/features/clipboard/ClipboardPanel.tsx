@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Clipboard, Copy, Pin, Trash2, Pause, Play, Settings2 } from 'lucide-react';
 import { clipboard } from '../../lib/clipboard';
 import type { ClipboardController, ClipKind } from '../../lib/clipboard';
@@ -189,10 +189,16 @@ export function ClipboardPanel({
   const [busy, setBusy] = useState(false);
   const [confirmation, setConfirmation] = useState(false);
   const [options, setOptions] = useState(false);
+  const list = useRef<HTMLDivElement>(null);
   const [preview, setPreview] = useState<{ id: string; content: string } | null>(null);
   const [previewError, setPreviewError] = useState<{ id: string; message: string } | null>(null);
   const selectedId = selected?.id;
   const selectedKind = selected?.kind;
+  useEffect(() => {
+    list.current
+      ?.querySelector<HTMLElement>('[aria-selected="true"]')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [selectedId, options]);
   useEffect(() => {
     if (!selectedId || !native) return;
     let cancelled = false;
@@ -313,6 +319,7 @@ export function ClipboardPanel({
           <div className="clipboard-body">
             <div
               className="clipboard-list"
+              ref={list}
               id={controller.listId}
               role="listbox"
               aria-label={t('title')}

@@ -23,11 +23,18 @@ const messages = {
     'モデルのインストールと実行はデスクトップアプリで利用できます。',
   ],
   platform: [
-    '현재 제공하는 실행 환경은 Windows x64 CPU용입니다. macOS·Linux 실행 패키지는 아직 제공하지 않습니다.',
-    'The current runtime supports Windows x64 on CPU. Runtime packages for macOS and Linux are not available yet.',
-    '当前运行环境仅支持Windows x64 CPU，尚未提供macOS或Linux运行包。',
-    '目前的執行環境僅支援Windows x64 CPU，尚未提供macOS或Linux執行套件。',
-    '現在の実行環境はWindows x64のCPU用です。macOS・Linux用の実行パッケージはまだありません。',
+    '운영체제와 CPU 구조에 맞는 공식 패키지를 사용합니다: Windows x64, macOS Apple Silicon·Intel, Linux x64·ARM64. 아래에 이 기기에 맞는 파일을 표시합니다.',
+    'Uses the official package for the OS and CPU: Windows x64, macOS Apple Silicon or Intel, and Linux x64 or ARM64. The matching file is listed below.',
+    '使用匹配操作系统和CPU的官方包：Windows x64、macOS Apple Silicon或Intel、Linux x64或ARM64。下方显示本机对应文件。',
+    '使用符合系統和CPU的官方套件：Windows x64、macOS Apple Silicon或Intel、Linux x64或ARM64。下方顯示本機對應檔案。',
+    'OSとCPUに合う公式パッケージを使用します：Windows x64、macOS Apple Silicon・Intel、Linux x64・ARM64。対応ファイルを下に表示します。',
+  ],
+  unsupportedPlatform: [
+    '이 운영체제·CPU 조합에 맞는 공식 런타임이 아직 없습니다. 모델 설치·실행은 지원되는 기기에서 이용하세요.',
+    'No pinned official runtime is available for this OS and CPU combination yet. Install and run the model on a supported device.',
+    '此操作系统和CPU组合暂无匹配的官方运行时。请在支持的设备上安装和运行模型。',
+    '此作業系統和CPU組合尚無符合的官方執行環境。請在支援的裝置安裝及執行模型。',
+    'このOSとCPUの組み合わせに対応する公式ランタイムはまだありません。対応端末でモデルをインストール・実行してください。',
   ],
   local: [
     '임베딩 입력은 이 기기 안에서 처리합니다. 다운로드나 실행은 버튼을 눌러 직접 시작하세요.',
@@ -70,11 +77,11 @@ const messages = {
     '公式Q8パッケージをダウンロード',
   ],
   downloadSize: [
-    '모델 약 310 MB + CPU 실행 환경 약 24 MB입니다. 실행 파일을 풀어 저장할 공간도 필요합니다.',
-    'About 310 MB for the model plus 24 MB for the CPU runtime. Extra space is needed to extract the runtime.',
-    '模型约310 MB，CPU运行环境约24 MB，解压运行环境还需要额外空间。',
-    '模型約310 MB，CPU執行環境約24 MB，解壓縮執行環境還需要額外空間。',
-    'モデル約310 MBとCPU実行環境約24 MBをダウンロードします。実行環境の展開にも空き容量が必要です。',
+    '모델 약 310 MB + CPU 실행 환경 약 12~25 MB입니다. 실행 환경을 풀어 저장할 공간도 필요합니다.',
+    'About 310 MB for the model plus 12–25 MB for the CPU runtime. Extra space is needed to extract it.',
+    '模型约310 MB，CPU运行环境约12–25 MB，解压还需要额外空间。',
+    '模型約310 MB，CPU執行環境約12–25 MB，解壓還需要額外空間。',
+    'モデル約310 MBとCPU実行環境約12～25 MBです。展開用にも空き容量が必要です。',
   ],
   start: ['모델 시작', 'Start model', '启动模型', '啟動模型', 'モデルを起動'],
   stop: ['모델 정지', 'Stop model', '停止模型', '停止模型', 'モデルを停止'],
@@ -124,11 +131,11 @@ const messages = {
     'オフラインインストール',
   ],
   importHint: [
-    '다른 기기에서 받은 공식 GGUF 모델과 CPU ZIP을 각각 가져올 수 있습니다. 가져오기만으로 모델을 실행하지 않습니다.',
-    'Import the official GGUF model and CPU ZIP downloaded on another device. Importing does not start the model.',
-    '可分别导入在其他设备下载的官方GGUF模型和CPU ZIP。导入不会自动启动模型。',
-    '可分別匯入在其他裝置下載的官方GGUF模型及CPU ZIP。匯入不會自動啟動模型。',
-    '別の端末でダウンロードした公式GGUFモデルとCPU ZIPを個別に読み込めます。読み込むだけではモデルを起動しません。',
+    '다른 기기에서 받은 공식 GGUF 모델과 이 기기에 맞는 CPU 압축 파일을 각각 가져올 수 있습니다. 가져오기만으로 모델을 실행하지 않습니다.',
+    'Import the official GGUF model and the CPU archive matching this device. Importing does not start the model.',
+    '可分别导入官方GGUF模型和匹配本机的CPU压缩包。导入不会自动启动模型。',
+    '可分別匯入官方GGUF模型及符合本機的CPU壓縮檔。匯入不會自動啟動模型。',
+    '公式GGUFモデルとこの端末に合うCPUアーカイブを個別に読み込めます。読み込むだけでは起動しません。',
   ],
   importModel: [
     '공식 GGUF 가져오기',
@@ -138,11 +145,11 @@ const messages = {
     '公式GGUFを読み込む',
   ],
   importRuntime: [
-    '공식 CPU ZIP 가져오기',
-    'Import official CPU ZIP',
-    '导入官方CPU ZIP',
-    '匯入官方CPU ZIP',
-    '公式CPU ZIPを読み込む',
+    '공식 CPU 패키지 가져오기',
+    'Import official CPU package',
+    '导入官方CPU包',
+    '匯入官方CPU套件',
+    '公式CPUパッケージを読み込む',
   ],
   chooseModel: [
     'EmbeddingGemma 2 공식 GGUF 선택',
@@ -152,11 +159,11 @@ const messages = {
     '公式EmbeddingGemma 2 GGUFを選択',
   ],
   chooseRuntime: [
-    '공식 Windows x64 CPU ZIP 선택',
-    'Choose the official Windows x64 CPU ZIP',
-    '选择官方Windows x64 CPU ZIP',
-    '選擇官方Windows x64 CPU ZIP',
-    '公式Windows x64 CPU ZIPを選択',
+    '이 기기의 공식 CPU 패키지 선택 (ZIP / TAR.GZ)',
+    'Choose the official CPU package for this device (ZIP / TAR.GZ)',
+    '选择本机对应的官方CPU包（ZIP / TAR.GZ）',
+    '選擇本機對應的官方CPU套件（ZIP / TAR.GZ）',
+    'この端末用の公式CPUパッケージを選択（ZIP / TAR.GZ）',
   ],
   verification: [
     '허용한 공식 릴리스의 고정 SHA-256과 일치하는 파일만 설치·실행합니다. 파일 이름이 같아도 내용이 다르면 거부합니다.',
@@ -263,6 +270,7 @@ export function modelErrorText(locale: Language, message: string) {
   let key: ModelMessageKey = 'errorGeneric';
   if (/cancelled/i.test(message)) key = 'cancelled';
   else if (/SHA-256|wrong size|pinned size|size mismatch/i.test(message)) key = 'errorChecksum';
+  else if (/No pinned CPU runtime/i.test(message)) key = 'unsupportedPlatform';
   else if (/currently supports|runtime currently supports/i.test(message)) key = 'platform';
   else if (/already running|stop .*before|another .*operation/i.test(message)) key = 'errorBusy';
   else if (/unsupported|unexpected runtime|invalid runtime|unsafe .*archive/i.test(message))

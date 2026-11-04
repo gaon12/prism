@@ -67,7 +67,7 @@ export function EmbeddingPanel() {
   const working = status?.phase === 'downloading' || status?.phase === 'starting';
   const busy = Boolean(operation || working);
   const running = status?.phase === 'running' || status?.pid != null;
-  const mutable = Boolean(status && !busy && !running && !statusError);
+  const mutable = Boolean(status?.runtimeTarget && !busy && !running && !statusError);
   const error = actionError ?? statusError ?? (!operation ? status?.lastError : null);
   const run = async (kind: Operation, work: () => Promise<EmbeddingStatus | null>) => {
     if (busy) return;
@@ -142,6 +142,11 @@ export function EmbeddingPanel() {
               <RefreshCw size={15} />
             </button>
           </div>
+          {status && !status.runtimeTarget ? (
+            <p className="embedding-note" role="status">
+              {modelText(locale, 'unsupportedPlatform')}
+            </p>
+          ) : null}
           <dl className="embedding-metadata">
             <div>
               <dt>{modelText(locale, 'modelFile')}</dt>
@@ -289,7 +294,7 @@ export function EmbeddingPanel() {
                 </li>
               ))}
               <li>
-                <code>{embeddingAssets.runtimeFile}</code>
+                <code>{status?.runtimeFilename ?? modelText(locale, 'unknown')}</code>
               </li>
             </ul>
             {status ? (

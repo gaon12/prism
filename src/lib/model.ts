@@ -11,6 +11,9 @@ export interface EmbeddingStatus {
   modelId: string;
   modelRevision: string;
   runtimeVersion: string;
+  runtimeTarget: string | null;
+  runtimeFilename: string | null;
+  runtimeBytes: number | null;
   quantization: string | null;
   modelReady: boolean;
   runtimeReady: boolean;
@@ -29,7 +32,6 @@ export const embeddingAssets = {
   runtimeUrl: 'https://github.com/ggml-org/llama.cpp/releases/tag/b11960',
   runtimeVersion: 'b11960',
   modelFiles: ['embeddinggemma-2-Q8_0.gguf', 'embeddinggemma-2-BF16.gguf'],
-  runtimeFile: 'llama-b11960-bin-win-cpu-x64.zip',
 } as const;
 
 function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -43,7 +45,12 @@ async function importAsset(runtime: boolean, title?: string): Promise<EmbeddingS
     title,
     multiple: false,
     directory: false,
-    filters: [{ name: runtime ? 'ZIP' : 'GGUF', extensions: [runtime ? 'zip' : 'gguf'] }],
+    filters: [
+      {
+        name: runtime ? 'CPU runtime (ZIP / TAR.GZ)' : 'GGUF',
+        extensions: runtime ? ['zip', 'gz'] : ['gguf'],
+      },
+    ],
   });
   return path ? call<EmbeddingStatus>('model_import', { path, runtime }) : null;
 }

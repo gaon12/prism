@@ -95,6 +95,7 @@ const messages = {
   units: ['단위 변환', 'Unit conversion', '单位换算', '單位換算', '単位変換'],
   web: ['웹 검색', 'Web search', '网页搜索', '網頁搜尋', 'ウェブ検索'],
   copy: ['복사', 'Copy', '复制', '複製', 'コピー'],
+  paste: ['붙여넣기', 'Paste', '粘贴', '貼上', '貼り付け'],
   copied: ['복사했어요', 'Copied', '已复制', '已複製', 'コピーしました'],
   exactValue: ['정확한 값', 'Exact value', '精确值', '精確值', '正確な値'],
   numericHint: [

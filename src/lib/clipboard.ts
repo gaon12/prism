@@ -2,7 +2,9 @@ import { useEffect, useId, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { native } from './bridge';
-import { errorMessage } from './store';
+import { errorMessage, showToast } from './store';
+import type { Language } from './types';
+import { clipText } from '../features/clipboard/messages';
 
 export type ClipKind = 'text' | 'link' | 'image';
 export interface ClipItem {
@@ -31,10 +33,25 @@ interface ClipList {
   total: number;
   status: ClipStatus;
 }
+export interface PasteOutcome {
+  copied: boolean;
+  pasted: boolean;
+  error:
+    | 'busy'
+    | 'keysHeld'
+    | 'noTarget'
+    | 'targetGone'
+    | 'focusFailed'
+    | 'inputBlocked'
+    | 'copyFailed'
+    | 'unsupported'
+    | null;
+}
 export const clipboard = {
   list: (query: string, kind: ClipKind | null) =>
     invoke<ClipList>('clipboard_list', { query, kind, limit: 100 }),
   copy: (id: string) => invoke<void>('clipboard_copy', { id }),
+  paste: (id: string) => invoke<PasteOutcome>('clipboard_paste', { id }),
   pin: (id: string, pinned: boolean) => invoke<ClipItem>('clipboard_pin', { id, pinned }),
   delete: (id: string) => invoke<void>('clipboard_delete', { id }),
   clear: (includePinned = false) => invoke<void>('clipboard_clear', { includePinned }),
@@ -42,6 +59,30 @@ export const clipboard = {
   thumbnail: (id: string) => invoke<string>('clipboard_thumbnail', { id }),
   text: (id: string) => invoke<string>('clipboard_text', { id }),
 };
+
+let pastePending = false;
+const pasteMessages = {
+  targetGone: 'pasteNoTarget',
+  noTarget: 'pasteNoTarget',
+  keysHeld: 'pasteKeysHeld',
+  focusFailed: 'pasteFocusFailed',
+  unsupported: 'pasteUnsupported',
+  busy: 'pasteBusy',
+  copyFailed: 'pasteCopyFailed',
+  inputBlocked: 'pasteInputBlocked',
+} as const;
+export async function pasteClipboard(id: string, language: Language) {
+  if (pastePending) return;
+  pastePending = true;
+  try {
+    const result = await clipboard.paste(id);
+    const key = result.pasted ? 'pasteSent' : pasteMessages[result.error ?? 'inputBlocked'];
+    showToast(clipText(language, key));
+    return result;
+  } finally {
+    pastePending = false;
+  }
+}
 
 export function useClipboard(active: boolean, query: string) {
   const listId = useId();

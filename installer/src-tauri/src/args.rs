@@ -17,6 +17,7 @@
 //! | `/D=C:\path`      | install folder (NSIS spelling)                                      |
 //! | `--uninstall`     | remove Prism (also implied when this file is named `uninstall.exe`) |
 //! | `--from-temp DIR` | internal: uninstaller re-started from %TEMP% to remove `DIR`        |
+//! | `--restore-version VERSION` | explicitly restore the matching retained version          |
 
 use std::path::PathBuf;
 
@@ -41,6 +42,8 @@ pub struct SetupArgs {
     pub install_dir: Option<PathBuf>,
     /// Set when the uninstaller copied itself to %TEMP% to be able to delete the install folder.
     pub from_temp: Option<PathBuf>,
+    /// Explicit target is required for a silent previous-version restore.
+    pub restore_version: Option<String>,
 }
 
 impl SetupArgs {
@@ -55,6 +58,7 @@ impl SetupArgs {
             relaunch_args: Vec::new(),
             install_dir: None,
             from_temp: None,
+            restore_version: None,
         };
         let mut index = 0;
         while index < args.len() {
@@ -73,6 +77,17 @@ impl SetupArgs {
                     break;
                 }
                 "--UNINSTALL" => parsed.uninstall = true,
+                "--RESTORE-VERSION" => {
+                    // Missing/empty is retained as an invalid request, never an install.
+                    parsed.restore_version = Some(String::new());
+                    if let Some(version) = args
+                        .get(index + 1)
+                        .filter(|value| !value.starts_with(['-', '/']))
+                    {
+                        index += 1;
+                        parsed.restore_version = Some(version.clone());
+                    }
+                }
                 "--FROM-TEMP" => {
                     index += 1;
                     parsed.from_temp = args.get(index).map(PathBuf::from);
@@ -141,6 +156,26 @@ mod tests {
         assert_eq!(
             parse(&["--future-flag", "/X"], "setup.exe").ui,
             UiMode::Full
+        );
+    }
+
+    #[test]
+    fn restore_target_is_explicit_and_does_not_consume_app_arguments() {
+        let args = parse(&["--restore-version", "0.1.0", "/S"], "uninstall.exe");
+        assert_eq!(args.restore_version.as_deref(), Some("0.1.0"));
+        assert!(args.uninstall);
+        assert_eq!(
+            parse(&["--restore-version"], "setup.exe")
+                .restore_version
+                .as_deref(),
+            Some("")
+        );
+        let missing = parse(&["--restore-version", "/S"], "setup.exe");
+        assert_eq!(missing.ui, UiMode::Silent);
+        assert_eq!(missing.restore_version.as_deref(), Some(""));
+        assert_eq!(
+            parse(&["/ARGS", "--restore-version", "0.1.0"], "setup.exe").restore_version,
+            None
         );
     }
 }

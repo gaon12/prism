@@ -20,6 +20,8 @@ mod journal;
 mod operation;
 mod payload;
 mod previous;
+#[cfg(test)]
+mod previous_tests;
 mod recovery;
 #[cfg(test)]
 mod recovery_tests;
@@ -64,6 +66,8 @@ struct SetupInfo {
     version: &'static str,
     installed_version: Option<String>,
     recovery_pending: bool,
+    previous_version: Option<previous::PreviousVersion>,
+    previous_error: Option<String>,
     /// Folder to suggest (the existing installation, or the default one).
     install_dir: PathBuf,
     default_dir: PathBuf,
@@ -140,7 +144,9 @@ fn setup_info(setup: tauri::State<'_, Setup>) -> Result<SetupInfo, String> {
     let folders = system::current()
         .folders()
         .map_err(|error| error.to_string())?;
-    let mode = if setup.args.uninstall {
+    let mode = if setup.args.restore_version.is_some() {
+        "restore"
+    } else if setup.args.uninstall {
         "uninstall"
     } else if setup.args.update || installed_version.is_some() {
         "update"
@@ -158,9 +164,24 @@ fn setup_info(setup: tauri::State<'_, Setup>) -> Result<SetupInfo, String> {
             .map_err(|_| "Could not estimate setup size.")?
             .len(),
     )?;
+    let previous = previous::available(&install_dir);
+    let previous_error = previous.as_ref().err().cloned();
+    if let Some(expected) = &setup.args.restore_version {
+        if !previous
+            .as_ref()
+            .ok()
+            .and_then(|value| value.as_ref())
+            .is_some_and(|value| &value.version == expected)
+        {
+            return Err(
+                "The requested previous version is unavailable. No application files were changed."
+                    .into(),
+            );
+        }
+    }
     Ok(SetupInfo {
         mode,
-        ui: if setup.args.ui == UiMode::Passive {
+        ui: if setup.args.ui == UiMode::Passive && setup.args.restore_version.is_none() {
             "passive"
         } else {
             "full"
@@ -168,6 +189,8 @@ fn setup_info(setup: tauri::State<'_, Setup>) -> Result<SetupInfo, String> {
         version: VERSION,
         installed_version,
         recovery_pending: recovery::has_workspaces(&install_dir),
+        previous_version: previous.unwrap_or_default(),
+        previous_error,
         free_bytes: system::free_bytes(&install_dir),
         install_dir,
         default_dir: friendly_path(install::default_install_dir(&folders)),
@@ -186,6 +209,8 @@ struct FolderCheck {
     free_bytes: Option<u64>,
     required_bytes: Option<u64>,
     recovery_pending: bool,
+    previous_version: Option<previous::PreviousVersion>,
+    previous_error: Option<String>,
 }
 
 /// Checks a folder the user typed or picked, so the window can warn before installing.
@@ -198,6 +223,8 @@ fn check_folder(path: String, setup: tauri::State<'_, Setup>) -> FolderCheck {
             free_bytes: None,
             required_bytes: None,
             recovery_pending: false,
+            previous_version: None,
+            previous_error: None,
         };
     }
     let estimate = std::fs::metadata(&setup.exe)
@@ -207,11 +234,15 @@ fn check_folder(path: String, setup: tauri::State<'_, Setup>) -> FolderCheck {
         .err()
         .or_else(|| estimate.as_ref().err().cloned());
     let recovery_pending = error.is_none() && recovery::has_workspaces(&dir);
+    let previous = previous::available(&dir);
+    let previous_error = previous.as_ref().err().cloned();
     FolderCheck {
         error,
         free_bytes: system::free_bytes(&dir),
         required_bytes: estimate.ok(),
         recovery_pending,
+        previous_version: previous.unwrap_or_default(),
+        previous_error,
     }
 }
 
@@ -285,6 +316,30 @@ async fn run_uninstall(app: tauri::AppHandle, remove_data: bool) -> Result<(), S
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+async fn run_restore(
+    app: tauri::AppHandle,
+    install_dir: PathBuf,
+    expected_version: String,
+) -> Result<(), String> {
+    system::check_sandbox_destination(&install_dir).map_err(|e| e.to_string())?;
+    let operation = app.state::<Setup>().gate.begin()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        previous::restore(
+            &*system::current(),
+            &install_dir,
+            &expected_version,
+            |stage, fraction| {
+                let _ = app.emit("setup://progress", Progress { stage, fraction });
+            },
+        )?;
+        let installed = safe_path::root(&install_dir).map_err(|e| e.to_string())?;
+        operation.complete(Some(installed))
+    })
+    .await
+    .map_err(|_| "Previous-version restoration failed.".to_string())?
+}
+
 /// Closes the setup, optionally starting the installed Prism first.
 #[tauri::command]
 fn finish(
@@ -331,6 +386,9 @@ fn restart_from_temp(args: &SetupArgs) -> ExitCode {
     };
     let mut command = Command::new(&copy);
     command.arg("--from-temp").arg(dir);
+    if let Some(version) = &args.restore_version {
+        command.arg("--restore-version").arg(version);
+    }
     if args.ui == UiMode::Silent {
         command.arg("/S");
     }
@@ -373,7 +431,22 @@ fn delete_self_later() -> Result<(), String> {
 
 /// `/S`: does the whole job without any window. Exit code 0 means success.
 fn run_silent(args: &SetupArgs) -> ExitCode {
-    let result = if let Some(dir) = &args.from_temp {
+    let result = if let Some(version) = &args.restore_version {
+        let result = args
+            .from_temp
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(|| suggested_options(args).map(|(o, _)| o.install_dir))
+            .and_then(|dir| previous::restore(&*system::current(), &dir, version, |_, _| {}));
+        if args.from_temp.is_some() {
+            match (result, delete_self_later()) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            }
+        } else {
+            result
+        }
+    } else if let Some(dir) = &args.from_temp {
         let result = install::uninstall(&*system::current(), dir, false, |_, _| {});
         match (result, delete_self_later()) {
             (Ok(()), Ok(())) => Ok(()),
@@ -500,6 +573,7 @@ fn main() -> ExitCode {
             choose_folder,
             run_install,
             run_uninstall,
+            run_restore,
             finish
         ])
         .build(tauri::generate_context!());

@@ -33,6 +33,18 @@ pub struct ClientSettings {
     pub calculator: CalculatorSettings,
     pub clipboard: crate::clipboard_history::ClipboardSettings,
     pub generation: crate::rag_service::GenerationPreferences,
+    pub updates: UpdatePreferences,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct UpdatePreferences {
+    pub auto_check: bool,
+}
+impl Default for UpdatePreferences {
+    fn default() -> Self {
+        Self { auto_check: true }
+    }
 }
 
 // Existing profiles predate the tour; only genuinely new settings start at zero.
@@ -73,6 +85,7 @@ impl Default for ClientSettings {
             calculator: CalculatorSettings::default(),
             clipboard: crate::clipboard_history::ClipboardSettings::default(),
             generation: crate::rag_service::GenerationPreferences::default(),
+            updates: UpdatePreferences::default(),
         }
     }
 }

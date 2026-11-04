@@ -30,6 +30,14 @@ mod rag_sources;
 mod rag_store;
 mod secret_store;
 mod settings;
+mod update_backend;
+mod update_commands;
+#[cfg(debug_assertions)]
+mod update_fixture;
+mod update_notice;
+mod update_runtime;
+mod update_service;
+mod update_state;
 mod vector_store;
 mod windows;
 
@@ -65,6 +73,7 @@ pub struct AppState {
     content: Result<content_service::ContentService, content_service::ContentError>,
     rag: Result<rag_service::RagService, rag_service::RagError>,
     documents: Result<document_service::DocumentService, document_service::DocumentError>,
+    updates: Result<update_runtime::UpdateRuntime, String>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -91,6 +100,11 @@ pub fn run() {
             app_paths::portable_identifier(&context.config().identifier, &exe);
     }
     let builder = tauri::Builder::default();
+    let builder = builder.plugin(
+        tauri_plugin_updater::Builder::new()
+            .pubkey(update_backend::PUBLIC_KEY.trim())
+            .build(),
+    );
     // Isolated debug tests must not hand their launch to an already running user instance.
     let builder = if isolated_test {
         builder
@@ -247,6 +261,7 @@ pub fn run() {
                     asset_dir.join("rag"),
                     asset_dir.join("generation-secrets"),
                     asset_dir.join("documents"),
+                    asset_dir.join("updates"),
                     asset_dir.join("EBWebView"),
                     asset_dir.join("WebView2"),
                     data_dir.join("webview"),
@@ -313,6 +328,8 @@ pub fn run() {
                     )
                 })
                 .and_then(|rag| document_service::DocumentService::open(&asset_dir, rag.clone()));
+            let updates=update_runtime::UpdateRuntime::new(app.handle().clone(),&asset_dir,&location,
+                settings.updates.auto_check && config_error.is_none(),isolated_test || test_mode);
             #[cfg(debug_assertions)]
             let input_fixture = (isolated_test || test_mode)
                 .then(|| std::sync::Arc::new(paste_fixture::MemoryInput::default()));
@@ -347,6 +364,7 @@ pub fn run() {
                 content,
                 rag,
                 documents,
+                updates,
             });
             if !isolated_test && !test_mode {
                 let state = app.state::<AppState>();
@@ -360,6 +378,7 @@ pub fn run() {
             windows::capture_paste_target(app.handle());
             windows::build_main(app.handle())?;
             windows::build_quick(app.handle())?;
+            if let Ok(updates)=&app.state::<AppState>().updates {updates.start();}
             let open = MenuItem::with_id(app, "open", "Prism 열기", true, None::<&str>)?;
             let quick = MenuItem::with_id(app, "quick", "빠른 검색", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
@@ -448,6 +467,13 @@ pub fn run() {
             clipboard_commands::clipboard_copy,
             clipboard_commands::clipboard_paste,
             clipboard_commands::paste_fixture,
+            update_commands::update_status,
+            update_commands::update_check,
+            update_commands::update_dismiss,
+            update_commands::update_install,
+            update_commands::update_fixture,
+            update_commands::update_open_download,
+            update_commands::update_verify_fixture,
             clipboard_commands::clipboard_pin,
             clipboard_commands::clipboard_delete,
             clipboard_commands::clipboard_clear,
@@ -513,6 +539,7 @@ pub fn run() {
             if matches!(event, tauri::RunEvent::Exit) {
                 foreground_tracker::stop();
                 if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(updates)=&state.updates {updates.shutdown();}
                     if let Ok(documents) = &state.documents {
                         documents.cancel_all();
                     }

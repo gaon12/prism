@@ -16,6 +16,9 @@
       "devCsp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: blob:; connect-src ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420; font-src 'self' data:"
     }
   },
+  "plugins": {
+    "updater": { "pubkey": "", "requireSignedVersion": true, "endpoints": ["https://github.com/gaon12/prism/releases/latest/download/latest.json"], "windows": { "installMode": "passive" } }
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis"],

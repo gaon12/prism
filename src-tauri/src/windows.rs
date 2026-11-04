@@ -129,6 +129,14 @@ pub fn show_main_window(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn show_quick_window(app: &AppHandle) -> Result<(), String> {
+    if app
+        .state::<AppState>()
+        .updates
+        .as_ref()
+        .is_ok_and(|updates| updates.is_installing())
+    {
+        return Err("An application update is in progress.".into());
+    }
     capture_paste_target(app);
     let state = app.state::<AppState>();
     let remember = state

@@ -11,6 +11,7 @@
     "check": "tsc -b --pretty false",
     "version:check": "node scripts/bump-version.mjs --check",
     "version:bump": "node scripts/bump-version.mjs",
+    "test:version": "node --test tests/scripts/version.test.mjs",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:bundle": "node scripts/test-e2e-bundle.mjs",

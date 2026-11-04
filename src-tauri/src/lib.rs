@@ -1,6 +1,7 @@
 mod clipboard_commands;
 mod clipboard_history;
 mod commands;
+mod content_service;
 mod content_store;
 mod dictionary_commands;
 mod dictionary_provider;

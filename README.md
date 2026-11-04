@@ -121,6 +121,8 @@ After building this standalone debug executable, run `npm run test:standalone`, 
 
 `npm run test:onboarding` verifies actual bundled first-run completion, shortcut/settings persistence, clipboard opt-out, skip without applying draft choices and restart. Recommended user folders are explicitly unchecked, and the isolated profile uses MemoryClipboard. Existing profiles missing the new completion marker bypass setup; fresh profiles see the tour. Theme/language choices are saved only on completion.
 
+`npm run test:clipboard-ui` checks retention input validation, filtered/global unpinned counts, pinned-only clear controls and keyboard selection scrolling in both windows using 40 generated entries and MemoryClipboard. Clipboard retention fields accept whole item/day/MiB values; invalid input stays editable and cannot be submitted.
+
 ## Native smoke tests
 
 With the Vite server running in another terminal:

@@ -95,6 +95,13 @@ const messages = {
     '最大保存容量（MiB）',
   ],
   save: ['설정 저장', 'Save settings', '保存设置', '儲存設定', '設定を保存'],
+  invalidLimits: [
+    '항목 수는 10–10000, 일수는 0–3650, 저장 공간은 16–8192 MiB 범위의 정수로 입력하세요.',
+    'Enter whole numbers: 10–10000 items, 0–3650 days, and 16–8192 MiB.',
+    '请输入整数：条目数10–10000，天数0–3650，存储空间16–8192 MiB。',
+    '請輸入整數：項目數10–10000，天數0–3650，儲存空間16–8192 MiB。',
+    '整数で入力してください：10～10000件、0～3650日、16～8192 MiB。',
+  ],
   pinnedHint: [
     '고정 항목은 자동 삭제하지 않아 용량 제한을 초과할 수 있습니다.',
     'Pinned items are never automatically removed and may exceed storage limits.',

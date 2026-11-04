@@ -46,17 +46,43 @@ export function ClipboardNotice() {
   );
 }
 
+function retentionInteger(value: string, min: number, max: number) {
+  const number = Number(value);
+  return value.trim() && Number.isSafeInteger(number) && number >= min && number <= max
+    ? number
+    : null;
+}
+
 function ClipboardSettings({ onClose }: { onClose: () => void }) {
   const { settings } = useClient();
   const [draft, setDraft] = useState(() => ({ ...settings.clipboard }));
+  const [limits, setLimits] = useState(() => ({
+    items: String(settings.clipboard.maxItems),
+    days: String(settings.clipboard.maxAgeDays),
+    mib: String(settings.clipboard.maxBytes / 1024 ** 2),
+  }));
+  const maxItems = retentionInteger(limits.items, 10, 10000);
+  const maxAgeDays = retentionInteger(limits.days, 0, 3650);
+  const maxMiB = retentionInteger(limits.mib, 16, 8192);
+  const valid = maxItems !== null && maxAgeDays !== null && maxMiB !== null;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const t = (key: Parameters<typeof clipText>[1]) => clipText(settings.language, key);
   const submit = async () => {
+    if (busy || maxItems === null || maxAgeDays === null || maxMiB === null) return;
     setBusy(true);
     setError(null);
     try {
-      await saveSettings({ ...settings, clipboard: { ...draft, onboarded: true } });
+      await saveSettings({
+        ...settings,
+        clipboard: {
+          ...draft,
+          maxItems,
+          maxAgeDays,
+          maxBytes: maxMiB * 1024 ** 2,
+          onboarded: true,
+        },
+      });
       onClose();
     } catch (cause) {
       setError(errorMessage(cause));
@@ -94,9 +120,11 @@ function ClipboardSettings({ onClose }: { onClose: () => void }) {
           type="number"
           min={10}
           max={10000}
+          step={1}
           required
-          value={draft.maxItems}
-          onChange={(event) => setDraft({ ...draft, maxItems: event.target.valueAsNumber })}
+          aria-invalid={maxItems === null}
+          value={limits.items}
+          onChange={(event) => setLimits({ ...limits, items: event.target.value })}
         />
       </label>
       <label>
@@ -105,9 +133,11 @@ function ClipboardSettings({ onClose }: { onClose: () => void }) {
           type="number"
           min={0}
           max={3650}
+          step={1}
           required
-          value={draft.maxAgeDays}
-          onChange={(event) => setDraft({ ...draft, maxAgeDays: event.target.valueAsNumber })}
+          aria-invalid={maxAgeDays === null}
+          value={limits.days}
+          onChange={(event) => setLimits({ ...limits, days: event.target.value })}
         />
       </label>
       <label>
@@ -116,21 +146,26 @@ function ClipboardSettings({ onClose }: { onClose: () => void }) {
           type="number"
           min={16}
           max={8192}
+          step={1}
           required
-          value={draft.maxBytes / 1024 ** 2}
-          onChange={(event) =>
-            setDraft({ ...draft, maxBytes: event.target.valueAsNumber * 1024 ** 2 })
-          }
+          aria-invalid={maxMiB === null}
+          value={limits.mib}
+          onChange={(event) => setLimits({ ...limits, mib: event.target.value })}
         />
       </label>
       <p className="muted">{t('pinnedHint')}</p>
+      {!valid ? (
+        <p className="inline-error" role="status">
+          {t('invalidLimits')}
+        </p>
+      ) : null}
       {error ? (
         <p className="inline-error" role="alert">
           {error}
         </p>
       ) : null}
       <div className="clipboard-actions">
-        <button className="button primary" disabled={busy}>
+        <button className="button primary" disabled={busy || !valid}>
           {t('save')}
         </button>
         <button className="button" type="button" disabled={busy} onClick={onClose}>

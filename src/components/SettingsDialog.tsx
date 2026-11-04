@@ -104,6 +104,17 @@ export function SettingsDialog({
             {tab === 'ai' ? (
               <>
                 <EmbeddingPanel />
+                <label className="setting-check">
+                  <span>{t('hybridSearch')}</span>
+                  <input
+                    type="checkbox"
+                    checked={draft.hybridSearch}
+                    onChange={(event) =>
+                      setDraft((current) => ({ ...current, hybridSearch: event.target.checked }))
+                    }
+                  />
+                </label>
+                <p className="setting-footnote">{t('hybridSearchHint')}</p>
                 <GenerationPanel
                   preferences={draft.generation}
                   onChange={(generation) => setDraft((current) => ({ ...current, generation }))}

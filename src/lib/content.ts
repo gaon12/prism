@@ -26,6 +26,8 @@ export interface ContentHit {
   chunk: ContentChunk;
   score: number;
   snippet: string;
+  keywordRank?: number | null;
+  semanticRank?: number | null;
 }
 export interface ContentStatus {
   phase: string;
@@ -54,6 +56,11 @@ interface SemanticResponse {
   filteredOut: number;
   exhausted: boolean;
   totalVectors: number;
+}
+interface HybridResponse extends TextResponse {
+  keywordCandidates: number;
+  semanticCandidates: number;
+  keywordSkipped: boolean;
 }
 export interface ContentFailure {
   code: string;
@@ -96,6 +103,7 @@ export function useContentSearch(active: boolean) {
     session.extension,
     session.scopeId,
     scopesKey,
+    settings.hybridSearch,
   ]);
   const [status, setStatus] = useState(emptyStatus);
   const [statusError, setStatusError] = useState<ContentFailure | null>(null);
@@ -103,6 +111,8 @@ export function useContentSearch(active: boolean) {
     key: string;
     hits: ContentHit[];
     diagnostics: SearchDiagnostics;
+    hybrid: boolean;
+    keywordSkipped: boolean;
   } | null>(null);
   const [error, setError] = useState<{ key: string; error: ContentFailure } | null>(null);
   const [pending, setPending] = useState<string | null>(null);
@@ -158,18 +168,27 @@ export function useContentSearch(active: boolean) {
         };
         const request =
           session.mode === 'semantic'
-            ? invoke<SemanticResponse>('search_semantic', args).then((data) => ({
-                hits: data.hits.map((hit) => ({
-                  chunk: hit.chunk,
-                  score: 1 - hit.cosineDistance,
-                  snippet: Array.from(hit.chunk.text).slice(0, 320).join(''),
-                })),
-                diagnostics: {
-                  candidateCount: data.candidateCount,
-                  candidateLimit: data.candidateLimit,
-                  hardLimitReached: data.hardLimitReached,
-                },
-              }))
+            ? settings.hybridSearch
+              ? invoke<HybridResponse>('search_hybrid', args).then((data) => ({
+                  hits: data.hits,
+                  diagnostics: data,
+                  hybrid: true,
+                  keywordSkipped: data.keywordSkipped,
+                }))
+              : invoke<SemanticResponse>('search_semantic', args).then((data) => ({
+                  hits: data.hits.map((hit) => ({
+                    chunk: hit.chunk,
+                    score: 1 - hit.cosineDistance,
+                    snippet: Array.from(hit.chunk.text).slice(0, 320).join(''),
+                  })),
+                  diagnostics: {
+                    candidateCount: data.candidateCount,
+                    candidateLimit: data.candidateLimit,
+                    hardLimitReached: data.hardLimitReached,
+                  },
+                  hybrid: false,
+                  keywordSkipped: false,
+                }))
             : invoke<ContentHit[] | TextResponse>('search_content', args).then((data) =>
                 Array.isArray(data)
                   ? {
@@ -179,8 +198,10 @@ export function useContentSearch(active: boolean) {
                         candidateLimit: 100,
                         hardLimitReached: data.length >= 100,
                       },
+                      hybrid: false,
+                      keywordSkipped: false,
                     }
-                  : { hits: data.hits, diagnostics: data },
+                  : { hits: data.hits, diagnostics: data, hybrid: false, keywordSkipped: false },
               );
         void request
           .then((data) => {
@@ -213,6 +234,7 @@ export function useContentSearch(active: boolean) {
     session.extension,
     session.scopeId,
     status.revision,
+    settings.hybridSearch,
   ]);
   const data = response?.key === key ? response : null;
   const currentError = error?.key === key ? error.error : null;

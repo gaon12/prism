@@ -81,12 +81,14 @@ export function ContentResults({
     contentText(language, key, values);
   const { data, status, selected } = controller;
   const semantic = controller.mode === 'semantic';
+  const hybrid = data?.hybrid === true;
   const title = t(semantic ? 'semanticTitle' : 'contentTitle');
   const list = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<{ key: string; message: string } | null>(null);
   const viewKey = JSON.stringify([
     controller.mode,
+    settings.hybridSearch,
     controller.query,
     controller.scopes.map((scope) => [scope.id, scope.path]),
   ]);
@@ -103,7 +105,7 @@ export function ContentResults({
   const needsModel = semantic && Boolean(controller.error?.code.toLowerCase().includes('model'));
   const modelNotRunning = semantic && controller.error?.code.toLowerCase() === 'modelnotrunning';
   const numeric = new Intl.NumberFormat(language);
-  const scores = new Intl.NumberFormat(language, { maximumFractionDigits: 3 });
+  const scores = new Intl.NumberFormat(language, { maximumFractionDigits: hybrid ? 6 : 3 });
   const visibleActionError = actionError?.key === viewKey ? actionError.message : null;
 
   useEffect(() => {
@@ -306,13 +308,18 @@ export function ContentResults({
           </details>
         ) : null}
 
+        {hybrid && data ? (
+          <p className="content-issues-note" role="status">
+            {t(data.keywordSkipped ? 'hybridKeywordSkipped' : 'hybridActive')}
+          </p>
+        ) : null}
         {hardLimitReached && data ? (
           <div className="content-alert content-candidate-warning" role="status">
             <AlertCircle size={17} aria-hidden="true" />
             <div>
               <strong>{t('candidateLimit')}</strong>
               <p>
-                {t('candidateLimitHint', {
+                {t(hybrid ? 'hybridCandidateLimitHint' : 'candidateLimitHint', {
                   count: numeric.format(data.diagnostics.candidateCount),
                   limit: numeric.format(data.diagnostics.candidateLimit),
                 })}
@@ -447,7 +454,7 @@ export function ContentResults({
                       <span className="content-result-section">{hit.chunk.heading}</span>
                     ) : null}
                     <p className="content-snippet">
-                      {semantic
+                      {semantic && !hybrid
                         ? hit.snippet
                         : matchedSegments(hit.snippet, controller.query).map((part, index) =>
                             part.matched ? <mark key={index}>{part.text}</mark> : part.text,
@@ -464,11 +471,28 @@ export function ContentResults({
                           {t('paragraph')} {numeric.format(hit.chunk.paragraph)}
                         </span>
                       ) : null}
+                      {hybrid ? (
+                        <span>
+                          {t(
+                            hit.keywordRank
+                              ? hit.semanticRank
+                                ? 'hybridBothMatch'
+                                : 'hybridKeywordMatch'
+                              : 'hybridSemanticMatch',
+                          )}
+                        </span>
+                      ) : null}
                       <span
                         className="content-score"
-                        title={t(semantic ? 'cosineScoreHint' : 'keywordScoreHint')}
+                        title={t(
+                          hybrid
+                            ? 'hybridScoreHint'
+                            : semantic
+                              ? 'cosineScoreHint'
+                              : 'keywordScoreHint',
+                        )}
                       >
-                        {t(semantic ? 'cosineScore' : 'keywordScore')}{' '}
+                        {t(hybrid ? 'hybridScore' : semantic ? 'cosineScore' : 'keywordScore')}{' '}
                         {Number.isFinite(hit.score) ? scores.format(hit.score) : '—'}
                       </span>
                     </div>

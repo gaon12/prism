@@ -83,6 +83,20 @@ const messages = {
     '僅在原文和首子音無結果時嘗試兩式韓文/QWERTY鍵位。',
     '原文・初声で見つからない場合のみ、韓国語2ボル式/QWERTYキーを補正します。',
   ],
+  hybridSearch: [
+    '자연어 검색에 본문 키워드 결과 결합',
+    'Combine content keyword results with natural-language search',
+    '自然语言搜索结合正文关键词结果',
+    '自然語言搜尋結合內文關鍵字結果',
+    '自然言語検索に本文キーワードの結果を組み合わせる',
+  ],
+  hybridSearchHint: [
+    '기본으로 켜져 있습니다. 켜면 두 검색의 순위를 합치고, 끄면 자연어 검색은 의미 순위만 사용합니다. 모델 설치·시작은 별도입니다.',
+    'On by default. Combine both result rankings, or turn off to use semantic ranking alone. Model installation and startup remain separate actions.',
+    '默认开启。开启时融合两种搜索排名，关闭时自然语言搜索仅使用语义排名。模型安装和启动需另行操作。',
+    '預設開啟。開啟時融合兩種搜尋排名，關閉時自然語言搜尋僅使用語意排名。模型安裝及啟動須另行操作。',
+    '初期設定はオンです。両方の検索順位を統合します。オフにすると自然言語検索は意味の順位のみを使います。モデルのインストールと起動は別の操作です。',
+  ],
   keyboardCorrectedNotice: [
     '한·영 키보드 입력을 보정해 찾은 결과입니다. 입력한 검색어는 유지됩니다.',
     'Found by Korean / English keyboard correction. Your query is unchanged.',

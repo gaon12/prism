@@ -47,15 +47,41 @@ pub fn resize_quick(app: &AppHandle, expanded: bool) -> Result<(), String> {
         .font_size;
     let extra = f64::from(font_size.saturating_sub(14));
     if let Some(quick) = app.get_webview_window("quick") {
+        let width = 720.0 + extra * 20.0;
+        let height = if expanded {
+            480.0 + extra * 24.0
+        } else {
+            94.0 + extra * 4.0
+        };
+        let (width, height) = if let Some(monitor) =
+            quick.current_monitor().map_err(|error| error.to_string())?
+        {
+            let area = monitor.work_area();
+            (
+                width.min((area.size.width as f64 / monitor.scale_factor() - 24.0).max(320.0)),
+                height.min((area.size.height as f64 / monitor.scale_factor() - 24.0).max(180.0)),
+            )
+        } else {
+            (width, height)
+        };
         quick
-            .set_size(tauri::LogicalSize::new(
-                720.0 + extra * 20.0,
-                if expanded {
-                    480.0 + extra * 24.0
-                } else {
-                    94.0 + extra * 4.0
-                },
-            ))
+            .set_size(tauri::LogicalSize::new(width, height))
+            .map_err(|error| error.to_string())?;
+        position_quick(&quick)?;
+    }
+    Ok(())
+}
+
+fn position_quick(quick: &tauri::WebviewWindow) -> Result<(), String> {
+    if let Some(monitor) = quick.current_monitor().map_err(|error| error.to_string())? {
+        let area = monitor.work_area();
+        let size = quick.outer_size().map_err(|error| error.to_string())?;
+        // Keep the input at the same anchor when results expand, while fitting the work area.
+        let x = area.position.x + (area.size.width as i32 - size.width as i32) / 2;
+        let available = (area.size.height as i32 - size.height as i32).max(0);
+        let y = area.position.y + ((area.size.height as f64 * 0.18) as i32).min(available);
+        quick
+            .set_position(tauri::PhysicalPosition::new(x, y))
             .map_err(|error| error.to_string())?;
     }
     Ok(())
@@ -94,7 +120,15 @@ pub fn show_quick_window(app: &AppHandle) -> Result<(), String> {
     let quick = app
         .get_webview_window("quick")
         .ok_or("Quick window is unavailable.")?;
-    quick.center().map_err(|error| error.to_string())?;
+    let expanded = !state
+        .session
+        .lock()
+        .map_err(|_| "Search state is unavailable.")?
+        .query
+        .trim()
+        .is_empty();
+    resize_quick(app, expanded)?;
+    position_quick(&quick)?;
     quick.show().map_err(|error| error.to_string())?;
     quick.set_focus().map_err(|error| error.to_string())?;
     quick

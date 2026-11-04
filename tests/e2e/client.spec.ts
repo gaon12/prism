@@ -124,7 +124,7 @@ test('keeps filename and AI scopes independent', async ({ page }) => {
     )
     .toBe(true);
   await expect(page.getByRole('heading', { name: '검색 범위가 준비됐어요' })).toBeVisible();
-  await expect(page.getByText('폴더 설정은 저장됐어요.', { exact: false })).toBeVisible();
+  await expect(page.getByText('파일명을 입력하세요', { exact: true })).toBeVisible();
 });
 
 test('edits, persists and exports a real Markdown draft', async ({ page }) => {
@@ -198,4 +198,77 @@ test('captures desktop reference states', async ({ browser }) => {
   await expect(page.locator('.quick-empty')).toHaveCount(0);
   await page.screenshot({ path: join(evidence, 'quick.png') });
   await context.close();
+});
+
+test('calculates in a worker, converts units, reports errors and discards stale answers', async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto('/');
+  const input = page.getByRole('textbox', { name: '검색어', exact: true });
+  await input.fill('= 2+3*4');
+  await expect(page.locator('.utility-value')).toHaveText('14');
+  await page.getByRole('button', { name: '복사', exact: true }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('14');
+  await page.screenshot({ path: join(evidence, 'calculator-main.png') });
+  await input.fill('= 1/3');
+  await expect(page.locator('.utility-value')).toHaveText('0.333333333333');
+  await expect(page.locator('.exact-value')).toContainText('1/3');
+  await page.getByRole('button', { name: /빠른 검색/ }).click();
+  await expect(page.locator('.utility-value')).toHaveText('0.333333333333');
+  await input.fill('=48/2(9+3)');
+  await expect(page.locator('.utility-value')).toHaveText('2');
+  await expect(page.locator('.interpreted-expression')).toContainText('48 / (2 * (9 + 3))');
+  await page.screenshot({ path: join(evidence, 'implicit-calculation.png') });
+  await input.fill('=48/2*(9+3)');
+  await expect(page.locator('.utility-value')).toHaveText('288');
+  await input.fill('unit: 10인치 to cm');
+  await expect(page.locator('.utility-value')).toHaveText('25.4 cm');
+  await page.screenshot({ path: join(evidence, 'units-quick.png') });
+  await input.fill('unit: 1 GiB to MiB');
+  await expect(page.locator('.utility-value')).toHaveText('1024 MiB');
+  await input.fill('= 2+');
+  await expect(page.locator('.utility-result').getByRole('status')).toContainText('수식을 확인');
+  await input.fill('= 9^(9^9)');
+  await input.fill('= 8+8');
+  await expect(page.locator('.utility-value')).toHaveText('16');
+  await input.fill('2+3.txt');
+  await expect(page.locator('.utility-result')).toHaveCount(0);
+  await input.fill('');
+  await expect(
+    page.locator('.quick-empty, .quick-results, .quick-meta, .quick-footer'),
+  ).toHaveCount(0);
+});
+
+test('uses configured degrees and keeps web queries local until explicit execution', async ({
+  page,
+  context,
+}) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '설정', exact: true }).click();
+  await page.getByLabel('각도 단위', { exact: true }).selectOption('deg');
+  await page.getByRole('button', { name: '저장', exact: true }).click();
+  const input = page.getByRole('textbox', { name: '검색어', exact: true });
+  await input.fill('= sin(90)');
+  await expect(page.locator('.utility-value')).toHaveText('1');
+  const sent: string[] = [];
+  await context.route(/https:\/\/www\.google\.com\/search.*/, async (route) => {
+    sent.push(route.request().url());
+    await route.fulfill({ body: '<title>Search test</title>' });
+  });
+  await input.fill('web: 한글 & a=1 #topic');
+  await expect(page.locator('.web-query')).toHaveText('한글 & a=1 #topic');
+  expect(sent).toEqual([]);
+  const popupPromise = context.waitForEvent('page');
+  await page.getByRole('button', { name: '브라우저에서 검색', exact: true }).click();
+  const popup = await popupPromise;
+  await expect.poll(() => sent.length).toBe(1);
+  expect(new URL(sent[0]).searchParams.get('q')).toBe('한글 & a=1 #topic');
+  await popup.close();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await input.fill('unit: 20 km/L to L/100km');
+  await expect(page.locator('.utility-value')).toHaveText('5 L/100km');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: join(evidence, 'units-mobile.png') });
 });

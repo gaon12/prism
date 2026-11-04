@@ -2,7 +2,16 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { defaultSettings, emptySession, normalizeSettings, normalizeSession } from './types';
-import type { ClientSettings, RecommendedFolder, RuntimeInfo, SearchSession } from './types';
+import type {
+  ClientSettings,
+  RecommendedFolder,
+  RuntimeInfo,
+  SearchSession,
+  IndexStatus,
+  SearchResponse,
+} from './types';
+import { webSearchUrl } from './utilities';
+import type { WebProvider } from './utilities';
 
 export const native = isTauri();
 const settingsKey = 'prism.settings.v1';
@@ -17,6 +26,36 @@ function read<T>(key: string, fallback: T): T {
 }
 
 export const bridge = {
+  async indexStatus(): Promise<IndexStatus> {
+    return native
+      ? invoke('index_status')
+      : { scanning: false, count: 0, revision: 0, skipped: 0, warnings: [], watching: false };
+  },
+  async searchFiles(
+    query: string,
+    extension: string,
+    scopeId: string | null,
+  ): Promise<SearchResponse> {
+    if (!native) throw new Error('NATIVE_ONLY');
+    return invoke('search_files', { query, extension, scopeId });
+  },
+  async refreshIndex() {
+    if (!native) throw new Error('NATIVE_ONLY');
+    await invoke('refresh_index');
+  },
+  async fileAction(path: string, reveal = false) {
+    if (!native) throw new Error('NATIVE_ONLY');
+    await invoke('file_action', { path, reveal });
+  },
+  async copyText(text: string) {
+    if (native) await invoke('copy_text', { text });
+    else await navigator.clipboard.writeText(text);
+  },
+  async webSearch(provider: WebProvider, query: string) {
+    if (!navigator.onLine) throw new Error('OFFLINE');
+    if (native) await invoke('open_web_search', { provider, query });
+    else window.open(webSearchUrl(provider, query), '_blank', 'noopener,noreferrer');
+  },
   async getSettings(): Promise<ClientSettings> {
     return native ? invoke('get_settings') : normalizeSettings(read(settingsKey, defaultSettings));
   },

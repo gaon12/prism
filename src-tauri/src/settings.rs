@@ -25,6 +25,22 @@ pub struct ClientSettings {
     pub close_to_tray: bool,
     pub start_on_login: bool,
     pub scopes: Vec<SearchScope>,
+    pub calculator: CalculatorSettings,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CalculatorSettings {
+    pub precision: u8,
+    pub angle: String,
+}
+impl Default for CalculatorSettings {
+    fn default() -> Self {
+        Self {
+            precision: 12,
+            angle: "rad".into(),
+        }
+    }
 }
 
 impl Default for ClientSettings {
@@ -40,12 +56,18 @@ impl Default for ClientSettings {
             close_to_tray: true,
             start_on_login: true,
             scopes: vec![],
+            calculator: CalculatorSettings::default(),
         }
     }
 }
 
 impl ClientSettings {
     pub fn validate(&self) -> Result<(), String> {
+        if !(6..=15).contains(&self.calculator.precision)
+            || !["rad", "deg"].contains(&self.calculator.angle.as_str())
+        {
+            return Err("Invalid calculator settings.".into());
+        }
         if self.schema_version != 1 {
             return Err(
                 "Unsupported settings version. Your existing file has not been changed.".into(),

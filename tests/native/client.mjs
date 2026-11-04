@@ -9,6 +9,8 @@ import { chromium } from '@playwright/test';
 
 // Run against a development binary and a running Vite server. All writes stay in this test directory.
 const dataDir = await mkdtemp(join(tmpdir(), 'prism-native-'));
+const filesDir = join(dataDir, 'files');
+await mkdir(filesDir);
 const evidence = join(tmpdir(), 'prism-ui-evidence');
 await mkdir(evidence, { recursive: true });
 const reservation = createServer();
@@ -41,6 +43,7 @@ async function start(expectSettingsError = false) {
     env: {
       ...process.env,
       PRISM_DEV_DATA_DIR: dataDir,
+      WEBVIEW2_USER_DATA_FOLDER: join(dataDir, 'webview'),
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1`,
     },
   });
@@ -51,7 +54,10 @@ async function start(expectSettingsError = false) {
     async () => (await fetch(`http://127.0.0.1:${port}/json/version`)).ok,
     'WebView2 debugging endpoint',
   );
-  browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+  browser = await until(
+    () => chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 2000 }),
+    'WebView2 reconnect after restart',
+  );
   const pages = await until(() => {
     const all = browser.contexts().flatMap((context) => context.pages());
     return all.filter((page) => page.url().includes('127.0.0.1:1420')).length >= 2 ? all : null;
@@ -115,7 +121,7 @@ try {
             {
               id: 'native-test',
               name: '네이티브 테스트',
-              path: dataDir,
+              path: filesDir,
               filenameEnabled: true,
               contentEnabled: false,
             },
@@ -145,7 +151,7 @@ try {
   assert.equal(persisted.shortcut, saved.shortcut);
   assert.equal(persisted.scopes[0].contentEnabled, false);
   assert.equal(persisted.scopes[0].filenameEnabled, true);
-  await main.getByRole('heading', { name: '검색 범위가 준비됐어요' }).waitFor();
+  await main.getByRole('heading', { name: '검색 결과가 없어요' }).waitFor();
   await main.screenshot({ path: join(evidence, 'native-main.png') });
   const markdownPath = join(dataDir, '네이티브 문서.md');
   await invoke(main, 'write_markdown', {
@@ -178,7 +184,7 @@ try {
   assert.equal(await readFile(join(dataDir, 'settings.json'), 'utf8'), '{broken');
   await writeFile(join(dataDir, 'settings.json'), settingsText);
   await main.getByRole('button', { name: '다시 시도', exact: true }).click();
-  await main.getByRole('heading', { name: '검색 범위가 준비됐어요' }).waitFor();
+  await main.getByRole('heading', { name: '검색 결과가 없어요' }).waitFor();
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify(

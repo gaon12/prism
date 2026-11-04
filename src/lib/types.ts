@@ -19,6 +19,7 @@ export interface ClientSettings {
   closeToTray: boolean;
   startOnLogin: boolean;
   scopes: SearchScope[];
+  calculator: { precision: number; angle: 'rad' | 'deg' };
 }
 export interface SearchSession {
   query: string;
@@ -37,6 +38,26 @@ export interface RuntimeInfo {
   shortcutError: string | null;
   startupError: string | null;
 }
+export interface FileResult {
+  path: string;
+  name: string;
+  isDir: boolean;
+  size: number;
+  modifiedMs: number | null;
+}
+export interface IndexStatus {
+  scanning: boolean;
+  count: number;
+  revision: number;
+  skipped: number;
+  warnings: string[];
+  watching: boolean;
+}
+export interface SearchResponse {
+  results: FileResult[];
+  total: number;
+  status: IndexStatus;
+}
 export const defaultSettings: ClientSettings = {
   schemaVersion: 1,
   revision: 0,
@@ -48,6 +69,7 @@ export const defaultSettings: ClientSettings = {
   closeToTray: true,
   startOnLogin: true,
   scopes: [],
+  calculator: { precision: 12, angle: 'rad' },
 };
 export const emptySession: SearchSession = {
   query: '',
@@ -79,6 +101,10 @@ export function normalizeSettings(input: unknown): ClientSettings {
     rememberSearch: typeof value.rememberSearch === 'boolean' ? value.rememberSearch : true,
     closeToTray: typeof value.closeToTray === 'boolean' ? value.closeToTray : true,
     startOnLogin: typeof value.startOnLogin === 'boolean' ? value.startOnLogin : true,
+    calculator: {
+      precision: Math.min(15, Math.max(6, Math.round(Number(value.calculator?.precision) || 12))),
+      angle: value.calculator?.angle === 'deg' ? 'deg' : 'rad',
+    },
     scopes: Array.isArray(value.scopes)
       ? value.scopes
           .filter(

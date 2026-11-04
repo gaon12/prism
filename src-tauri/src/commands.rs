@@ -6,7 +6,19 @@ use serde::Serialize;
 use std::{fs, path::PathBuf};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_autostart::ManagerExt as AutostartExt;
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+use tauri_plugin_opener::OpenerExt;
+
+#[tauri::command]
+pub fn copy_text(app: AppHandle, text: String) -> Result<(), String> {
+    if text.len() > 1_048_576 {
+        return Err("Text is too long to copy.".into());
+    }
+    app.clipboard()
+        .write_text(text)
+        .map_err(|error| error.to_string())
+}
 
 #[tauri::command]
 pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> Result<ClientSettings, String> {
@@ -33,7 +45,8 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> Result<Client
         *state
             .settings
             .lock()
-            .map_err(|_| "Settings are unavailable.")? = restored;
+            .map_err(|_| "Settings are unavailable.")? = restored.clone();
+        state.index.configure(restored.scopes);
         *config_error = None;
     }
     Ok(state
@@ -117,7 +130,20 @@ pub fn save_settings(
     if changing_shortcut {
         let _ = app.global_shortcut().unregister(old_shortcut);
     }
+    let changed_scopes = current
+        .scopes
+        .iter()
+        .map(|scope| (&scope.id, &scope.path, scope.filename_enabled))
+        .collect::<Vec<_>>()
+        != settings
+            .scopes
+            .iter()
+            .map(|scope| (&scope.id, &scope.path, scope.filename_enabled))
+            .collect::<Vec<_>>();
     *current = settings.clone();
+    if changed_scopes {
+        state.index.configure(settings.scopes.clone());
+    }
     *state
         .shortcut_error
         .lock()
@@ -148,6 +174,89 @@ pub fn save_settings(
 #[tauri::command]
 pub fn resize_quick(app: AppHandle, expanded: bool) -> Result<(), String> {
     windows::resize_quick(&app, expanded)
+}
+
+#[tauri::command]
+pub fn index_status(state: State<'_, AppState>) -> Result<crate::index::IndexStatus, String> {
+    state.index.status()
+}
+
+#[tauri::command]
+pub async fn search_files(
+    state: State<'_, AppState>,
+    query: String,
+    extension: String,
+    scope_id: Option<String>,
+) -> Result<crate::index::SearchResponse, String> {
+    let index = state.index.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        index.search(&query, &extension, scope_id.as_deref(), 200)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub fn refresh_index(state: State<'_, AppState>) -> Result<(), String> {
+    let scopes = state
+        .settings
+        .lock()
+        .map_err(|_| "Settings unavailable.")?
+        .scopes
+        .clone();
+    state.index.refresh(scopes);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn file_action(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    reveal: bool,
+) -> Result<(), String> {
+    let path = state.index.resolve_result(&path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        if reveal {
+            app.opener().reveal_item_in_dir(path)
+        } else {
+            app.opener()
+                .open_path(path.to_string_lossy().to_string(), None::<&str>)
+        }
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn open_web_search(
+    app: AppHandle,
+    provider: String,
+    query: String,
+) -> Result<(), String> {
+    if query.trim().is_empty() || query.len() > 4096 {
+        return Err("Enter a search term (4096 bytes maximum).".into());
+    }
+    // Only built-in HTTPS search providers are allowed; never execute user input as a URL or shell command.
+    let base = match provider.as_str() {
+        "google" => "https://www.google.com/search?q=",
+        "bing" => "https://www.bing.com/search?q=",
+        "ddg" => "https://duckduckgo.com/?q=",
+        "namu" => "https://namu.wiki/Search?q=",
+        "wiki" => "https://en.wikipedia.org/w/index.php?search=",
+        _ => return Err("Unknown web search provider.".into()),
+    };
+    let mut url = tauri::Url::parse(base).map_err(|error| error.to_string())?;
+    let key = if provider == "wiki" { "search" } else { "q" };
+    url.query_pairs_mut().clear().append_pair(key, query.trim());
+    tauri::async_runtime::spawn_blocking(move || {
+        app.opener()
+            .open_url(url.as_str(), None::<&str>)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

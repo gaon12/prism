@@ -1,4 +1,5 @@
 mod commands;
+mod index;
 mod settings;
 mod windows;
 
@@ -19,15 +20,24 @@ pub struct AppState {
     startup_error: Mutex<Option<String>>,
     config_error: Mutex<Option<String>>,
     data_dir: PathBuf,
+    index: index::FileIndex,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+    let builder = tauri::Builder::default();
+    // Isolated debug tests must not hand their launch to an already running user instance.
+    let isolated_test = cfg!(debug_assertions) && std::env::var_os("PRISM_DEV_DATA_DIR").is_some();
+    let builder = if isolated_test {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
             let _ = windows::show_main_window(app);
         }))
+    };
+    builder
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_autostart::Builder::new()
@@ -84,6 +94,10 @@ pub fn run() {
             } else {
                 None
             };
+            let index = index::FileIndex::new();
+            if config_error.is_none() {
+                index.configure(settings.scopes.clone());
+            }
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 session: Mutex::new(session),
@@ -91,6 +105,7 @@ pub fn run() {
                 startup_error: Mutex::new(startup_error),
                 config_error: Mutex::new(config_error),
                 data_dir,
+                index,
             });
             windows::build_quick(app.handle())?;
             let open = MenuItem::with_id(app, "open", "Prism 열기", true, None::<&str>)?;
@@ -167,6 +182,12 @@ pub fn run() {
             commands::show_main,
             commands::hide_quick,
             commands::resize_quick,
+            commands::index_status,
+            commands::search_files,
+            commands::refresh_index,
+            commands::file_action,
+            commands::open_web_search,
+            commands::copy_text,
             commands::window_action,
             commands::quit_app,
             commands::write_markdown

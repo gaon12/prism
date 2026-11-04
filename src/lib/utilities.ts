@@ -1,0 +1,48 @@
+export type UtilityKind = 'files' | 'calculator' | 'units' | 'web';
+export type WebProvider = 'google' | 'bing' | 'ddg' | 'namu' | 'wiki';
+export interface UtilityRequest {
+  kind: UtilityKind;
+  input: string;
+  provider?: WebProvider;
+}
+export interface UtilityAnswer {
+  value: string;
+  exact?: string;
+  interpretation?: string;
+}
+export function parseInput(query: string): UtilityRequest {
+  const trimmed = query.trim();
+  if (trimmed.startsWith('=')) return { kind: 'calculator', input: trimmed.slice(1).trim() };
+  const match = /^(calc|계산|unit|변환|web|google|bing|ddg|namu|wiki):\s*(.*)$/is.exec(trimmed);
+  if (!match) return { kind: 'files', input: trimmed };
+  const prefix = match[1].toLowerCase();
+  const kind = ['calc', '계산'].includes(prefix)
+    ? 'calculator'
+    : ['unit', '변환'].includes(prefix)
+      ? 'units'
+      : 'web';
+  return {
+    kind,
+    input: match[2],
+    ...(kind === 'web' ? { provider: (prefix === 'web' ? 'google' : prefix) as WebProvider } : {}),
+  };
+}
+export const providerNames: Record<WebProvider, string> = {
+  google: 'Google',
+  bing: 'Bing',
+  ddg: 'DuckDuckGo',
+  namu: '나무위키',
+  wiki: 'Wikipedia',
+};
+export function webSearchUrl(provider: WebProvider, query: string) {
+  const base = {
+    google: 'https://www.google.com/search',
+    bing: 'https://www.bing.com/search',
+    ddg: 'https://duckduckgo.com/',
+    namu: 'https://namu.wiki/Search',
+    wiki: 'https://en.wikipedia.org/w/index.php',
+  }[provider];
+  const url = new URL(base);
+  url.searchParams.set(provider === 'wiki' ? 'search' : 'q', query.trim());
+  return url.href;
+}

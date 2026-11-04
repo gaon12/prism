@@ -11,9 +11,11 @@ import {
   X,
 } from 'lucide-react';
 import { EmptyState } from '../components/EmptyState';
-import { useClient, setSession, submitSearch, showToast, errorMessage } from '../lib/store';
+import { useClient, setSession } from '../lib/store';
 import { translate } from '../lib/i18n';
-import { isComposing } from '../lib/types';
+import { useSearch } from '../lib/use-search';
+import { FileResults, IndexSummary, UtilityResult } from './SearchResults';
+import { native } from '../lib/bridge';
 
 export function SearchView({
   recent,
@@ -29,6 +31,7 @@ export function SearchView({
   onSettings: () => void;
 }) {
   const { settings, session, focusTick } = useClient();
+  const search = useSearch();
   const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
   const input = useRef<HTMLInputElement>(null);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -41,9 +44,6 @@ export function SearchView({
   const scopes = settings.scopes.filter(
     (scope) => scope.filenameEnabled && (!session.scopeId || scope.id === session.scopeId),
   );
-  const submit = () => {
-    void submitSearch().catch((error) => showToast(errorMessage(error)));
-  };
   return (
     <section className="search-view">
       <div className="page-heading">
@@ -55,20 +55,21 @@ export function SearchView({
         <input
           ref={input}
           aria-label={t('searchTerm')}
+          aria-controls={search.data?.total ? search.listId : undefined}
+          aria-activedescendant={search.selectedId}
+          aria-autocomplete="list"
           value={session.query}
           placeholder={t('searchPlaceholder')}
           onChange={(event) => {
             setSession({ query: event.target.value });
             onRecent(false);
           }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !isComposing(event.nativeEvent)) submit();
-          }}
+          onKeyDown={search.keyDown}
         />
         {session.query ? (
           <button
             className="icon-button small"
-            aria-label={t('clearHistory')}
+            aria-label={t('clearQuery')}
             onClick={() => setSession({ query: '' })}
           >
             <X size={16} />
@@ -106,8 +107,19 @@ export function SearchView({
             placeholder={t('extensionHint')}
             onChange={(event) => setSession({ extension: event.target.value.replace(/^\./, '') })}
           />
-          <span className="muted">{t('searchNotConnected')}</span>
+          <span className="muted">{t('filenameSyntax')}</span>
         </div>
+      ) : null}
+      <IndexSummary search={search} />
+      {search.status.warnings.length ? (
+        <details className="index-warning">
+          <summary>
+            {search.status.warnings.length} · {t('searchFolders')}
+          </summary>
+          {search.status.warnings.map((warning) => (
+            <p key={warning}>{warning}</p>
+          ))}
+        </details>
       ) : null}
       <div className="search-content">
         {recent ? (
@@ -140,6 +152,10 @@ export function SearchView({
               <p>{t('searchPlaceholder')}</p>
             </EmptyState>
           )
+        ) : search.request.kind !== 'files' ? (
+          <UtilityResult search={search} />
+        ) : scopes.length && (native || session.query.trim()) ? (
+          <FileResults search={search} />
         ) : scopes.length ? (
           <EmptyState
             icon={<FolderCheck size={66} strokeWidth={1.3} />}
@@ -150,7 +166,8 @@ export function SearchView({
               </button>
             }
           >
-            <p>{t('engineNext')}</p>
+            <p>{t('typeToSearch')}</p>
+            <p>{t('filenameSyntax')}</p>
             <div className="registered-scopes">
               {scopes.map((scope) => (
                 <span key={scope.id} title={scope.path}>
@@ -182,8 +199,12 @@ export function SearchView({
       </div>
       <div className="phase-note">
         <FileText size={19} />
-        <strong>{t('filenameFirst')}</strong>
-        <span>{t('nextSearch')}</span>
+        <strong>
+          {t('calculator')} · {t('units')} · {t('web')}
+        </strong>
+        <span>
+          <code>= 2+3</code> · <code>unit: 10 inch to cm</code> · <code>web: Prism</code>
+        </span>
       </div>
     </section>
   );

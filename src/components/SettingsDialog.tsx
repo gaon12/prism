@@ -141,6 +141,45 @@ export function SettingsDialog({
                   </div>
                 </div>
                 <div className="settings-divider" />
+                <div className="setting-field">
+                  <label htmlFor="calc-precision">{t('precision')}</label>
+                  <input
+                    id="calc-precision"
+                    type="number"
+                    min="6"
+                    max="15"
+                    value={draft.calculator.precision}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        calculator: {
+                          ...draft.calculator,
+                          precision: Math.min(15, Math.max(6, Number(event.target.value) || 12)),
+                        },
+                      })
+                    }
+                  />
+                </div>
+                <div className="setting-field">
+                  <label htmlFor="calc-angle">{t('angle')}</label>
+                  <select
+                    id="calc-angle"
+                    value={draft.calculator.angle}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        calculator: {
+                          ...draft.calculator,
+                          angle: event.target.value as 'rad' | 'deg',
+                        },
+                      })
+                    }
+                  >
+                    <option value="rad">{t('radians')}</option>
+                    <option value="deg">{t('degrees')}</option>
+                  </select>
+                </div>
+                <div className="settings-divider" />
                 <label className="setting-check">
                   <span>{t('rememberSearch')}</span>
                   <input

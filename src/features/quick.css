@@ -25,6 +25,16 @@
   border-radius: 10px;
   padding: 0 15px;
 }
+.quick-panel.expanded {
+  height: 480px;
+  display: flex;
+  flex-direction: column;
+}
+.quick-panel .quick-search-box,
+.quick-meta,
+.quick-footer {
+  flex-shrink: 0;
+}
 .quick-search-box > svg {
   color: var(--text);
 }
@@ -136,6 +146,9 @@
 .native-quick .quick-empty {
   flex: 1;
   min-height: 0;
+}
+.native-quick .quick-panel.expanded {
+  height: 100dvh;
 }
 @media (max-width: 580px) {
   .quick-backdrop {

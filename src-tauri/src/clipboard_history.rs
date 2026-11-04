@@ -443,6 +443,14 @@ impl Store {
         self.last_error = result.as_ref().err().cloned();
         result
     }
+    fn report_error(&mut self, message: &str) -> bool {
+        if self.last_error.as_deref() == Some(message) {
+            return false;
+        }
+        self.last_error = Some(message.into());
+        self.revision += 1;
+        true
+    }
 
     /// Adds content or moves an identical existing item to the top. Returns false if ignored.
     fn add(&mut self, content: &ClipContent, at: i64, count_copy: bool) -> Result<bool, String> {
@@ -609,12 +617,43 @@ impl Store {
 
 type Listener = Arc<dyn Fn(ClipStatus) + Send + Sync>;
 
+/// Monitor state carried between ticks.
+struct PollState {
+    marker: Option<u64>,
+    /// Hash of the last payload seen; only used by sources without change markers.
+    last_hash: Option<String>,
+    failures: u32,
+    /// The next payload read is a baseline, not a copy (startup or resume without markers).
+    rebaseline: bool,
+}
+impl PollState {
+    /// Content already on the clipboard at startup was copied before Prism was watching.
+    fn new(source: &mut dyn ClipboardSource) -> Self {
+        let marker = source.change_marker();
+        Self {
+            marker,
+            last_hash: None,
+            failures: 0,
+            rebaseline: marker.is_none(),
+        }
+    }
+}
+
+/// Identifies Prism's own clipboard write. The OS may re-encode what it reads back (e.g. an
+/// image round-tripped through DIB loses exact RGBA), so the change marker observed right after
+/// the write is the primary signal and the content hash is the fallback.
+#[derive(Clone, Debug, PartialEq)]
+struct OwnWrite {
+    hash: String,
+    marker: Option<u64>,
+}
+
 #[derive(Clone)]
 pub struct ClipboardService {
     store: Arc<Mutex<Store>>,
     paused: Arc<AtomicBool>,
-    /// Hash of content this app wrote itself; the monitor must not count it as a new copy.
-    suppressed: Arc<Mutex<Option<String>>>,
+    /// Content this app wrote itself; the monitor must not count it as a new copy.
+    suppressed: Arc<Mutex<Option<OwnWrite>>>,
     writer: Arc<Mutex<Option<Box<dyn ClipboardSource>>>>,
     listener: Listener,
     lifetime: Arc<()>,
@@ -780,22 +819,25 @@ impl ClipboardService {
     /// All Prism writes share the injected writer, including calculator copies in isolated tests.
     pub fn write_content(&self, content: ClipContent) -> Result<(), String> {
         let hash = content_hash(&content);
+        // Set before writing so a monitor tick racing the write still recognizes it by hash.
         *self
             .suppressed
             .lock()
-            .map_err(|_| "Clipboard history is unavailable.")? = Some(hash);
-        let result = self
+            .map_err(|_| "Clipboard history is unavailable.")? = Some(OwnWrite {
+            hash: hash.clone(),
+            marker: None,
+        });
+        let mut writer = self
             .writer
             .lock()
-            .map_err(|_| "Clipboard history is unavailable.")?
+            .map_err(|_| "Clipboard history is unavailable.")?;
+        let writer = writer
             .as_mut()
-            .ok_or("Clipboard monitoring has not started.")?
-            .write(&content);
-        if result.is_err() {
-            *self
-                .suppressed
-                .lock()
-                .map_err(|_| "Clipboard history is unavailable.")? = None;
+            .ok_or("Clipboard monitoring has not started.")?;
+        let result = writer.write(&content);
+        let marker = result.is_ok().then(|| writer.change_marker()).flatten();
+        if let Ok(mut slot) = self.suppressed.lock() {
+            *slot = result.is_ok().then_some(OwnWrite { hash, marker });
         }
         result
     }
@@ -809,20 +851,14 @@ impl ClipboardService {
         std::thread::spawn(move || service.monitor(source));
     }
     fn monitor(&self, mut source: Box<dyn ClipboardSource>) {
-        // Content already on the clipboard at startup was copied before Prism was watching.
-        let mut marker = source.change_marker();
-        let mut last_hash: Option<String> = None;
-        if marker.is_none() {
-            last_hash = source.read(false).ok().flatten().map(|c| content_hash(&c));
-        }
-        let mut failures = 0;
+        let mut state = PollState::new(&mut *source);
         let mut last_prune = now_ms();
         loop {
             std::thread::sleep(POLL_INTERVAL);
             if Arc::strong_count(&self.lifetime) == 1 {
                 return;
             }
-            if self.poll_once(&mut *source, &mut marker, &mut last_hash, &mut failures) {
+            if self.poll_once(&mut *source, &mut state) {
                 self.notify();
             }
             if now_ms() - last_prune > 3_600_000 {
@@ -835,14 +871,14 @@ impl ClipboardService {
             }
         }
     }
-    /// One monitor tick. Returns true when the history changed.
-    fn poll_once(
-        &self,
-        source: &mut dyn ClipboardSource,
-        marker: &mut Option<u64>,
-        last_hash: &mut Option<String>,
-        failures: &mut u32,
-    ) -> bool {
+    /// One monitor tick. Returns true when history or diagnostic status changed.
+    fn poll_once(&self, source: &mut dyn ClipboardSource, state: &mut PollState) -> bool {
+        let PollState {
+            marker,
+            last_hash,
+            failures,
+            rebaseline,
+        } = state;
         let next = source.change_marker();
         if next.is_some() && next == *marker {
             return false;
@@ -853,8 +889,10 @@ impl ClipboardService {
         };
         if !enabled || self.paused.load(Ordering::SeqCst) {
             // Anything copied while paused or disabled is never recorded, even after resuming.
+            // Without change markers the first payload seen after resuming becomes the new
+            // baseline instead of a new copy.
             *marker = next;
-            *last_hash = None;
+            *rebaseline = next.is_none();
             return false;
         }
         if source.excluded() {
@@ -870,7 +908,7 @@ impl ClipboardService {
                     *failures = 0;
                     *marker = next;
                     if let Ok(mut store) = self.store.lock() {
-                        store.last_error = Some("The clipboard could not be read.".into());
+                        return store.report_error("The clipboard could not be read.");
                     }
                 }
                 return false;
@@ -882,21 +920,35 @@ impl ClipboardService {
             return false;
         };
         let hash = content_hash(&content);
+        if std::mem::take(rebaseline) {
+            *last_hash = Some(hash);
+            return false;
+        }
         if next.is_none() && last_hash.as_ref() == Some(&hash) {
             return false;
         }
         *last_hash = Some(hash.clone());
+        // The first payload observed after a write consumes the record either way, so a stale
+        // record can never hide a later copy. With markers on both sides only an exact marker
+        // match counts (a user re-copying identical content gets a new marker and is recorded);
+        // the hash is the fallback when the marker is unknown.
         let own_write = self
             .suppressed
             .lock()
             .ok()
-            .and_then(|mut slot| slot.take_if(|value| *value == hash))
-            .is_some();
+            .and_then(|mut slot| slot.take())
+            .is_some_and(|own| match (own.marker, next) {
+                (Some(own), Some(next)) => own == next,
+                _ => own.hash == hash,
+            });
         if own_write {
             return false;
         }
         match self.store.lock() {
-            Ok(mut store) => store.add(&content, now_ms(), true).unwrap_or(false),
+            Ok(mut store) => match store.add(&content, now_ms(), true) {
+                Ok(added) => added,
+                Err(_) => store.report_error("Clipboard history could not be saved. Check available disk space and permissions."),
+            },
             Err(_) => false,
         }
     }
@@ -921,6 +973,8 @@ impl ClipboardService {
 #[derive(Default)]
 struct MemoryState {
     marker: u64,
+    /// Simulates an OS without clipboard sequence numbers.
+    markerless: bool,
     content: Option<ClipContent>,
     excluded: bool,
     fail_reads: u32,
@@ -929,6 +983,14 @@ struct MemoryState {
 #[derive(Clone, Default)]
 pub struct MemoryClipboard(Arc<Mutex<MemoryState>>);
 impl MemoryClipboard {
+    /// A fixture that reports no change markers, like platforms without sequence numbers.
+    pub fn without_markers() -> Self {
+        let clipboard = Self::default();
+        if let Ok(mut state) = clipboard.0.lock() {
+            state.markerless = true;
+        }
+        clipboard
+    }
     /// Simulates another app copying `content`.
     pub fn copy(&self, content: ClipContent) {
         if let Ok(mut state) = self.0.lock() {
@@ -955,7 +1017,11 @@ impl MemoryClipboard {
 }
 impl ClipboardSource for MemoryClipboard {
     fn change_marker(&mut self) -> Option<u64> {
-        self.0.lock().ok().map(|state| state.marker)
+        self.0
+            .lock()
+            .ok()
+            .filter(|state| !state.markerless)
+            .map(|state| state.marker)
     }
     fn excluded(&mut self) -> bool {
         self.0.lock().is_ok_and(|state| state.excluded)
@@ -1017,19 +1083,30 @@ impl<R: tauri::Runtime> ClipboardSource for SystemSource<R> {
     }
     fn read(&mut self, include_images: bool) -> Result<Option<ClipContent>, String> {
         use tauri_plugin_clipboard_manager::ClipboardExt;
+        // A read failure while a format is advertised means the clipboard is busy (another app
+        // holds it open): report it so the monitor retries instead of skipping the copy.
+        #[cfg(windows)]
+        let (has_text, has_image) = windows_exclusion::available_formats();
+        #[cfg(not(windows))]
+        let (has_text, has_image) = (false, false);
         let clipboard = self.app.clipboard();
-        if let Ok(text) = clipboard.read_text() {
-            if !text.is_empty() {
-                return Ok(Some(ClipContent::Text(text)));
-            }
+        match clipboard.read_text() {
+            Ok(text) if !text.is_empty() => return Ok(Some(ClipContent::Text(text))),
+            Ok(_) => {}
+            Err(_) if has_text => return Err("The clipboard is busy.".into()),
+            Err(_) => {}
         }
         if include_images {
-            if let Ok(image) = clipboard.read_image() {
-                return Ok(Some(ClipContent::Image {
-                    width: image.width(),
-                    height: image.height(),
-                    rgba: image.rgba().to_vec(),
-                }));
+            match clipboard.read_image() {
+                Ok(image) => {
+                    return Ok(Some(ClipContent::Image {
+                        width: image.width(),
+                        height: image.height(),
+                        rgba: image.rgba().to_vec(),
+                    }))
+                }
+                Err(_) if has_image => return Err("The clipboard is busy.".into()),
+                Err(_) => {}
             }
         }
         Ok(None)
@@ -1058,6 +1135,23 @@ mod windows_exclusion {
         },
         Memory::{GlobalLock, GlobalSize, GlobalUnlock},
     };
+    /// Whether text and image formats are advertised. Needs no clipboard lock.
+    pub fn available_formats() -> (bool, bool) {
+        const CF_BITMAP: u32 = 2;
+        const CF_DIB: u32 = 8;
+        const CF_UNICODETEXT: u32 = 13;
+        const CF_DIBV5: u32 = 17;
+        let png = format("PNG");
+        // SAFETY: format ids are constants or come from RegisterClipboardFormatW.
+        unsafe {
+            let text = IsClipboardFormatAvailable(CF_UNICODETEXT) != 0;
+            let image = [CF_DIBV5, CF_DIB, CF_BITMAP]
+                .into_iter()
+                .chain((png != 0).then_some(png))
+                .any(|id| IsClipboardFormatAvailable(id) != 0);
+            (text, image)
+        }
+    }
     fn format(name: &str) -> u32 {
         let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
         // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
@@ -1113,9 +1207,7 @@ mod tests {
         service: ClipboardService,
         clipboard: MemoryClipboard,
         source: Box<dyn ClipboardSource>,
-        marker: Option<u64>,
-        last_hash: Option<String>,
-        failures: u32,
+        state: PollState,
         events: Arc<Mutex<u32>>,
     }
     impl Harness {
@@ -1125,34 +1217,34 @@ mod tests {
             Self::with_dir(dir, path, settings)
         }
         fn with_dir(dir: tempfile::TempDir, path: PathBuf, settings: ClipboardSettings) -> Self {
+            Self::with_clipboard(dir, path, settings, MemoryClipboard::default())
+        }
+        fn with_clipboard(
+            dir: tempfile::TempDir,
+            path: PathBuf,
+            settings: ClipboardSettings,
+            clipboard: MemoryClipboard,
+        ) -> Self {
             let events = Arc::new(Mutex::new(0));
             let counter = events.clone();
             let service = ClipboardService::open(path.clone(), settings, move |_| {
                 *counter.lock().unwrap() += 1;
             });
-            let clipboard = MemoryClipboard::default();
             *service.writer.lock().unwrap() = Some(Box::new(clipboard.clone()));
             let mut source: Box<dyn ClipboardSource> = Box::new(clipboard.clone());
-            let marker = source.change_marker();
+            let state = PollState::new(&mut *source);
             Self {
                 _dir: dir,
                 path,
                 service,
                 clipboard,
                 source,
-                marker,
-                last_hash: None,
-                failures: 0,
+                state,
                 events,
             }
         }
         fn tick(&mut self) -> bool {
-            self.service.poll_once(
-                &mut *self.source,
-                &mut self.marker,
-                &mut self.last_hash,
-                &mut self.failures,
-            )
+            self.service.poll_once(&mut *self.source, &mut self.state)
         }
         fn copy(&mut self, content: ClipContent) -> bool {
             self.clipboard.copy(content);
@@ -1179,6 +1271,115 @@ mod tests {
                 .map(|value| (value as u8).wrapping_add(seed))
                 .collect(),
         }
+    }
+
+    /// Writes like an OS that re-encodes images: what is read back differs from what was written.
+    struct LossyWriter(MemoryClipboard);
+    impl ClipboardSource for LossyWriter {
+        fn change_marker(&mut self) -> Option<u64> {
+            self.0.change_marker()
+        }
+        fn excluded(&mut self) -> bool {
+            false
+        }
+        fn read(&mut self, images: bool) -> Result<Option<ClipContent>, String> {
+            self.0.read(images)
+        }
+        fn write(&mut self, content: &ClipContent) -> Result<(), String> {
+            let mut altered = content.clone();
+            if let ClipContent::Image { rgba, .. } = &mut altered {
+                rgba.iter_mut()
+                    .skip(3)
+                    .step_by(4)
+                    .for_each(|alpha| *alpha = 255);
+            }
+            self.0.copy(altered);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn restored_images_that_the_os_re_encodes_are_not_duplicated() {
+        let mut h = Harness::new(ClipboardSettings::default());
+        h.copy(image(16, 16, 11));
+        let id = h.service.list("", None, 1).unwrap().items[0].id.clone();
+        *h.service.writer.lock().unwrap() = Some(Box::new(LossyWriter(h.clipboard.clone())));
+        h.service.copy_to_clipboard(&id).unwrap();
+        assert_ne!(
+            h.clipboard.content(),
+            Some(image(16, 16, 11)),
+            "fixture re-encoded"
+        );
+        assert!(!h.tick(), "own write is recognized by its change marker");
+        assert_eq!(h.service.status().unwrap().count, 1);
+        // A later real copy of other content is still recorded.
+        assert!(h.copy_text("after restore"));
+        assert_eq!(h.service.status().unwrap().count, 2);
+    }
+
+    #[test]
+    fn own_write_records_are_consumed_and_do_not_hide_real_copies() {
+        // Own write, then another app copies before the monitor ticks, then the user re-copies
+        // the restored text: both real copies are recorded.
+        let mut h = Harness::new(ClipboardSettings::default());
+        h.copy_text("restored");
+        let id = h.service.list("", None, 1).unwrap().items[0].id.clone();
+        h.service.copy_to_clipboard(&id).unwrap();
+        h.clipboard.copy(ClipContent::Text("other app".into()));
+        assert!(h.tick(), "content copied after our write is recorded");
+        assert!(
+            h.copy_text("restored"),
+            "a later identical copy is not swallowed"
+        );
+        let items = h.service.list("", None, 10).unwrap().items;
+        assert_eq!(
+            (items[0].preview.as_str(), items[0].copy_count),
+            ("restored", 2)
+        );
+        // Own write, then the user immediately copies the same content again (new marker).
+        let mut h = Harness::new(ClipboardSettings::default());
+        h.copy_text("same");
+        let id = h.service.list("", None, 1).unwrap().items[0].id.clone();
+        h.service.copy_to_clipboard(&id).unwrap();
+        h.clipboard.copy(ClipContent::Text("same".into()));
+        assert!(h.tick(), "the user's own re-copy counts");
+        assert_eq!(h.service.list("", None, 1).unwrap().items[0].copy_count, 2);
+        // Without markers the content hash decides, and the record is still single-use.
+        assert!(!h.service.suppressed.lock().unwrap().is_some());
+    }
+
+    #[test]
+    fn markerless_sources_rebaseline_after_pause_and_disable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clipboard");
+        let clipboard = MemoryClipboard::without_markers();
+        clipboard.copy(ClipContent::Text("before start".into()));
+        let mut h = Harness::with_clipboard(dir, path, ClipboardSettings::default(), clipboard);
+        assert!(!h.tick(), "content present at start is a baseline");
+        assert!(!h.tick(), "unchanged content is not re-recorded");
+        assert!(h.copy_text("first"));
+        h.service.set_paused(true).unwrap();
+        assert!(!h.copy_text("copied while paused"));
+        h.service.set_paused(false).unwrap();
+        assert!(!h.tick(), "paused content is not recorded after resuming");
+        assert!(h.copy_text("after resume"));
+        h.service
+            .apply_settings(ClipboardSettings {
+                enabled: false,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(!h.copy_text("copied while disabled"));
+        h.service
+            .apply_settings(ClipboardSettings::default())
+            .unwrap();
+        assert!(!h.tick());
+        assert_eq!(h.previews(""), ["after resume", "first"]);
+        // Read failures are retried for markerless sources too.
+        h.clipboard.fail_next_reads(1);
+        h.clipboard.copy(ClipContent::Text("busy once".into()));
+        assert!(!h.tick());
+        assert!(h.tick());
     }
 
     #[test]
@@ -1304,11 +1505,33 @@ mod tests {
         assert!(h.tick());
         h.clipboard.fail_next_reads(99);
         h.clipboard.copy(ClipContent::Text("never readable".into()));
-        for _ in 0..5 {
+        let revision = h.service.status().unwrap().revision;
+        for _ in 0..4 {
             assert!(!h.tick());
         }
+        assert!(
+            h.tick(),
+            "diagnostic change must be emitted to visible windows"
+        );
+        assert!(h.service.status().unwrap().revision > revision);
         let error = h.service.status().unwrap().last_error.unwrap();
         assert!(!error.contains("never readable"));
+    }
+
+    #[test]
+    fn payload_storage_failures_change_status_without_exposing_content() {
+        let mut h = Harness::new(ClipboardSettings::default());
+        fs::remove_dir(h.path.join("blobs")).unwrap();
+        fs::write(h.path.join("blobs"), b"blocked fixture directory").unwrap();
+        let revision = h.service.status().unwrap().revision;
+        assert!(
+            h.copy_text("private fixture value"),
+            "storage diagnostic must reach the monitor listener"
+        );
+        let status = h.service.status().unwrap();
+        assert_eq!(status.count, 0);
+        assert!(status.revision > revision);
+        assert!(!status.last_error.unwrap().contains("private fixture value"));
     }
 
     #[test]

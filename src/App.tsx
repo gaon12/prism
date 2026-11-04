@@ -64,6 +64,23 @@ export default function App() {
     void initialize();
   }, []);
   useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void bridge
+      .subscribeSettings((tab) => {
+        if (['general', 'scopes', 'shortcuts', 'ai'].includes(tab)) setSettingsTab(tab);
+      })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else stop = unlisten;
+      })
+      .catch((cause) => showToast(errorMessage(cause)));
+    return () => {
+      disposed = true;
+      stop?.();
+    };
+  }, []);
+  useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const apply = () => {
       document.documentElement.dataset.theme =

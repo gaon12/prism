@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { X, Plus, Trash2, Folder, Settings2, Keyboard, Folders, LogOut } from 'lucide-react';
+import { X, Plus, Trash2, Folder, Settings2, Keyboard, Folders, LogOut, Cpu } from 'lucide-react';
+import { EmbeddingPanel } from '../features/models/EmbeddingPanel';
 import { bridge } from '../lib/bridge';
 import { useClient, saveSettings, scopesFromPaths, showToast, errorMessage } from '../lib/store';
 import { languageNames, translate } from '../lib/i18n';
 import type { Language, Theme } from '../lib/types';
-export type SettingsTab = 'general' | 'scopes' | 'shortcuts';
+export type SettingsTab = 'general' | 'scopes' | 'shortcuts' | 'ai';
 
 export function SettingsDialog({
   initialTab,
@@ -79,6 +80,7 @@ export function SettingsDialog({
                 { id: 'general', icon: Settings2 },
                 { id: 'scopes', icon: Folders },
                 { id: 'shortcuts', icon: Keyboard },
+                { id: 'ai', icon: Cpu },
               ] as const
             ).map((item) => (
               <button
@@ -93,6 +95,7 @@ export function SettingsDialog({
             ))}
           </nav>
           <div className="settings-body">
+            {tab === 'ai' ? <EmbeddingPanel /> : null}
             {tab === 'general' ? (
               <>
                 <div className="setting-field">

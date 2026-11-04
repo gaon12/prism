@@ -1,5 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { defaultSettings, emptySession, normalizeSettings, normalizeSession } from './types';
 import type {
@@ -26,6 +27,23 @@ function read<T>(key: string, fallback: T): T {
 }
 
 export const bridge = {
+  async openSettings(tab: 'general' | 'scopes' | 'shortcuts' | 'ai') {
+    if (native) await invoke('open_settings', { tab });
+    else {
+      window.location.hash = '';
+      window.dispatchEvent(new CustomEvent('prism:open-settings', { detail: tab }));
+    }
+  },
+  async subscribeSettings(handler: (tab: 'general' | 'scopes' | 'shortcuts' | 'ai') => void) {
+    if (native)
+      return getCurrentWebviewWindow().listen<'general' | 'scopes' | 'shortcuts' | 'ai'>(
+        'prism:open-settings',
+        (event) => handler(event.payload),
+      );
+    const listener = (event: Event) => handler((event as CustomEvent).detail);
+    window.addEventListener('prism:open-settings', listener);
+    return () => window.removeEventListener('prism:open-settings', listener);
+  },
   async indexStatus(): Promise<IndexStatus> {
     return native
       ? invoke('index_status')
@@ -142,7 +160,7 @@ export const bridge = {
       const unlisteners = await Promise.all([
         listen<ClientSettings>('prism:settings', (event) => onSettings(event.payload)),
         listen<SearchSession>('prism:session', (event) => onSession(event.payload)),
-        listen('prism:focus-search', onFocus),
+        getCurrentWebviewWindow().listen('prism:focus-search', onFocus),
       ]);
       return () => unlisteners.forEach((unlisten) => unlisten());
     }

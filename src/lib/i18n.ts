@@ -2,6 +2,9 @@ import type { Language } from './types';
 
 // Each entry is Korean, English, Simplified Chinese, Traditional Chinese, Japanese.
 const messages = {
+  ai: ['AI·모델', 'AI & models', 'AI与模型', 'AI與模型', 'AI・モデル'],
+  dictionary: ['사전', 'Dictionary', '词典', '詞典', '辞書'],
+  lookup: ['조회', 'Look up', '查询', '查詢', '調べる'],
   clipboard: [
     '클립보드 기록',
     'Clipboard history',
@@ -209,6 +212,13 @@ const messages = {
     '包含搜尋 · extension:pdf · edit-date:>2023',
     '部分一致 · extension:pdf · edit-date:>2023',
   ],
+  contentSyntax: [
+    '선택한 본문·AI 폴더에서 검색합니다. 확장자 필터는 본문·자연어 검색에도 적용됩니다.',
+    'Search the selected content/AI folders. Extension filters also apply to content and natural-language search.',
+    '搜索选定的正文/AI文件夹，扩展名筛选也适用于正文与自然语言搜索。',
+    '搜尋選取的內文/AI資料夾，副檔名篩選也適用於內文與自然語言搜尋。',
+    '選択した本文・AIフォルダーを検索します。拡張子フィルターは本文・自然言語検索にも適用されます。',
+  ],
   skipped: [
     '읽지 못한 항목',
     'Unreadable items',
@@ -325,11 +335,11 @@ const messages = {
     '検索範囲を設定しました',
   ],
   engineNext: [
-    '폴더 설정은 저장됐어요. 실제 파일명 검색 엔진은 다음 단계에 연결됩니다.',
-    'Your folders are saved. The filename engine will be connected in the next stage.',
-    '文件夹设置已保存，文件名搜索引擎将在下一阶段接入。',
-    '資料夾設定已儲存，檔名搜尋引擎將於下一階段接入。',
-    '設定は保存済みです。検索エンジンは次の段階で接続します。',
+    '파일명 범위와 본문·AI 범위를 따로 선택하세요. 자연어 검색은 로컬 임베딩 모델을 시작한 뒤 사용할 수 있어요.',
+    'Choose filename and content/AI scopes separately. Start the local embedding model to use natural-language search.',
+    '请分别选择文件名和正文/AI范围。启动本机嵌入模型后即可使用自然语言搜索。',
+    '請分別選擇檔名和內文/AI範圍。啟動本機嵌入模型後即可使用自然語言搜尋。',
+    'ファイル名と本文・AIの範囲を別々に選択してください。自然言語検索はローカル埋め込みモデルの起動後に利用できます。',
   ],
   manageScopes: [
     '검색 범위 관리',

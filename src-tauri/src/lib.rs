@@ -16,6 +16,7 @@ mod index;
 mod keyboard_pattern;
 mod model_commands;
 mod process_job;
+mod rag_commands;
 mod rag_service;
 mod rag_sources;
 mod rag_store;
@@ -46,6 +47,7 @@ pub struct AppState {
     dictionary: Result<dictionary_service::DictionaryService, dictionary_service::DictionaryError>,
     embedding: Result<embedding_runtime::EmbeddingRuntime, String>,
     content: Result<content_service::ContentService, content_service::ContentError>,
+    rag: Result<rag_service::RagService, rag_service::RagError>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -179,6 +181,8 @@ pub fn run() {
                     data_dir.join("credentials"),
                     asset_dir.join("credentials"),
                     asset_dir.join("chats"),
+                    asset_dir.join("rag"),
+                    asset_dir.join("generation-secrets"),
                 ]);
             }
             if config_error.is_none() {
@@ -188,6 +192,52 @@ pub fn run() {
             }
             let dictionary =
                 dictionary_service::DictionaryService::open(&asset_dir.join("dictionary"));
+            let rag = content
+                .as_ref()
+                .map_err(|_| rag_service::RagError::new(rag_service::RagErrorCode::Storage))
+                .and_then(|content| {
+                    let handle = app.handle().clone();
+                    rag_service::RagService::open(
+                        &asset_dir,
+                        std::sync::Arc::new(move || {
+                            let state = handle.try_state::<AppState>().ok_or_else(|| {
+                                rag_service::RagError::new(rag_service::RagErrorCode::Worker)
+                            })?;
+                            if state
+                                .config_error
+                                .lock()
+                                .map_err(|_| {
+                                    rag_service::RagError::new(rag_service::RagErrorCode::Worker)
+                                })?
+                                .is_some()
+                            {
+                                return Err(rag_service::RagError::new(
+                                    rag_service::RagErrorCode::Storage,
+                                ));
+                            }
+                            let settings = state.settings.lock().map_err(|_| {
+                                rag_service::RagError::new(rag_service::RagErrorCode::Worker)
+                            })?;
+                            Ok(rag_service::RagPolicy {
+                                revision: settings.revision,
+                                prefs: settings.generation.clone(),
+                                scopes: settings
+                                    .scopes
+                                    .iter()
+                                    .map(|scope| rag_service::RagScope {
+                                        id: scope.id.clone(),
+                                        name: scope.name.clone(),
+                                        path: scope.path.clone(),
+                                        content_enabled: scope.content_enabled,
+                                        external_allowed: scope.external_allowed,
+                                    })
+                                    .collect(),
+                            })
+                        }),
+                        std::sync::Arc::new(rag_sources::ContentSources(content.clone())),
+                        secret_store::SecretStore::new(asset_dir.clone()),
+                    )
+                });
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 session: Mutex::new(session),
@@ -200,6 +250,7 @@ pub fn run() {
                 dictionary,
                 embedding,
                 content,
+                rag,
             });
             windows::build_quick(app.handle())?;
             let open = MenuItem::with_id(app, "open", "Prism 열기", true, None::<&str>)?;
@@ -314,6 +365,19 @@ pub fn run() {
             content_commands::search_semantic,
             content_commands::content_chunks,
             content_commands::content_file_action,
+            rag_commands::rag_create,
+            rag_commands::rag_list,
+            rag_commands::rag_rename,
+            rag_commands::rag_delete,
+            rag_commands::rag_conversation,
+            rag_commands::rag_ask,
+            rag_commands::rag_cancel,
+            rag_commands::rag_job,
+            rag_commands::rag_export,
+            rag_commands::rag_sources_hidden,
+            rag_commands::generation_credential_status,
+            rag_commands::generation_set_key,
+            rag_commands::generation_clear_key,
             commands::window_action,
             commands::quit_app,
             commands::write_markdown
@@ -323,6 +387,9 @@ pub fn run() {
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(rag) = &state.rag {
+                        rag.cancel_all();
+                    }
                     if let Ok(content) = &state.content {
                         content.shutdown();
                     }

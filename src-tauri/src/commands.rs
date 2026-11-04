@@ -154,6 +154,11 @@ pub fn save_settings(
             .map(|scope| (&scope.id, &scope.path, scope.content_enabled))
             .collect::<Vec<_>>();
     *current = settings.clone();
+    // Cancel in-flight generation after committing the new settings. The RAG
+    // service independently rechecks the latest policy before every provider call.
+    if let Ok(rag) = &state.rag {
+        rag.cancel_all();
+    }
     if changed_content {
         if let Ok(content) = &state.content {
             let _ = content.configure(settings.scopes.clone());

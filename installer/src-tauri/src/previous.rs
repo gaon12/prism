@@ -329,6 +329,21 @@ impl Archive {
                 }
             }
         }
+        // Validate every surviving owned body before deleting the first one.
+        // Missing bodies can be a prior interrupted cleanup; changed bodies are
+        // preserved for inspection rather than silently treated as disposable.
+        for stamp in &self.manifest.previous_files {
+            let path = self.file(&stamp.name)?;
+            match fs::metadata(&path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+                Ok(_) => {
+                    if journal::digest(&path)? != stamp.digest {
+                        return Err(invalid());
+                    }
+                }
+            }
+        }
         for stamp in &self.manifest.previous_files {
             match fs::remove_file(self.file(&stamp.name)?) {
                 Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),

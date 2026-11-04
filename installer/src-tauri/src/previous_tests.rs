@@ -227,16 +227,29 @@ fn failed_restore_returns_to_the_current_version_and_can_be_retried() {
 
 #[test]
 fn removal_cleans_owned_backups_but_preserves_unexpected_archive_files() {
-    for extra in [false, true] {
+    for fault in 0..3 {
         let temp = tempfile::tempdir().unwrap();
         let (system, dir, _) = base(temp.path());
         let backup = archive(&dir);
-        if extra {
+        if fault == 1 {
             fs::write(backup.join("personal.txt"), b"not owned").unwrap();
         }
+        if fault == 2 {
+            fs::write(backup.join("files/prism.exe"), b"changed backup bytes").unwrap();
+        }
         install::uninstall(&system, &dir, false, |_, _| {}).unwrap();
-        if extra {
+        if fault == 1 {
             assert_eq!(fs::read(backup.join("personal.txt")).unwrap(), b"not owned");
+        } else if fault == 2 {
+            assert_eq!(
+                fs::read(backup.join("files/prism.exe")).unwrap(),
+                b"changed backup bytes"
+            );
+            assert!(backup.join("previous.json").exists());
+            assert!(
+                backup.join("files/uninstall.exe").exists(),
+                "validate all bodies before any deletion"
+            );
         } else {
             assert!(!backup.exists());
         }

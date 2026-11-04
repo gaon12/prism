@@ -19,6 +19,7 @@ mod install_regression;
 mod journal;
 mod operation;
 mod payload;
+mod previous;
 mod recovery;
 #[cfg(test)]
 mod recovery_tests;

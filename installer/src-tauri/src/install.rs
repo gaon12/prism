@@ -139,7 +139,7 @@ pub fn read_record(dir: &Path) -> InstallRecord {
     checked_record(dir).unwrap_or_default()
 }
 
-fn checked_record(dir: &Path) -> Result<InstallRecord, String> {
+pub(crate) fn checked_record(dir: &Path) -> Result<InstallRecord, String> {
     use std::io::Read;
     let path = dir.join(RECORD_FILE);
     safe_path::no_links(&path)
@@ -171,6 +171,13 @@ fn validate_record(record: InstallRecord) -> Result<InstallRecord, String> {
     for name in &record.files {
         safe_path::relative_name(name)
             .map_err(|_| "The installation record contains an unsafe file path.".to_string())?;
+        if name.eq_ignore_ascii_case(RECORD_FILE)
+            || name.to_ascii_lowercase().starts_with(".prism-")
+        {
+            return Err(
+                "The installation record names reserved setup data; no files were removed.".into(),
+            );
+        }
     }
     Ok(record)
 }
@@ -208,13 +215,17 @@ pub fn required_free_bytes(
         if let Some(backup_bytes) = crate::recovery::pending_backup_bytes(dir)? {
             return payload_bytes
                 .checked_add(setup_bytes)
-                .and_then(|bytes| bytes.checked_add(backup_bytes))
+                .and_then(|bytes| {
+                    backup_bytes
+                        .checked_mul(2)
+                        .and_then(|backups| bytes.checked_add(backups))
+                })
                 .and_then(|bytes| bytes.checked_add(1024 * 1024))
                 .ok_or_else(|| "The installation size exceeds allowed limits.".into());
         }
     }
     let record = checked_record(dir)?;
-    let mut names: std::collections::HashSet<String> = record.files.into_iter().collect();
+    let mut names: std::collections::HashSet<String> = record.files.iter().cloned().collect();
     names.extend([
         APP_EXE.to_owned(),
         UNINSTALLER_EXE.to_owned(),
@@ -232,6 +243,17 @@ pub fn required_free_bytes(
                 Ok(metadata) => {
                     required = required
                         .checked_add(metadata.len())
+                        // An update retains another copy of the original app files
+                        // after its transient recovery workspace has been cleaned up.
+                        .and_then(|bytes| {
+                            if !record.version.is_empty()
+                                && record.files.iter().any(|file| file == &name)
+                            {
+                                bytes.checked_add(metadata.len())
+                            } else {
+                                Some(bytes)
+                            }
+                        })
                         .ok_or("The installation size exceeds allowed limits.")?
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -252,6 +274,52 @@ pub fn install(
     version: &str,
     options: &InstallOptions,
     setup_exe: &Path,
+    progress: impl FnMut(Stage, f64),
+) -> Result<(), String> {
+    install_from_source(
+        system,
+        &PackedSource {
+            bytes: payload_bytes,
+            setup: setup_exe,
+        },
+        version,
+        options,
+        true,
+        progress,
+    )
+}
+
+/// Both downloaded updates and a checked previous-version archive go through the
+/// same path validation, folder lock, recovery journal and failure rollback.
+pub(crate) trait InstallSource {
+    fn list(&self) -> io::Result<Vec<payload::PayloadFile>>;
+    fn stage(&self, destination: &Path, progress: &mut dyn FnMut(u64, u64)) -> io::Result<()>;
+    fn setup_exe(&self) -> PathBuf;
+    fn verify_current(&self, _system: &dyn System, _root: &Path) -> Result<(), String> {
+        Ok(())
+    }
+}
+struct PackedSource<'a> {
+    bytes: &'a [u8],
+    setup: &'a Path,
+}
+impl InstallSource for PackedSource<'_> {
+    fn list(&self) -> io::Result<Vec<payload::PayloadFile>> {
+        payload::list(self.bytes)
+    }
+    fn stage(&self, destination: &Path, progress: &mut dyn FnMut(u64, u64)) -> io::Result<()> {
+        payload::extract(self.bytes, destination, progress).map(|_| ())
+    }
+    fn setup_exe(&self) -> PathBuf {
+        self.setup.into()
+    }
+}
+pub(crate) fn install_from_source(
+    system: &dyn System,
+    source: &dyn InstallSource,
+    version: &str,
+    options: &InstallOptions,
+    retain_previous: bool,
     mut progress: impl FnMut(Stage, f64),
 ) -> Result<(), String> {
     let dir = &options.install_dir;
@@ -263,6 +331,7 @@ pub fn install(
         progress(Stage::Recovering, 0.0);
         crate::recovery::recover(system, dir)?;
     }
+    source.verify_current(system, dir)?;
     let previous = checked_record(dir)?;
     let folders = system
         .folders()
@@ -286,8 +355,9 @@ pub fn install(
         safe_path::file(dir, name).map_err(|_| "A recorded file path is unsafe.".to_string())?;
     }
 
-    let contents =
-        payload::list(payload_bytes).map_err(|_| "The setup payload is damaged.".to_string())?;
+    let contents = source
+        .list()
+        .map_err(|_| "The setup payload is damaged.".to_string())?;
     if !contents.iter().any(|file| file.name == APP_EXE)
         || contents.iter().any(|file| {
             file.name.eq_ignore_ascii_case(RECORD_FILE)
@@ -335,21 +405,38 @@ pub fn install(
         &registration,
     )
     .map_err(|_| "Could not save the registration recovery snapshot.".to_string())?;
+    let previous_backup = if retain_previous
+        && !previous.version.is_empty()
+        && previous.version != version
+        && previous.files.iter().any(|name| name == APP_EXE)
+        && previous.files.iter().any(|name| name == UNINSTALLER_EXE)
+    {
+        Some(
+            crate::previous::Prepared::new(dir, &previous, &transaction).map_err(|_| {
+                "Could not preserve the previous version. No application files were changed."
+                    .to_string()
+            })?,
+        )
+    } else {
+        None
+    };
+    let mut published_previous = None;
     let mut registration_changed = false;
     let result = (|| -> Result<(), String> {
         // Extract everything into private staging before replacing the first installed file.
         progress(Stage::Copying, 0.05);
         let staged = transaction.stage();
-        payload::extract(payload_bytes, &staged, |done, total| {
-            let share = if total == 0 {
-                1.0
-            } else {
-                done as f64 / total as f64
-            };
-            progress(Stage::Copying, 0.05 + 0.75 * share);
-        })
-        .map_err(|_| "Could not stage Prism's files.".to_string())?;
-        fs::copy(setup_exe, staged.join(UNINSTALLER_EXE))
+        source
+            .stage(&staged, &mut |done, total| {
+                let share = if total == 0 {
+                    1.0
+                } else {
+                    done as f64 / total as f64
+                };
+                progress(Stage::Copying, 0.05 + 0.75 * share);
+            })
+            .map_err(|_| "Could not stage Prism's files.".to_string())?;
+        fs::copy(source.setup_exe(), staged.join(UNINSTALLER_EXE))
             .map_err(|_| "Could not stage the uninstaller.".to_string())?;
         fs::OpenOptions::new()
             .write(true)
@@ -452,6 +539,13 @@ pub fn install(
                 size_kib: folder_size_kib(dir, &files),
             })
             .map_err(|_| "Could not register Prism with Windows.".to_string())?;
+        if let Some(backup) = previous_backup {
+            published_previous = Some(
+                backup
+                    .publish(&record)
+                    .map_err(|_| "Could not commit the previous-version backup.".to_string())?,
+            );
+        }
         transaction
             .finished()
             .map_err(|_| "Could not finalize the installation recovery record.".to_string())?;
@@ -477,6 +571,9 @@ pub fn install(
         }
         transaction.finished().map_err(|_| "The previous installation was restored, but its recovery record could not be finalized. Backups were kept.".to_string())?;
         return Err(format!("{message} The previous installation was restored."));
+    }
+    if let Some(archive) = &published_previous {
+        crate::previous::prune(dir, Some(archive));
     }
     progress(Stage::Done, 1.0);
     Ok(())
@@ -555,6 +652,7 @@ pub fn uninstall(
         let _ = fs::remove_file(link);
     }
     let _ = fs::remove_file(dir.join(RECORD_FILE));
+    crate::previous::prune(dir, None);
     // Deletes the folder only if nothing of the user's is left in it.
     let _ = fs::remove_dir(dir);
     if remove_data {
@@ -808,7 +906,7 @@ pub mod tests {
     }
 
     #[test]
-    fn required_space_includes_staging_uninstaller_and_old_file_backups_once() {
+    fn required_space_includes_staging_recovery_and_retained_previous_files() {
         let temporary = tempfile::tempdir().unwrap();
         let dir = temporary.path().join("app");
         assert_eq!(
@@ -827,7 +925,7 @@ pub mod tests {
         fs::write(dir.join(RECORD_FILE), &bytes).unwrap();
         assert_eq!(
             required_free_bytes(&dir, 100, 20).unwrap(),
-            1024 * 1024 + 120 + 3 + 5 + bytes.len() as u64
+            1024 * 1024 + 120 + 2 * (3 + 5) + bytes.len() as u64
         );
     }
 }

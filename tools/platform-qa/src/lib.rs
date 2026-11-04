@@ -7,5 +7,9 @@ pub mod embedding_package;
 pub mod embedding_runtime;
 #[path = "../../../src-tauri/src/process_job.rs"]
 pub mod process_job;
+#[path = "../../../src-tauri/src/runtime_process.rs"]
+pub mod runtime_process;
+#[path = "../../../src-tauri/src/runtime_supervisor.rs"]
+pub mod runtime_supervisor;
 #[path = "../../../src-tauri/src/secret_store.rs"]
 pub mod secret_store;

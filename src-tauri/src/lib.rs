@@ -1,8 +1,10 @@
-mod dictionary_provider;
-mod content_store;
 mod clipboard_commands;
 mod clipboard_history;
 mod commands;
+mod content_store;
+mod dictionary_commands;
+mod dictionary_provider;
+mod dictionary_service;
 mod dictionary_store;
 mod document_extract;
 mod embedding_runtime;
@@ -31,6 +33,7 @@ pub struct AppState {
     data_dir: PathBuf,
     index: index::FileIndex,
     clipboard: clipboard_history::ClipboardService,
+    dictionary: Result<dictionary_service::DictionaryService, dictionary_service::DictionaryError>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -135,6 +138,8 @@ pub fn run() {
                     clipboard_history::system_source(app.handle().clone()),
                 );
             }
+            let dictionary =
+                dictionary_service::DictionaryService::open(&data_dir.join("dictionary"));
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 session: Mutex::new(session),
@@ -144,6 +149,7 @@ pub fn run() {
                 data_dir,
                 index,
                 clipboard,
+                dictionary,
             });
             windows::build_quick(app.handle())?;
             let open = MenuItem::with_id(app, "open", "Prism 열기", true, None::<&str>)?;
@@ -235,6 +241,13 @@ pub fn run() {
             clipboard_commands::clipboard_delete,
             clipboard_commands::clipboard_clear,
             clipboard_commands::clipboard_set_paused,
+            dictionary_commands::dictionary_lookup,
+            dictionary_commands::dictionary_packs,
+            dictionary_commands::dictionary_job,
+            dictionary_commands::dictionary_cancel,
+            dictionary_commands::dictionary_import,
+            dictionary_commands::dictionary_download,
+            dictionary_commands::dictionary_remove,
             commands::window_action,
             commands::quit_app,
             commands::write_markdown

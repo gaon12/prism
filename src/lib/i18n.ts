@@ -2,6 +2,13 @@ import type { Language } from './types';
 
 // Each entry is Korean, English, Simplified Chinese, Traditional Chinese, Japanese.
 const messages = {
+  externalScope: [
+    '이 폴더 본문 외부 AI 전송 허용',
+    'Allow sending this folder’s content to external AI',
+    '允许向外部AI发送此文件夹正文',
+    '允許向外部AI傳送此資料夾內文',
+    'このフォルダーの本文を外部AIに送信することを許可',
+  ],
   ai: ['AI·모델', 'AI & models', 'AI与模型', 'AI與模型', 'AI・モデル'],
   dictionary: ['사전', 'Dictionary', '词典', '詞典', '辞書'],
   lookup: ['조회', 'Look up', '查询', '查詢', '調べる'],

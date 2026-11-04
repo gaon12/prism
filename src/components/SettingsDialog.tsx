@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { X, Plus, Trash2, Folder, Settings2, Keyboard, Folders, LogOut, Cpu } from 'lucide-react';
 import { EmbeddingPanel } from '../features/models/EmbeddingPanel';
+import { GenerationPanel } from '../features/generation/GenerationPanel';
+import { generationCredentials } from '../lib/rag';
 import { bridge } from '../lib/bridge';
 import { useClient, saveSettings, scopesFromPaths, showToast, errorMessage } from '../lib/store';
 import { languageNames, translate } from '../lib/i18n';
@@ -95,7 +97,18 @@ export function SettingsDialog({
             ))}
           </nav>
           <div className="settings-body">
-            {tab === 'ai' ? <EmbeddingPanel /> : null}
+            {tab === 'ai' ? (
+              <>
+                <EmbeddingPanel />
+                <GenerationPanel
+                  preferences={draft.generation}
+                  onChange={(generation) => setDraft((current) => ({ ...current, generation }))}
+                  language={settings.language}
+                  native={runtime.native}
+                  credentials={generationCredentials}
+                />
+              </>
+            ) : null}
             {tab === 'general' ? (
               <>
                 <div className="setting-field">
@@ -286,13 +299,36 @@ export function SettingsDialog({
                                   ...draft,
                                   scopes: draft.scopes.map((item) =>
                                     item.id === scope.id
-                                      ? { ...item, contentEnabled: event.target.checked }
+                                      ? {
+                                          ...item,
+                                          contentEnabled: event.target.checked,
+                                          externalAllowed:
+                                            event.target.checked && item.externalAllowed,
+                                        }
                                       : item,
                                   ),
                                 })
                               }
                             />
                             {t('contentScope')}
+                          </label>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={scope.externalAllowed}
+                              disabled={!scope.contentEnabled}
+                              onChange={(event) =>
+                                setDraft({
+                                  ...draft,
+                                  scopes: draft.scopes.map((item) =>
+                                    item.id === scope.id
+                                      ? { ...item, externalAllowed: event.target.checked }
+                                      : item,
+                                  ),
+                                })
+                              }
+                            />
+                            {t('externalScope')}
                           </label>
                         </div>
                       </div>

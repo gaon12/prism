@@ -1,4 +1,3 @@
-mod vector_store;
 mod clipboard_commands;
 mod clipboard_history;
 mod commands;
@@ -12,7 +11,9 @@ mod embedding_runtime;
 mod filename_pattern;
 mod index;
 mod keyboard_pattern;
+mod process_job;
 mod settings;
+mod vector_store;
 mod windows;
 
 use settings::{ClientSettings, SearchSession};

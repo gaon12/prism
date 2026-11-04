@@ -131,6 +131,8 @@ struct ManagedServer {
     child: Child,
     endpoint: String,
     token: String,
+    // Closing this private job also reaps the server if Prism exits abnormally.
+    _job: crate::process_job::OwnedJobGuard,
 }
 impl Drop for ManagedServer {
     fn drop(&mut self) {
@@ -332,14 +334,22 @@ impl EmbeddingRuntime {
                     command.creation_flags(0x08000000); // CREATE_NO_WINDOW
                 }
                 drop(reservation);
-                let child = command.spawn().map_err(|_| {
+                let job = crate::process_job::OwnedJobGuard::new()
+                    .map_err(|_| "Cannot create the embedding process owner".to_string())?;
+                let mut child = command.spawn().map_err(|_| {
                     "Cannot launch embedding CPU runtime; check Windows runtime dependencies"
                         .to_string()
                 })?;
+                if job.assign(&child).is_err() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("Cannot bind the embedding server to this app process".into());
+                }
                 let mut owned = ManagedServer {
                     child,
                     endpoint,
                     token,
+                    _job: job,
                 };
                 let deadline = Instant::now() + Duration::from_secs(90);
                 loop {

@@ -184,6 +184,42 @@ fn atomic_replace(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Publish a new directory on the same volume without replacing an existing one.
+/// Directory moves cannot use the file-only REPLACE_EXISTING flag.
+/// https://learn.microsoft.com/en-us/windows/win32/fileio/moving-directories
+pub fn publish_directory(from: &Path, to: &Path) -> io::Result<()> {
+    safe_path::no_links(from)?;
+    safe_path::no_links(to)?;
+    if to.exists() {
+        return Err(invalid());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::{
+            core::PCWSTR,
+            Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH},
+        };
+        let source: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
+        let destination: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: both same-volume, checked UTF-16 paths outlive the call.
+        unsafe {
+            MoveFileExW(
+                PCWSTR(source.as_ptr()),
+                PCWSTR(destination.as_ptr()),
+                MOVEFILE_WRITE_THROUGH,
+            )
+        }
+        .map_err(|_| io::Error::last_os_error())?;
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(from, to)?;
+        fs::File::open(to.parent().ok_or_else(invalid)?)?.sync_all()?;
+    }
+    Ok(())
+}
+
 /// Keep state.json until all other recovery files are removed. A crash during cleanup
 /// must not make a committed installation look like an interrupted replacement.
 pub fn cleanup(root: &Path, directory: &Path) -> io::Result<()> {

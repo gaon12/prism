@@ -64,6 +64,21 @@ impl Files {
     pub fn stage(&self) -> PathBuf {
         self.directory.join("new")
     }
+    /// Use the exact original bytes already captured for failure recovery, not
+    /// another read of a live file that could have changed during preparation.
+    pub fn original(&self, root: &Path, name: &str) -> io::Result<PathBuf> {
+        let root = safe_path::root(root)?;
+        let entry = self
+            .entries
+            .iter()
+            .find(|e| e.root == root && e.name == name)
+            .ok_or_else(journal::invalid)?;
+        let backup = entry.backup.as_ref().ok_or_else(journal::invalid)?;
+        if entry.digest.as_ref() != Some(&journal::digest(backup)?) {
+            return Err(journal::invalid());
+        }
+        Ok(backup.clone())
+    }
     pub fn snapshot(&mut self, root: &Path, name: &str) -> io::Result<()> {
         let root = safe_path::root(root)?;
         let target = safe_path::file(&root, name)?;

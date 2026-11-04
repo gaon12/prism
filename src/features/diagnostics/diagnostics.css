@@ -1,0 +1,46 @@
+.diagnostic-panel {
+  border-top: 1px solid var(--border);
+  margin-top: 24px;
+  padding-top: 20px;
+}
+.diagnostic-panel h3 {
+  margin: 0 0 12px;
+}
+.diagnostic-panel p {
+  line-height: 1.65;
+  margin: 10px 0;
+}
+.diagnostic-report {
+  margin-top: 16px;
+}
+.diagnostic-report label {
+  display: block;
+  margin: 16px 0 8px;
+}
+.diagnostic-report textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+#diagnostic-preview {
+  font-family: monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.diagnostic-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+.diagnostic-panel [role='alert'] {
+  color: var(--danger);
+}

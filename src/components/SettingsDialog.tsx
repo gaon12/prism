@@ -3,6 +3,7 @@ import { X, Plus, Trash2, Folder, Settings2, Keyboard, Folders, LogOut, Cpu } fr
 import { EmbeddingPanel } from '../features/models/EmbeddingPanel';
 import { GenerationPanel } from '../features/generation/GenerationPanel';
 import { UpdatePanel } from '../features/updates/UpdatePanel';
+import { DiagnosticPanel } from '../features/diagnostics/DiagnosticPanel';
 import { generationCredentials } from '../lib/rag';
 import { bridge } from '../lib/bridge';
 import { useClient, saveSettings, scopesFromPaths, showToast, errorMessage } from '../lib/store';
@@ -251,6 +252,7 @@ export function SettingsDialog({
                     !allowUpdateInstall || JSON.stringify(draft) !== JSON.stringify(settings)
                   }
                 />
+                <DiagnosticPanel language={settings.language} />
               </>
             ) : null}
             {tab === 'scopes' ? (

@@ -1,4 +1,4 @@
-//! Data location for installed vs portable builds.
+//! Data locations and OS integration policy for each distribution format.
 //!
 //! A portable copy is marked by a `prism.portable` file next to the executable. All of its data
 //! (settings, session, clipboard history, dictionaries, indexes and the WebView2 profile) lives in
@@ -37,6 +37,8 @@ pub fn portable_identifier(base: &str, exe: &Path) -> String {
 pub enum InstallKind {
     Installed,
     Portable,
+    /// An MSIX package owns its LocalState and is updated by Windows.
+    Packaged,
     /// Debug-only isolated test directory (`PRISM_DEV_DATA_DIR`).
     Isolated,
 }
@@ -54,8 +56,8 @@ impl DataLocation {
             _ => Some(self.dir.join("WebView2")),
         }
     }
-    /// Login autostart writes an absolute exe path to the registry; a portable copy on a
-    /// removable drive must not register itself.
+    /// Only ordinary installations use the autostart plugin's absolute registry path.
+    /// Packaged copies use a manifest StartupTask instead.
     pub fn allows_autostart(&self) -> bool {
         self.kind == InstallKind::Installed
     }
@@ -71,9 +73,12 @@ pub fn resolve(
     exe: &Path,
     installed_dir: PathBuf,
     override_dir: Option<PathBuf>,
+    packaged_dir: Option<PathBuf>,
 ) -> Result<DataLocation, String> {
     let (dir, kind) = if let Some(dir) = override_dir {
         (dir, InstallKind::Isolated)
+    } else if let Some(dir) = packaged_dir {
+        (dir, InstallKind::Packaged)
     } else {
         let exe_dir = exe
             .parent()
@@ -128,13 +133,13 @@ mod tests {
         let exe = app.join("prism.exe");
         let profile = root.path().join("profile");
 
-        let installed = resolve(&exe, profile.clone(), None).unwrap();
+        let installed = resolve(&exe, profile.clone(), None, None).unwrap();
         assert_eq!(installed.kind, InstallKind::Installed);
         assert_eq!(installed.dir, profile);
         assert!(installed.allows_autostart() && installed.webview_dir().is_none());
 
         fs::write(app.join(PORTABLE_MARKER), "").unwrap();
-        let portable = resolve(&exe, profile.clone(), None).unwrap();
+        let portable = resolve(&exe, profile.clone(), None, None).unwrap();
         assert_eq!(portable.kind, InstallKind::Portable);
         assert_eq!(portable.dir, app.join(PORTABLE_DATA));
         assert!(portable.dir.is_dir());
@@ -144,7 +149,20 @@ mod tests {
         );
         assert!(!portable.allows_autostart() && !portable.allows_installer_update());
 
-        let isolated = resolve(&exe, profile, Some(root.path().join("dev"))).unwrap();
+        let packaged_dir = root.path().join("package/LocalState");
+        let packaged = resolve(&exe, profile.clone(), None, Some(packaged_dir.clone())).unwrap();
+        assert_eq!(packaged.kind, InstallKind::Packaged);
+        assert_eq!(packaged.dir, packaged_dir);
+        assert_eq!(packaged.webview_dir(), Some(packaged_dir.join("WebView2")));
+        assert!(!packaged.allows_autostart() && !packaged.allows_installer_update());
+
+        let isolated = resolve(
+            &exe,
+            profile,
+            Some(root.path().join("dev")),
+            Some(packaged_dir),
+        )
+        .unwrap();
         assert_eq!(isolated.kind, InstallKind::Isolated);
         assert!(isolated.webview_dir().is_some());
         assert_eq!(
@@ -162,14 +180,30 @@ mod tests {
         // A file where the data folder should be makes it impossible to create.
         fs::write(root.path().join(PORTABLE_DATA), "").unwrap();
         let profile = root.path().join("profile");
-        let error = resolve(&exe, profile.clone(), None).unwrap_err();
+        let error = resolve(&exe, profile.clone(), None, None).unwrap_err();
         assert!(error.contains(PORTABLE_DATA));
         assert!(!profile.exists());
         // A marker directory (not a file) does not enable portable mode.
         let other = tempfile::tempdir().unwrap();
         fs::create_dir(other.path().join(PORTABLE_MARKER)).unwrap();
-        let location = resolve(&other.path().join("prism.exe"), profile, None).unwrap();
+        let location = resolve(&other.path().join("prism.exe"), profile, None, None).unwrap();
         assert_eq!(location.kind, InstallKind::Installed);
+    }
+
+    #[test]
+    fn packaged_data_failure_never_falls_back_to_another_profile() {
+        let root = tempfile::tempdir().unwrap();
+        let blocked = root.path().join("blocked");
+        fs::write(&blocked, "not a directory").unwrap();
+        let profile = root.path().join("profile");
+        assert!(resolve(
+            &root.path().join("prism.exe"),
+            profile.clone(),
+            None,
+            Some(blocked)
+        )
+        .is_err());
+        assert!(!profile.exists());
     }
 
     #[test]

@@ -69,7 +69,9 @@ impl UpdateRuntime {
     ) -> Result<Self, String> {
         let state = Arc::new(UpdateState::open(dir.join("updates/state.json"))?);
         let record = state.record();
-        let reason = if location.kind == InstallKind::Portable {
+        let reason = if location.kind == InstallKind::Packaged {
+            Some("packaged")
+        } else if location.kind == InstallKind::Portable {
             Some("portable")
         } else if isolated {
             Some("isolated")
@@ -81,7 +83,8 @@ impl UpdateRuntime {
             None
         };
         #[cfg(debug_assertions)]
-        let fixture = isolated.then(|| Arc::new(crate::update_fixture::MemoryBackend::default()));
+        let fixture = (isolated && location.kind != InstallKind::Packaged)
+            .then(|| Arc::new(crate::update_fixture::MemoryBackend::default()));
         let backend: Arc<dyn UpdateBackend> = {
             #[cfg(debug_assertions)]
             if let Some(fixture) = &fixture {

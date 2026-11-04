@@ -20,6 +20,8 @@ mod generation_runtime;
 mod index;
 mod keyboard_pattern;
 mod model_commands;
+mod package_context;
+mod packaged_startup;
 #[cfg(debug_assertions)]
 mod paste_fixture;
 mod paste_target;
@@ -48,7 +50,6 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, WindowEvent,
 };
-use tauri_plugin_autostart::ManagerExt as AutostartExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
@@ -86,7 +87,14 @@ pub fn run() {
         None
     };
     let isolated_test = override_dir.is_some();
-    let portable = override_dir.is_none() && app_paths::is_portable(&exe);
+    let package_family = if isolated_test {
+        Ok(None)
+    } else {
+        package_context::current_family()
+    };
+    let portable = override_dir.is_none()
+        && matches!(&package_family, Ok(None))
+        && app_paths::is_portable(&exe);
     let test_mode = cfg!(debug_assertions)
         && std::env::var_os("PRISM_DEV_TEST_MODE").is_some_and(|value| value == "1");
     // Portable fixtures use real path selection and single-instance handling,
@@ -98,6 +106,9 @@ pub fn run() {
     if portable {
         context.config_mut().identifier =
             app_paths::portable_identifier(&context.config().identifier, &exe);
+    } else if let Ok(Some(family)) = &package_family {
+        context.config_mut().identifier =
+            package_context::instance_identifier(&context.config().identifier, family);
     }
     let builder = tauri::Builder::default();
     let builder = builder.plugin(
@@ -134,12 +145,19 @@ pub fn run() {
                 .build(),
         )
         .setup(move |app| {
-            let location = app_paths::resolve(&exe, app.path().app_config_dir()?, override_dir.clone())
+            let location = package_family.as_ref().map_err(Clone::clone).and_then(|family| {
+                let packaged_dir = family.as_ref().map(|family| {
+                    let local = app.path().local_data_dir().map_err(|error| error.to_string())?;
+                    package_context::data_directory(&local, family)
+                }).transpose()?;
+                let installed_dir = app.path().app_config_dir().map_err(|error| error.to_string())?;
+                app_paths::resolve(&exe, installed_dir, override_dir.clone(), packaged_dir)
+            })
                 .and_then(|location| {
-                    if location.kind == app_paths::InstallKind::Portable
+                    if matches!(location.kind, app_paths::InstallKind::Portable | app_paths::InstallKind::Packaged)
                         && std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_some()
                     {
-                        Err("Portable mode cannot use WEBVIEW2_USER_DATA_FOLDER. Remove that environment override so the WebView profile stays in PrismData.".into())
+                        Err("This distribution cannot use WEBVIEW2_USER_DATA_FOLDER. Remove that environment override so the WebView profile stays in the application data folder.".into())
                     } else {
                         Ok(location)
                     }
@@ -182,15 +200,8 @@ pub fn run() {
             } else {
                 None
             };
-            let startup_error = if !cfg!(debug_assertions)
-                && location.allows_autostart() && config_error.is_none() {
-                (if settings.start_on_login {
-                    app.autolaunch().enable()
-                } else {
-                    app.autolaunch().disable()
-                })
-                .err()
-                .map(|error| error.to_string())
+            let startup_error = if config_error.is_none() {
+                commands::apply_autostart(app.handle(), &location, settings.start_on_login).err()
             } else {
                 None
             };
@@ -245,7 +256,7 @@ pub fn run() {
                 },
             );
             if let Ok(content) = &content {
-                if location.kind == app_paths::InstallKind::Portable {
+                if matches!(location.kind, app_paths::InstallKind::Portable | app_paths::InstallKind::Packaged) {
                     content.exclude_paths(&[data_dir.clone()]);
                 }
                 content.exclude_paths(&[

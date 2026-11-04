@@ -30,7 +30,13 @@ pub async fn update_install(state: State<'_, AppState>, version: String) -> Resu
         .map_err(|_| "Update request failed.")?
 }
 #[tauri::command]
-pub fn update_open_download(app: tauri::AppHandle) -> Result<(), String> {
+pub fn update_open_download(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if state.location.kind == crate::app_paths::InstallKind::Packaged {
+        return Err("Update this package through its Windows distribution source.".into());
+    }
     app.opener()
         .open_url(crate::update_backend::DOWNLOAD_PAGE, None::<&str>)
         .map_err(|_| "Could not open the download page.".into())

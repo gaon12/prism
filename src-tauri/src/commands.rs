@@ -63,7 +63,22 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> Result<Client
 }
 
 fn set_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
-    if cfg!(debug_assertions) || !app.state::<AppState>().location.allows_autostart() {
+    apply_autostart(app, &app.state::<AppState>().location, enabled)
+}
+
+pub(crate) fn apply_autostart(
+    app: &AppHandle,
+    location: &crate::app_paths::DataLocation,
+    enabled: bool,
+) -> Result<(), String> {
+    // Debug fixtures must never change the real user's login configuration.
+    if cfg!(debug_assertions) {
+        return Ok(());
+    }
+    if location.kind == crate::app_paths::InstallKind::Packaged {
+        return crate::packaged_startup::set(enabled);
+    }
+    if !location.allows_autostart() {
         return Ok(());
     }
     if enabled {

@@ -159,6 +159,7 @@
     } else if (free != null) {
       message = t('space', { need: formatBytes(need), free: formatBytes(free) });
     }
+    if (folderOk && check.recoveryPending) message = t('recoveryPending') + ' ' + message;
     if (!info.payloadReady) {
       folderOk = false;
       message = t('noPayload');
@@ -233,6 +234,7 @@
 
   const stageText = {
     preparing: 'preparing',
+    recovering: 'recovering',
     copying: 'copying',
     shortcuts: 'shortcuts',
     registering: 'registering',
@@ -249,7 +251,10 @@
     $('stage').textContent = t('preparing');
 
     $('version').textContent =
-      info.mode === 'update' && info.installedVersion && info.installedVersion !== info.version
+      !info.recoveryPending &&
+      info.mode === 'update' &&
+      info.installedVersion &&
+      info.installedVersion !== info.version
         ? t('updateFrom', { old: info.installedVersion, v: info.version })
         : t('version', { v: info.version });
 

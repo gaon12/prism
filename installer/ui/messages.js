@@ -45,6 +45,20 @@ window.SETUP_MESSAGES = {
     'このセットアップには Prism が含まれていません。もう一度ダウンロードしてください。',
   ],
   preparing: ['준비 중', 'Preparing', '正在准备', '正在準備', '準備中'],
+  recoveryPending: [
+    '이전 설치 작업이 남아 있습니다. 설치를 시작하면 먼저 복구합니다.',
+    'An earlier setup is unfinished. Starting setup will recover it first.',
+    '之前的安装尚未完成。开始安装时将先恢复。',
+    '先前的安裝尚未完成。開始安裝時會先復原。',
+    '未完了のインストールがあります。開始すると先に復旧します。',
+  ],
+  recovering: [
+    '중단된 설치 복구 중',
+    'Recovering interrupted setup',
+    '正在恢复中断的安装',
+    '正在復原中斷的安裝',
+    '中断したインストールを復旧中',
+  ],
   copying: ['파일 복사 중', 'Copying files', '正在复制文件', '正在複製檔案', 'ファイルをコピー中'],
   shortcuts: [
     '바로 가기 만드는 중',

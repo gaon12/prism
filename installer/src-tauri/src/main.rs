@@ -14,14 +14,14 @@
 mod args;
 mod folder_lock;
 mod install;
-mod journal;
-mod recovery;
 #[cfg(test)]
 mod install_regression;
-#[cfg(test)]
-mod recovery_tests;
+mod journal;
 mod operation;
 mod payload;
+mod recovery;
+#[cfg(test)]
+mod recovery_tests;
 mod safe_path;
 mod system;
 mod temp_cleanup;
@@ -62,6 +62,7 @@ struct SetupInfo {
     ui: &'static str,
     version: &'static str,
     installed_version: Option<String>,
+    recovery_pending: bool,
     /// Folder to suggest (the existing installation, or the default one).
     install_dir: PathBuf,
     default_dir: PathBuf,
@@ -165,6 +166,7 @@ fn setup_info(setup: tauri::State<'_, Setup>) -> Result<SetupInfo, String> {
         },
         version: VERSION,
         installed_version,
+        recovery_pending: recovery::has_workspaces(&install_dir),
         free_bytes: system::free_bytes(&install_dir),
         install_dir,
         default_dir: friendly_path(install::default_install_dir(&folders)),
@@ -182,6 +184,7 @@ struct FolderCheck {
     error: Option<String>,
     free_bytes: Option<u64>,
     required_bytes: Option<u64>,
+    recovery_pending: bool,
 }
 
 /// Checks a folder the user typed or picked, so the window can warn before installing.
@@ -193,6 +196,7 @@ fn check_folder(path: String, setup: tauri::State<'_, Setup>) -> FolderCheck {
             error: Some(error.to_string()),
             free_bytes: None,
             required_bytes: None,
+            recovery_pending: false,
         };
     }
     let estimate = std::fs::metadata(&setup.exe)
@@ -201,10 +205,12 @@ fn check_folder(path: String, setup: tauri::State<'_, Setup>) -> FolderCheck {
     let error = install::validate_install_dir(&dir)
         .err()
         .or_else(|| estimate.as_ref().err().cloned());
+    let recovery_pending = error.is_none() && recovery::has_workspaces(&dir);
     FolderCheck {
         error,
         free_bytes: system::free_bytes(&dir),
         required_bytes: estimate.ok(),
+        recovery_pending,
     }
 }
 

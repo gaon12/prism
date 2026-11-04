@@ -182,12 +182,26 @@ const messages = {
     '金鑰僅儲存於此伺服器類型及目前URL。變更主機或URL後不會將原金鑰用於新位址。',
     'キーはこのサーバー枠と現在のURLに対して保存されます。ホストやURLを変えても、既存のキーを新しいURLに再利用しません。',
   ],
-  accountBound: [
+  windowsDpapi: [
     'Windows DPAPI로 현재 Windows 사용자 계정에 묶어 저장합니다. 다른 사용자 계정이나 다른 PC로 그대로 옮겨 사용할 수 없습니다.',
     'Windows DPAPI binds storage to your current Windows user account. The stored key is not portable to another user or PC.',
     '通过Windows DPAPI绑定当前Windows用户账户保存。已保存的密钥不能直接迁移至其他用户或电脑使用。',
     '透過Windows DPAPI綁定目前Windows使用者帳戶儲存。已儲存的金鑰不能直接移至其他使用者或電腦使用。',
     'Windows DPAPIで現在のWindowsユーザーアカウントに紐付けて保存します。別のユーザーやPCへそのまま移して使うことはできません。',
+  ],
+  macosKeychain: [
+    '현재 사용자 계정의 macOS 키체인에 저장합니다. 키체인이 잠겨 있으면 잠금을 해제한 뒤 상태를 새로고침하세요.',
+    'Stored in your macOS user keychain. If it is locked, unlock it and refresh the key status.',
+    '保存在当前用户的macOS钥匙串中。如已锁定，请解锁后刷新密钥状态。',
+    '儲存於目前使用者的macOS鑰匙圈。如已鎖定，請解鎖後重新整理金鑰狀態。',
+    '現在のユーザーのmacOSキーチェーンに保存します。ロック中の場合は解除してキーの状態を更新してください。',
+  ],
+  linuxSecretService: [
+    '로그인 세션의 Secret Service에 저장합니다. GNOME Keyring·KWallet 등의 서비스가 필요합니다. 잠금을 해제한 뒤 상태를 새로고침하세요.',
+    'Stored in your login session’s Secret Service, such as GNOME Keyring or KWallet. Unlock the service and refresh the key status.',
+    '保存在登录会话的Secret Service中，需要GNOME Keyring或KWallet等服务。请解锁后刷新密钥状态。',
+    '儲存於登入工作階段的Secret Service中，需要GNOME Keyring或KWallet等服務。請解鎖後重新整理金鑰狀態。',
+    'ログインセッションのSecret Serviceに保存します。GNOME KeyringやKWalletなどが必要です。ロックを解除してキーの状態を更新してください。',
   ],
   unsupported: [
     '이 운영체제에서는 안전한 API 키 저장을 지원하지 않습니다.',
@@ -261,11 +275,11 @@ const messages = {
     '現在のURLのキーを削除しました。',
   ],
   keyError: [
-    '키 작업을 완료하지 못했습니다. 데스크톱 앱의 저장 지원 여부와 URL을 확인하고 다시 시도하세요.',
-    'The key operation could not be completed. Check desktop storage support and the URL, then retry.',
-    '未能完成密钥操作。请检查桌面应用的存储支持和URL，然后重试。',
-    '無法完成金鑰操作。請檢查桌面應用程式的儲存支援與URL後重試。',
-    'キーの操作を完了できませんでした。デスクトップアプリの保存対応状況とURLを確認して再試行してください。',
+    '키 작업을 완료하지 못했습니다. 운영체제의 키 저장 서비스를 실행·잠금 해제하고 URL을 확인한 뒤 상태를 새로고침하세요. 저장된 키는 유지됩니다.',
+    'The key operation could not be completed. Start or unlock your OS credential service, check the URL, and refresh the status. Existing keys are preserved.',
+    '未能完成密钥操作。请启动或解锁系统凭据服务，检查URL后刷新状态。已保存的密钥会保留。',
+    '無法完成金鑰操作。請啟動或解鎖系統憑證服務，檢查URL後重新整理狀態。已儲存的金鑰會保留。',
+    'キーの操作を完了できませんでした。OSの認証情報サービスを起動・ロック解除し、URLを確認して状態を更新してください。既存のキーは保持されます。',
   ],
   keyInvalid: [
     'API 키는 공백·줄바꿈 없이 출력 가능한 ASCII 문자 1–8192자로 입력하세요.',

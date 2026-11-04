@@ -1,4 +1,23 @@
 export type GenerationSlot = 'local' | 'external';
+export type CredentialBackend =
+  'windowsDpapi' | 'macosKeychain' | 'linuxSecretService' | 'unsupported';
+
+export function credentialBackend(support: {
+  supported: boolean;
+  provider: string;
+}): CredentialBackend {
+  if (!support.supported) return 'unsupported';
+  switch (support.provider) {
+    case 'windowsDpapi':
+      return 'windowsDpapi';
+    case 'macos-keychain':
+      return 'macosKeychain';
+    case 'linux-secret-service':
+      return 'linuxSecretService';
+    default:
+      return 'unsupported';
+  }
+}
 export interface GenerationConfig {
   endpoint: string;
   model: string;

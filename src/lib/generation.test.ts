@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { defaultGeneration, normalizeGeneration } from './generation';
+import { credentialBackend, defaultGeneration, normalizeGeneration } from './generation';
+
+it('permits only known available OS credential providers', () => {
+  for (const [provider, expected] of [
+    ['windowsDpapi', 'windowsDpapi'],
+    ['macos-keychain', 'macosKeychain'],
+    ['linux-secret-service', 'linuxSecretService'],
+    ['unknown', 'unsupported'],
+  ]) {
+    expect(credentialBackend({ supported: true, provider })).toBe(expected);
+    expect(credentialBackend({ supported: false, provider })).toBe('unsupported');
+  }
+});
 describe('generation preferences migration', () => {
   it('keeps old profiles local and blocks external fallback until explicitly allowed', () => {
     expect(normalizeGeneration(undefined)).toEqual(defaultGeneration);

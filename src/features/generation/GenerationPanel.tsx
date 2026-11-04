@@ -4,11 +4,16 @@ import type { Language } from '../../lib/types';
 import { generationText } from './messages';
 import './generation.css';
 
-import type { GenerationSlot, GenerationConfig, GenerationPreferences } from '../../lib/generation';
+import type {
+  CredentialBackend,
+  GenerationSlot,
+  GenerationConfig,
+  GenerationPreferences,
+} from '../../lib/generation';
 export type { GenerationSlot, GenerationConfig, GenerationPreferences } from '../../lib/generation';
 export interface GenerationCredentialStatus {
   hasKey: boolean;
-  support: 'windowsDpapi' | 'unsupported';
+  support: CredentialBackend;
 }
 export interface GenerationCredentials {
   status: (slot: GenerationSlot, endpoint: string) => Promise<GenerationCredentialStatus>;
@@ -187,7 +192,8 @@ function CredentialEditor({
     };
   }, [slot, endpoint, native, revision, statusRequest]);
   const mutate = async (action: 'set' | 'clear') => {
-    if (pending.current || !native || loading || status?.support !== 'windowsDpapi') return;
+    if (pending.current || !native || loading || !status || status.support === 'unsupported')
+      return;
     let secret = action === 'set' ? (input.current?.value ?? '') : '';
     if (input.current) input.current.value = '';
     if (action === 'set' && !/^[\x21-\x7e]{1,8192}$/u.test(secret)) {
@@ -214,7 +220,7 @@ function CredentialEditor({
       if (alive.current) setBusy(false);
     }
   };
-  const disabled = busy || loading || !native || status?.support !== 'windowsDpapi';
+  const disabled = busy || loading || !native || !status || status.support === 'unsupported';
   return (
     <div
       className="generation-credentials"
@@ -247,8 +253,8 @@ function CredentialEditor({
                     : 'keyError',
             )}
           </p>
-          {status?.support === 'windowsDpapi' ? (
-            <p className="generation-note">{generationText(language, 'accountBound')}</p>
+          {status && status.support !== 'unsupported' ? (
+            <p className="generation-note">{generationText(language, status.support)}</p>
           ) : null}
         </>
       )}

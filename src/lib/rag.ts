@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { GenerationSlot } from './generation';
+import { credentialBackend, type CredentialBackend, type GenerationSlot } from './generation';
 export interface RagFailure {
   code: string;
   message: string;
@@ -85,17 +85,14 @@ export const generationCredentials = {
   status: async (
     slot: GenerationSlot,
     endpoint: string,
-  ): Promise<{ hasKey: boolean; support: 'windowsDpapi' | 'unsupported' }> => {
+  ): Promise<{ hasKey: boolean; support: CredentialBackend }> => {
     const status = await invoke<CredentialStatus>('generation_credential_status', {
       slot,
       endpoint,
     });
     return {
       hasKey: status.hasKey,
-      support:
-        status.support.supported && status.support.provider === 'windowsDpapi'
-          ? 'windowsDpapi'
-          : 'unsupported',
+      support: credentialBackend(status.support),
     };
   },
   set: (slot: GenerationSlot, endpoint: string, key: string) =>

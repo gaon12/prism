@@ -81,7 +81,7 @@ Portable copies, development builds and release builds without an update verific
 
 MSIX copies use their Windows distribution source for updates. They never launch the ordinary installer updater or offer its download button. New-version notices remain available, with guidance to Microsoft Store or the source used to install the package.
 
-The current local preview has no production verification key and does not self-install updates. The standalone setup has separate sandbox verification; signed updater-initiated installation and recovery against a normal installed profile, crash recovery and release publication remain integration work.
+The current local preview has no production verification key and does not self-install updates. The standalone setup recovers interrupted transactions on the next run, with process-termination and sandbox UI verification. Signed updater-initiated installation against a normal installed profile, power-loss recovery, manual previous-version restoration and release publication remain integration work.
 
 ## Development
 
@@ -91,7 +91,7 @@ Desktop builds link an `rlib` into the executable to keep intermediate disk usag
 
 `npm run version:check` checks app and setup versions across eight configuration, manifest and lockfiles. Use `npm run version:bump -- patch` (or `minor`, `major`, an explicit SemVer) to update them together without changing dependency versions or file formatting. The command validates every file before writing and attempts to restore earlier writes if a write fails; it is not a crash-safe multi-file transaction. Commit the version files together. `npm run test:version` verifies the command against temporary fixtures without changing this checkout's version.
 
-`npm run test:setup-core` checks the [setup core](installer/core/README.md), including deletion boundaries, failed-install recovery and concurrency. It uses fake registration and temporary files; a Windows COM shortcut test stays inside a temporary directory. `npm run test:setup` additionally verifies the real setup UI, silent update, installed app launch and removal inside a sandbox. See the [Windows setup instructions](installer/README.md) for build and executable overrides. Normal-profile registration, signed updater installation and crash recovery remain integration work.
+`npm run test:setup-core` checks the [setup core](installer/core/README.md), including deletion boundaries, failed-install recovery, concurrency and recovery after externally terminating owned fixture processes. Registration and files stay in temporary fixtures; real Windows COM shortcuts also stay there. `npm run test:setup` verifies the actual setup UI, silent update, installed app launch and removal inside a sandbox. `npm run test:setup-recovery` verifies the real setup UI against an interrupted transaction with a damaged live install record, preserving user files without launching Prism. See the [Windows setup instructions](installer/README.md) for build and executable overrides. Normal-profile registration, signed updater installation and power-loss behavior remain separate checks.
 
 The native LanceDB build also requires `protoc`. Install a compatible [official Protocol Buffers release](https://github.com/protocolbuffers/protobuf/releases) and put its executable on PATH, or set `PROTOC` for the build shell. The Windows vector tests were verified with protoc 34.1.
 

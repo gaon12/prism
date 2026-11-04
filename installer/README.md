@@ -76,8 +76,33 @@ The cleanup worker remains as a small verified binary in the per-user OS-temp
 recursively deletes a path supplied on its command line. Install-folder locks
 also live in an OS-temp cache and are released by the OS if a process exits.
 
-Automatic recovery after a killed process/power loss, actual HKCU registration,
-signed updater installation, MSIX and release publication still require integration.
+## Interrupted installation recovery
+
+Setup writes a versioned journal before changing installed files. It flushes the
+original bytes and records hashes for backups, the file map and registration.
+The next install or removal in the same folder recovers an unfinished transaction
+under the folder lock, then proceeds. A completed journal only needs cleanup.
+The window announces pending recovery before installation; folder and disk-space
+checks do not restore files by themselves.
+
+Recovery validates every backup and limits destinations to the selected install
+folder and its known Prism shortcuts. Corrupt, ambiguous or old unversioned data
+is preserved with an error. Changed shortcuts and registration belonging to a
+different installation are also preserved. Unpublished staging without a journal
+is left in place. Manual restoration of a previous released version is separate.
+
+`npm run test:setup-core` externally terminates its own temporary fixture processes
+at four transaction boundaries. `npm run test:setup-recovery` then provides a
+separate real-window check: it creates a process-exit journal, damages the current
+install record and verifies recovery, the new installed bytes and preserved user
+files. It never launches the embedded app and supports release setup builds too.
+The executable overrides are the same as `test:setup`; optional
+`PRISM_SETUP_CORE_TARGET` selects the core build directory, or
+`PRISM_RECOVERY_FIXTURE` supplies its already-built test executable.
+
+Process termination has been tested; power loss and storage hardware failures
+have not. Actual HKCU registration, signed updater installation, MSIX and release
+publication still require integration checks.
 
 Preview the window design in a browser: open `ui/index.html?preview=options` (also `progress`,
 `uninstall`).

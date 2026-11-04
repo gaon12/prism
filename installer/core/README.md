@@ -20,13 +20,25 @@ state. Incomplete recovery is reported and retains recovery data. Restoring a
 shortcut uses a temporary file beside its destination, allowing the install and
 Desktop folders to reside on different drives.
 
-An unexpected unwind retains the file map and backups. Automatic recovery after
-a killed process or power loss is not implemented yet. Native state guards block
-overlapping requests and closing during writes; an OS lock serializes independent
-processes targeting one folder. Launch authorization comes from a completed
-installation rather than a frontend path.
+Before replacing installed files, setup flushes a versioned journal and hashes
+the file map, original registration and file backups. The next install or removal
+recovers an interrupted transaction under the folder lock before reading the live
+install record. A completed transaction only needs cleanup. Invalid, ambiguous or
+legacy recovery data is preserved and reported instead of replayed. Recovery also
+refuses changed shortcuts or registration belonging to another install folder.
+
+Native state guards block overlapping requests and closing during writes; an OS
+lock serializes independent processes targeting one folder. Launch authorization
+comes from a completed installation rather than a frontend path.
+
+The suite externally terminates its own marked fixture processes at four journal
+boundaries, then checks recovery, lock release, user-file preservation and repeat
+attempts. The ignored fixture entry is invoked by those tests and by native QA.
+These process-termination tests do not establish power-loss or hardware durability.
 
 `npm run test:setup` separately exercises the actual setup UI, installed app launch,
-silent updates and both removal modes in a temporary sandbox. Real HKCU writes,
-updater-initiated signed installation, crash recovery and MSIX integration remain
-separate checks. These tests do not make the setup ready to publish.
+silent updates and both removal modes in a temporary sandbox.
+`npm run test:setup-recovery` checks the actual UI against a process-exit journal
+and a damaged live record without launching the installed app. Real HKCU writes,
+updater-initiated signed installation, power loss, manual previous-version
+restoration and MSIX integration remain separate checks.

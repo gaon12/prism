@@ -118,8 +118,18 @@ impl ClientSettings {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchMode {
+    #[default]
+    Filename,
+    Content,
+    Semantic,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SearchSession {
+    pub mode: SearchMode,
     pub query: String,
     pub scope_id: Option<String>,
     pub extension: String,

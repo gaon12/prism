@@ -31,6 +31,7 @@ export interface ClientSettings {
   };
 }
 export interface SearchSession {
+  mode: 'filename' | 'content' | 'semantic';
   query: string;
   scopeId: string | null;
   extension: string;
@@ -91,6 +92,7 @@ export const defaultSettings: ClientSettings = {
   },
 };
 export const emptySession: SearchSession = {
+  mode: 'filename',
   query: '',
   scopeId: null,
   extension: '',
@@ -191,6 +193,7 @@ export function normalizeSession(input: unknown): SearchSession {
   if (!input || typeof input !== 'object') return structuredClone(emptySession);
   const value = input as Partial<SearchSession>;
   return {
+    mode: value.mode === 'content' || value.mode === 'semantic' ? value.mode : 'filename',
     query: typeof value.query === 'string' ? value.query : '',
     scopeId: typeof value.scopeId === 'string' ? value.scopeId : null,
     extension: typeof value.extension === 'string' ? value.extension : '',

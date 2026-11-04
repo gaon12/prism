@@ -11,6 +11,11 @@ import {
 } from './types';
 
 describe('persisted client data', () => {
+  it('keeps legacy search mode on filenames and preserves an explicit content mode', () => {
+    expect(normalizeSession({ query: '기획' }).mode).toBe('filename');
+    expect(normalizeSession({ mode: 'content', query: '기획' }).mode).toBe('content');
+    expect(normalizeSession({ mode: 'unknown', query: '기획' }).query).toBe('기획');
+  });
   it('migrates old clipboard settings and preserves explicit off and unlimited retention', () => {
     expect(normalizeSettings({}).clipboard).toEqual(defaultSettings.clipboard);
     expect(

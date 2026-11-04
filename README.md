@@ -83,6 +83,14 @@ MSIX copies use their Windows distribution source for updates. They never launch
 
 The current local preview has no production verification key and does not self-install updates. The standalone setup recovers interrupted transactions on the next run, with process-termination and sandbox UI verification. Signed updater-initiated installation against a normal installed profile, power-loss recovery, manual previous-version restoration and release publication remain integration work.
 
+## Reporting a problem
+
+Open **Settings → General → Report a problem** in the desktop app and choose **Preview diagnostics**. The snapshot includes the app version, OS and architecture, distribution type, initialization/error flags and aggregate counts. It excludes document text, paths, queries, clipboard contents, API keys, generation endpoints and raw error messages. Unavailable status fields are `null`; an initialized service is not a guarantee that every operation works.
+
+Add reproduction steps, then review the complete report before copying it or saving it as Markdown. Notes you type are included, so check them for personal information. Refreshing diagnostics preserves your notes. Nothing is submitted automatically: **Report on GitHub** opens a fixed issue page without report data in its URL. GitHub issues are public and require an account; paste and submit the report yourself. This is an on-demand report, not a background crash-upload service.
+
+`npm run test:diagnostics` exercises real native snapshot collection, privacy sentinels, report preview, MemoryClipboard copying, Markdown writing, cancelled save and retry behavior in an isolated debug profile. File-picker selection and the external-browser handoff are intercepted; the actual OS picker and GitHub submission are separate manual checks.
+
 ## Development
 
 Requires Node.js 22.12+, Rust 1.94+, and the [Tauri Windows prerequisites](https://v2.tauri.app/start/prerequisites/), including Rust, MSVC C++ Build Tools and WebView2.

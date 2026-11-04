@@ -73,7 +73,7 @@ impl RagStore {
         let version: u32 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(storage)?;
-        if version > 1 {
+        if version > 2 {
             return Err(RagError::new(RagErrorCode::Storage));
         }
         db.execute_batch("PRAGMA journal_mode=WAL;
@@ -82,7 +82,28 @@ impl RagStore {
             CREATE TABLE IF NOT EXISTS rag_requests(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,status TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS conversation_turns(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,request_id TEXT NOT NULL REFERENCES rag_requests(id) ON DELETE CASCADE,sequence INTEGER NOT NULL,role TEXT NOT NULL,status TEXT NOT NULL,text TEXT NOT NULL,payload TEXT NOT NULL,UNIQUE(conversation_id,sequence),UNIQUE(request_id,role));
             CREATE INDEX IF NOT EXISTS conversation_turns_order ON conversation_turns(conversation_id,sequence);
-            PRAGMA user_version=1;").map_err(storage)?;
+            ").map_err(storage)?;
+        let has_kind = {
+            let mut query = db
+                .prepare("PRAGMA table_info(conversations)")
+                .map_err(storage)?;
+            let columns = query
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(storage)?;
+            columns
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage)?
+                .iter()
+                .any(|name| name == "kind")
+        };
+        if !has_kind {
+            db.execute(
+                "ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'",
+                [],
+            )
+            .map_err(storage)?;
+        }
+        db.pragma_update(None, "user_version", 2).map_err(storage)?;
         db.execute(
             "INSERT OR IGNORE INTO rag_meta(key,value) VALUES('profileId',?1)",
             [fresh_id()?],
@@ -143,12 +164,18 @@ impl RagStore {
         &self.profile_id
     }
     pub fn create(&self, title: &str) -> RagResult<ConversationSummary> {
+        self.create_kind(title, "chat")
+    }
+    pub fn create_for_document(&self, title: &str) -> RagResult<ConversationSummary> {
+        self.create_kind(title, "document")
+    }
+    fn create_kind(&self, title: &str, kind: &str) -> RagResult<ConversationSummary> {
         let id = fresh_id()?;
         let now = now_ms();
         self.connect()?
             .execute(
-                "INSERT INTO conversations(id,title,created_ms,updated_ms) VALUES(?1,?2,?3,?3)",
-                params![id, title, now],
+                "INSERT INTO conversations(id,title,created_ms,updated_ms,kind) VALUES(?1,?2,?3,?3,?4)",
+                params![id, title, now, kind],
             )
             .map_err(storage)?;
         Ok(ConversationSummary {
@@ -161,7 +188,7 @@ impl RagStore {
     }
     pub fn list(&self, query: &str, limit: usize) -> RagResult<Vec<ConversationSummary>> {
         let db = self.connect()?;
-        let mut statement=db.prepare("SELECT c.id,c.title,c.created_ms,c.updated_ms,(SELECT count(*) FROM conversation_turns t WHERE t.conversation_id=c.id) FROM conversations c WHERE ?1='' OR instr(lower(c.title),lower(?1))>0 OR EXISTS(SELECT 1 FROM conversation_turns t WHERE t.conversation_id=c.id AND instr(lower(t.text),lower(?1))>0) ORDER BY c.updated_ms DESC,c.id LIMIT ?2").map_err(storage)?;
+        let mut statement=db.prepare("SELECT c.id,c.title,c.created_ms,c.updated_ms,(SELECT count(*) FROM conversation_turns t WHERE t.conversation_id=c.id) FROM conversations c WHERE c.kind='chat' AND (?1='' OR instr(lower(c.title),lower(?1))>0 OR EXISTS(SELECT 1 FROM conversation_turns t WHERE t.conversation_id=c.id AND instr(lower(t.text),lower(?1))>0)) ORDER BY c.updated_ms DESC,c.id LIMIT ?2").map_err(storage)?;
         let rows = statement
             .query_map(params![query, limit as u64], read_summary)
             .map_err(storage)?;

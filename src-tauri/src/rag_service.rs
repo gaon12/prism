@@ -568,6 +568,12 @@ impl Drop for ActiveGuard {
         }
     }
 }
+#[derive(Clone)]
+pub(crate) struct RagDocumentInput {
+    pub provenance: Vec<SourceRef>,
+    pub external_input_eligible: bool,
+    pub retrieval_query: String,
+}
 struct Prepared {
     config: GenerationConfig,
     key: Option<SecretValue>,
@@ -665,6 +671,36 @@ impl RagService {
         let title = title.unwrap_or("");
         valid_title(title, true)?;
         self.inner.store.create(title)
+    }
+    pub(crate) fn create_for_document(&self, title: &str) -> RagResult<ConversationSummary> {
+        valid_title(title, true)?;
+        self.inner.store.create_for_document(title)
+    }
+    pub(crate) fn document_snapshot(&self, scope_ids: &[String]) -> RagResult<ScopeSnapshot> {
+        Ok(snapshot(&self.policy()?, scope_ids))
+    }
+    pub(crate) async fn document_citations(
+        &self,
+        mut citations: Vec<RagCitation>,
+        scope_ids: Vec<String>,
+    ) -> RagResult<Vec<RagCitation>> {
+        let policy = self.policy()?;
+        let cancel = RequestCancel::new();
+        let refs = citations
+            .iter()
+            .map(|citation| citation.source.clone())
+            .collect();
+        let checked = self
+            .check_sources(refs, scope_ids, policy.clone(), &cancel)
+            .await?;
+        for citation in &mut citations {
+            citation.state = if scope_allowed(&policy, &citation.source, false) {
+                checked_state(&citation.source, &checked)
+            } else {
+                SourceState::OutOfScope
+            };
+        }
+        Ok(citations)
     }
     pub fn list_conversations(
         &self,
@@ -831,6 +867,31 @@ impl RagService {
 
     pub async fn ask(&self, request: RagRequest) -> RagResult<RagAnswer> {
         valid_request(&request)?;
+        self.ask_inner(request, None).await
+    }
+    pub(crate) async fn ask_for_document(
+        &self,
+        request: RagRequest,
+        input: RagDocumentInput,
+    ) -> RagResult<RagAnswer> {
+        valid_request_limit(&request, 128 * 1024)?;
+        if request.scope_ids.is_empty()
+            || request.mode != QuestionMode::Documents
+            || input.retrieval_query.trim().is_empty()
+            || input.retrieval_query.len() > 4096
+            || input.retrieval_query.chars().any(char::is_control)
+            || input.provenance.len() > 256
+            || input.provenance.iter().any(|source| !valid_source(source))
+        {
+            return Err(RagError::new(RagErrorCode::Input));
+        }
+        self.ask_inner(request, Some(input)).await
+    }
+    async fn ask_inner(
+        &self,
+        request: RagRequest,
+        input: Option<RagDocumentInput>,
+    ) -> RagResult<RagAnswer> {
         let initial = self.policy()?;
         let cancel = RequestCancel::new();
         {
@@ -860,7 +921,9 @@ impl RagService {
         let initial_snapshot = snapshot(&initial, &request.scope_ids);
         let mut pair = blocking(move || store.reserve(&reservation, initial_snapshot)).await?;
         self.update_job(&request, "retrieving", None, None);
-        let result = self.perform(&request, &initial, &cancel, &mut pair).await;
+        let result = self
+            .perform(&request, &initial, &cancel, &mut pair, input.as_ref())
+            .await;
         match result {
             Ok((attempts, omitted)) => {
                 let user = pair.user.clone();
@@ -912,13 +975,16 @@ impl RagService {
         initial: &RagPolicy,
         cancel: &RequestCancel,
         pair: &mut crate::rag_store::PendingPair,
+        input: Option<&RagDocumentInput>,
     ) -> RagResult<(Vec<ProviderAttempt>, usize)> {
         let mut attempts = Vec::new();
         let mut last_error = RagError::new(RagErrorCode::NotConfigured);
         for (index, slot) in initial.prefs.plan().into_iter().enumerate() {
             cancel.check()?;
             self.update_job(request, "retrieving", Some(slot), None);
-            let prepared = self.prepare(request, slot, index > 0, cancel).await?;
+            let prepared = self
+                .prepare(request, slot, index > 0, cancel, input)
+                .await?;
             merge_refs(&mut pair.user.provenance, &prepared.provenance)?;
             pair.user.taint_complete = true;
             pair.user.scope_snapshot = prepared.snapshot.clone();
@@ -1045,6 +1111,7 @@ impl RagService {
         slot: ProviderSlot,
         fallback: bool,
         cancel: &RequestCancel,
+        input: Option<&RagDocumentInput>,
     ) -> RagResult<Prepared> {
         for _ in 0..3 {
             cancel.check()?;
@@ -1065,12 +1132,39 @@ impl RagService {
             if remote && !policy.prefs.allow_external_questions {
                 return Err(RagError::new(RagErrorCode::ScopeBlocked));
             }
+            let mandatory = input
+                .map(|input| input.provenance.clone())
+                .unwrap_or_default();
+            if let Some(input) = input {
+                if remote && !input.external_input_eligible {
+                    return Err(RagError::new(RagErrorCode::ScopeBlocked));
+                }
+                if mandatory
+                    .iter()
+                    .any(|source| !scope_allowed(&policy, source, remote))
+                {
+                    return Err(RagError::new(RagErrorCode::ScopeBlocked));
+                }
+                let checked = self
+                    .check_sources(
+                        mandatory.clone(),
+                        request.scope_ids.clone(),
+                        policy.clone(),
+                        cancel,
+                    )
+                    .await?;
+                if mandatory.iter().any(|source| !is_current(source, &checked)) {
+                    return Err(RagError::new(RagErrorCode::SourceChanged));
+                }
+            }
             let history_store = self.inner.store.clone();
             let conversation = request.conversation_id.clone();
             let history = blocking(move || history_store.history(&conversation, 32)).await?;
             let retrieved = if request.mode == QuestionMode::Documents {
                 let resolver = Arc::clone(&self.inner.sources);
-                let question = request.question.clone();
+                let question = input
+                    .map(|input| input.retrieval_query.clone())
+                    .unwrap_or_else(|| request.question.clone());
                 let selection = request.scope_ids.clone();
                 let snapshot = policy.clone();
                 let flag = Arc::clone(&cancel.sources);
@@ -1171,18 +1265,20 @@ impl RagService {
             }
             let budget = policy.prefs.budget();
             let owned = request.clone();
-            let known: Vec<_> = retrieved
+            let known: Vec<_> = mandatory
                 .iter()
-                .map(|item| item.source.clone())
+                .cloned()
+                .chain(retrieved.iter().map(|item| item.source.clone()))
                 .chain(history.iter().flat_map(|(user, assistant)| {
                     user.provenance.iter().chain(&assistant.provenance).cloned()
                 }))
                 .collect();
             let total_history = history.len();
-            let packet = blocking(move || {
+            let mut packet = blocking(move || {
                 build_packet(&owned, current, eligible, known, budget, total_history)
             })
             .await?;
+            merge_refs(&mut packet.provenance, &mandatory)?;
             let latest = self.policy()?;
             if policy_stamp(&latest)? != stamp {
                 continue;
@@ -1450,10 +1546,13 @@ fn valid_title(value: &str, empty: bool) -> RagResult<()> {
     Ok(())
 }
 fn valid_request(request: &RagRequest) -> RagResult<()> {
+    valid_request_limit(request, 4096)
+}
+fn valid_request_limit(request: &RagRequest, max_bytes: usize) -> RagResult<()> {
     valid_id(&request.request_id)?;
     valid_id(&request.conversation_id)?;
     if request.question.trim().is_empty()
-        || request.question.len() > 4096
+        || request.question.len() > max_bytes
         || request.question.contains('\0')
         || request.scope_ids.len() > 128
     {

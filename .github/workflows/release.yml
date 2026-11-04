@@ -128,6 +128,32 @@ jobs:
       - name: Build the Windows setup with the release payload
         if: matrix.platform == 'windows'
         run: cargo build --manifest-path installer/src-tauri/Cargo.toml --release --locked
+      - name: Ensure WebView2 exists on the disposable CI runner
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $client = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $keys = @("HKCU:\Software\Microsoft\EdgeUpdate\Clients\$client", "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$client")
+          $installed = @($keys | ForEach-Object {
+            $version = $null
+            $value = (Get-ItemProperty -LiteralPath $_ -Name pv -ErrorAction SilentlyContinue).pv
+            if ([version]::TryParse($value, [ref]$version) -and $version -gt [version]'0.0.0.0') { $version }
+          })
+          if ($installed.Count -gt 0) { exit 0 }
+          $bootstrapper = Join-Path $env:RUNNER_TEMP 'MicrosoftEdgeWebview2Setup.exe'
+          Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $bootstrapper
+          $signature = Get-AuthenticodeSignature -LiteralPath $bootstrapper
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'Microsoft bootstrapper signature verification failed.' }
+          $process = Start-Process -FilePath $bootstrapper -ArgumentList '/silent', '/install' -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -notin @(0, 3010)) { throw "WebView2 setup failed: $($process.ExitCode)" }
+      - name: Verify release setup recovery in an isolated sandbox
+        # Native recovery uses inert crash fixtures and never starts the embedded app.
+        if: matrix.platform == 'windows'
+        shell: bash
+        env:
+          PRISM_SETUP_EXE: ${{ github.workspace }}/installer/src-tauri/target/release/prism-setup.exe
+          PRISM_SETUP_EXPECTED_EXE: ${{ github.workspace }}/src-tauri/target/release/prism.exe
+        run: npm run test:setup-recovery
       - name: Collect Windows setup
         if: matrix.platform == 'windows'
         shell: pwsh

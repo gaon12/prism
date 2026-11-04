@@ -73,9 +73,9 @@ export const updates = {
     await invoke('update_dismiss');
     await refresh();
   },
-  async install() {
+  async install(version: string) {
     try {
-      await invoke('update_install');
+      await invoke('update_install', { version });
     } finally {
       await refresh();
     }

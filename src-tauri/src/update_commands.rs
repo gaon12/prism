@@ -23,9 +23,9 @@ pub fn update_dismiss(state: State<'_, AppState>) -> Result<UpdateView, String> 
     Ok(service(&state)?.dismiss())
 }
 #[tauri::command]
-pub async fn update_install(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn update_install(state: State<'_, AppState>, version: String) -> Result<(), String> {
     let service = service(&state)?;
-    tauri::async_runtime::spawn_blocking(move || service.install())
+    tauri::async_runtime::spawn_blocking(move || service.install(&version))
         .await
         .map_err(|_| "Update request failed.")?
 }

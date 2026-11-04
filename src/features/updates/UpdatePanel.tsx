@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Download, RefreshCw } from 'lucide-react';
 import { native } from '../../lib/bridge';
-import { useClient, showToast } from '../../lib/store';
+import { useClient, showToast, errorMessage } from '../../lib/store';
 import { translate } from '../../lib/i18n';
 import { updates, useUpdates } from '../../lib/updates';
 import { updateText } from './messages';
@@ -11,39 +11,39 @@ function InstallAction({ blocked = false }: { blocked?: boolean }) {
   const { view } = useUpdates();
   const { settings } = useClient();
   const t = (key: Parameters<typeof updateText>[1]) => updateText(settings.language, key);
-  const [confirm, setConfirm] = useState(false);
+  const [confirm, setConfirm] = useState<string | null>(null);
   return (
     <>
       <button
         type="button"
         className="button primary"
         disabled={blocked || view?.checking || view?.installing}
-        onClick={() => setConfirm(true)}
+        onClick={() => setConfirm(view?.available?.version ?? null)}
       >
         {t('install')}
       </button>
       {blocked ? <small className="muted">{t('unsaved')}</small> : null}
-      {confirm ? <InstallDialog onClose={() => setConfirm(false)} /> : null}
+      {confirm ? <InstallDialog version={confirm} onClose={() => setConfirm(null)} /> : null}
     </>
   );
 }
-function InstallDialog({ onClose }: { onClose: () => void }) {
+function InstallDialog({ onClose, version }: { onClose: () => void; version: string }) {
   const { settings } = useClient();
   const t = (key: Parameters<typeof updateText>[1]) => updateText(settings.language, key);
   const dialog = useRef<HTMLDialogElement>(null);
   const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<'install' | 'changed' | null>(null);
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
   const install = async () => {
     setBusy(true);
-    setFailed(false);
+    setFailed(null);
     try {
-      await updates.install();
+      await updates.install(version);
       onClose();
-    } catch {
-      setFailed(true);
+    } catch (cause) {
+      setFailed(errorMessage(cause).includes('UPDATE_CHANGED') ? 'changed' : 'install');
     } finally {
       setBusy(false);
     }
@@ -59,10 +59,11 @@ function InstallDialog({ onClose }: { onClose: () => void }) {
       }}
     >
       <h2>{t('confirm')}</h2>
+      <p className="update-version">Prism {version}</p>
       <p>{t('confirmBody')}</p>
       {failed ? (
         <p role="alert" className="inline-error">
-          {t('installFailed')}
+          {t(failed === 'changed' ? 'changed' : 'installFailed')}
         </p>
       ) : null}
       {busy ? <p role="status">{t('installing')}</p> : null}
@@ -73,7 +74,7 @@ function InstallDialog({ onClose }: { onClose: () => void }) {
         <button
           type="button"
           className="button primary"
-          disabled={busy}
+          disabled={busy || failed === 'changed'}
           onClick={() => void install()}
         >
           {t('install')}

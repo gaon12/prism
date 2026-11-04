@@ -18,6 +18,7 @@ impl MemoryBackend {
             "offline",
             "signatureFailed",
             "installFailed",
+            "newerInstallFailed",
         ]
         .contains(&mode)
         {
@@ -40,22 +41,24 @@ impl UpdateBackend for MemoryBackend {
         state.checks += 1;
         match state.mode.as_str() {
             "offline" => Err("The update server could not be reached.".into()),
-            "ready" | "signatureFailed" | "installFailed" | "newer" => Ok(Some(AvailableUpdate {
-                version: if state.mode == "newer" {
-                    "0.3.0"
-                } else {
-                    "0.2.0"
-                }
-                .into(),
-                notes: "Synthetic release notes <script>plain text only</script>".into(),
-            })),
+            "ready" | "signatureFailed" | "installFailed" | "newer" | "newerInstallFailed" => {
+                Ok(Some(AvailableUpdate {
+                    version: if state.mode == "newer" || state.mode == "newerInstallFailed" {
+                        "0.3.0"
+                    } else {
+                        "0.2.0"
+                    }
+                    .into(),
+                    notes: "Synthetic release notes <script>plain text only</script>".into(),
+                }))
+            }
             _ => Ok(None),
         }
     }
     fn can_install(&self) -> bool {
         matches!(
             self.0.lock().unwrap().mode.as_str(),
-            "signatureFailed" | "installFailed"
+            "signatureFailed" | "installFailed" | "newerInstallFailed"
         )
     }
     fn install(&self, _: &str, prepare: &dyn Fn() -> Result<(), String>) -> Result<(), String> {
@@ -67,7 +70,7 @@ impl UpdateBackend for MemoryBackend {
         if mode == "signatureFailed" {
             return Err("The update signature or signed version could not be verified.".into());
         }
-        if mode != "installFailed" {
+        if mode != "installFailed" && mode != "newerInstallFailed" {
             return Err("Synthetic transport never installs packages.".into());
         }
         prepare()?;

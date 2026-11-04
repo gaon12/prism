@@ -51,6 +51,7 @@
   overflow: auto;
 }
 .update-dialog {
+  overflow-y: auto;
   width: min(520px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
   padding: 24px;

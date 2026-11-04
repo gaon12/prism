@@ -228,7 +228,7 @@ impl UpdateService {
 
     /// The user pressed "Install now". Stops background work first; if installing fails the
     /// work is restarted and the error is shown.
-    pub fn install(&self) -> Result<(), String> {
+    pub fn install(&self, expected_version: &str) -> Result<(), String> {
         let version = {
             let mut status = lock(&self.status);
             if !status.can_install {
@@ -240,6 +240,9 @@ impl UpdateService {
             let Some(update) = status.available.clone() else {
                 return Err("No update is available.".into());
             };
+            if expected_version.len() > 128 || update.version != expected_version {
+                return Err("UPDATE_CHANGED".into());
+            }
             status.installing = true;
             status.install_error = None;
             update.version
@@ -411,10 +414,16 @@ mod tests {
         };
         *fake.answers.lock().unwrap() = vec![Ok(update("0.2.0"))];
         let (service, fake, stopped, restarted) = make_service(fake, true);
-        assert_eq!(service.install().unwrap_err(), "No update is available.");
+        assert_eq!(
+            service.install("0.2.0").unwrap_err(),
+            "No update is available."
+        );
         assert_eq!(stopped.load(Ordering::SeqCst), 0);
         service.check_now(1);
-        assert_eq!(service.install().unwrap_err(), "installer launch failed");
+        assert_eq!(
+            service.install("0.2.0").unwrap_err(),
+            "installer launch failed"
+        );
         assert_eq!(*fake.installs.lock().unwrap(), ["0.2.0"]);
         assert_eq!(
             (
@@ -437,7 +446,7 @@ mod tests {
         *fake.answers.lock().unwrap() = vec![Ok(update("0.2.0"))];
         let (service, _, stopped, restarted) = make_service(fake, true);
         service.check_now(1);
-        service.install().unwrap();
+        service.install("0.2.0").unwrap();
         assert_eq!(
             (
                 stopped.load(Ordering::SeqCst),
@@ -457,7 +466,7 @@ mod tests {
             service.check_now(1),
             "portable builds are still told about new versions"
         );
-        assert!(service.install().is_err());
+        assert!(service.install("0.2.0").is_err());
         assert!(fake.installs.lock().unwrap().is_empty());
         assert_eq!(stopped.load(Ordering::SeqCst), 0);
         let json = serde_json::to_value(service.status()).unwrap();
@@ -474,7 +483,7 @@ mod tests {
         *fake.answers.lock().unwrap() = vec![Ok(update("0.2.0"))];
         let (service, backend, stopped, resumed) = make_service(fake, true);
         service.check_now(1);
-        assert!(service.install().is_err());
+        assert!(service.install("0.2.0").is_err());
         assert_eq!(
             (
                 stopped.load(Ordering::SeqCst),
@@ -500,7 +509,10 @@ mod tests {
             None,
         );
         service.check_now(1);
-        assert_eq!(service.install().unwrap_err(), "cannot save settings");
+        assert_eq!(
+            service.install("0.2.0").unwrap_err(),
+            "cannot save settings"
+        );
         assert_eq!(backend.executions.load(Ordering::SeqCst), 0);
         assert_eq!(resumed.load(Ordering::SeqCst), 1);
         assert!(!service.status().installing);
@@ -548,11 +560,31 @@ mod tests {
         let worker_service = service.clone();
         let worker = std::thread::spawn(move || worker_service.check_now(2));
         backend.entered.wait();
-        assert!(service.install().is_err());
+        assert!(service.install("0.2.0").is_err());
         service.dismiss();
         backend.release.wait();
         assert!(!worker.join().unwrap());
         assert_eq!(service.status().dismissed_version.as_deref(), Some("0.2.0"));
         assert!(service.next_wait(Duration::from_secs(30), 2) <= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn install_confirmation_is_bound_to_the_selected_version() {
+        let fake = Fake::default();
+        *fake.answers.lock().unwrap() = vec![Ok(update("0.2.0")), Ok(update("0.3.0"))];
+        let (service, backend, stopped, resumed) = make_service(fake, true);
+        service.check_now(1);
+        service.check_now(2);
+        assert_eq!(service.install("0.2.0").unwrap_err(), "UPDATE_CHANGED");
+        assert!(backend.installs.lock().unwrap().is_empty());
+        assert_eq!(
+            (
+                stopped.load(Ordering::SeqCst),
+                resumed.load(Ordering::SeqCst)
+            ),
+            (0, 0)
+        );
+        service.install("0.3.0").unwrap();
+        assert_eq!(*backend.installs.lock().unwrap(), ["0.3.0"]);
     }
 }

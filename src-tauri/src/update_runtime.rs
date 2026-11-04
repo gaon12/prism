@@ -217,8 +217,8 @@ impl UpdateRuntime {
         self.0.service.dismiss();
         self.status()
     }
-    pub fn install(&self) -> Result<(), String> {
-        self.0.service.install()
+    pub fn install(&self, version: &str) -> Result<(), String> {
+        self.0.service.install(version)
     }
     pub fn is_installing(&self) -> bool {
         self.0.service.status().installing

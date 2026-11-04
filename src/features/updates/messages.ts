@@ -1,5 +1,12 @@
 import type { Language } from '../../lib/types';
 const messages = {
+  changed: [
+    '확인하던 업데이트가 바뀌었습니다. 새 버전 정보를 확인한 뒤 다시 선택하세요.',
+    'The selected update changed. Review the new version and select it again.',
+    '所选更新已更改，请确认新版本信息后重新选择。',
+    '所選更新已變更，請確認新版本資訊後重新選擇。',
+    '選択した更新が変わりました。新しいバージョンを確認して選び直してください。',
+  ],
   title: ['업데이트', 'Updates', '更新', '更新', 'アップデート'],
   auto: [
     '새 버전 자동 확인',

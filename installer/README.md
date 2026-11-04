@@ -35,6 +35,7 @@ is used to delete temporary uninstall copies.
 | `/S`                         | no window                                                    |
 | `/UPDATE`, `/R`, `/ARGS ...` | update, restart Prism afterwards, Prism's arguments          |
 | `/D=C:\path`                 | install folder                                               |
+| `--restore-version x.y.z`     | restore the explicitly selected retained app version          |
 | `uninstall.exe [/S]`         | remove Prism (settings are kept unless chosen in the window) |
 
 Everything after `/ARGS` belongs to Prism. Do not append `/D=` through Tauri's
@@ -100,9 +101,45 @@ The executable overrides are the same as `test:setup`; optional
 `PRISM_SETUP_CORE_TARGET` selects the core build directory, or
 `PRISM_RECOVERY_FIXTURE` supplies its already-built test executable.
 
+## Restore the previous app version
+
+An update to a different version retains the previous recorded app files and
+uninstaller in a `.prism-previous-<pid>-<counter>` archive inside the installation.
+It records hashes for both the old files and the newly installed version. A first
+install or same-version reinstall does not create a new previous-version archive.
+The next successful update keeps its immediate predecessor; it is not a full
+version history. Space estimates include the retained copy and temporary recovery
+backups. Invalid archives or archives containing unexpected files are preserved.
+
+Close Prism, then open setup or the installed uninstaller. When a matching archive
+exists, **Previous version** opens a confirmation with the exact version and disk
+space requirement. Confirm the data policy before restoring. The same install
+engine verifies the archive and current files under the folder lock, stages the
+old files, restores shortcuts and registers the old version. User-modified app
+files, conflicting unrecorded files, an altered registration owner or a stale
+selected version stop restoration. An ordinary failure restores the current app;
+process interruption is handled by next-run transaction recovery.
+
+This restores app files, not user data: settings, documents and indexes stay at
+their current state. An older released app may not understand a newer data schema.
+Launching the restored app is therefore unchecked by default. Successful
+restoration consumes the archive; reinstall the newer release to move forward.
+
+For an explicit silent operation, use `prism-setup.exe /S /D=C:\path
+--restore-version x.y.z`, or `uninstall.exe /S --restore-version x.y.z` from the
+installation folder. The installed uninstaller forwards the target to its owned
+temporary copy, allowing its installed file to be replaced. Bootstrap exit still
+does not mean the child has finished; automated callers must observe completion.
+
+`npm run test:setup-previous` uses a real setup executable, synthetic version labels
+and inert old app bytes. It checks the actual confirmation UI, exact file restore,
+unchecked launch, data preservation and silent restore/temp cleanup. The core suite
+also externally terminates restoration processes before and after commit. It does
+not establish compatibility with an actual older released app's data schema.
+
 Process termination has been tested; power loss and storage hardware failures
-have not. Actual HKCU registration, signed updater installation, MSIX and release
-publication still require integration checks.
+have not. Actual HKCU registration, signed updater installation, real older-release
+data compatibility, MSIX and release publication still require integration checks.
 
 Preview the window design in a browser: open `ui/index.html?preview=options` (also `progress`,
 `uninstall`).

@@ -81,7 +81,7 @@ Portable copies, development builds and release builds without an update verific
 
 MSIX copies use their Windows distribution source for updates. They never launch the ordinary installer updater or offer its download button. New-version notices remain available, with guidance to Microsoft Store or the source used to install the package.
 
-The current local preview has no production verification key and does not self-install updates. The standalone setup recovers interrupted transactions on the next run, with process-termination and sandbox UI verification. Signed updater-initiated installation against a normal installed profile, power-loss recovery, manual previous-version restoration and release publication remain integration work.
+The current local preview has no production verification key and does not self-install updates. The Windows setup recovers interrupted transactions and can restore a retained previous app version. Both have process-termination and sandbox UI verification. Previous-version restoration keeps current settings, documents and indexes, requires confirmation, and leaves app launch unchecked. Signed updater-initiated installation against a normal installed profile, power-loss recovery, real older-release data compatibility and release publication remain integration work.
 
 ## Reporting a problem
 
@@ -100,6 +100,8 @@ Desktop builds link an `rlib` into the executable to keep intermediate disk usag
 `npm run version:check` checks app and setup versions across eight configuration, manifest and lockfiles. Use `npm run version:bump -- patch` (or `minor`, `major`, an explicit SemVer) to update them together without changing dependency versions or file formatting. The command validates every file before writing and attempts to restore earlier writes if a write fails; it is not a crash-safe multi-file transaction. Commit the version files together. `npm run test:version` verifies the command against temporary fixtures without changing this checkout's version.
 
 `npm run test:setup-core` checks the [setup core](installer/core/README.md), including deletion boundaries, failed-install recovery, concurrency and recovery after externally terminating owned fixture processes. Registration and files stay in temporary fixtures; real Windows COM shortcuts also stay there. `npm run test:setup` verifies the actual setup UI, silent update, installed app launch and removal inside a sandbox. `npm run test:setup-recovery` verifies the real setup UI against an interrupted transaction with a damaged live install record, preserving user files without launching Prism. See the [Windows setup instructions](installer/README.md) for build and executable overrides. Normal-profile registration, signed updater installation and power-loss behavior remain separate checks.
+
+`npm run test:setup-previous` checks the actual previous-version confirmation, stale-target rejection, restored bytes, user-file/data preservation and silent restoration through an installed uninstaller's temporary copy. Version labels and the old app bytes are synthetic; no old app is launched and no real HKCU registration is changed. Restoring files does not prove that an older released app can read a newer data schema.
 
 The native LanceDB build also requires `protoc`. Install a compatible [official Protocol Buffers release](https://github.com/protocolbuffers/protobuf/releases) and put its executable on PATH, or set `PROTOC` for the build shell. The Windows vector tests were verified with protoc 34.1.
 

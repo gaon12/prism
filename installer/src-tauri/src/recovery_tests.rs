@@ -229,6 +229,29 @@ fn a_shortcut_changed_by_the_user_blocks_recovery_before_other_files_change() {
 }
 
 #[test]
+fn a_newer_registration_for_another_folder_is_not_replaced_by_old_recovery() {
+    let temp = tempfile::tempdir().unwrap();
+    let (system, app, _) = base(temp.path());
+    let directory = pending(&system, &app);
+    let another = temp.path().join("other installation");
+    fs::create_dir(&another).unwrap();
+    system
+        .write_uninstall_entry(&UninstallEntry {
+            install_dir: another,
+            version: "0.9.0".into(),
+            size_kib: 1,
+        })
+        .unwrap();
+    let registration = system.capture_registration().unwrap();
+    assert!(recovery::recover(&system, &app)
+        .unwrap_err()
+        .contains("another installation"));
+    assert_eq!(system.capture_registration().unwrap(), registration);
+    assert_eq!(fs::read(app.join("prism.exe")).unwrap(), b"new");
+    assert!(directory.exists());
+}
+
+#[test]
 fn a_shortcut_changed_during_install_is_not_overwritten_by_the_failure_rollback() {
     let temp = tempfile::tempdir().unwrap();
     let (system, app, setup) = base(temp.path());

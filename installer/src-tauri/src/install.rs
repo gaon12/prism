@@ -458,6 +458,12 @@ pub fn install(
         Ok(())
     })();
     if let Err(message) = result {
+        if registration_changed
+            && crate::recovery::check_registration_owner(system, dir, &registration).is_err()
+        {
+            transaction.retain();
+            return Err(format!("{message} Windows registration changed to another installation; recovery backups were preserved."));
+        }
         if transaction.check_shortcut_ownership(system).is_err() {
             transaction.retain();
             return Err(format!("{message} A shortcut changed during setup; it and the recovery backups were preserved."));

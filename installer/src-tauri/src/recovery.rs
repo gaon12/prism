@@ -14,6 +14,24 @@ pub fn has_workspaces(root: &Path) -> bool {
     })
 }
 
+pub fn check_registration_owner(
+    system: &dyn System,
+    root: &Path,
+    original: &[u8],
+) -> Result<(), String> {
+    let current = system
+        .capture_registration()
+        .map_err(|_| "Could not check the current Windows registration.".to_string())?;
+    if current != original
+        && system
+            .existing_install()
+            .is_some_and(|(path, _)| !safe_path::same_target(&path, root))
+    {
+        return Err("Windows registration now points to another installation; recovery backups were preserved.".into());
+    }
+    Ok(())
+}
+
 /// A space check remains read-only even when the current install record is damaged.
 /// Original sizes come from the checksummed map, not partially replaced live files.
 pub fn pending_backup_bytes(root: &Path) -> Result<Option<u64>, String> {
@@ -108,6 +126,9 @@ pub fn recover(system: &dyn System, root: &Path) -> Result<usize, String> {
                 })
         })
         .transpose()?;
+    if let Some(original) = &registration {
+        check_registration_owner(system, &root, original)?;
+    }
     for mut files in candidates {
         if files.needs_restore() {
             files.restore().map_err(|_| "Recovery could not restore application files. Close Prism and retry; backups were kept.".to_string())?;

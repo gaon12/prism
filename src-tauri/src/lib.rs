@@ -1,3 +1,4 @@
+mod dictionary_store;
 mod clipboard_history;
 mod commands;
 mod filename_pattern;

@@ -3393,6 +3393,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
  "tempfile",
+ "tokio",
  "unicode-normalization",
  "walkdir",
  "windows-sys 0.61.2",

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { bridge } from './bridge';
+import { startupFailure } from './i18n';
 import { defaultSettings, emptySession, rememberQuery, scopeName, scopePathKey } from './types';
 import type { ClientSettings, RuntimeInfo, SearchScope, SearchSession } from './types';
 
@@ -104,7 +105,9 @@ export function submitSearch() {
   return flushSession();
 }
 export async function saveSettings(settings: ClientSettings) {
-  const saved = await bridge.saveSettings(settings);
+  const saved = await bridge.saveSettings(settings).catch((error: unknown) => {
+    throw new Error(startupFailure(settings.language, errorMessage(error)));
+  });
   update({ settings: saved });
   if (!saved.rememberSearch) setSession({ recentQueries: [] });
   if (state.session.scopeId && !saved.scopes.some((scope) => scope.id === state.session.scopeId))

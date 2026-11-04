@@ -2,6 +2,34 @@ import type { Language } from './types';
 
 // Each entry is Korean, English, Simplified Chinese, Traditional Chinese, Japanese.
 const messages = {
+  packagedStartup: [
+    'MSIX 버전은 Windows의 시작 앱 설정을 따릅니다. Windows에서 끈 경우 해당 설정에서 다시 켜세요.',
+    'The MSIX version follows Windows Startup apps settings. If disabled there, enable it there again.',
+    'MSIX版本遵循Windows启动应用设置。如果在那里关闭，请在那里重新启用。',
+    'MSIX版本遵循Windows啟動應用程式設定。如果在該處關閉，請在該處重新啟用。',
+    'MSIX版はWindowsのスタートアップアプリ設定に従います。そこで無効にした場合は、同じ設定で再度有効にしてください。',
+  ],
+  startupDisabledByUser: [
+    'Windows 설정 → 앱 → 시작 프로그램에서 Prism을 다시 켜세요.',
+    'Enable Prism again in Windows Settings → Apps → Startup.',
+    '请在Windows设置 → 应用 → 启动中重新启用Prism。',
+    '請在Windows設定 → 應用程式 → 啟動中重新啟用Prism。',
+    'Windowsの設定 → アプリ → スタートアップでPrismを再度有効にしてください。',
+  ],
+  startupDisabledByPolicy: [
+    '조직의 Windows 정책 때문에 자동 시작 설정을 변경할 수 없습니다.',
+    'Your organization’s Windows policy prevents changing startup settings.',
+    '组织的Windows策略不允许更改启动设置。',
+    '組織的Windows原則不允許變更啟動設定。',
+    '組織のWindowsポリシーによりスタートアップ設定を変更できません。',
+  ],
+  startupChangeFailed: [
+    'Windows 자동 시작 설정을 변경하지 못했습니다. Windows의 시작 프로그램 설정을 확인하고 다시 시도하세요.',
+    'Could not change Windows startup settings. Check Windows Startup apps settings and try again.',
+    '无法更改Windows启动设置。请检查Windows启动应用设置后重试。',
+    '無法變更Windows啟動設定。請檢查Windows啟動應用程式設定後重試。',
+    'Windowsのスタートアップ設定を変更できませんでした。設定を確認して再試行してください。',
+  ],
   aiDocuments: ['AI 문서', 'AI documents', 'AI文档', 'AI文件', 'AI文書'],
   portableStartup: [
     '포터블에서는 로그인 자동 실행을 사용하지 않습니다. 이동식 실행 파일 경로를 등록하지 않습니다.',
@@ -633,6 +661,15 @@ const messages = {
 export type MessageKey = keyof typeof messages;
 export function translate(language: Language, key: MessageKey) {
   return messages[key][['ko', 'en', 'zh-CN', 'zh-TW', 'ja'].indexOf(language)] ?? messages[key][0];
+}
+export function startupFailure(language: Language, error: string) {
+  const keys: Record<string, MessageKey> = {
+    STARTUP_DISABLED_BY_USER: 'startupDisabledByUser',
+    STARTUP_DISABLED_BY_POLICY: 'startupDisabledByPolicy',
+    STARTUP_CHANGE_FAILED: 'startupChangeFailed',
+    STARTUP_UNAVAILABLE: 'startupChangeFailed',
+  };
+  return keys[error] ? translate(language, keys[error]) : error;
 }
 export const languageNames: Record<Language, string> = {
   ko: '한국어',

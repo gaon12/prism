@@ -34,7 +34,7 @@ import {
   errorMessage,
   switchWindow,
 } from './lib/store';
-import { languageNames, translate } from './lib/i18n';
+import { languageNames, startupFailure, translate } from './lib/i18n';
 import { isComposing } from './lib/types';
 import type { RecommendedFolder, Tab } from './lib/types';
 
@@ -116,7 +116,9 @@ export default function App() {
   }, [runtime.shortcutError, settings.language]);
   useEffect(() => {
     if (runtime.startupError)
-      showToast(`${translate(settings.language, 'startOnLogin')}: ${runtime.startupError}`);
+      showToast(
+        `${translate(settings.language, 'startOnLogin')}: ${startupFailure(settings.language, runtime.startupError)}`,
+      );
   }, [runtime.startupError, settings.language]);
   useEffect(() => {
     if (native) return;

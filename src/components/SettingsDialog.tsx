@@ -239,6 +239,8 @@ export function SettingsDialog({
                 </label>
                 {runtime.installKind === 'portable' ? (
                   <p className="setting-footnote">{t('portableStartup')}</p>
+                ) : runtime.installKind === 'packaged' && !runtime.development ? (
+                  <p className="setting-footnote">{t('packagedStartup')}</p>
                 ) : runtime.development ? (
                   <p className="setting-footnote">{t('developmentStartup')}</p>
                 ) : null}

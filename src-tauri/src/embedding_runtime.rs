@@ -10,7 +10,7 @@ use std::{
     io::{Cursor, Read, Write},
     net::TcpListener,
     path::{Component, Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc, Mutex, MutexGuard,
@@ -125,21 +125,13 @@ impl RuntimeInstall {
 }
 
 struct ManagedServer {
-    child: Child,
+    child: crate::runtime_process::OwnedRuntimeProcess,
     endpoint: String,
     token: String,
-    // Closing this private job also reaps the server if Prism exits abnormally.
-    _job: crate::process_job::OwnedJobGuard,
-}
-impl Drop for ManagedServer {
-    fn drop(&mut self) {
-        // Only the Child created by this instance is terminated. Never kill by process name.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
 }
 struct Inner {
     root: PathBuf,
+    supervisor_exe: PathBuf,
     state: Mutex<EmbeddingStatus>,
     model: Mutex<Option<ModelInstall>>,
     runtime: Mutex<Option<RuntimeInstall>>,
@@ -158,6 +150,11 @@ fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl EmbeddingRuntime {
     pub fn new(data_dir: PathBuf) -> Result<Self, String> {
+        let supervisor_exe = std::env::current_exe()
+            .map_err(|_| "Cannot locate the embedding process supervisor".to_string())?;
+        Self::with_supervisor(data_dir, supervisor_exe)
+    }
+    fn with_supervisor(data_dir: PathBuf, supervisor_exe: PathBuf) -> Result<Self, String> {
         let root = data_dir.join("embedding");
         fs::create_dir_all(&root).map_err(|_| "Cannot create embedding storage".to_string())?;
         let model = read_manifest::<ModelInstall>(&root.join("model.json"))
@@ -167,6 +164,7 @@ impl EmbeddingRuntime {
         let service = Self {
             inner: Arc::new(Inner {
                 root,
+                supervisor_exe,
                 model: Mutex::new(model),
                 runtime: Mutex::new(runtime),
                 operation: Mutex::new(()),
@@ -340,22 +338,14 @@ impl EmbeddingRuntime {
                     command.creation_flags(0x08000000); // CREATE_NO_WINDOW
                 }
                 drop(reservation);
-                let job = crate::process_job::OwnedJobGuard::new()
-                    .map_err(|_| "Cannot create the embedding process owner".to_string())?;
-                let mut child = command.spawn().map_err(|_| {
+                let child = crate::runtime_process::OwnedRuntimeProcess::spawn(command, &self.inner.supervisor_exe).map_err(|_| {
                     "Cannot launch embedding CPU runtime; check this platform's runtime dependencies"
                         .to_string()
                 })?;
-                if job.assign(&child).is_err() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("Cannot bind the embedding server to this app process".into());
-                }
                 let mut owned = ManagedServer {
                     child,
                     endpoint,
                     token,
-                    _job: job,
                 };
                 let deadline = Instant::now() + Duration::from_secs(90);
                 loop {
@@ -385,7 +375,7 @@ impl EmbeddingRuntime {
                     }
                     thread::sleep(Duration::from_millis(150));
                 }
-                // A failed process (including a port race) is reaped by ManagedServer::drop.
+                // A failed process (including a port race) is reaped by its owner.
             }
             Err("Embedding CPU server exited during startup".into())
         })
@@ -1050,7 +1040,20 @@ mod tests {
         let runtime =
             PathBuf::from(std::env::var_os("PRISM_TEST_RUNTIME").expect("PRISM_TEST_RUNTIME"));
         let directory = tempfile::tempdir().unwrap();
-        let service = EmbeddingRuntime::new(directory.path().to_path_buf()).unwrap();
+        let make_service = || {
+            #[cfg(unix)]
+            {
+                let launcher = std::env::var_os("PRISM_TEST_SUPERVISOR")
+                    .expect("PRISM_TEST_SUPERVISOR must name a binary with the pre-GUI supervisor dispatcher");
+                EmbeddingRuntime::with_supervisor(directory.path().to_path_buf(), launcher.into())
+                    .unwrap()
+            }
+            #[cfg(not(unix))]
+            {
+                EmbeddingRuntime::new(directory.path().to_path_buf()).unwrap()
+            }
+        };
+        let service = make_service();
         service.import_model(&model).unwrap();
         assert!(!service.status().runtime_ready);
         service.import_runtime(&runtime).unwrap();
@@ -1105,7 +1108,7 @@ mod tests {
             .get(format!("{endpoint}/health"))
             .send()
             .is_err());
-        let reopened = EmbeddingRuntime::new(directory.path().to_path_buf()).unwrap();
+        let reopened = make_service();
         assert_eq!(reopened.status().phase, EmbeddingPhase::Ready);
         assert!(reopened.status().pid.is_none());
     }

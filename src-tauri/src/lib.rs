@@ -33,6 +33,8 @@ mod rag_commands;
 mod rag_service;
 mod rag_sources;
 mod rag_store;
+mod runtime_process;
+mod runtime_supervisor;
 mod secret_store;
 mod settings;
 mod update_backend;
@@ -45,6 +47,11 @@ mod update_service;
 mod update_state;
 mod vector_store;
 mod windows;
+
+/// Internal Unix helper mode. Dispatch before desktop initialization.
+pub fn run_runtime_supervisor() -> Option<i32> {
+    runtime_supervisor::dispatch()
+}
 
 use settings::{ClientSettings, SearchSession};
 use std::{fs, path::PathBuf, sync::Mutex};

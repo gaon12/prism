@@ -15,7 +15,8 @@
 //!   never looks up processes by name or PID, so it cannot touch another program.
 //! - Handles are wrapped in `OwnedHandle`, so they are always closed exactly once.
 //!
-//! On other operating systems the type exists but does nothing, so callers need no `cfg`.
+//! On other operating systems the type exists but does nothing. The runtime_process
+//! module uses a separate Unix supervisor instead of relying on this no-op type.
 
 #[cfg(windows)]
 mod imp {

@@ -1,4 +1,5 @@
 mod app_paths;
+mod automatic_search;
 mod clipboard_commands;
 mod clipboard_history;
 mod commands;
@@ -523,6 +524,7 @@ pub fn run() {
             content_commands::search_content,
             content_commands::search_semantic,
             content_commands::search_hybrid,
+            content_commands::search_automatic,
             content_commands::content_chunks,
             content_commands::content_file_action,
             rag_commands::rag_create,

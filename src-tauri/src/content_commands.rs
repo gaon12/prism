@@ -8,6 +8,37 @@ use std::path::PathBuf;
 use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_opener::OpenerExt;
 #[tauri::command]
+pub async fn search_automatic(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    query: String,
+    extension: String,
+    scope_id: Option<String>,
+    request_id: String,
+) -> Result<crate::automatic_search::AutomaticResponse, ContentError> {
+    let (semantic_enabled, hybrid) = {
+        let settings = state.settings.lock().map_err(|_| worker_error())?;
+        (settings.automatic_semantic, settings.hybrid_search)
+    };
+    let service = state.content.clone()?;
+    let label = window.label().to_string();
+    let cancel = service.begin_search(&label, &request_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = service.automatic_search(
+            &query,
+            &extension,
+            scope_id.as_deref(),
+            semantic_enabled,
+            hybrid,
+            &cancel,
+        );
+        service.cancel_search(&label, &request_id);
+        result
+    })
+    .await
+    .map_err(|_| worker_error())?
+}
+#[tauri::command]
 pub async fn search_hybrid(
     window: WebviewWindow,
     state: State<'_, AppState>,

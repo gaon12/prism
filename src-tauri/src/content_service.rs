@@ -867,7 +867,12 @@ impl ContentService {
         let values = if extension.trim().is_empty() {
             Vec::new()
         } else {
-            vec![extension.trim().into()]
+            extension
+                .split([',', ';', ' '])
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(String::from)
+                .collect()
         };
         let extensions =
             crate::content_store::normalized_extensions(&values).map_err(|error| ContentError {
@@ -997,6 +1002,76 @@ impl ContentService {
         response.filtered_out += before - response.hits.len();
         Ok(response)
     }
+    pub fn automatic_search(
+        &self,
+        query: &str,
+        extension: &str,
+        scope_id: Option<&str>,
+        semantic_enabled: bool,
+        hybrid: bool,
+        cancel: &AtomicBool,
+    ) -> Result<crate::automatic_search::AutomaticResponse> {
+        use crate::automatic_search::{AutomaticResponse, SemanticState};
+        if cancel.load(Ordering::Acquire) {
+            return Err(error("cancelled", "Search cancelled."));
+        }
+        if query.trim().is_empty() || query.len() > 4096 {
+            return Err(error("input", "Enter a search up to 4096 bytes."));
+        }
+        let running = semantic_enabled
+            && self
+                .inner
+                .embedding
+                .as_ref()
+                .is_ok_and(|model| model.status().phase == EmbeddingPhase::Running);
+        let mut semantic_state = if semantic_enabled {
+            SemanticState::NotRunning
+        } else {
+            SemanticState::Disabled
+        };
+        let mut failure = None;
+        if running {
+            let result = if hybrid {
+                self.hybrid_search(query, extension, scope_id, cancel)
+                    .map(AutomaticResponse::hybrid)
+            } else {
+                self.semantic_search(query, extension, scope_id, cancel)
+                    .map(AutomaticResponse::semantic)
+            };
+            match result {
+                Ok(value) => return Ok(value),
+                Err(value)
+                    if !crate::automatic_search::can_fallback_after_semantic_error(&value.code) =>
+                {
+                    return Err(value)
+                }
+                Err(value) => {
+                    semantic_state = SemanticState::Failed;
+                    failure = Some(value.code);
+                }
+            }
+        }
+        let mut skipped = false;
+        let keyword = match self.search(query, extension, scope_id, cancel) {
+            Ok(value) => value,
+            Err(value) if value.code.eq_ignore_ascii_case("invalidInput") => {
+                skipped = true;
+                ContentSearchResponse {
+                    hits: Vec::new(),
+                    candidate_count: 0,
+                    candidate_limit: 0,
+                    hard_limit_reached: false,
+                }
+            }
+            Err(value) => return Err(value),
+        };
+        if cancel.load(Ordering::Acquire) {
+            return Err(error("cancelled", "Search cancelled."));
+        }
+        let mut result = AutomaticResponse::keyword(keyword, semantic_state, failure);
+        result.keyword_skipped = skipped;
+        Ok(result)
+    }
     pub fn hybrid_search(
         &self,
         query: &str,
@@ -1081,6 +1156,85 @@ impl ContentService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_without_a_running_model_keeps_authorized_keywords_and_explicit_limits() {
+        use crate::automatic_search::{AutomaticRanking, SemanticState};
+        let root = tempfile::tempdir().unwrap();
+        let docs = root.path().join("docs");
+        fs::create_dir(&docs).unwrap();
+        fs::write(docs.join("guide.md"), "본문토큰 자료입니다.").unwrap();
+        let service = ContentService::open(
+            &root.path().join("data"),
+            Err("Synthetic model unavailable".into()),
+            |_| {},
+        )
+        .unwrap();
+        service
+            .configure(vec![SearchScope {
+                id: "docs".into(),
+                name: "docs".into(),
+                path: docs.to_string_lossy().into(),
+                filename_enabled: false,
+                content_enabled: true,
+                external_allowed: false,
+            }])
+            .unwrap();
+        wait_ready(&service);
+        let cancel = AtomicBool::new(false);
+        let value = service
+            .automatic_search("본문토큰", "", Some("docs"), true, true, &cancel)
+            .unwrap();
+        assert_eq!(value.ranking, AutomaticRanking::Keyword);
+        assert_eq!(value.semantic_state, SemanticState::NotRunning);
+        assert!(!value.keyword_skipped);
+        assert!(!value.hits.is_empty());
+        assert!(!service
+            .automatic_search("본문토큰", "pdf,.MD", Some("docs"), false, true, &cancel)
+            .unwrap()
+            .hits
+            .is_empty());
+        assert!(service
+            .automatic_search("본문토큰", "pdf; txt", Some("docs"), false, true, &cancel)
+            .unwrap()
+            .hits
+            .is_empty());
+        assert_eq!(
+            service
+                .automatic_search("본문토큰", "", Some("docs"), false, true, &cancel)
+                .unwrap()
+                .semantic_state,
+            SemanticState::Disabled
+        );
+        assert!(service
+            .automatic_search("본문토큰", "", Some("other"), true, true, &cancel)
+            .unwrap()
+            .hits
+            .is_empty());
+        let long = (0..33)
+            .map(|index| format!("term{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let value = service
+            .automatic_search(&long, "", Some("docs"), true, true, &cancel)
+            .unwrap();
+        assert!(value.keyword_skipped);
+        assert_eq!(value.ranking, AutomaticRanking::Keyword);
+        assert!(value.hits.is_empty());
+        assert!(service
+            .automatic_search("본문토큰", "../md", None, true, true, &cancel)
+            .is_err());
+        assert!(service
+            .automatic_search("", "", None, true, true, &cancel)
+            .is_err());
+        cancel.store(true, Ordering::Release);
+        assert_eq!(
+            service
+                .automatic_search("본문토큰", "", None, true, true, &cancel)
+                .unwrap_err()
+                .code,
+            "cancelled"
+        );
+    }
     fn wait_ready(service: &ContentService) {
         let until = Instant::now() + Duration::from_secs(10);
         while Instant::now() < until {

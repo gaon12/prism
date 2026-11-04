@@ -1,0 +1,261 @@
+# Build artifacts first. Publishing stays a separate, manually reviewed draft.
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      create_draft:
+        description: Create a draft release (select an existing matching version tag)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: '2'
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: windows-latest
+            verifier: tools/update-verifier/target/debug/prism-update-verifier.exe
+          - platform: macos
+            runner: macos-latest
+            verifier: tools/update-verifier/target/debug/prism-update-verifier
+          - platform: linux
+            runner: ubuntu-22.04
+            verifier: tools/update-verifier/target/debug/prism-update-verifier
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      PRISM_UPDATER_PUBLIC_KEY: ${{ vars.PRISM_UPDATER_PUBLIC_KEY }}
+      PRISM_UPDATE_VERIFIER: ${{ github.workspace }}/${{ matrix.verifier }}
+      PRISM_MSIX_PACKAGE_VERSION: ${{ vars.PRISM_MSIX_PACKAGE_VERSION }}
+      APPIMAGE_EXTRACT_AND_RUN: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Check versions, tag and updater key configuration
+        id: plan
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: node scripts/release-config.mjs --platform '${{ matrix.platform }}' --output "$RUNNER_TEMP/prism-build.json"
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - name: Install universal macOS targets
+        if: matrix.platform == 'macos'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: |
+            src-tauri
+            installer/src-tauri
+            installer/core
+            tools/update-verifier
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: '34.1'
+          repo-token: ${{ github.token }}
+      - name: Install Linux system libraries
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libclang-dev libssl-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - run: npm ci
+      - name: Test the independent artifact verifier
+        run: |
+          cargo test --manifest-path tools/update-verifier/Cargo.toml --locked
+          cargo clippy --manifest-path tools/update-verifier/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Check client and release tooling
+        run: |
+          npm run format:check
+          npm run check
+          npm test
+          npm run test:release
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo fmt --manifest-path tools/update-verifier/Cargo.toml --check
+      - name: Check Windows package creation and setup core
+        if: matrix.platform == 'windows'
+        run: |
+          npm run test:msix
+          cargo test --manifest-path installer/core/Cargo.toml --locked
+          cargo clippy --manifest-path installer/core/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Build Windows app without NSIS
+        if: matrix.platform == 'windows'
+        env:
+          BUILD_CONFIG: ${{ steps.plan.outputs.config }}
+        run: npm run tauri -- build --no-bundle --config "$BUILD_CONFIG" -- --locked
+      - name: Build universal macOS app and DMG
+        if: matrix.platform == 'macos'
+        env:
+          BUILD_CONFIG: ${{ steps.plan.outputs.config }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri -- build --target universal-apple-darwin --bundles app,dmg --config "$BUILD_CONFIG" -- --locked
+      - name: Build Linux AppImage
+        if: matrix.platform == 'linux'
+        env:
+          BUILD_CONFIG: ${{ steps.plan.outputs.config }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri -- build --bundles appimage --config "$BUILD_CONFIG" -- --locked
+      - name: Test the native app library
+        run: cargo test --manifest-path src-tauri/Cargo.toml --release --lib --locked
+      - name: Verify production UI interactions
+        if: matrix.platform == 'linux'
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e:bundle
+      - name: Build the Windows setup with the release payload
+        if: matrix.platform == 'windows'
+        run: cargo build --manifest-path installer/src-tauri/Cargo.toml --release --locked
+      - name: Collect Windows setup
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          New-Item -ItemType Directory out -ErrorAction Stop | Out-Null
+          Copy-Item -LiteralPath installer/src-tauri/target/release/prism-setup.exe -Destination "out/Prism_${env:VERSION}_x64-setup.exe" -ErrorAction Stop
+      - name: Package Windows portable copy
+        if: matrix.platform == 'windows'
+        run: npm run package:portable -- --out out
+      - name: Build unsigned MSIX inspection artifact
+        if: matrix.platform == 'windows'
+        env:
+          MSIX_VERSION: ${{ steps.plan.outputs.msix_version }}
+        run: npm run package:msix -- --out inspection --package-version "$MSIX_VERSION"
+      - name: Sign the custom Windows updater artifact with its version
+        if: matrix.platform == 'windows' && steps.plan.outputs.signed == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri -- signer sign --app-version "$VERSION" "out/Prism_${VERSION}_x64-setup.exe"
+      - name: Collect macOS downloads
+        if: matrix.platform == 'macos'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          SIGNED: ${{ steps.plan.outputs.signed }}
+        run: |
+          mkdir out
+          bundle=src-tauri/target/universal-apple-darwin/release/bundle
+          images=("$bundle"/dmg/*.dmg)
+          if [ "${#images[@]}" -ne 1 ] || [ ! -f "${images[0]}" ]; then exit 1; fi
+          cp "${images[0]}" "out/Prism_${VERSION}_universal.dmg"
+          if [ "$SIGNED" = true ]; then
+            cp "$bundle/macos/Prism.app.tar.gz" "out/Prism_${VERSION}_universal.app.tar.gz"
+            cp "$bundle/macos/Prism.app.tar.gz.sig" "out/Prism_${VERSION}_universal.app.tar.gz.sig"
+          fi
+      - name: Collect Linux download
+        if: matrix.platform == 'linux'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          SIGNED: ${{ steps.plan.outputs.signed }}
+        run: |
+          mkdir out
+          images=(src-tauri/target/release/bundle/appimage/*.AppImage)
+          if [ "${#images[@]}" -ne 1 ] || [ ! -f "${images[0]}" ]; then exit 1; fi
+          cp "${images[0]}" "out/Prism_${VERSION}_amd64.AppImage"
+          if [ "$SIGNED" = true ]; then cp "${images[0]}.sig" "out/Prism_${VERSION}_amd64.AppImage.sig"; fi
+      - name: Verify updater artifact against the app's public key
+        if: steps.plan.outputs.signed == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          case "$PLATFORM" in
+            windows) file="Prism_${VERSION}_x64-setup.exe" ;;
+            macos) file="Prism_${VERSION}_universal.app.tar.gz" ;;
+            linux) file="Prism_${VERSION}_amd64.AppImage" ;;
+            *) exit 1 ;;
+          esac
+          "$PRISM_UPDATE_VERIFIER" --version "$VERSION" --file "out/$file"
+      - name: Hash downloads
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: node scripts/release-checksums.mjs --dir out --version "$VERSION" --write
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: downloads-${{ matrix.platform }}
+          path: out/*
+          if-no-files-found: error
+          compression-level: 0
+      - name: Keep unsigned MSIX separate from release downloads
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: inspection-windows-msix
+          path: inspection/*
+          if-no-files-found: error
+          compression-level: 0
+
+  draft:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.create_draft)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      PRISM_UPDATER_PUBLIC_KEY: ${{ vars.PRISM_UPDATER_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: downloads-*
+          path: dist-release
+          merge-multiple: true
+      - name: Recheck release identity and download hashes
+        run: |
+          npm run version:check
+          [ "$GITHUB_REPOSITORY" = 'gaon12/prism' ]
+          version=$(node -p "require('./package.json').version")
+          [ "$GITHUB_REF" = "refs/tags/v$version" ]
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          node scripts/release-checksums.mjs --dir dist-release --version "$version" --check --complete
+      - name: Build the manifest verifier
+        if: env.PRISM_UPDATER_PUBLIC_KEY != ''
+        run: cargo build --manifest-path tools/update-verifier/Cargo.toml --release --locked
+      - name: Generate a complete, verified updater manifest
+        if: env.PRISM_UPDATER_PUBLIC_KEY != ''
+        run: node scripts/make-latest-json.mjs --dir dist-release --version "$VERSION" --repo "$GITHUB_REPOSITORY" --verifier tools/update-verifier/target/release/prism-update-verifier
+      - name: Create a draft without publishing or replacing an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s\n' "Prism $VERSION" "" \
+            'Windows: custom setup and portable ZIP. macOS: universal DMG. Linux: AppImage.' \
+            'MSIX is a separate unsigned CI inspection artifact, pending a signing/distribution choice.' \
+            'Windows Authenticode and Apple notarization are not configured for this build.' \
+            'Review platform smoke tests, prerequisites and checksums before publishing.' > "$RUNNER_TEMP/release-notes.md"
+          extra=()
+          if [[ "$VERSION" == *-* ]]; then extra+=(--prerelease); fi
+          gh release create "v$VERSION" dist-release/* --draft --verify-tag "${extra[@]}" --title "Prism $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"

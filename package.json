@@ -14,6 +14,12 @@
     "test:version": "node --test tests/scripts/version.test.mjs",
     "test:manifest": "node --test tests/scripts/manifest.test.mjs",
     "release:manifest": "node scripts/make-latest-json.mjs",
+    "release:config": "node scripts/release-config.mjs",
+    "release:checksums": "node scripts/release-checksums.mjs",
+    "test:release-config": "node --test tests/scripts/release-config.test.mjs",
+    "test:release-checksums": "node --test tests/scripts/release-checksums.test.mjs",
+    "build:update-verifier": "cargo build --manifest-path tools/update-verifier/Cargo.toml --locked",
+    "test:release": "npm run build:update-verifier && node --test tests/scripts/version.test.mjs tests/scripts/manifest.test.mjs tests/scripts/release-config.test.mjs tests/scripts/release-checksums.test.mjs tests/scripts/release-signing.test.mjs",
     "test:setup-core": "cargo test --manifest-path installer/core/Cargo.toml",
     "build:setup": "cargo build --manifest-path installer/src-tauri/Cargo.toml --release",
     "test:setup": "node tests/native/setup.mjs",
@@ -35,7 +41,7 @@
     "package:portable": "node scripts/package-portable.mjs",
     "package:msix": "node scripts/package-msix.mjs",
     "test:msix": "node --test tests/scripts/msix.test.mjs",
-    "format:check": "prettier --check src tests vite.config.ts playwright.config.ts package.json tsconfig*.json index.html .prettierrc.json README.md"
+    "format:check": "prettier --check src tests scripts .github tools/update-verifier/README.md vite.config.ts playwright.config.ts package.json tsconfig*.json index.html .prettierrc.json README.md"
   },
   "dependencies": {
     "@cortex-js/compute-engine": "0.173.0",

@@ -1,4 +1,5 @@
 use crate::filename_pattern::{initial_projection, FilenamePattern};
+use crate::keyboard_pattern::{keyboard_projection, KeyboardPattern};
 use crate::settings::SearchScope;
 use chrono::{Datelike, Local, NaiveDate, TimeZone};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -59,6 +60,7 @@ struct Entry {
     extension: String,
     initials_path: Option<String>,
     initials_name: Option<String>,
+    keyboard_path: Option<String>,
     seen: u64,
 }
 #[derive(Clone, Default, Serialize)]
@@ -96,6 +98,7 @@ pub struct SearchResponse {
     pub results: Vec<FileResult>,
     pub total: usize,
     pub status: IndexStatus,
+    pub keyboard_corrected: bool,
 }
 
 impl FileIndex {
@@ -342,6 +345,7 @@ impl FileIndex {
                         let key = path_key(path);
                         let name = entry.file_name().to_string_lossy().to_string();
                         batch.push(Entry {
+                            keyboard_path: keyboard_projection(&normalized(&key)),
                             initials_path: initial_projection(&normalized(&key)),
                             initials_name: initial_projection(&normalized(&name)),
                             seen: generation,
@@ -406,11 +410,22 @@ impl FileIndex {
         scope_id: Option<&str>,
         limit: usize,
     ) -> Result<SearchResponse, String> {
+        self.search_with_keyboard(query, extension, scope_id, limit, true)
+    }
+    pub fn search_with_keyboard(
+        &self,
+        query: &str,
+        extension: &str,
+        scope_id: Option<&str>,
+        limit: usize,
+        allow_keyboard: bool,
+    ) -> Result<SearchResponse, String> {
         let query = Query::parse(query, extension)?;
         let catalog = self.catalog.read().map_err(|_| "File index unavailable.")?;
         let root = scope_id.and_then(|id| catalog.roots.iter().find(|root| root.id == id));
         let mut heap = BinaryHeap::new();
         let mut total = 0;
+        let mut keyboard_corrected = false;
         if scope_id.is_none() || root.is_some() {
             for entry in catalog.entries.values() {
                 if root.is_some_and(|root| !under(&entry.key, &root.key)) || !query.matches(entry) {
@@ -426,7 +441,34 @@ impl FileIndex {
                 }
             }
         }
+        if total == 0
+            && allow_keyboard
+            && query.keyboard_terms.iter().any(Option::is_some)
+            && (scope_id.is_none() || root.is_some())
+        {
+            for entry in catalog.entries.values() {
+                if root.is_some_and(|root| !under(&entry.key, &root.key))
+                    || !query.matches_keyboard(entry)
+                {
+                    continue;
+                }
+                total += 1;
+                heap.push(Ranked {
+                    rank: if query.keyboard_name_matches(entry) {
+                        6
+                    } else {
+                        7
+                    },
+                    entry,
+                });
+                if heap.len() > limit.clamp(1, 500) {
+                    heap.pop();
+                }
+            }
+            keyboard_corrected = total > 0;
+        }
         Ok(SearchResponse {
+            keyboard_corrected,
             results: heap
                 .into_sorted_vec()
                 .into_iter()
@@ -489,6 +531,7 @@ struct Query {
     extensions: Vec<HashSet<String>>,
     dates: Vec<(i64, i64)>,
     exact: String,
+    keyboard_terms: Vec<Option<KeyboardPattern>>,
 }
 impl Query {
     fn parse(query: &str, extension: &str) -> Result<Self, String> {
@@ -500,6 +543,7 @@ impl Query {
             extensions: vec![],
             dates: vec![],
             exact: normalized(query.trim()),
+            keyboard_terms: vec![],
         };
         if !extension.trim().is_empty() {
             parsed.extensions.push(Self::extensions(extension)?);
@@ -535,6 +579,7 @@ impl Query {
                 parsed.dates.push(date_range(date)?);
             } else {
                 parsed.terms.push(FilenamePattern::new(lower));
+                parsed.keyboard_terms.push(KeyboardPattern::new(&token));
             }
         }
         parsed.exact = parsed
@@ -566,10 +611,37 @@ impl Query {
         self.terms
             .iter()
             .all(|term| term.matches(&entry.searchable_path, entry.initials_path.as_deref()))
+            && self.filters_match(entry)
+    }
+    fn matches_keyboard(&self, entry: &Entry) -> bool {
+        self.filters_match(entry)
             && self
-                .extensions
+                .terms
                 .iter()
-                .all(|set| !entry.result.is_dir && set.contains(&entry.extension))
+                .zip(&self.keyboard_terms)
+                .all(|(term, keyboard)| {
+                    term.matches(&entry.searchable_path, entry.initials_path.as_deref())
+                        || keyboard.as_ref().is_some_and(|pattern| {
+                            pattern.matches(&entry.searchable_path, entry.keyboard_path.as_deref())
+                        })
+                })
+    }
+    fn keyboard_name_matches(&self, entry: &Entry) -> bool {
+        let projection = keyboard_projection(&entry.name);
+        self.terms
+            .iter()
+            .zip(&self.keyboard_terms)
+            .all(|(term, keyboard)| {
+                term.matches(&entry.name, entry.initials_name.as_deref())
+                    || keyboard
+                        .as_ref()
+                        .is_some_and(|pattern| pattern.matches(&entry.name, projection.as_deref()))
+            })
+    }
+    fn filters_match(&self, entry: &Entry) -> bool {
+        self.extensions
+            .iter()
+            .all(|set| !entry.result.is_dir && set.contains(&entry.extension))
             && self.dates.iter().all(|(start, end)| {
                 entry
                     .result
@@ -757,5 +829,53 @@ mod tests {
             1
         );
         assert_eq!(index.search("ㄱㅁㅅ", "txt", None, 20).unwrap().total, 1);
+    }
+    #[test]
+    fn keyboard_fallback_runs_only_after_filtered_literal_results_are_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "공문서.hwpx",
+            "Prism-guide.txt",
+            "쌀.md",
+            "살.md",
+            "rhdanstj-note.pdf",
+        ] {
+            fs::write(dir.path().join(name), "").unwrap();
+        }
+        let index = FileIndex::new();
+        index.configure(vec![scope(dir.path(), "all")]);
+        wait(&index, || index.status().unwrap().count == 6);
+        let literal = index.search("rhdanstj", "", None, 20).unwrap();
+        assert_eq!(literal.total, 1);
+        assert!(!literal.keyboard_corrected);
+        assert_eq!(literal.results[0].name, "rhdanstj-note.pdf");
+        let corrected = index.search("rhdanstj ext:hwpx", "", None, 20).unwrap();
+        assert_eq!(corrected.total, 1);
+        assert!(corrected.keyboard_corrected);
+        assert_eq!(corrected.results[0].name, "공문서.hwpx");
+        assert_eq!(
+            index
+                .search_with_keyboard("rhdanstj", "hwpx", None, 20, false)
+                .unwrap()
+                .total,
+            0
+        );
+        assert_eq!(
+            index.search("ㅖㄱㅑ느", "", None, 20).unwrap().results[0].name,
+            "Prism-guide.txt"
+        );
+        assert_eq!(
+            index.search("Tkf", "md", None, 20).unwrap().results[0].name,
+            "쌀.md"
+        );
+        assert_eq!(
+            index.search("tkf", "md", None, 20).unwrap().results[0].name,
+            "살.md"
+        );
+        let missing = index
+            .search("rhdanstj", "hwpx", Some("missing"), 20)
+            .unwrap();
+        assert_eq!(missing.total, 0);
+        assert!(!missing.keyboard_corrected);
     }
 }

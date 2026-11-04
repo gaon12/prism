@@ -1,6 +1,7 @@
 mod commands;
 mod filename_pattern;
 mod index;
+mod keyboard_pattern;
 mod settings;
 mod windows;
 

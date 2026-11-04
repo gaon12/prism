@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import {
   FileText,
   Folder,
@@ -19,6 +19,7 @@ import { EmptyState } from '../components/EmptyState';
 import './results.css';
 
 export function UtilityResult({ search }: { search: SearchController }) {
+  const accuracyId = useId();
   const { request, utility, t } = search;
   const kind =
     request.kind === 'calculator' ? 'calculator' : request.kind === 'units' ? 'units' : 'web';
@@ -58,9 +59,21 @@ export function UtilityResult({ search }: { search: SearchController }) {
         </p>
       ) : utility?.answer ? (
         <>
-          <output className="utility-value" aria-live="polite">
+          <output
+            className="utility-value"
+            aria-live="polite"
+            aria-describedby={utility.answer.accuracy ? accuracyId : undefined}
+          >
             {utility.answer.value}
           </output>
+          {utility.answer.accuracy ? (
+            <p id={accuracyId} className="accuracy-note">
+              {t(utility.answer.accuracy.rounded ? 'roundedValue' : 'approximateValue').replace(
+                '{digits}',
+                String(utility.answer.accuracy.significantDigits),
+              )}
+            </p>
+          ) : null}
           {utility.answer.interpretation ? (
             <p className="interpreted-expression">
               {t('interpretedExpression')}: <code>{utility.answer.interpretation}</code>

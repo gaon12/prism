@@ -9,6 +9,7 @@ export interface UtilityAnswer {
   value: string;
   exact?: string;
   interpretation?: string;
+  accuracy?: { significantDigits: number; rounded: boolean };
 }
 export function parseInput(query: string): UtilityRequest {
   const trimmed = query.trim();

@@ -42,7 +42,11 @@ describe('general calculator', () => {
   it('honors precedence, exact fractions, decimals, roots and angle settings', () => {
     expect(calculate('2+3*4').value).toBe('14');
     expect(calculate('0.1+0.2').value).toBe('0.3');
-    expect(calculate('1/3')).toEqual({ value: '0.333333333333', exact: '1/3' });
+    expect(calculate('1/3')).toMatchObject({
+      value: '0.333333333333',
+      exact: '1/3',
+      accuracy: { significantDigits: 12, rounded: true },
+    });
     expect(Number(calculate('sqrt(2)').value)).toBeCloseTo(Math.SQRT2, 11);
     expect(calculate('sin(pi/2)').value).toBe('1');
     expect(calculate('sin(90)', 12, 'deg').value).toBe('1');
@@ -68,6 +72,18 @@ describe('general calculator', () => {
     expect(calculate('10^400').value).toBe('1e+400');
     expect(calculate('10^-400').value).toBe('1e-400');
     expect(calculate('1000!').value).toMatch(/^4\.02387260077e\+2567$/);
+  });
+  it('distinguishes actual rounding from exact values and scientific formatting', () => {
+    for (const input of ['2', '1/8', '0.1+0.2', '10^400'])
+      expect(calculate(input).accuracy, input).toBeUndefined();
+    expect(calculate('1/3', 6).accuracy).toEqual({ significantDigits: 6, rounded: true });
+    expect(calculate('sqrt(2)').accuracy?.rounded).toBe(true);
+    expect(calculate('123456789', 6)).toMatchObject({
+      value: '123457000',
+      accuracy: { significantDigits: 6, rounded: true },
+    });
+    expect(convertUnits('20 km/L to L/100km').accuracy).toBeUndefined();
+    expect(convertUnits('30 mpg to L/100km').accuracy?.rounded).toBe(true);
   });
 });
 describe('ten unit categories', () => {

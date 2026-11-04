@@ -169,6 +169,12 @@ mark {
   padding-bottom: 18px;
   overflow-wrap: anywhere;
 }
+.accuracy-note {
+  color: var(--accent-text);
+  font-size: 0.86rem;
+  line-height: 1.8;
+  padding-bottom: 16px;
+}
 .interpreted-expression {
   color: var(--muted);
   font-size: 0.88rem;

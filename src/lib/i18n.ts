@@ -2,6 +2,20 @@ import type { Language } from './types';
 
 // Each entry is Korean, English, Simplified Chinese, Traditional Chinese, Japanese.
 const messages = {
+  roundedValue: [
+    '근삿값 · 유효숫자 {digits}자리로 반올림',
+    'Approximate · rounded to {digits} significant digits',
+    '近似值 · 四舍五入至 {digits} 位有效数字',
+    '近似值 · 四捨五入至 {digits} 位有效數字',
+    '近似値 · 有効数字{digits}桁に丸めています',
+  ],
+  approximateValue: [
+    '근삿값 · 유효숫자 {digits}자리까지 표시',
+    'Approximate · displayed to {digits} significant digits',
+    '近似值 · 显示至 {digits} 位有效数字',
+    '近似值 · 顯示至 {digits} 位有效數字',
+    '近似値 · 有効数字{digits}桁まで表示',
+  ],
   interpretedExpression: [
     '해석한 식',
     'Interpreted expression',

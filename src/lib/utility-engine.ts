@@ -1,4 +1,4 @@
-import { ComputeEngine } from '@cortex-js/compute-engine/core';
+import { ComputeEngine, isNumber } from '@cortex-js/compute-engine/core';
 import type { MathJsonExpression as Expression } from '@cortex-js/compute-engine/math-json';
 import { parse, unit, format, bignumber, OperatorNode } from 'mathjs';
 import type { MathNode } from 'mathjs';
@@ -165,8 +165,13 @@ export function calculate(
     upperExp: 15,
   });
   const exactText = exact.toString();
+  const rounded = !numeric.eq(bignumber(value));
+  const needsApproximation = rounded || !isNumber(exact);
   return {
     value,
+    ...(needsApproximation
+      ? { accuracy: { significantDigits: Math.max(6, Math.min(15, precision)), rounded } }
+      : {}),
     ...(exactText !== value && exactText.length < 100 ? { exact: exactText } : {}),
     ...(implicit
       ? { interpretation: interpreted.toString({ parenthesis: 'all', implicit: 'show' }) }
@@ -275,5 +280,8 @@ export function convertUnits(input: string, precision = 12): UtilityAnswer {
   }
   return {
     value: `${numberText(result, precision)} ${to.canonical === 'mpg' ? 'mpg (US)' : to.canonical.replace('deg', '°').replace('^2', '²').replace('^3', '³')}`,
+    ...(bignumber(result).eq(bignumber(numberText(result, precision)))
+      ? {}
+      : { accuracy: { significantDigits: Math.max(6, Math.min(15, precision)), rounded: true } }),
   };
 }

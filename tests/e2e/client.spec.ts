@@ -209,12 +209,14 @@ test('calculates in a worker, converts units, reports errors and discards stale 
   const input = page.getByRole('textbox', { name: '검색어', exact: true });
   await input.fill('= 2+3*4');
   await expect(page.locator('.utility-value')).toHaveText('14');
+  await expect(page.locator('.accuracy-note')).toHaveCount(0);
   await page.getByRole('button', { name: '복사', exact: true }).click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('14');
   await page.screenshot({ path: join(evidence, 'calculator-main.png') });
   await input.fill('= 1/3');
   await expect(page.locator('.utility-value')).toHaveText('0.333333333333');
   await expect(page.locator('.exact-value')).toContainText('1/3');
+  await expect(page.locator('.accuracy-note')).toHaveText('근삿값 · 유효숫자 12자리로 반올림');
   await page.getByRole('button', { name: /빠른 검색/ }).click();
   await expect(page.locator('.utility-value')).toHaveText('0.333333333333');
   await input.fill('=48/2(9+3)');

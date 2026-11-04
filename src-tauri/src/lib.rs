@@ -17,6 +17,7 @@ mod keyboard_pattern;
 mod model_commands;
 mod process_job;
 mod rag_service;
+mod rag_store;
 mod secret_store;
 mod settings;
 mod vector_store;

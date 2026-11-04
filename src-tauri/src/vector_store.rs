@@ -123,7 +123,9 @@ fn error(code: VectorStoreErrorCode, message: &str) -> VectorStoreError {
         message: message.into(),
     }
 }
-fn storage(_: impl std::fmt::Debug) -> VectorStoreError {
+fn storage(_value: impl std::fmt::Debug) -> VectorStoreError {
+    #[cfg(test)]
+    eprintln!("Synthetic-test Lance storage failure: {_value:?}");
     error(
         VectorStoreErrorCode::Storage,
         "Lance vector repository operation failed",
@@ -150,7 +152,9 @@ fn content_error(value: ContentStoreError) -> VectorStoreError {
         _ => storage(value),
     }
 }
-fn commit_unknown(_: impl std::fmt::Debug) -> VectorStoreError {
+fn commit_unknown(_value: impl std::fmt::Debug) -> VectorStoreError {
+    #[cfg(test)]
+    eprintln!("Synthetic-test Lance commit failure: {_value:?}");
     error(
         VectorStoreErrorCode::CommitUnknown,
         "Lance vector commit requires reconciliation before retry",
@@ -1111,6 +1115,36 @@ mod tests {
             );
         }
         assert_eq!(normalized_vector(&[3.0, 4.0], 2).unwrap(), vec![0.6, 0.8]);
+    }
+
+    #[test]
+    fn native_lance_commits_under_long_portable_data_paths() {
+        runtime(async {
+            let dir = tempfile::Builder::new()
+                .prefix("prism-portable-regression-")
+                .tempdir()
+                .unwrap();
+            let root = dir.path().join("sources");
+            let roots = vec![root.clone()];
+            let content = ContentStore::open(&dir.path().join("content.sqlite")).unwrap();
+            let (document, chunks) =
+                source(&root, "source.txt", "portable source", &content, &roots);
+            let spec = model(2);
+            let path = dir
+                .path()
+                .join("unpacked/Prism_0.1.0_x64_portable/PrismData/content/vectors");
+            let store = VectorStore::open(&path, spec.clone()).await.unwrap();
+            store
+                .replace_document(
+                    batch(&document, &chunks, &spec.model_fingerprint, vec![1.0, 0.0]),
+                    &content,
+                    &roots,
+                    &cancel(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(store.table.count_rows(None).await.unwrap(), 1);
+        });
     }
 
     #[test]

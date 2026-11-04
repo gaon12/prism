@@ -56,7 +56,10 @@ export async function launch(dataDir, options = {}) {
       );
       return main && quick;
     }, 'bundled main and Spotlight windows');
-    await main.getByRole('heading', { name: '파일 검색', exact: true }).waitFor();
+    if (options.readyHeading !== false)
+      await main
+        .getByRole('heading', { name: options.readyHeading ?? '파일 검색', exact: true })
+        .waitFor();
     assert.equal(await main.title(), 'Prism');
     const errors = [];
     for (const page of [main, quick]) {

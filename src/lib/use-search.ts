@@ -7,7 +7,7 @@ import { isComposing } from './types';
 import type { IndexStatus, SearchResponse } from './types';
 import { parseInput } from './utilities';
 import type { UtilityAnswer } from './utilities';
-import { clipboard, useClipboard } from './clipboard';
+import { pasteClipboard, useClipboard } from './clipboard';
 import { useDictionary } from './dictionary';
 import { useContentSearch } from './content';
 
@@ -212,8 +212,8 @@ export function useSearch(quick = false) {
     if (request.kind === 'web' && request.input)
       await bridge.webSearch(request.provider!, request.input);
     else if (request.kind === 'clipboard' && clips.selected) {
-      await clipboard.copy(clips.selected.id);
-      showToast(t('copied'));
+      await pasteClipboard(clips.selected.id, settings.language);
+      return;
     } else if (request.kind === 'dictionary') {
       await dict.lookup();
       return;

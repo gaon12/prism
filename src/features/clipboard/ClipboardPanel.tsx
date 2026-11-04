@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Clipboard, Copy, Pin, Trash2, Pause, Play, Settings2 } from 'lucide-react';
-import { clipboard } from '../../lib/clipboard';
+import { Clipboard, ClipboardPaste, Copy, Pin, Trash2, Pause, Play, Settings2 } from 'lucide-react';
+import { clipboard, pasteClipboard } from '../../lib/clipboard';
 import type { ClipboardController, ClipKind } from '../../lib/clipboard';
 import { native } from '../../lib/bridge';
 import { useClient, saveSettings, showToast, errorMessage } from '../../lib/store';
@@ -337,7 +337,9 @@ export function ClipboardPanel({
                     aria-selected={selectedId === item.id}
                     className="clipboard-row"
                     onClick={() => controller.select(item.id)}
-                    onDoubleClick={() => void run(() => clipboard.copy(item.id), true)}
+                    onDoubleClick={() => {
+                      if (!busy) void run(() => pasteClipboard(item.id, settings.language));
+                    }}
                   >
                     <span className="clipboard-kind">
                       {item.pinned ? <Pin size={14} /> : t(item.kind)}
@@ -353,6 +355,14 @@ export function ClipboardPanel({
                 <div className="clipboard-actions">
                   <button
                     className="button primary"
+                    disabled={busy}
+                    onClick={() => void run(() => pasteClipboard(selected.id, settings.language))}
+                  >
+                    <ClipboardPaste size={15} />
+                    {t('paste')}
+                  </button>
+                  <button
+                    className="button"
                     disabled={busy}
                     onClick={() => void run(() => clipboard.copy(selected.id), true)}
                   >

@@ -148,15 +148,15 @@ export function QuickWindow() {
                 ) : null}
                 <kbd>Enter</kbd>{' '}
                 {t(
-                  search.request.kind === 'calculator' ||
-                    search.request.kind === 'units' ||
-                    search.request.kind === 'clipboard'
+                  search.request.kind === 'calculator' || search.request.kind === 'units'
                     ? 'copy'
-                    : search.request.kind === 'dictionary'
-                      ? 'lookup'
-                      : search.request.kind === 'web'
-                        ? 'web'
-                        : 'open',
+                    : search.request.kind === 'clipboard'
+                      ? 'paste'
+                      : search.request.kind === 'dictionary'
+                        ? 'lookup'
+                        : search.request.kind === 'web'
+                          ? 'web'
+                          : 'open',
                 )}
               </span>
               <button className="text-button" onClick={openMain}>

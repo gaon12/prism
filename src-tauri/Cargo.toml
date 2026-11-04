@@ -3,7 +3,7 @@ name = "prism"
 version = "0.1.0"
 description = "Prism desktop search workspace"
 edition = "2021"
-rust-version = "1.90"
+rust-version = "1.94"
 
 [lib]
 name = "prism_lib"
@@ -39,6 +39,10 @@ encoding_rs = "0.8"
 pdf-extract = "0.10"
 cfb = "0.14"
 tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "time", "sync"] }
+lancedb = { version = "=0.41.0", default-features = false }
+arrow-array = "58.0.0"
+arrow-schema = "58.0.0"
+futures = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

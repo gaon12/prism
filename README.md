@@ -50,9 +50,12 @@ History is stored locally and is not encrypted. Defaults keep up to 500 unpinned
 
 ## Development
 
-Requires Node.js 22.12+ and the [Tauri Windows prerequisites](https://v2.tauri.app/start/prerequisites/), including Rust, MSVC C++ Build Tools and WebView2.
+Requires Node.js 22.12+, Rust 1.94+, and the [Tauri Windows prerequisites](https://v2.tauri.app/start/prerequisites/), including Rust, MSVC C++ Build Tools and WebView2.
 
-```sh
+The native LanceDB build also requires `protoc`. Install a compatible [official Protocol Buffers release](https://github.com/protocolbuffers/protobuf/releases) and put its executable on PATH, or set `PROTOC` for the build shell. The Windows vector tests were verified with protoc 34.1.
+
+```powershell
+$env:PROTOC = "C:\tools\protobuf\bin\protoc.exe"
 npm ci
 npm run tauri dev
 ```

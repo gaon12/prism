@@ -11,10 +11,15 @@ cargo clippy --manifest-path tools/platform-qa/Cargo.toml --locked --all-targets
 ```
 
 Ordinary tests use synthetic archives and temporary application directories. Windows
-tests additionally use DPAPI and privately owned child processes. macOS and Linux
-ordinary tests do not access the system credential store.
+tests additionally use DPAPI and privately owned child processes. Unix tests start
+inert localhost server fixtures through the production supervisor, exercise normal
+stop and actual SIGKILL of their owned parent, and check that a sibling survives.
+An unresponsive-launcher check also exercises the ten-second handshake timeout
+and two-second shutdown grace period, then verifies private-group cleanup. It
+never signals a cached process ID after its child may have been reaped.
+macOS and Linux ordinary tests do not access the system credential store.
 
-Three expensive or OS-dependent checks are opt-in:
+Four expensive or OS-dependent checks are opt-in:
 
 - `actual_upstream_packages_extract_verify_and_materialize_all_aliases`: set
   `PRISM_TEST_PACKAGES_DIR` to a directory containing all five archives named in
@@ -24,8 +29,18 @@ Three expensive or OS-dependent checks are opt-in:
 - `real_korean_retrieval_and_owned_process_shutdown`: set `PRISM_TEST_MODEL` to the
   pinned Q8 model and `PRISM_TEST_RUNTIME` to the **host platform's** pinned archive.
   Runs actual Korean retrieval at 768 and 256 dimensions, reopens installed state,
-  and checks normal runtime cleanup. This does not test forced parent termination
-  on Unix, where the Windows Job Object mechanism is unavailable.
+  and checks normal runtime cleanup. On Unix, first build this QA binary with
+  `cargo build --manifest-path tools/platform-qa/Cargo.toml --locked`, then set
+  `PRISM_TEST_SUPERVISOR` to its absolute executable path. This supplies the same
+  pre-GUI supervisor dispatcher used by the application; Rust's test-runner binary
+  does not have that entry point. Windows does not need this variable.
+- `real_embedding_server_is_reaped_after_the_app_parent_is_killed`: on Unix, set
+  the same pinned model/runtime variables. The QA fixture uses the actual
+  `EmbeddingRuntime`, imports the files, starts the server and embeds a Korean
+  query. The test sends SIGKILL to its own app-parent fixture and checks that the
+  actual server is gone. This uses the normal production supervisor, not a model
+  substitute. It does not require `PRISM_TEST_SUPERVISOR` because the parent is
+  already the QA binary with the proper dispatcher.
 - `native_store_roundtrip_replacement_isolation_and_delete`: on macOS or Linux,
   set `PRISM_TEST_OS_CREDENTIALS=1` and provide an accessible **disposable** user
   keychain or Secret Service session. Creates a random QA service namespace,

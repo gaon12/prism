@@ -297,3 +297,158 @@ fn install_and_uninstall_recover_before_reading_the_previous_record() {
         assert!(!recovery::has_workspaces(&app));
     }
 }
+
+#[test]
+#[cfg(windows)]
+#[ignore = "Private subprocess fixture; invoked only with a validated OS-temp sandbox"]
+fn crash_fixture_process() {
+    use crate::install::{Folders, Stage};
+    use std::io;
+    let root = PathBuf::from(
+        std::env::var_os("PRISM_RECOVERY_TEST_ROOT").expect("private sandbox required"),
+    );
+    let root = fs::canonicalize(root).unwrap();
+    assert_eq!(
+        root.parent().unwrap(),
+        fs::canonicalize(std::env::temp_dir()).unwrap()
+    );
+    assert!(root
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("prism-recovery-test-"));
+    assert_eq!(
+        fs::read(root.join("fixture-owner.txt")).unwrap(),
+        b"Prism isolated recovery fixture"
+    );
+    let phase = std::env::var("PRISM_RECOVERY_TEST_PHASE").unwrap();
+    let system = crate::system::SandboxSystem { root: root.clone() };
+    let setup = root.join("fixture-setup.exe");
+    fs::write(&setup, b"inert setup; never executed").unwrap();
+    let app = root.join("app");
+    let old = payload::pack(&[("prism.exe", b"old"), ("res/old.txt", b"old resource")]).unwrap();
+    install::install(&system, &old, "0.1.0", &options(&app), &setup, |_, _| {}).unwrap();
+    fs::write(app.join("personal.txt"), b"user file").unwrap();
+    // The wrapper stops after the real sandbox registration adapter has written its file,
+    // but before the installer can record completion or run its ordinary rollback path.
+    struct CrashAfterRegistration<'a> {
+        inner: &'a dyn System,
+        crash: bool,
+    }
+    impl System for CrashAfterRegistration<'_> {
+        fn folders(&self) -> io::Result<Folders> {
+            self.inner.folders()
+        }
+        fn capture_registration(&self) -> io::Result<Vec<u8>> {
+            self.inner.capture_registration()
+        }
+        fn restore_registration(&self, bytes: &[u8]) -> io::Result<()> {
+            self.inner.restore_registration(bytes)
+        }
+        fn create_shortcut(&self, link: &Path, target: &Path, description: &str) -> io::Result<()> {
+            self.inner.create_shortcut(link, target, description)
+        }
+        fn shortcut_points_to(&self, link: &Path, target: &Path) -> io::Result<bool> {
+            self.inner.shortcut_points_to(link, target)
+        }
+        fn write_uninstall_entry(&self, entry: &UninstallEntry) -> io::Result<()> {
+            self.inner.write_uninstall_entry(entry)?;
+            if self.crash {
+                std::process::exit(73);
+            }
+            Ok(())
+        }
+        fn remove_uninstall_entry(&self) -> io::Result<()> {
+            self.inner.remove_uninstall_entry()
+        }
+        fn existing_install(&self) -> Option<(PathBuf, Option<String>)> {
+            self.inner.existing_install()
+        }
+    }
+    let system = CrashAfterRegistration {
+        inner: &system,
+        crash: phase == "registration",
+    };
+    let new = payload::pack(&[("prism.exe", b"new"), ("res/new.txt", b"new resource")]).unwrap();
+    install::install(
+        &system,
+        &new,
+        "0.2.0",
+        &options(&app),
+        &setup,
+        |stage, _| {
+            if (phase == "preparing" && stage == Stage::Copying)
+                || (phase == "files" && stage == Stage::Shortcuts)
+                || (phase == "completed" && stage == Stage::Done)
+            {
+                std::process::exit(73);
+            }
+        },
+    )
+    .unwrap();
+    panic!("Fixture did not reach its requested interruption point");
+}
+
+#[test]
+#[cfg(windows)]
+fn actual_process_exit_keeps_a_recoverable_or_committed_installation() {
+    use std::os::windows::process::CommandExt;
+    for phase in ["preparing", "files", "registration", "completed"] {
+        let root = tempfile::Builder::new()
+            .prefix("prism-recovery-test-")
+            .tempdir()
+            .unwrap();
+        fs::write(
+            root.path().join("fixture-owner.txt"),
+            b"Prism isolated recovery fixture",
+        )
+        .unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "recovery_tests::crash_fixture_process",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("PRISM_RECOVERY_TEST_ROOT", root.path())
+            .env("PRISM_RECOVERY_TEST_PHASE", phase)
+            .creation_flags(0x0800_0000)
+            .output()
+            .unwrap();
+        assert_eq!(
+            status.status.code(),
+            Some(73),
+            "{phase}: {}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+        let system = crate::system::SandboxSystem {
+            root: root.path().into(),
+        };
+        let app = root.path().join("app");
+        let lock = crate::folder_lock::FolderLock::acquire(&app).unwrap();
+        let count = recovery::recover(&system, &app).unwrap();
+        assert_eq!(
+            count,
+            usize::from(matches!(phase, "files" | "registration"))
+        );
+        let expected: &[u8] = if phase == "completed" { b"new" } else { b"old" };
+        assert_eq!(
+            fs::read(app.join("prism.exe")).unwrap(),
+            expected,
+            "{phase}"
+        );
+        assert_eq!(fs::read(app.join("personal.txt")).unwrap(), b"user file");
+        assert_eq!(
+            system.existing_install().unwrap().1.as_deref(),
+            Some(if phase == "completed" {
+                "0.2.0"
+            } else {
+                "0.1.0"
+            })
+        );
+        assert_eq!(recovery::recover(&system, &app).unwrap(), 0);
+        assert!(!recovery::has_workspaces(&app));
+        drop(lock);
+    }
+}

@@ -5,6 +5,7 @@ mod commands;
 mod content_commands;
 mod content_service;
 mod content_store;
+mod diagnostics;
 mod dictionary_commands;
 mod dictionary_provider;
 mod dictionary_service;
@@ -460,6 +461,8 @@ pub fn run() {
             commands::set_search_session,
             commands::recommended_folders,
             commands::runtime_info,
+            diagnostics::diagnostics_snapshot,
+            diagnostics::diagnostics_open_issue,
             commands::show_quick,
             commands::show_main,
             commands::open_settings,

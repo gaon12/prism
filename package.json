@@ -13,6 +13,7 @@
     "test:e2e": "playwright test",
     "test:native": "node tests/native/client.mjs",
     "test:standalone": "node tests/native/standalone.mjs",
+    "test:clipboard": "node tests/native/clipboard.mjs",
     "format:check": "prettier --check src tests vite.config.ts playwright.config.ts package.json tsconfig*.json index.html .prettierrc.json README.md"
   },
   "dependencies": {

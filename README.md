@@ -9,9 +9,9 @@ Windows-first desktop search workspace built with Tauri 2, Rust, React and TypeS
 - Korean, English, Simplified Chinese, Traditional Chinese and Japanese UI, light/dark/system themes, and adjustable text size.
 - A local Markdown draft editor with autosave and Markdown export.
 - Real filename/path search over registered folders, extension and modification-date filters, bounded results, live filesystem updates, and open/reveal/copy-path actions.
-- CortexJS calculator, math.js unit conversions, and explicit web-search commands in both windows. Empty quick search stays compact without a result or empty-state panel.
+- CortexJS calculator, math.js unit conversions, explicit web-search commands and persistent clipboard history in both windows. Empty quick search stays compact without a result or empty-state panel.
 
-Content search, RAG, AI-generated answers, dictionaries and clipboard history are not connected yet. The filename index is an in-memory, portable directory traversal implementation rebuilt at startup. It is not the planned NTFS MFT/USN backend, a persistent catalog, or an Everything-level performance claim. Symlinks and junctions below a registered root are not followed. Only names, paths and filesystem metadata are collected; document contents are not read.
+Content search, RAG, AI-generated answers and dictionaries are not connected yet. Local document extraction, scoped chunk storage, dictionary pack storage and the EmbeddingGemma 2 CPU engine have independent tests; their client integration is in progress. The filename index is an in-memory, portable directory traversal implementation rebuilt at startup. It is not the planned NTFS MFT/USN backend, a persistent catalog, or an Everything-level performance claim. Symlinks and junctions below a registered root are not followed. Only names, paths and filesystem metadata are collected; document contents are not read.
 
 ## Search and quick tools
 
@@ -44,7 +44,9 @@ Approximate answers state the display precision. When formatting changes the num
 
 Units cover length, area, mass, volume, temperature, pressure, speed, fuel economy, data and time. Common Korean aliases are accepted. `GB/MB` are decimal and `GiB/MiB` binary; `mpg`, gallon and cup use US measures. Conversion between incompatible categories or values below absolute zero is rejected. Negative quantities are supported for temperature only.
 
-Web input stays local until the user executes a search. It then opens a built-in HTTPS provider with an encoded query. `web:` defaults to Google; `wiki:` currently uses English Wikipedia. Clipboard access is limited to explicit copy actions; history collection is not active.
+Web input stays local until the user executes a search. It then opens a built-in HTTPS provider with an encoded query. `web:` defaults to Google; `wiki:` currently uses English Wikipedia. Clipboard history is enabled by default with a first-run notice and can be disabled or paused. `clip:`, `clipboard:` or `클립보드:` opens text, link and image history. Filter by kind, search normalized text or Korean initials, preview, copy, pin or delete items, and clear unpinned history. Enter copies the selected item; automatic paste into the previous app is not implemented yet.
+
+History is stored locally and is not encrypted. Defaults keep up to 500 unpinned items for 30 days within 256 MiB; pinned items are not automatically removed and may exceed the budget. Retention, image capture and collection can be changed in the clipboard panel. Windows history-exclusion formats are respected. Existing clipboard contents at startup and content copied while paused or disabled are skipped. Platforms without change markers rebaseline on resume and cannot detect an immediate same-content recopy until a different payload is seen.
 
 ## Development
 
@@ -89,7 +91,7 @@ npm run tauri build -- --debug --no-bundle
 
 Run `src-tauri/target/debug/prism.exe`. Development builds do not register login startup. A normal desktop build needs WebView2 on Windows.
 
-After building this standalone debug executable, run `npm run test:standalone` to verify the embedded UI, settings and window handoff without Vite.
+After building this standalone debug executable, run `npm run test:standalone` and `npm run test:clipboard` to verify the embedded UI, settings and window handoff without Vite.
 
 ## Native smoke tests
 
@@ -100,6 +102,6 @@ cargo build --manifest-path src-tauri/Cargo.toml
 npm run test:native
 ```
 
-This tests actual WebView2 windows, IPC, shortcut registration, isolated settings persistence, restart recovery and Markdown writes. It uses a temporary data directory through the development-only `PRISM_DEV_DATA_DIR` override, plus a separate WebView2 profile. Isolated debug tests skip the single-instance handoff so they can coexist with an open user app. Normal debug and release apps retain single-instance behavior. Screenshots and test output are saved in the OS temporary directory, outside committed source. The test does not send physical OS keyboard input or exercise native file-picker dialogs.
+This tests actual WebView2 windows, IPC, shortcut registration, isolated settings persistence, restart recovery and Markdown writes. It uses a temporary data directory through the development-only `PRISM_DEV_DATA_DIR` override, plus a separate WebView2 profile. Isolated debug tests skip the single-instance handoff so they can coexist with an open user app. Normal debug and release apps retain single-instance behavior. Screenshots and test output are saved in the OS temporary directory, outside committed source. The tests do not send physical OS keyboard input or exercise native file-picker dialogs. Isolated debug profiles inject an in-memory clipboard, including copy commands, so they never read or write the user’s system clipboard. Clipboard fixtures cover text/link/image restoration, filtering, pinning, retention settings, first-run acknowledgment and restart; real Windows clipboard capture remains a separate manual integration check.
 
 Planning notes and local verification artifacts are kept in the ignored `.dev/` directory.

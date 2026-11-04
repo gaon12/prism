@@ -31,6 +31,21 @@ test('renders the empty library without fabricated files', async ({ page }) => {
   await page.screenshot({ path: join(evidence, 'main.png') });
 });
 
+test('clipboard command stays native-only in browser preview and empty quick stays compact', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '클립보드 기록', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '검색어', exact: true })).toHaveValue('clip:');
+  await expect(page.locator('.clipboard-panel')).toContainText('데스크톱 앱');
+  await expect(page.locator('.clipboard-notice')).toHaveCount(0);
+  await page.getByRole('button', { name: '빠른 검색', exact: true }).click();
+  await expect(page.locator('.clipboard-panel')).toContainText('데스크톱 앱');
+  await page.getByRole('textbox', { name: '검색어', exact: true }).fill(' ');
+  await expect(page.locator('.quick-results')).toHaveCount(0);
+  await expect(page.locator('.quick-empty')).toHaveCount(0);
+});
+
 test('transfers query and filters to quick search and handles IME Enter', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('textbox', { name: '검색어', exact: true }).fill('개발 계획');

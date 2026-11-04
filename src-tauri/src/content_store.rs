@@ -25,6 +25,10 @@ const MAX_QUERY_BYTES: usize = 4096;
 const MAX_TERMS: usize = 32;
 const MAX_RESULTS: usize = 100;
 const MAX_IDS: usize = 256;
+/// Most extensions one search may filter on (e.g. "pdf", "docx").
+const MAX_EXTENSIONS: usize = 16;
+/// Longest accepted extension, without the dot.
+const MAX_EXTENSION_LEN: usize = 16;
 const MAX_CANDIDATES: usize = 250_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,6 +91,45 @@ pub struct ContentSearchFilter {
     pub document_paths: Vec<String>,
     #[serde(default)]
     pub scope_paths: Vec<String>,
+    /// Only search files with one of these extensions, e.g. `["pdf", ".DOCX"]`.
+    /// Empty means "any extension". A leading dot and upper/lower case do not matter.
+    /// Unlike `document_paths`, this has no file-count limit: it is checked inside the query,
+    /// so a filter matching thousands of PDFs costs the same as one matching a single file.
+    #[serde(default)]
+    pub extensions: Vec<String>,
+}
+
+/// Cleans up the extension filter: strips one leading dot, lower-cases, and removes
+/// duplicates. Only ASCII letters and digits are accepted, so the values are safe to put in a
+/// SQL `LIKE` pattern (no `%` or `_` wildcards can sneak in).
+pub(crate) fn normalized_extensions(extensions: &[String]) -> Result<Vec<String>> {
+    if extensions.len() > MAX_EXTENSIONS {
+        return Err(error(
+            ContentStoreErrorCode::InvalidInput,
+            "Content search has too many extension filters",
+        ));
+    }
+    let mut clean: Vec<String> = Vec::new();
+    for extension in extensions {
+        let value = extension.trim();
+        let value = value
+            .strip_prefix('.')
+            .unwrap_or(value)
+            .to_ascii_lowercase();
+        let valid = !value.is_empty()
+            && value.len() <= MAX_EXTENSION_LEN
+            && value.bytes().all(|b| b.is_ascii_alphanumeric());
+        if !valid {
+            return Err(error(
+                ContentStoreErrorCode::InvalidInput,
+                "Content search extension filter is invalid",
+            ));
+        }
+        if !clean.contains(&value) {
+            clean.push(value);
+        }
+    }
+    Ok(clean)
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,9 +162,46 @@ pub struct ContentSearchHit {
     pub score: f64,
     pub snippet: String,
 }
+/// Search results plus numbers that explain how complete they are.
+///
+/// A search first collects every chunk whose text contains all terms ("candidates"), then keeps
+/// only the ones the caller may see. To bound memory and time, at most `candidate_limit`
+/// candidates are collected. If more existed, `hard_limit_reached` is true: the hits are then
+/// only a partial answer, and an empty list does NOT mean "nothing matches". The UI should say
+/// so and suggest a more specific query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentSearchResponse {
+    pub hits: Vec<ContentSearchHit>,
+    /// How many candidates were collected (before the scope and permission checks).
+    pub candidate_count: usize,
+    pub candidate_limit: usize,
+    pub hard_limit_reached: bool,
+}
+impl ContentSearchResponse {
+    fn empty(candidate_limit: usize) -> Self {
+        Self {
+            hits: Vec::new(),
+            candidate_count: 0,
+            candidate_limit,
+            hard_limit_reached: false,
+        }
+    }
+}
 
 pub struct ContentStore {
     connection: Mutex<Connection>,
+    path: PathBuf,
+    /// Maximum candidates collected per search. Always `MAX_CANDIDATES` in the app; tests lower
+    /// it to exercise the partial-result path without creating 250,000 chunks.
+    candidate_limit: usize,
+}
+
+fn connect(db_path: &Path) -> rusqlite::Result<Connection> {
+    let connection = Connection::open(db_path)?;
+    connection.busy_timeout(Duration::from_secs(5))?;
+    connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;")?;
+    Ok(connection)
 }
 
 fn normalized(text: &str) -> String {
@@ -278,7 +358,7 @@ impl ContentStore {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(storage)?;
-        if version > 1 {
+        if version > 2 {
             return Err(error(
                 ContentStoreErrorCode::Storage,
                 "Content repository version is unsupported",
@@ -303,10 +383,28 @@ impl ContentStore {
                 FOREIGN KEY(document_id,section_index) REFERENCES content_sections(document_id,section_index) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS content_chunks_document ON content_chunks(document_id, section_index, chunk_index);
-            PRAGMA user_version=1; COMMIT;
+            CREATE VIRTUAL TABLE IF NOT EXISTS content_chunks_fts USING fts5(
+                normalized, content='content_chunks', content_rowid='rowid', tokenize='trigram'
+            );
+            CREATE TRIGGER IF NOT EXISTS content_chunks_fts_insert AFTER INSERT ON content_chunks BEGIN
+                INSERT INTO content_chunks_fts(rowid, normalized) VALUES (new.rowid, new.normalized);
+            END;
+            CREATE TRIGGER IF NOT EXISTS content_chunks_fts_delete AFTER DELETE ON content_chunks BEGIN
+                INSERT INTO content_chunks_fts(content_chunks_fts, rowid, normalized) VALUES ('delete', old.rowid, old.normalized);
+            END;
+            COMMIT;
         ").map_err(storage)?;
+        if version < 2 {
+            // Databases created by version 1 have chunks but no search index yet. Fill the
+            // index once from the stored chunks; the triggers keep it updated afterwards.
+            connection
+                .execute_batch("BEGIN IMMEDIATE; INSERT INTO content_chunks_fts(content_chunks_fts) VALUES('rebuild'); PRAGMA user_version=2; COMMIT;")
+                .map_err(storage)?;
+        }
         Ok(Self {
             connection: Mutex::new(connection),
+            path: db_path.to_owned(),
+            candidate_limit: MAX_CANDIDATES,
         })
     }
 
@@ -350,6 +448,14 @@ impl ContentStore {
             let result = action(&mut connection);
             drop(finish);
             worker.join().map_err(storage)?;
+            if result.is_err() && !connection.is_autocommit() {
+                // A cancelled operation can leave the transaction open: SQLite's full-text
+                // index (FTS5) keeps an internal reader open, so the "interrupted" state stays
+                // set and even the ROLLBACK fails with "interrupted". Closing the connection
+                // always rolls the unfinished transaction back, so replace it with a new one.
+                // Without this, every later call on this store would fail.
+                *connection = connect(&self.path).map_err(storage)?;
+            }
             if result.is_err() {
                 check_cancel(cancel)?;
             }
@@ -498,6 +604,8 @@ impl ContentStore {
         })
     }
 
+    /// Same as [`Self::search_detailed`] but returns only the hits. Kept so existing callers
+    /// keep working; new code should use `search_detailed` to see partial-result warnings.
     pub fn search(
         &self,
         query: &str,
@@ -506,7 +614,20 @@ impl ContentStore {
         limit_count: usize,
         cancel: &AtomicBool,
     ) -> Result<Vec<ContentSearchHit>> {
+        self.search_detailed(query, filter, allowed_content_roots, limit_count, cancel)
+            .map(|response| response.hits)
+    }
+
+    pub fn search_detailed(
+        &self,
+        query: &str,
+        filter: &ContentSearchFilter,
+        allowed_content_roots: &[PathBuf],
+        limit_count: usize,
+        cancel: &AtomicBool,
+    ) -> Result<ContentSearchResponse> {
         check_cancel(cancel)?;
+        let candidate_limit = self.candidate_limit;
         if query.len() > MAX_QUERY_BYTES
             || !(1..=MAX_RESULTS).contains(&limit_count)
             || filter.document_paths.len() > MAX_IDS
@@ -517,6 +638,7 @@ impl ContentStore {
                 "Content search request exceeds allowed limits",
             ));
         }
+        let extensions = normalized_extensions(&filter.extensions)?;
         let mut seen = HashSet::new();
         let terms: Vec<String> = query
             .split_whitespace()
@@ -524,7 +646,7 @@ impl ContentStore {
             .filter(|term| !term.is_empty() && seen.insert(term.clone()))
             .collect();
         if terms.is_empty() {
-            return Ok(Vec::new());
+            return Ok(ContentSearchResponse::empty(self.candidate_limit));
         }
         if terms.len() > MAX_TERMS {
             return Err(error(
@@ -534,7 +656,7 @@ impl ContentStore {
         }
         let allowed = roots(allowed_content_roots);
         if allowed.is_empty() {
-            return Ok(Vec::new());
+            return Ok(ContentSearchResponse::empty(self.candidate_limit));
         }
         let documents: HashSet<String> = filter
             .document_paths
@@ -550,36 +672,129 @@ impl ContentStore {
         if (!filter.document_paths.is_empty() && documents.is_empty())
             || (!filter.scope_paths.is_empty() && scopes.is_empty())
         {
-            return Ok(Vec::new());
+            return Ok(ContentSearchResponse::empty(self.candidate_limit));
         }
         self.run(cancel, |connection| {
-            let conditions = (1..=terms.len())
+            let mut conditions = (1..=terms.len())
                 .map(|n| format!("instr(c.normalized,?{n})>0"))
-                .collect::<Vec<_>>()
-                .join(" AND ");
+                .collect::<Vec<_>>();
+            let mut arguments = terms.clone();
+            // Extension filter: keep files whose path ends with ".<ext>" (any of them).
+            // `lower()` is enough because extensions are ASCII-only (checked above).
+            if !extensions.is_empty() {
+                let mut options = Vec::new();
+                for extension in &extensions {
+                    arguments.push(format!("%.{extension}"));
+                    options.push(format!("lower(d.file_path) LIKE ?{}", arguments.len()));
+                }
+                conditions.push(format!("({})", options.join(" OR ")));
+            }
+            // How candidates are found:
+            // - The full-text index splits text into 3-character pieces ("trigrams"), so it can
+            //   quickly find chunks containing any term of 3+ characters.
+            // - It cannot look up 1-2 character terms, and we want results identical to the
+            //   original substring search, so the `instr(...)` checks stay for every term.
+            // The index only skips chunks that cannot match; it never changes which chunks match.
+            let indexed: Vec<String> = terms
+                .iter()
+                .filter(|term| term.chars().count() >= 3)
+                .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+                .collect();
+            if !indexed.is_empty() {
+                arguments.push(indexed.join(" AND "));
+                conditions.insert(
+                    0,
+                    format!(
+                        "c.rowid IN (SELECT rowid FROM content_chunks_fts WHERE content_chunks_fts MATCH ?{})",
+                        arguments.len()
+                    ),
+                );
+            }
+            // Step 1 of 2: score every candidate cheaply.
+            // Only small columns are read here (path, fingerprint, position and the
+            // already-normalized text), not the full chunk. Checking file permissions is the
+            // slow part (~0.7 ms per file), so it is postponed to step 2.
             let sql = format!(
-                "{CHUNK_SELECT} WHERE {conditions} ORDER BY c.rowid LIMIT {}",
-                MAX_CANDIDATES + 1
+                "SELECT c.rowid,d.file_path,d.sha256,d.size_bytes,d.modified_unix_ms,c.section_index,c.chunk_index,c.normalized                  FROM content_chunks c JOIN content_documents d ON d.id=c.document_id                  WHERE {} ORDER BY c.rowid LIMIT {}",
+                conditions.join(" AND "),
+                candidate_limit + 1
             );
             let mut statement = connection.prepare(&sql).map_err(storage)?;
             let mut rows = statement
-                .query(params_from_iter(terms.iter()))
+                .query(params_from_iter(arguments.iter()))
                 .map_err(storage)?;
-            let mut hits = Vec::new();
-            let mut visibility = HashMap::new();
+            /// One candidate chunk with just enough data to rank it and check its file.
+            struct Scored {
+                rowid: i64,
+                file_path: String,
+                fingerprint: SourceFingerprint,
+                section_index: u32,
+                chunk_index: u32,
+                score: f64,
+            }
             let phrase = normalized(query);
-            let mut candidates = 0;
+            let mut scored = Vec::new();
+            let mut hard_limit_reached = false;
             while let Some(row) = rows.next().map_err(storage)? {
                 check_cancel(cancel)?;
-                candidates += 1;
-                if candidates > MAX_CANDIDATES {
-                    return Err(limit());
+                if scored.len() >= candidate_limit {
+                    // A very common term matched too many chunks. Stop collecting, rank what
+                    // we have, and tell the caller the result is partial.
+                    hard_limit_reached = true;
+                    break;
                 }
-                let chunk = read_chunk(row).map_err(storage)?;
+                let searchable: String = row.get(7).map_err(storage)?;
+                let score = terms
+                    .iter()
+                    .map(|term| searchable.match_indices(term).take(8).count() as f64 * 10.0)
+                    .sum::<f64>()
+                    + if searchable.contains(&phrase) {
+                        25.0
+                    } else {
+                        0.0
+                    };
+                scored.push(Scored {
+                    rowid: row.get(0).map_err(storage)?,
+                    file_path: row.get(1).map_err(storage)?,
+                    fingerprint: SourceFingerprint {
+                        sha256: row.get(2).map_err(storage)?,
+                        size_bytes: row.get(3).map_err(storage)?,
+                        modified_unix_ms: row.get(4).map_err(storage)?,
+                    },
+                    section_index: row.get(5).map_err(storage)?,
+                    chunk_index: row.get(6).map_err(storage)?,
+                    score,
+                });
+            }
+            drop(rows);
+            drop(statement);
+            let candidate_count = scored.len();
+            scored.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then_with(|| a.file_path.cmp(&b.file_path))
+                    .then_with(|| a.section_index.cmp(&b.section_index))
+                    .then_with(|| a.chunk_index.cmp(&b.chunk_index))
+            });
+            // Step 2 of 2: walk candidates from best to worst and keep the visible ones.
+            // Visibility is checked once per file (cached), and the full chunk is loaded only
+            // for the hits we return. The result is the same as checking every candidate first,
+            // because the order of visible candidates does not change.
+            let mut visibility = HashMap::new();
+            let mut fetch = connection
+                .prepare(&format!("{CHUNK_SELECT} WHERE c.rowid=?1"))
+                .map_err(storage)?;
+            let mut hits = Vec::new();
+            for candidate in scored {
+                check_cancel(cancel)?;
+                if hits.len() >= limit_count {
+                    break;
+                }
                 let permitted = *visibility
-                    .entry(chunk.file_path.clone())
+                    .entry(candidate.file_path.clone())
                     .or_insert_with(|| {
-                        let Some(path) = visible(&chunk.file_path, &chunk.fingerprint, &allowed)
+                        let Some(path) =
+                            visible(&candidate.file_path, &candidate.fingerprint, &allowed)
                         else {
                             return false;
                         };
@@ -590,36 +805,29 @@ impl ContentStore {
                 if !permitted {
                     continue;
                 }
-                let searchable = normalized(&chunk.text);
-                let score = terms
-                    .iter()
-                    .map(|term| searchable.match_indices(term).take(8).count() as f64 * 10.0)
-                    .sum::<f64>()
-                    + if searchable.contains(&phrase) {
-                        25.0
-                    } else {
-                        0.0
-                    };
+                let chunk = fetch
+                    .query_row([candidate.rowid], read_chunk)
+                    .map_err(storage)?;
                 let snippet = plain_snippet(&chunk.text, &terms);
                 hits.push(ContentSearchHit {
                     chunk,
-                    score,
+                    score: candidate.score,
                     snippet,
                 });
-                hits.sort_by(|a, b| {
-                    b.score
-                        .total_cmp(&a.score)
-                        .then_with(|| a.chunk.file_path.cmp(&b.chunk.file_path))
-                        .then_with(|| a.chunk.section_index.cmp(&b.chunk.section_index))
-                        .then_with(|| a.chunk.chunk_index.cmp(&b.chunk.chunk_index))
-                });
-                hits.truncate(limit_count);
             }
+            drop(fetch);
             check_cancel(cancel)?;
+            // Check the returned files one more time: a file may have been edited or deleted
+            // while we were ranking. Only the final hits (at most 100) are checked again.
             hits.retain(|hit| {
                 visible(&hit.chunk.file_path, &hit.chunk.fingerprint, &allowed).is_some()
             });
-            Ok(hits)
+            Ok(ContentSearchResponse {
+                hits,
+                candidate_count,
+                candidate_limit,
+                hard_limit_reached,
+            })
         })
     }
 
@@ -925,6 +1133,7 @@ mod tests {
         let filter = ContentSearchFilter {
             document_paths: vec![second.file_path.clone()],
             scope_paths: vec![],
+            ..Default::default()
         };
         assert!(store
             .search("shared", &filter, &[a.clone()], 20, &cancel())
@@ -933,6 +1142,7 @@ mod tests {
         let filter = ContentSearchFilter {
             document_paths: vec![],
             scope_paths: vec![a.to_string_lossy().into_owned()],
+            ..Default::default()
         };
         assert_eq!(
             store
@@ -944,6 +1154,7 @@ mod tests {
         let filter = ContentSearchFilter {
             document_paths: vec![dir.path().join("missing").to_string_lossy().into_owned()],
             scope_paths: vec![],
+            ..Default::default()
         };
         assert!(store
             .search("shared", &filter, &all, 20, &cancel())
@@ -1134,6 +1345,163 @@ mod tests {
         assert!(result.is_err());
         assert!(started.elapsed() < Duration::from_secs(5));
         drop(store);
+    }
+
+    #[test]
+    fn trigram_index_matches_linear_semantics_and_tracks_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = vec![dir.path().to_owned()];
+        let db = dir.path().join("index.sqlite");
+        let store = ContentStore::open(&db).unwrap();
+        let doc = document(dir.path(), "a.txt", "한 국 어 예산 Budget\"Quote\" 100%_x");
+        store.replace_document(&doc, &roots, &cancel()).unwrap();
+        // 3+ character terms go through FTS, shorter ones through instr; both still AND.
+        assert_eq!(search(&store, "한국어 예산", &roots).len(), 1);
+        assert_eq!(search(&store, "budget\"quote\"", &roots).len(), 1);
+        assert_eq!(search(&store, "100%_x 예", &roots).len(), 1);
+        assert!(search(&store, "한국어 없음", &roots).is_empty());
+        // Replacing and purging keep the trigram index in sync (no stale candidates).
+        let doc = document(dir.path(), "a.txt", "replacement words");
+        store.replace_document(&doc, &roots, &cancel()).unwrap();
+        assert!(search(&store, "한국어", &roots).is_empty());
+        assert_eq!(search(&store, "replacement", &roots).len(), 1);
+        let count: i64 = store
+            .connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM content_chunks_fts WHERE content_chunks_fts MATCH '\"한국어\"'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        drop(store);
+        // A v1 store (no FTS) is upgraded and its existing chunks become searchable.
+        let connection = Connection::open(&db).unwrap();
+        connection
+            .execute_batch("DROP TRIGGER content_chunks_fts_insert; DROP TRIGGER content_chunks_fts_delete; DROP TABLE content_chunks_fts; PRAGMA user_version=1;")
+            .unwrap();
+        drop(connection);
+        let store = ContentStore::open(&db).unwrap();
+        assert_eq!(search(&store, "replacement", &roots).len(), 1);
+        drop(store);
+        let connection = Connection::open(&db).unwrap();
+        connection.execute_batch("PRAGMA user_version=3;").unwrap();
+        drop(connection);
+        assert!(ContentStore::open(&db).is_err());
+    }
+
+    #[test]
+    fn detailed_search_reports_partial_results_at_the_candidate_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let inside = dir.path().join("inside");
+        let roots = vec![inside.clone()];
+        let wide = vec![dir.path().to_owned()];
+        let mut store = ContentStore::open(&dir.path().join("index.sqlite")).unwrap();
+        // Rowid order: three documents outside the requested scope come first.
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            let doc = document(dir.path(), name, "공통단어 outside");
+            store.replace_document(&doc, &wide, &cancel()).unwrap();
+        }
+        let doc = document(&inside, "d.txt", "공통단어 inside");
+        store.replace_document(&doc, &wide, &cancel()).unwrap();
+        let detailed = |store: &ContentStore, roots: &[PathBuf]| {
+            store
+                .search_detailed(
+                    "공통단어",
+                    &ContentSearchFilter::default(),
+                    roots,
+                    20,
+                    &cancel(),
+                )
+                .unwrap()
+        };
+        let full = detailed(&store, &roots);
+        assert_eq!(
+            (
+                full.hits.len(),
+                full.candidate_count,
+                full.hard_limit_reached
+            ),
+            (1, 4, false)
+        );
+        assert_eq!(full.candidate_limit, MAX_CANDIDATES);
+        store.candidate_limit = 3;
+        // Only out-of-scope candidates fit the budget: zero hits must be reported as partial.
+        let partial = detailed(&store, &roots);
+        assert!(partial.hits.is_empty());
+        assert_eq!((partial.candidate_count, partial.candidate_limit), (3, 3));
+        assert!(partial.hard_limit_reached);
+        let json = serde_json::to_value(&partial).unwrap();
+        assert_eq!(json["hardLimitReached"], true);
+        assert_eq!(json["candidateCount"], 3);
+        // The compatibility wrapper returns the same hits.
+        assert!(search(&store, "공통단어", &roots).is_empty());
+        store.candidate_limit = MAX_CANDIDATES;
+        assert_eq!(search(&store, "공통단어", &roots).len(), 1);
+        assert_eq!(detailed(&store, &roots).candidate_count, 4);
+        assert!(!detailed(&store, &[]).hard_limit_reached);
+    }
+
+    #[test]
+    fn extension_filter_has_no_file_count_limit_and_ignores_dots_and_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = vec![dir.path().to_owned()];
+        let store = ContentStore::open(&dir.path().join("index.sqlite")).unwrap();
+        // More files than the 256-entry document_paths budget, to show there is no such cap.
+        for i in 0..300 {
+            let doc = document(dir.path(), &format!("note{i}.txt"), "확장자검색 본문");
+            store.replace_document(&doc, &roots, &cancel()).unwrap();
+        }
+        let doc = document(dir.path(), "Guide.MD", "확장자검색 본문");
+        store.replace_document(&doc, &roots, &cancel()).unwrap();
+        let only = |extensions: &[&str]| {
+            let filter = ContentSearchFilter {
+                extensions: extensions.iter().map(|e| e.to_string()).collect(),
+                ..Default::default()
+            };
+            store.search_detailed("확장자검색", &filter, &roots, 100, &cancel())
+        };
+        let text = only(&["TXT"]).unwrap();
+        assert_eq!(text.hits.len(), 100); // limited by the result count, not the file count
+        assert_eq!(text.candidate_count, 300);
+        assert!(text
+            .hits
+            .iter()
+            .all(|hit| hit.chunk.file_path.ends_with(".txt")));
+        let markdown = only(&[".md"]).unwrap();
+        assert_eq!(markdown.hits.len(), 1);
+        assert!(markdown.hits[0].chunk.file_path.ends_with("Guide.MD"));
+        assert_eq!(only(&["md", "txt", ".MD"]).unwrap().candidate_count, 301);
+        assert!(only(&["pdf"]).unwrap().hits.is_empty());
+        assert_eq!(only(&[]).unwrap().candidate_count, 301);
+        // Wildcards, paths, empty values and too many filters are rejected.
+        for bad in [&["%"][..], &["t_t"], &["a/b"], &[""], &["."], &["한글"]] {
+            assert_eq!(
+                only(bad).unwrap_err().code,
+                ContentStoreErrorCode::InvalidInput
+            );
+        }
+        let many: Vec<String> = (0..17).map(|i| format!("e{i}")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert_eq!(
+            only(&many).unwrap_err().code,
+            ContentStoreErrorCode::InvalidInput
+        );
+        // Old clients that do not send `extensions` still deserialize.
+        let old: ContentSearchFilter =
+            serde_json::from_str(r#"{"documentPaths":[],"scopePaths":[]}"#).unwrap();
+        assert!(old.extensions.is_empty());
+    }
+
+    #[test]
+    fn final_source_check_drops_hits_changed_after_ranking() {
+        // The final recheck uses the same visibility rule as ranking; a changed source vanishes.
+        let dir = tempfile::tempdir().unwrap();
+        let roots = vec![dir.path().to_owned()];
+        let store = ContentStore::open(&dir.path().join("index.sqlite")).unwrap();
+        let doc = document(dir.path(), "x.txt", "검사대상 내용");
+        store.replace_document(&doc, &roots, &cancel()).unwrap();
+        assert_eq!(search(&store, "검사대상", &roots).len(), 1);
+        fs::write(dir.path().join("x.txt"), "검사대상 내용이 바뀜").unwrap();
+        assert!(search(&store, "검사대상", &roots).is_empty());
     }
 
     #[test]

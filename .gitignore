@@ -9,6 +9,7 @@
 /src-tauri/icons/ios/
 /installer/**/target/
 /installer/src-tauri/gen/
+/tools/update-verifier/target/
 /test-results/
 /playwright-report/
 

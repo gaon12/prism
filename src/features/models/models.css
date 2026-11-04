@@ -1,0 +1,191 @@
+.embedding-panel {
+  min-width: 0;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.embedding-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.embedding-heading > svg {
+  color: var(--accent);
+}
+.embedding-heading h3 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+.embedding-description {
+  font-size: 0.87rem;
+  color: var(--muted);
+  margin: 9px 0 16px;
+}
+.embedding-status-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+.embedding-status-heading > code {
+  font-size: 0.8rem;
+}
+.embedding-status-heading > .icon-button {
+  margin-left: auto;
+}
+.embedding-phase {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 2px 8px;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.embedding-phase[data-phase='running'],
+.embedding-phase[data-phase='ready'] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  border-color: var(--accent-soft);
+}
+.embedding-phase[data-phase='error'] {
+  color: var(--danger);
+}
+.embedding-metadata {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 18px;
+  margin: 16px 0;
+  padding: 12px;
+  background: var(--subtle);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.embedding-metadata > div {
+  min-width: 0;
+}
+.embedding-metadata dt {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.embedding-metadata dd {
+  margin: 2px 0 0;
+  font-size: 0.86rem;
+}
+.embedding-metadata dd small {
+  color: var(--muted);
+  margin-left: 4px;
+}
+.embedding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 9px 0;
+}
+.embedding-actions .button,
+.embedding-install .button {
+  font-size: 0.83rem;
+}
+.embedding-note {
+  color: var(--muted);
+  font-size: 0.77rem;
+  margin: 7px 0;
+}
+.embedding-install,
+.embedding-offline {
+  border-top: 1px solid var(--border);
+  margin-top: 17px;
+  padding-top: 14px;
+}
+.embedding-offline h4 {
+  margin: 0;
+  font-size: 0.87rem;
+  font-weight: 600;
+}
+.embedding-progress {
+  position: relative;
+  background: var(--subtle);
+  border: 1px solid var(--border);
+  padding: 11px;
+  margin: 12px 0;
+  border-radius: 7px;
+  font-size: 0.81rem;
+}
+.embedding-progress progress {
+  width: 100%;
+  display: block;
+  height: 7px;
+  accent-color: var(--accent);
+  margin: 9px 0;
+}
+.embedding-progress small {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.embedding-progress > .text-button {
+  margin-top: 8px;
+}
+.embedding-panel .text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  text-align: left;
+  white-space: normal;
+}
+.embedding-error {
+  border-left: 2px solid var(--danger);
+  padding: 7px 10px;
+  margin: 12px 0;
+  font-size: 0.8rem;
+  color: var(--danger);
+}
+.embedding-error details {
+  margin-top: 7px;
+  color: var(--muted);
+}
+.embedding-error pre {
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 7px 0 0;
+  max-height: 130px;
+  overflow-y: auto;
+}
+.embedding-error summary,
+.embedding-files summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.embedding-files {
+  font-size: 0.77rem;
+  color: var(--muted);
+  margin-top: 13px;
+}
+.embedding-files ul {
+  padding-left: 18px;
+  margin: 7px 0;
+}
+.embedding-files li {
+  margin: 4px 0;
+}
+.embedding-files code {
+  font-size: 0.73rem;
+}
+.embedding-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 14px;
+  margin-top: 12px;
+}
+.embedding-links .text-button {
+  font-size: 0.76rem;
+}
+.embedding-platform {
+  margin-top: 16px;
+}
+@media (max-width: 480px) {
+  .embedding-metadata {
+    grid-template-columns: 1fr;
+  }
+  .embedding-actions .button,
+  .embedding-install .button {
+    width: 100%;
+  }
+}

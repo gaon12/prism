@@ -351,11 +351,15 @@ impl<'a> Collector<'a> {
             return Ok(());
         }
         if self.sections.len() >= self.options.max_sections
-            || self.bytes.saturating_add(text.len()) > self.options.max_text_bytes
+            || self
+                .bytes
+                .saturating_add(text.len())
+                .saturating_add(self.heading.as_ref().map_or(0, String::len))
+                > self.options.max_text_bytes
         {
             return Err(limit());
         }
-        self.bytes += text.len();
+        self.bytes += text.len() + self.heading.as_ref().map_or(0, String::len);
         self.sections.push(DocumentSection {
             text: text.into(),
             page,
@@ -428,6 +432,7 @@ fn extract_delimited(text: &str, delimiter: char, out: &mut Collector<'_>) -> Re
     let mut closed_quote = false;
     let mut line = 1u32;
     let mut row_line = line;
+    let mut headers: Vec<String> = Vec::new();
     while let Some(ch) = chars.next() {
         check_cancel(out.cancel)?;
         if quoted {
@@ -453,7 +458,17 @@ fn extract_delimited(text: &str, delimiter: char, out: &mut Collector<'_>) -> Re
                 chars.next();
             }
             fields.push(std::mem::take(&mut field));
-            out.push(&fields.join("\t"), None, row_line)?;
+            if headers.is_empty() {
+                headers = fields.clone();
+            }
+            emit_row(
+                &fields,
+                &headers,
+                "CSV/TSV; header=first-row inferred",
+                row_line,
+                None,
+                out,
+            )?;
             fields.clear();
             line += 1;
             row_line = line;
@@ -475,7 +490,17 @@ fn extract_delimited(text: &str, delimiter: char, out: &mut Collector<'_>) -> Re
     }
     if !fields.is_empty() || !field.is_empty() || closed_quote {
         fields.push(field);
-        out.push(&fields.join("\t"), None, row_line)?;
+        if headers.is_empty() {
+            headers = fields.clone();
+        }
+        emit_row(
+            &fields,
+            &headers,
+            "CSV/TSV; header=first-row inferred",
+            row_line,
+            None,
+            out,
+        )?;
     }
     Ok(())
 }
@@ -560,6 +585,10 @@ fn xml_tree(bytes: &[u8], out: &Collector<'_>) -> Result<XmlNode> {
     let mut nodes = 0usize;
     loop {
         check_cancel(out.cancel)?;
+        nodes = nodes.saturating_add(1);
+        if nodes > out.options.max_sections.saturating_mul(40).max(200) {
+            return Err(limit());
+        }
         match reader.read_event().map_err(|_| corrupt())? {
             Event::Start(e) | Event::Empty(e) => {
                 // Empty elements are identified using the reader's consumed token.
@@ -584,6 +613,10 @@ fn xml_tree(bytes: &[u8], out: &Collector<'_>) -> Result<XmlNode> {
                         .decode_and_unescape_value(reader.decoder())
                         .map_err(|_| corrupt())?
                         .into_owned();
+                    let qualified = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
+                    if qualified != key {
+                        node.attrs.push((qualified, value.clone()));
+                    }
                     node.attrs.push((key, value));
                 }
                 if empty {
@@ -599,31 +632,36 @@ fn xml_tree(bytes: &[u8], out: &Collector<'_>) -> Result<XmlNode> {
                 let node = stack.pop().ok_or_else(corrupt)?;
                 stack.last_mut().ok_or_else(corrupt)?.children.push(node);
             }
-            Event::Text(e) => stack
-                .last_mut()
-                .ok_or_else(corrupt)?
-                .text
-                .push_str(&e.decode().map_err(|_| corrupt())?),
-            Event::CData(e) => stack
-                .last_mut()
-                .ok_or_else(corrupt)?
-                .text
-                .push_str(&e.decode().map_err(|_| corrupt())?),
+            Event::Text(e) => xml_text(
+                stack.last_mut().ok_or_else(corrupt)?,
+                &e.decode().map_err(|_| corrupt())?,
+            ),
+            Event::CData(e) => xml_text(
+                stack.last_mut().ok_or_else(corrupt)?,
+                &e.decode().map_err(|_| corrupt())?,
+            ),
             Event::GeneralRef(e) => {
                 let value = e.decode().map_err(|_| corrupt())?;
                 let entity = format!("&{value};");
-                stack
-                    .last_mut()
-                    .ok_or_else(corrupt)?
-                    .text
-                    .push_str(&quick_xml::escape::unescape(&entity).map_err(|_| corrupt())?);
+                xml_text(
+                    stack.last_mut().ok_or_else(corrupt)?,
+                    &quick_xml::escape::unescape(&entity).map_err(|_| corrupt())?,
+                );
             }
             Event::DocType(_) => return Err(corrupt()), // no DTDs/entities or external resolution
             Event::Eof => break,
             _ => {}
         }
     }
-    if stack.len() != 1 || stack[0].children.len() != 1 || !stack[0].text.trim().is_empty() {
+    if stack.len() != 1
+        || stack[0]
+            .children
+            .iter()
+            .filter(|n| n.name != "#text")
+            .count()
+            != 1
+        || !stack[0].text.trim().is_empty()
+    {
         return Err(corrupt());
     }
     stack.pop().ok_or_else(corrupt)
@@ -645,6 +683,38 @@ fn xml_inline(node: &XmlNode, text: &mut String) {
 }
 fn xml_paragraphs(node: &XmlNode, out: &mut Collector<'_>) -> Result<()> {
     check_cancel(out.cancel)?;
+    if node.name == "tbl" {
+        let rows: Vec<_> = node.children.iter().filter(|n| n.name == "tr").collect();
+        let headers = rows
+            .first()
+            .map(|row| aligned_table_cells(row, true, out.options.max_sections))
+            .transpose()?
+            .unwrap_or_default();
+        let explicit = rows
+            .first()
+            .is_some_and(|row| descendants(row, "tblHeader").next().is_some());
+        let context = format!(
+            "{} / table; header={}",
+            out.heading.as_deref().unwrap_or("Document"),
+            if explicit {
+                "declared"
+            } else {
+                "first-row inferred"
+            }
+        );
+        for row in rows {
+            let para = out.next_paragraph();
+            emit_row(
+                &aligned_table_cells(row, false, out.options.max_sections)?,
+                &headers,
+                &context,
+                para,
+                None,
+                out,
+            )?;
+        }
+        return Ok(());
+    }
     if node.name == "tr" {
         let paragraph = out.next_paragraph();
         let mut cells = Vec::new();
@@ -1095,6 +1165,210 @@ fn hwp_records(data: &[u8], out: &mut Collector<'_>) -> Result<()> {
     render(&records, out)
 }
 
+fn xml_text(node: &mut XmlNode, text: &str) {
+    node.text.push_str(text);
+    // Ordered text nodes preserve mixed ODF spans, including trailing punctuation.
+    if let Some(last) = node.children.last_mut().filter(|n| n.name == "#text") {
+        last.text.push_str(text);
+    } else {
+        node.children.push(XmlNode {
+            name: "#text".into(),
+            text: text.into(),
+            ..Default::default()
+        });
+    }
+}
+fn attr<'a>(node: &'a XmlNode, name: &str) -> Option<&'a str> {
+    node.attrs
+        .iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.as_str())
+}
+fn descendants<'a>(node: &'a XmlNode, name: &str) -> std::vec::IntoIter<&'a XmlNode> {
+    fn walk<'a>(n: &'a XmlNode, name: &str, items: &mut Vec<&'a XmlNode>) {
+        if n.name == name {
+            items.push(n);
+        }
+        for child in &n.children {
+            walk(child, name, items);
+        }
+    }
+    let mut items = Vec::new();
+    walk(node, name, &mut items);
+    items.into_iter()
+}
+fn column_name(mut index: usize) -> String {
+    let mut chars = Vec::new();
+    loop {
+        chars.push((b'A' + (index % 26) as u8) as char);
+        if index < 26 {
+            break;
+        }
+        index = index / 26 - 1;
+    }
+    chars.iter().rev().collect()
+}
+fn excerpt(text: &str, max: usize) -> String {
+    let mut chars = text.chars();
+    let result: String = chars.by_ref().take(max).collect();
+    if chars.next().is_some() {
+        result + "…"
+    } else {
+        result
+    }
+}
+/// Each section remains below the downstream 1200-scalar chunk budget. Repeated
+/// labels and row keys keep a long cell's fragments interpretable independently.
+fn emit_row(
+    values: &[String],
+    headers: &[String],
+    context: &str,
+    row: u32,
+    page: Option<u32>,
+    out: &mut Collector<'_>,
+) -> Result<()> {
+    let key = values
+        .iter()
+        .find(|v| !v.trim().is_empty())
+        .map(String::as_str)
+        .unwrap_or("");
+    for (column, value) in values.iter().enumerate() {
+        if value.trim().is_empty() {
+            continue;
+        }
+        let generic = format!("Column {}", column_name(column));
+        let label = headers
+            .get(column)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(&generic);
+        let address = format!("{}{}", column_name(column), row);
+        emit_cell(value, label, key, &address, context, row, page, out)?;
+    }
+    Ok(())
+}
+fn table_cells(row: &XmlNode) -> Vec<String> {
+    fn cell_text(node: &XmlNode, text: &mut String) {
+        if node.name == "tr" {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&table_cells(node).join("\t"));
+            return;
+        }
+        if node.name == "p" {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            xml_inline(node, text);
+        }
+        for child in &node.children {
+            cell_text(child, text);
+        }
+    }
+    row.children
+        .iter()
+        .filter(|n| n.name == "tc")
+        .map(|n| {
+            let mut s = String::new();
+            cell_text(n, &mut s);
+            s
+        })
+        .collect()
+}
+/// Align explicit HWPX addresses and OOXML column spans before applying labels.
+fn aligned_table_cells(row: &XmlNode, header: bool, max: usize) -> Result<Vec<String>> {
+    let raw = table_cells(row);
+    let mut result = Vec::new();
+    let before = descendants(row, "gridBefore")
+        .next()
+        .and_then(|n| attr(n, "val"))
+        .unwrap_or("0")
+        .parse::<usize>()
+        .map_err(|_| corrupt())?;
+    if before > max {
+        return Err(limit());
+    }
+    result.resize(before, String::new());
+    for (cell, value) in row.children.iter().filter(|n| n.name == "tc").zip(raw) {
+        let position = cell
+            .children
+            .iter()
+            .find(|n| n.name == "cellAddr")
+            .and_then(|n| attr(n, "colAddr"))
+            .map(|s| s.parse::<usize>().map_err(|_| corrupt()))
+            .transpose()?
+            .unwrap_or(result.len());
+        if position < result.len() {
+            return Err(corrupt());
+        }
+        let span = attr(cell, "gridSpan")
+            .or_else(|| {
+                cell.children
+                    .iter()
+                    .find(|n| n.name == "tcPr")
+                    .and_then(|p| p.children.iter().find(|n| n.name == "gridSpan"))
+                    .and_then(|n| attr(n, "val"))
+            })
+            .or_else(|| {
+                cell.children
+                    .iter()
+                    .find(|n| n.name == "cellSpan")
+                    .and_then(|n| attr(n, "colSpan"))
+            })
+            .unwrap_or("1")
+            .parse::<usize>()
+            .map_err(|_| corrupt())?;
+        let end = position.checked_add(span).ok_or_else(limit)?;
+        if span == 0 {
+            return Err(corrupt());
+        }
+        if end > max {
+            return Err(limit());
+        }
+        result.resize(position, String::new());
+        result.push(value.clone());
+        result.resize(end, if header { value } else { String::new() });
+    }
+    Ok(result)
+}
+fn emit_cell(
+    value: &str,
+    label: &str,
+    key: &str,
+    address: &str,
+    context: &str,
+    row: u32,
+    page: Option<u32>,
+    out: &mut Collector<'_>,
+) -> Result<()> {
+    if value.trim().is_empty() {
+        return Ok(());
+    }
+    let previous = out.heading.clone();
+    out.heading = Some(format!(
+        "{context}; row={row}; cell={address}; column={label}; row key={}",
+        excerpt(key, 120)
+    ));
+    let prefix = format!(
+        "[row {row}; key={}; cell={address}; {}]: ",
+        excerpt(key, 80),
+        excerpt(label, 100)
+    );
+    let chars: Vec<char> = value.chars().collect();
+    let size = 1000usize.saturating_sub(prefix.chars().count()).max(200);
+    let mut start = 0;
+    loop {
+        let end = (start + size).min(chars.len());
+        let part: String = chars[start..end].iter().collect();
+        out.push(&(prefix.clone() + &part), page, row)?;
+        if end == chars.len() {
+            break;
+        }
+        start = end.saturating_sub(150);
+    }
+    out.heading = previous;
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1239,7 +1513,7 @@ mod tests {
         let (bytes, _, bad) = EUC_KR.encode(text);
         assert!(!bad);
         assert_eq!(
-            extract("sample.csv", &bytes).unwrap().sections[0].text,
+            extract("sample.txt", &bytes).unwrap().sections[0].text,
             "한국어 확장 똠"
         );
     }
@@ -1257,10 +1531,16 @@ mod tests {
             r#"<w:document xmlns:w="urn:test"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Summary</w:t></w:r></w:p><w:p><w:r><w:t>A&amp;B</w:t></w:r><w:r><w:t> costs 42</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>Item</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Cost</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>"#,
         )]);
         let doc = extract("sample.docx", &bytes).unwrap();
-        assert_eq!(doc.sections.len(), 3);
+        assert_eq!(doc.sections.len(), 4);
         assert_eq!(doc.sections[1].text, "A&B costs 42");
         assert_eq!(doc.sections[1].heading.as_deref(), Some("Summary"));
-        assert_eq!(doc.sections[2].text, "Item\tCost");
+        assert!(doc.sections[2].text.ends_with(": Item"));
+        assert!(doc.sections[3].text.ends_with(": Cost"));
+        assert!(doc.sections[3]
+            .heading
+            .as_deref()
+            .unwrap()
+            .contains("column=Cost"));
     }
     #[test]
     fn hwpx_sections_sort_numerically_and_keep_nested_table() {
@@ -1269,13 +1549,10 @@ mod tests {
             ("Contents/section2.xml", "<sec><p><run><t>second</t><tbl><tr><tc><subList><p><run><t>A</t></run></p></subList></tc><tc><subList><p><run><t>B</t></run></p></subList></tc></tr></tbl></run></p></sec>"),
         ]);
         let doc = extract("sample.hwpx", &bytes).unwrap();
-        assert_eq!(
-            doc.sections
-                .iter()
-                .map(|s| s.text.as_str())
-                .collect::<Vec<_>>(),
-            vec!["second", "A\tB", "tenth"]
-        );
+        assert_eq!(doc.sections.first().unwrap().text, "second");
+        assert_eq!(doc.sections.last().unwrap().text, "tenth");
+        assert!(doc.sections.iter().any(|s| s.text.ends_with(": A")));
+        assert!(doc.sections.iter().any(|s| s.text.ends_with(": B")));
         assert!(doc.sections.iter().all(|s| s.page.is_none()));
     }
     #[test]
@@ -1468,10 +1745,16 @@ mod tests {
             b"name,note\r\nTea,\"two\nlines, with \"\"quote\"\"\"\r\nCoffee,42",
         )
         .unwrap();
-        assert_eq!(doc.sections.len(), 3);
-        assert_eq!(doc.sections[0].text, "name\tnote");
-        assert_eq!(doc.sections[1].text, "Tea\ttwo\nlines, with \"quote\"");
-        assert_eq!(doc.sections[2].paragraph, Some(4));
+        assert_eq!(doc.sections.len(), 6);
+        let note = doc
+            .sections
+            .iter()
+            .find(|s| s.text.ends_with("two\nlines, with \"quote\""))
+            .unwrap();
+        assert!(note.text.contains("note"));
+        assert!(note.text.contains("key=Tea"));
+        assert_eq!(note.paragraph, Some(2));
+        assert_eq!(doc.sections.last().unwrap().paragraph, Some(4));
         assert_eq!(
             extract("broken.csv", b"a,\"open").unwrap_err().code,
             ExtractErrorCode::CorruptDocument
@@ -1482,8 +1765,9 @@ mod tests {
     fn nested_docx_table_keeps_inner_cell_boundaries() {
         let bytes = zip_file(&[("word/document.xml", "<document><tbl><tr><tc><p><r><t>Outer</t></r></p><tbl><tr><tc><p><r><t>Inner A</t></r></p></tc><tc><p><r><t>Inner B</t></r></p></tc></tr></tbl></tc><tc><p><r><t>42</t></r></p></tc></tr></tbl></document>")]);
         let doc = extract("nested.docx", &bytes).unwrap();
-        assert_eq!(doc.sections.len(), 1);
-        assert_eq!(doc.sections[0].text, "Outer\nInner A\tInner B\t42");
+        assert_eq!(doc.sections.len(), 2);
+        assert!(doc.sections[0].text.ends_with("Outer\nInner A\tInner B"));
+        assert!(doc.sections[1].text.ends_with(": 42"));
     }
 
     #[test]
@@ -1556,5 +1840,59 @@ mod tests {
                 .code,
             ExtractErrorCode::LimitExceeded
         );
+    }
+    #[test]
+    fn tables_repeat_header_and_row_key_in_long_unicode_fragments() {
+        let value = "매출한글🙂".repeat(700);
+        let doc = extract("long.csv", format!("품목,설명\n한국차,{value}").as_bytes()).unwrap();
+        let fragments: Vec<_> = doc
+            .sections
+            .iter()
+            .filter(|s| {
+                s.paragraph == Some(2) && s.heading.as_deref().unwrap().contains("column=설명")
+            })
+            .collect();
+        assert!(fragments.len() > 3);
+        assert!(fragments.iter().all(|s| s.text.chars().count() <= 1000
+            && s.text.contains("key=한국차")
+            && s.text.contains("설명")
+            && s.text.contains("cell=B2")));
+        assert!(fragments.iter().all(|s| s
+            .heading
+            .as_deref()
+            .unwrap()
+            .contains("first-row inferred")));
+        let docx=zip_file(&[("word/document.xml","<document><tbl><tr><trPr><tblHeader/></trPr><tc><p><t>품목</t></p></tc><tc><p><t>가격</t></p></tc></tr><tr><tc><p><t>차</t></p></tc><tc><p><t>42</t></p></tc></tr></tbl></document>")]);
+        let doc = extract("table.docx", &docx).unwrap();
+        let amount = doc.sections.last().unwrap();
+        assert!(amount.text.contains("가격"));
+        assert!(amount.text.contains("key=차"));
+        assert!(amount
+            .heading
+            .as_deref()
+            .unwrap()
+            .contains("header=declared"));
+    }
+    #[test]
+    fn hwpx_explicit_cell_columns_and_docx_header_span_stay_aligned() {
+        let xml="<sec><tbl><tr><tc><cellSpan colSpan=\"2\"/><p><t>매출</t></p></tc><tc><cellAddr colAddr=\"2\"/><p><t>비용</t></p></tc></tr><tr><tc><cellAddr colAddr=\"1\"/><p><t>100</t></p></tc><tc><cellAddr colAddr=\"2\"/><p><t>42</t></p></tc></tr></tbl></sec>";
+        let doc = extract("aligned.hwpx", &zip_file(&[("Contents/section0.xml", xml)])).unwrap();
+        let sales = doc
+            .sections
+            .iter()
+            .find(|s| s.text.ends_with(": 100"))
+            .unwrap();
+        assert!(sales.text.contains("매출"));
+        assert!(sales.text.contains("cell=B2"));
+        let cost = doc
+            .sections
+            .iter()
+            .find(|s| s.text.ends_with(": 42"))
+            .unwrap();
+        assert!(cost.text.contains("비용"));
+        assert!(cost.text.contains("cell=C2"));
+        let xml="<document><tbl><tr><tc><tcPr><gridSpan val=\"2\"/></tcPr><p><t>Revenue</t></p></tc></tr><tr><tc><p><t>Tea</t></p></tc><tc><p><t>42</t></p></tc></tr></tbl></document>";
+        let doc = extract("span.docx", &zip_file(&[("word/document.xml", xml)])).unwrap();
+        assert!(doc.sections.last().unwrap().text.contains("Revenue"));
     }
 }

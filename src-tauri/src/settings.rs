@@ -27,6 +27,7 @@ pub struct ClientSettings {
     pub shortcut: String,
     pub remember_search: bool,
     pub keyboard_correction: bool,
+    pub hybrid_search: bool,
     pub close_to_tray: bool,
     pub start_on_login: bool,
     pub scopes: Vec<SearchScope>,
@@ -79,6 +80,7 @@ impl Default for ClientSettings {
             shortcut: "Alt+Space".into(),
             remember_search: true,
             keyboard_correction: true,
+            hybrid_search: true,
             close_to_tray: true,
             start_on_login: true,
             scopes: vec![],
@@ -230,10 +232,12 @@ mod tests {
         });
         write_json(&path, &settings).unwrap();
         settings.theme = "dark".into();
+        settings.hybrid_search = false;
         settings.revision = 1;
         write_json(&path, &settings).unwrap();
         let loaded = read_settings(&path).unwrap();
         assert_eq!(loaded.theme, "dark");
+        assert!(!loaded.hybrid_search);
         assert_eq!(loaded.revision, 1);
         assert_eq!(loaded.scopes[0].name, "문서");
         assert!(!loaded.scopes[0].content_enabled);

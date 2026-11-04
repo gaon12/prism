@@ -11,6 +11,10 @@ import {
 } from './types';
 
 describe('persisted client data', () => {
+  it('defaults to combined content retrieval and preserves an explicit opt-out', () => {
+    expect(normalizeSettings({}).hybridSearch).toBe(true);
+    expect(normalizeSettings({ hybridSearch: false }).hybridSearch).toBe(false);
+  });
   it('distinguishes fresh settings from legacy profiles and preserves tour completion', () => {
     expect(normalizeSettings(undefined).onboardingVersion).toBe(0);
     expect(normalizeSettings({}).onboardingVersion).toBe(1);

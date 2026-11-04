@@ -21,6 +21,7 @@ export interface ClientSettings {
   shortcut: string;
   rememberSearch: boolean;
   keyboardCorrection: boolean;
+  hybridSearch: boolean;
   closeToTray: boolean;
   startOnLogin: boolean;
   scopes: SearchScope[];
@@ -86,6 +87,7 @@ export const defaultSettings: ClientSettings = {
   shortcut: 'Alt+Space',
   rememberSearch: true,
   keyboardCorrection: true,
+  hybridSearch: true,
   closeToTray: true,
   startOnLogin: true,
   scopes: [],
@@ -133,6 +135,7 @@ export function normalizeSettings(input: unknown): ClientSettings {
     rememberSearch: typeof value.rememberSearch === 'boolean' ? value.rememberSearch : true,
     keyboardCorrection:
       typeof value.keyboardCorrection === 'boolean' ? value.keyboardCorrection : true,
+    hybridSearch: value.hybridSearch !== false,
     closeToTray: typeof value.closeToTray === 'boolean' ? value.closeToTray : true,
     startOnLogin: typeof value.startOnLogin === 'boolean' ? value.startOnLogin : true,
     calculator: {

@@ -14,6 +14,7 @@ export interface SearchScope {
 export interface ClientSettings {
   schemaVersion: number;
   revision: number;
+  onboardingVersion: number;
   theme: Theme;
   language: Language;
   fontSize: number;
@@ -76,6 +77,7 @@ export interface SearchResponse {
 export const defaultSettings: ClientSettings = {
   schemaVersion: 1,
   revision: 0,
+  onboardingVersion: 0,
   theme: 'system',
   language: 'ko',
   fontSize: 14,
@@ -119,6 +121,7 @@ export function normalizeSettings(input: unknown): ClientSettings {
     language,
     theme,
     revision: Number.isSafeInteger(value.revision) && value.revision! >= 0 ? value.revision! : 0,
+    onboardingVersion: finiteInteger(value.onboardingVersion, 1, 0, 4294967295),
     fontSize: Math.min(18, Math.max(12, Number(value.fontSize) || 14)),
     shortcut:
       typeof value.shortcut === 'string' && value.shortcut.trim()

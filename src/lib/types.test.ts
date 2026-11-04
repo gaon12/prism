@@ -11,6 +11,12 @@ import {
 } from './types';
 
 describe('persisted client data', () => {
+  it('distinguishes fresh settings from legacy profiles and preserves tour completion', () => {
+    expect(normalizeSettings(undefined).onboardingVersion).toBe(0);
+    expect(normalizeSettings({}).onboardingVersion).toBe(1);
+    expect(normalizeSettings({ onboardingVersion: 0 }).onboardingVersion).toBe(0);
+    expect(normalizeSettings({ onboardingVersion: 1 }).onboardingVersion).toBe(1);
+  });
   it('keeps legacy search mode on filenames and preserves an explicit content mode', () => {
     expect(normalizeSession({ query: '기획' }).mode).toBe('filename');
     expect(normalizeSession({ mode: 'content', query: '기획' }).mode).toBe('content');

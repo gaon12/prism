@@ -19,6 +19,8 @@ pub struct SearchScope {
 pub struct ClientSettings {
     pub schema_version: u32,
     pub revision: u64,
+    #[serde(default = "legacy_onboarding_version")]
+    pub onboarding_version: u32,
     pub theme: String,
     pub language: String,
     pub font_size: u8,
@@ -31,6 +33,11 @@ pub struct ClientSettings {
     pub calculator: CalculatorSettings,
     pub clipboard: crate::clipboard_history::ClipboardSettings,
     pub generation: crate::rag_service::GenerationPreferences,
+}
+
+// Existing profiles predate the tour; only genuinely new settings start at zero.
+fn legacy_onboarding_version() -> u32 {
+    1
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,6 +60,7 @@ impl Default for ClientSettings {
         Self {
             schema_version: 1,
             revision: 0,
+            onboarding_version: 0,
             theme: "system".into(),
             language: "ko".into(),
             font_size: 14,
@@ -176,6 +184,23 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_new_profiles_require_onboarding_and_completion_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        assert_eq!(read_settings(&path).unwrap().onboarding_version, 0);
+        fs::write(&path, r#"{"language":"ja","shortcut":"Ctrl+Shift+K"}"#).unwrap();
+        let mut existing = read_settings(&path).unwrap();
+        assert_eq!(existing.onboarding_version, 1);
+        assert_eq!(existing.language, "ja");
+        existing.onboarding_version = 0;
+        write_json(&path, &existing).unwrap();
+        assert_eq!(read_settings(&path).unwrap().onboarding_version, 0);
+        existing.onboarding_version = 1;
+        write_json(&path, &existing).unwrap();
+        assert_eq!(read_settings(&path).unwrap().onboarding_version, 1);
+    }
 
     #[test]
     fn settings_round_trip_preserves_korean_scopes_and_overwrites_atomically() {

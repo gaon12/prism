@@ -27,6 +27,7 @@ pub struct ClientSettings {
     pub start_on_login: bool,
     pub scopes: Vec<SearchScope>,
     pub calculator: CalculatorSettings,
+    pub clipboard: crate::clipboard_history::ClipboardSettings,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -59,12 +60,14 @@ impl Default for ClientSettings {
             start_on_login: true,
             scopes: vec![],
             calculator: CalculatorSettings::default(),
+            clipboard: crate::clipboard_history::ClipboardSettings::default(),
         }
     }
 }
 
 impl ClientSettings {
     pub fn validate(&self) -> Result<(), String> {
+        self.clipboard.validate()?;
         if !(6..=15).contains(&self.calculator.precision)
             || !["rad", "deg"].contains(&self.calculator.angle.as_str())
         {

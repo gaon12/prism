@@ -1,8 +1,9 @@
-mod embedding_runtime;
-mod document_extract;
-mod dictionary_store;
+mod clipboard_commands;
 mod clipboard_history;
 mod commands;
+mod dictionary_store;
+mod document_extract;
+mod embedding_runtime;
 mod filename_pattern;
 mod index;
 mod keyboard_pattern;
@@ -14,7 +15,7 @@ use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Emitter, Manager, WindowEvent,
 };
 use tauri_plugin_autostart::ManagerExt as AutostartExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -27,6 +28,7 @@ pub struct AppState {
     config_error: Mutex<Option<String>>,
     data_dir: PathBuf,
     index: index::FileIndex,
+    clipboard: clipboard_history::ClipboardService,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -61,7 +63,7 @@ pub fn run() {
                 })
                 .build(),
         )
-        .setup(|app| {
+        .setup(move |app| {
             let data_dir = app.path().app_config_dir()?;
             #[cfg(debug_assertions)]
             let data_dir = std::env::var_os("PRISM_DEV_DATA_DIR")
@@ -104,6 +106,33 @@ pub fn run() {
             if config_error.is_none() {
                 index.configure(settings.scopes.clone());
             }
+            let mut clipboard_settings = settings.clipboard.clone();
+            if config_error.is_some() {
+                clipboard_settings.enabled = false;
+                // Preserve history until the user repairs the corrupt settings file.
+                clipboard_settings.max_age_days = 0;
+                clipboard_settings.max_items = 10_000;
+                clipboard_settings.max_bytes = 8u64 << 30;
+            }
+            let clipboard = clipboard_history::ClipboardService::open(
+                data_dir.join("clipboard"),
+                clipboard_settings,
+                {
+                    let app = app.handle().clone();
+                    move |status| {
+                        let _ = app.emit("prism:clipboard", status);
+                    }
+                },
+            );
+            if isolated_test {
+                let source = clipboard_history::MemoryClipboard::default();
+                clipboard.start(source.boxed(), source.boxed());
+            } else {
+                clipboard.start(
+                    clipboard_history::system_source(app.handle().clone()),
+                    clipboard_history::system_source(app.handle().clone()),
+                );
+            }
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 session: Mutex::new(session),
@@ -112,6 +141,7 @@ pub fn run() {
                 config_error: Mutex::new(config_error),
                 data_dir,
                 index,
+                clipboard,
             });
             windows::build_quick(app.handle())?;
             let open = MenuItem::with_id(app, "open", "Prism 열기", true, None::<&str>)?;
@@ -194,6 +224,15 @@ pub fn run() {
             commands::file_action,
             commands::open_web_search,
             commands::copy_text,
+            clipboard_commands::clipboard_list,
+            clipboard_commands::clipboard_status,
+            clipboard_commands::clipboard_text,
+            clipboard_commands::clipboard_thumbnail,
+            clipboard_commands::clipboard_copy,
+            clipboard_commands::clipboard_pin,
+            clipboard_commands::clipboard_delete,
+            clipboard_commands::clipboard_clear,
+            clipboard_commands::clipboard_set_paused,
             commands::window_action,
             commands::quit_app,
             commands::write_markdown

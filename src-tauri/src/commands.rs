@@ -6,18 +6,17 @@ use serde::Serialize;
 use std::{fs, path::PathBuf};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_autostart::ManagerExt as AutostartExt;
-use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 use tauri_plugin_opener::OpenerExt;
 
 #[tauri::command]
-pub fn copy_text(app: AppHandle, text: String) -> Result<(), String> {
+pub fn copy_text(state: State<'_, AppState>, text: String) -> Result<(), String> {
     if text.len() > 1_048_576 {
         return Err("Text is too long to copy.".into());
     }
-    app.clipboard()
-        .write_text(text)
-        .map_err(|error| error.to_string())
+    state
+        .clipboard
+        .write_content(crate::clipboard_history::ClipContent::Text(text))
 }
 
 #[tauri::command]
@@ -47,6 +46,7 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> Result<Client
             .lock()
             .map_err(|_| "Settings are unavailable.")? = restored.clone();
         state.index.configure(restored.scopes);
+        state.clipboard.apply_settings(restored.clipboard)?;
         *config_error = None;
     }
     Ok(state
@@ -141,6 +141,9 @@ pub fn save_settings(
             .map(|scope| (&scope.id, &scope.path, scope.filename_enabled))
             .collect::<Vec<_>>();
     *current = settings.clone();
+    // The persisted settings are authoritative. Runtime storage errors are reported by
+    // clipboard_status; do not report a failed settings save after its atomic commit.
+    let _ = state.clipboard.apply_settings(settings.clipboard.clone());
     if changed_scopes {
         state.index.configure(settings.scopes.clone());
     }

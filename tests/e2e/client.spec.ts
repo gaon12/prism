@@ -261,6 +261,12 @@ test('edits, persists and exports a real Markdown draft', async ({ page }) => {
   await expect(page.getByRole('textbox', { name: 'Markdown', exact: true })).toContainText(
     '- 설정 저장',
   );
+  await page.getByRole('button', { name: 'AI 문서', exact: true }).click();
+  await expect(page.locator('.doc-native')).toContainText('데스크톱 앱');
+  await page.getByRole('button', { name: '기존 로컬 메모 열기', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Markdown', exact: true })).toHaveValue(
+    '# 첫 단계\n\n- 두 창\n- 설정 저장',
+  );
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Markdown 저장', exact: true }).click();
   const download = await downloadPromise;

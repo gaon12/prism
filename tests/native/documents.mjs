@@ -1,0 +1,399 @@
+// Actual document/RAG/source/storage services. Generation is a synthetic local
+// server; documents, revisions and source files are all isolated fixtures.
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { launch, shutdown, until } from './harness.mjs';
+
+const directory = await mkdtemp(join(tmpdir(), 'prism-documents-'));
+const evidence = join(tmpdir(), 'prism-ui-evidence');
+await mkdir(evidence, { recursive: true });
+const folder = join(directory, 'source-documents');
+await mkdir(folder);
+const source = join(folder, '원본.md');
+await writeFile(source, 'shared 제주 출장 경비 120000원. 표와 일정 검토.');
+await writeFile(
+  join(directory, 'settings.json'),
+  JSON.stringify({
+    shortcut: 'Ctrl+Alt+Shift+F6',
+    startOnLogin: false,
+    clipboard: { enabled: false, onboarded: true },
+    scopes: [
+      {
+        id: 'source',
+        name: '문서 근거',
+        path: folder,
+        filenameEnabled: true,
+        contentEnabled: true,
+        externalAllowed: false,
+      },
+    ],
+  }),
+);
+const calls = [],
+  sockets = new Set();
+let behavior = 'normal';
+const server = createServer((request, response) => {
+  const buffers = [];
+  request.on('data', (chunk) => buffers.push(chunk));
+  request.on('end', () => {
+    const packet = JSON.parse(Buffer.concat(buffers).toString());
+    const current = packet.messages.at(-1).content;
+    const marker = 'Document input:\n';
+    const input = JSON.parse(
+      current.slice(current.lastIndexOf(marker) + marker.length).split('\n')[0],
+    );
+    calls.push({ packet, input });
+    if (behavior === 'stall') return;
+    const payload =
+      input.operation === 'outline'
+        ? {
+            title: 'shared',
+            sections: [{ id: 'summary', heading: '경비와 검토', instruction: 'shared' }],
+          }
+        : input.operation === 'rewrite'
+          ? {
+              blocks: [
+                {
+                  id: input.targetBlockIds[0],
+                  sectionId: 'summary',
+                  kind: 'aiProposal',
+                  markdown: input.selection ? '수정' : '다듬은 제안',
+                  sourceLabels: [],
+                },
+              ],
+            }
+          : {
+              blocks: [
+                {
+                  id: 'facts',
+                  sectionId: 'summary',
+                  kind: 'fact',
+                  markdown: '| 항목 | 경비 |\n|---|---:|\n| 제주도 | 120000원 |\n\n[S1]',
+                  sourceLabels: ['[S1]'],
+                },
+                {
+                  id: 'proposal',
+                  sectionId: 'summary',
+                  kind: 'aiProposal',
+                  markdown: 'A🙂한글Z',
+                  sourceLabels: [],
+                },
+                {
+                  id: 'blank',
+                  sectionId: 'summary',
+                  kind: 'blank',
+                  markdown: '',
+                  sourceLabels: [],
+                },
+                {
+                  id: 'classified',
+                  sectionId: 'summary',
+                  kind: 'userInput',
+                  markdown: '모델 분류 예시',
+                  sourceLabels: [],
+                },
+              ],
+            };
+    const text = behavior === 'malformed' ? 'synthetic invalid JSON' : JSON.stringify(payload);
+    const body = JSON.stringify({
+      model: 'synthetic-document-generator',
+      choices: [{ message: { content: text }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 11, completion_tokens: 9, total_tokens: 20 },
+    });
+    response.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+    });
+    response.end(body);
+  });
+});
+server.on('connection', (socket) => {
+  sockets.add(socket);
+  socket.on('close', () => sockets.delete(socket));
+});
+await new Promise((done) => server.listen(0, '127.0.0.1', done));
+let instance;
+try {
+  instance = await launch(directory);
+  const { invoke, main } = instance;
+  const result = (command, args) =>
+    main.evaluate(
+      async ({ command, args }) => {
+        try {
+          return { ok: true, value: await window.__TAURI_INTERNALS__.invoke(command, args) };
+        } catch (error) {
+          return { ok: false, error: { code: error?.code, rag: error?.rag } };
+        }
+      },
+      { command, args },
+    );
+  await until(async () => {
+    const status = await invoke('content_status');
+    return status.phase === 'ready' && status.indexed === 1;
+  }, 'document source indexed');
+  const settings = await invoke('get_settings');
+  await invoke('save_settings', {
+    expectedRevision: settings.revision,
+    settings: {
+      ...settings,
+      generation: {
+        ...settings.generation,
+        maxContextChars: 40000,
+        local: {
+          endpoint: `http://127.0.0.1:${server.address().port}/v1`,
+          model: 'synthetic-document-generator',
+          maxTokens: 2048,
+          tokenParameter: 'maxTokens',
+          temperature: null,
+        },
+      },
+    },
+  });
+  const created = await invoke('doc_create', {
+    input: { title: 'shared', purpose: 'shared', scopeIds: ['source'], templateMarkdown: null },
+  });
+  const id = created.document.id;
+  const request = (revision, scopeIds = ['source']) => ({
+    documentId: id,
+    expectedRevisionId: revision.id,
+    requestId: crypto.randomUUID(),
+    instruction: 'shared',
+    scopeIds,
+  });
+  const early = await result('doc_generate_body', { request: request(created.revision) });
+  assert.equal(early.error.code, 'outlineReviewRequired');
+  assert.equal(calls.length, 0);
+  const noScopes = await result('doc_generate_outline', { request: request(created.revision, []) });
+  assert.equal(noScopes.error.code, 'input');
+  assert.equal(calls.length, 0);
+  const outline = await invoke('doc_generate_outline', { request: request(created.revision) });
+  assert.equal(outline.outlineReviewed, false);
+  const reviewed = await invoke('doc_save_outline', {
+    id,
+    expected: outline.id,
+    plan: outline.plan,
+    reviewed: true,
+  });
+  const body = await invoke('doc_generate_body', { request: request(reviewed) });
+  assert.equal(body.claimsVerified, false);
+  assert(body.blocks.every((block) => !block.claimsVerified && !block.userEdited));
+  assert(body.markdown.includes('120000원'));
+  assert(body.blocks.some((block) => block.kind === 'blank' && block.markdown === ''));
+  assert.equal(
+    (await invoke('rag_list', { query: '', limit: 100 })).length,
+    0,
+    'Document generation history must stay out of chat lists',
+  );
+  assert.equal((await invoke('rag_list', { query: '120000', limit: 100 })).length, 0);
+  const modified = structuredClone(body.blocks);
+  modified.find((block) => block.id === 'blank').kind = 'userInput';
+  modified.find((block) => block.id === 'blank').markdown = '사용자가 채운 값';
+  const manual = await invoke('doc_save_manual', {
+    id,
+    expected: body.id,
+    blocks: modified,
+    plan: null,
+  });
+  assert.equal(
+    manual.blocks.find((block) => block.id === 'facts').userEdited,
+    false,
+    'Untouched model blocks must not become user edits',
+  );
+  assert.equal(manual.blocks.find((block) => block.id === 'blank').userEdited, true);
+  const stale = await result('doc_save_manual', {
+    id,
+    expected: body.id,
+    blocks: modified,
+    plan: null,
+  });
+  assert.equal(stale.error.code, 'conflict');
+  const rewritten = await invoke('doc_rewrite', {
+    request: {
+      ...request(manual),
+      targetBlockIds: ['proposal'],
+      selection: { blockId: 'proposal', start: 1, end: 3 },
+    },
+  });
+  assert.equal(rewritten.blocks.find((block) => block.id === 'proposal').markdown, 'A수정글Z');
+  assert.equal(
+    rewritten.blocks.find((block) => block.id === 'facts').markdown,
+    manual.blocks.find((block) => block.id === 'facts').markdown,
+  );
+  const larger = structuredClone(rewritten.blocks);
+  larger.find((block) => block.id === 'proposal').markdown += ' 긴 문서 내용'.repeat(600);
+  const longRevision = await invoke('doc_save_manual', {
+    id,
+    expected: rewritten.id,
+    blocks: larger,
+    plan: null,
+  });
+  const longRewrite = await invoke('doc_rewrite', {
+    request: { ...request(longRevision), targetBlockIds: ['proposal'], selection: null },
+  });
+  assert.equal(longRewrite.blocks.find((block) => block.id === 'proposal').markdown, '다듬은 제안');
+  assert(
+    Buffer.byteLength(calls.at(-1).packet.messages.at(-1).content) > 4096,
+    'Long derived input must reach generation without becoming the retrieval query',
+  );
+  behavior = 'malformed';
+  const malformed = await result('doc_generate_body', { request: request(longRewrite) });
+  assert.equal(malformed.error.code, 'malformed');
+  assert.equal((await invoke('doc_get', { id, revisionId: null })).revision.id, longRewrite.id);
+  behavior = 'stall';
+  const pendingRequest = request(longRewrite),
+    before = calls.length;
+  const pending = result('doc_generate_body', { request: pendingRequest });
+  await until(() => calls.length > before, 'document provider starts stalled operation');
+  await invoke('doc_cancel', { id, request: pendingRequest.requestId });
+  assert.equal((await pending).error.code, 'cancelled');
+  assert.equal((await invoke('doc_get', { id, revisionId: null })).revision.id, longRewrite.id);
+  behavior = 'normal';
+  const restored = await invoke('doc_restore', { id, expected: longRewrite.id, target: body.id });
+  assert(restored.sequence > longRewrite.sequence);
+  assert.equal(restored.markdown, body.markdown);
+  assert((await invoke('doc_revisions', { id, before: null, limit: 100 })).length >= 8);
+  const exported = await invoke('doc_export', {
+    id,
+    revision: null,
+    includeSources: true,
+    includeTypeMarkers: true,
+  });
+  assert(
+    exported.includes('120000원') && exported.includes('prism:fact') && exported.includes('[^S1]'),
+  );
+  assert(calls.every(({ packet }) => !JSON.stringify(packet).includes(directory)));
+
+  // Rendered UI calls the same real IPC. Creating/reviewing/saving remains explicit.
+  await main.getByRole('button', { name: '문서', exact: true }).click();
+  await main.getByRole('button', { name: '새 문서', exact: true }).click();
+  await main.getByLabel('문서 제목', { exact: true }).fill('화면 검증');
+  await main.getByLabel('작성 목적·문서 유형', { exact: true }).fill('shared');
+  await main.getByRole('button', { name: '검색', exact: true }).click();
+  assert.equal(
+    await main.getByLabel('작성 목적·문서 유형', { exact: true }).inputValue(),
+    'shared',
+  );
+  const beforeCreate = calls.length;
+  await main.getByRole('button', { name: '초안 만들기', exact: true }).click();
+  await main.locator('.doc-editor h2').filter({ hasText: '화면 검증' }).waitFor();
+  assert.equal(calls.length, beforeCreate, 'Creating a draft must not call generation');
+  const uiDoc = (await invoke('doc_list', { query: '화면 검증', limit: 100 }))[0];
+  const outlineButton = main.getByRole('button', { name: 'AI로 개요 생성', exact: true });
+  await main.locator('.doc-options > summary').click();
+  const scopeBox = main.locator('.doc-options input[type=checkbox]');
+  await scopeBox.uncheck();
+  assert.equal(await outlineButton.isDisabled(), true);
+  await scopeBox.check();
+  await main.locator('.doc-options > summary').click();
+  await outlineButton.click();
+  await main.getByLabel('항목 제목', { exact: true }).waitFor();
+  await main.getByRole('tab', { name: '본문 블록', exact: true }).click();
+  const bodyButton = main.getByRole('button', { name: '검토한 개요로 본문 생성', exact: true });
+  assert.equal(await bodyButton.isDisabled(), true, 'Review must not be inferred from AI output');
+  await main.getByRole('tab', { name: '개요', exact: true }).click();
+  await main.getByLabel('개요를 검토했습니다.', { exact: true }).check();
+  await main.getByRole('button', { name: '검토한 개요 저장', exact: true }).click();
+  await until(
+    async () => (await bodyButton.isVisible()) && !(await bodyButton.isDisabled()),
+    'reviewed body action',
+  );
+  await bodyButton.click();
+  await until(
+    async () => (await main.locator('.doc-block').count()) === 4,
+    'four generated body blocks',
+  );
+  assert.equal(await main.locator('.doc-user-edited').count(), 0);
+  const proposal = main.locator('.doc-block').nth(1).getByLabel('블록 Markdown', { exact: true });
+  await proposal.focus();
+  await proposal.press('Home');
+  await proposal.press('ArrowRight');
+  await proposal.press('Shift+ArrowRight');
+  await proposal.press('Shift+ArrowRight'); // Select the emoji and Korean character as real input.
+  await main.getByRole('button', { name: '텍스트 선택 영역 다시 쓰기', exact: true }).click();
+  await until(
+    async () => (await proposal.inputValue()) === 'A수정글Z',
+    'Unicode selection rewrite',
+  );
+  const blank = main.locator('.doc-block').nth(2);
+  await blank.getByLabel('블록 분류', { exact: true }).selectOption('userInput');
+  await blank.getByLabel('블록 Markdown', { exact: true }).fill('화면에서 채운 값');
+  assert.equal(
+    await main.getByRole('button', { name: '기존 로컬 메모 열기', exact: true }).isDisabled(),
+    true,
+  );
+  await main.getByRole('button', { name: '채팅', exact: true }).click();
+  assert.equal(
+    await blank.getByLabel('블록 Markdown', { exact: true }).inputValue(),
+    '화면에서 채운 값',
+  );
+  await main.getByRole('button', { name: '본문 편집 저장', exact: true }).click();
+  await until(
+    async () => (await main.locator('.doc-user-edited').count()) === 1,
+    'only edited block marked',
+  );
+  const uiSaved = (await invoke('doc_get', { id: uiDoc.id, revisionId: null })).revision;
+  assert.equal(uiSaved.blocks.find((block) => block.id === 'facts').userEdited, false);
+  assert.equal(uiSaved.blocks.find((block) => block.id === 'blank').markdown, '화면에서 채운 값');
+  await main.locator('.doc-edit-scroll').evaluate((element) => (element.scrollTop = 0));
+  await main.screenshot({ path: join(evidence, 'documents-body-native.png') });
+  assert.equal(await main.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await main.locator('.doc-history > summary').click();
+  await main.getByRole('button', { name: '이전 버전으로 실행 취소', exact: true }).click();
+  await until(
+    async () =>
+      (await invoke('doc_get', { id: uiDoc.id, revisionId: null })).revision.operation ===
+      'restore',
+    'UI undo creates revision',
+  );
+  assert.equal(
+    (await invoke('doc_get', { id: uiDoc.id, revisionId: null })).revision.blocks.find(
+      (block) => block.id === 'blank',
+    ).markdown,
+    '',
+  );
+  await main.getByRole('button', { name: '문서 삭제', exact: true }).click();
+  await main.getByRole('button', { name: '모든 버전 삭제', exact: true }).click();
+  await until(
+    async () => (await invoke('doc_list', { query: '화면 검증', limit: 100 })).length === 0,
+    'UI confirmed deletion',
+  );
+  await writeFile(source, 'shared changed source 경비 130000원');
+  const sourceStates = await invoke('doc_current_citations', { id, revisionId: null });
+  assert(sourceStates.some((citation) => citation.state === 'changed'));
+  assert(
+    (await invoke('doc_get', { id, revisionId: null })).revision.citations.every(
+      (citation) => citation.state === 'current',
+    ),
+    'Current citation checks must not mutate revision snapshots',
+  );
+  const count = calls.length;
+  const changed = await result('doc_generate_body', { request: request(restored) });
+  assert.equal(changed.error.rag.code, 'sourceChanged');
+  assert.equal(calls.length, count, 'Stale derived input must not be sent to the provider');
+  assert.deepEqual(instance.errors, []);
+  await shutdown(instance);
+  instance = await launch(directory);
+  assert.equal(
+    (await instance.invoke('doc_get', { id, revisionId: null })).revision.id,
+    restored.id,
+  );
+  assert.equal((await instance.invoke('rag_list', { query: '', limit: 100 })).length, 0);
+  await instance.invoke('doc_delete', { id });
+  assert.equal((await instance.invoke('doc_list', { query: '', limit: 100 })).length, 0);
+  assert.deepEqual(instance.errors, []);
+  console.log(
+    JSON.stringify({
+      passed: true,
+      directory,
+      generation: 'synthetic loopback fixture',
+      externalCalls: 0,
+    }),
+  );
+} finally {
+  if (instance) await shutdown(instance);
+  for (const socket of sockets) socket.destroy();
+  await new Promise((done) => server.close(done));
+}

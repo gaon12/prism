@@ -62,6 +62,12 @@ interface HybridResponse extends TextResponse {
   semanticCandidates: number;
   keywordSkipped: boolean;
 }
+interface AutomaticResponse extends TextResponse {
+  ranking: 'keyword' | 'cosine' | 'hybrid';
+  semanticState: 'disabled' | 'notRunning' | 'used' | 'failed';
+  semanticFailure: string | null;
+  keywordSkipped: boolean;
+}
 export interface ContentFailure {
   code: string;
   message: string;
@@ -104,6 +110,7 @@ export function useContentSearch(active: boolean) {
     session.scopeId,
     scopesKey,
     settings.hybridSearch,
+    settings.automaticSemantic,
   ]);
   const [status, setStatus] = useState(emptyStatus);
   const [statusError, setStatusError] = useState<ContentFailure | null>(null);
@@ -113,6 +120,7 @@ export function useContentSearch(active: boolean) {
     diagnostics: SearchDiagnostics;
     hybrid: boolean;
     keywordSkipped: boolean;
+    automatic: Pick<AutomaticResponse, 'ranking' | 'semanticState' | 'semanticFailure'> | null;
   } | null>(null);
   const [error, setError] = useState<{ key: string; error: ContentFailure } | null>(null);
   const [pending, setPending] = useState<string | null>(null);
@@ -167,42 +175,63 @@ export function useContentSearch(active: boolean) {
           requestId,
         };
         const request =
-          session.mode === 'semantic'
-            ? settings.hybridSearch
-              ? invoke<HybridResponse>('search_hybrid', args).then((data) => ({
-                  hits: data.hits,
-                  diagnostics: data,
-                  hybrid: true,
-                  keywordSkipped: data.keywordSkipped,
-                }))
-              : invoke<SemanticResponse>('search_semantic', args).then((data) => ({
-                  hits: data.hits.map((hit) => ({
-                    chunk: hit.chunk,
-                    score: 1 - hit.cosineDistance,
-                    snippet: Array.from(hit.chunk.text).slice(0, 320).join(''),
-                  })),
-                  diagnostics: {
-                    candidateCount: data.candidateCount,
-                    candidateLimit: data.candidateLimit,
-                    hardLimitReached: data.hardLimitReached,
-                  },
-                  hybrid: false,
-                  keywordSkipped: false,
-                }))
-            : invoke<ContentHit[] | TextResponse>('search_content', args).then((data) =>
-                Array.isArray(data)
-                  ? {
-                      hits: data,
-                      diagnostics: {
-                        candidateCount: data.length,
-                        candidateLimit: 100,
-                        hardLimitReached: data.length >= 100,
+          session.mode === 'auto'
+            ? invoke<AutomaticResponse>('search_automatic', args).then((data) => ({
+                hits: data.hits,
+                diagnostics: data,
+                hybrid: data.ranking === 'hybrid',
+                keywordSkipped: data.keywordSkipped,
+                automatic: {
+                  ranking: data.ranking,
+                  semanticState: data.semanticState,
+                  semanticFailure: data.semanticFailure,
+                },
+              }))
+            : session.mode === 'semantic'
+              ? settings.hybridSearch
+                ? invoke<HybridResponse>('search_hybrid', args).then((data) => ({
+                    hits: data.hits,
+                    diagnostics: data,
+                    hybrid: true,
+                    keywordSkipped: data.keywordSkipped,
+                    automatic: null,
+                  }))
+                : invoke<SemanticResponse>('search_semantic', args).then((data) => ({
+                    hits: data.hits.map((hit) => ({
+                      chunk: hit.chunk,
+                      score: 1 - hit.cosineDistance,
+                      snippet: Array.from(hit.chunk.text).slice(0, 320).join(''),
+                    })),
+                    diagnostics: {
+                      candidateCount: data.candidateCount,
+                      candidateLimit: data.candidateLimit,
+                      hardLimitReached: data.hardLimitReached,
+                    },
+                    hybrid: false,
+                    keywordSkipped: false,
+                    automatic: null,
+                  }))
+              : invoke<ContentHit[] | TextResponse>('search_content', args).then((data) =>
+                  Array.isArray(data)
+                    ? {
+                        hits: data,
+                        diagnostics: {
+                          candidateCount: data.length,
+                          candidateLimit: 100,
+                          hardLimitReached: data.length >= 100,
+                        },
+                        hybrid: false,
+                        keywordSkipped: false,
+                        automatic: null,
+                      }
+                    : {
+                        hits: data.hits,
+                        diagnostics: data,
+                        hybrid: false,
+                        keywordSkipped: false,
+                        automatic: null,
                       },
-                      hybrid: false,
-                      keywordSkipped: false,
-                    }
-                  : { hits: data.hits, diagnostics: data, hybrid: false, keywordSkipped: false },
-              );
+                );
         void request
           .then((data) => {
             if (!disposed) {
@@ -218,7 +247,7 @@ export function useContentSearch(active: boolean) {
             if (!disposed) setPending((previous) => (previous === key ? null : previous));
           });
       },
-      session.mode === 'semantic' ? 450 : 200,
+      session.mode === 'semantic' || session.mode === 'auto' ? 450 : 200,
     );
     return () => {
       disposed = true;
@@ -235,6 +264,7 @@ export function useContentSearch(active: boolean) {
     session.scopeId,
     status.revision,
     settings.hybridSearch,
+    settings.automaticSemantic,
   ]);
   const data = response?.key === key ? response : null;
   const currentError = error?.key === key ? error.error : null;
@@ -258,7 +288,14 @@ export function useContentSearch(active: boolean) {
     statusError,
     data,
     error: currentError,
-    loading: pending === key,
+    loading:
+      pending === key ||
+      (active &&
+        native &&
+        Boolean(session.query.trim()) &&
+        Boolean(scopesKey) &&
+        !data &&
+        !currentError),
     selected,
     select,
     move,

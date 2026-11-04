@@ -10,6 +10,7 @@ import type { UtilityAnswer } from './utilities';
 import { pasteClipboard, useClipboard } from './clipboard';
 import { useDictionary } from './dictionary';
 import { useContentSearch } from './content';
+import { automaticBodyEligible } from './automatic-search';
 
 const emptyStatus: IndexStatus = {
   scanning: false,
@@ -24,7 +25,6 @@ export function useSearch(quick = false) {
   const { settings, session } = useClient();
   const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
   const request = parseInput(session.query);
-  const body = useContentSearch(request.kind === 'files' && session.mode !== 'filename');
   const clips = useClipboard(request.kind === 'clipboard', request.input);
   const dict = useDictionary(
     request.kind === 'dictionary',
@@ -92,7 +92,7 @@ export function useSearch(quick = false) {
   useEffect(() => {
     if (
       request.kind !== 'files' ||
-      session.mode !== 'filename' ||
+      (session.mode !== 'filename' && session.mode !== 'auto') ||
       (quick && !request.input) ||
       !scopesKey ||
       !native
@@ -192,6 +192,27 @@ export function useSearch(quick = false) {
   const data = response?.key === key ? response.data : null;
   const error = failure?.key === key ? failure.message : null;
   const utility = answerState?.key === utilityKey ? answerState : null;
+  const automaticFallback =
+    native &&
+    session.mode === 'auto' &&
+    request.kind === 'files' &&
+    automaticBodyEligible(request.input) &&
+    settings.scopes.some(
+      (scope) => scope.contentEnabled && (!session.scopeId || scope.id === session.scopeId),
+    ) &&
+    (!scopesKey || (data !== null && data.total === 0 && !error));
+  const bodyActive =
+    request.kind === 'files' &&
+    (session.mode === 'content' || session.mode === 'semantic' || automaticFallback);
+  const body = useContentSearch(bodyActive);
+  const awaitingFilename =
+    native &&
+    request.kind === 'files' &&
+    (session.mode === 'auto' || session.mode === 'filename') &&
+    Boolean(scopesKey) &&
+    (!quick || Boolean(request.input)) &&
+    !data &&
+    !error;
   const selected =
     data?.results.find((file) => file.path === session.selectedPath) ?? data?.results[0];
   const report = (cause: unknown) =>
@@ -218,19 +239,9 @@ export function useSearch(quick = false) {
       await dict.lookup();
       return;
     } else if (utility?.answer) await copy(utility.answer.value);
-    else if (
-      request.kind === 'files' &&
-      session.mode !== 'filename' &&
-      body.selected &&
-      !body.error
-    )
+    else if (request.kind === 'files' && bodyActive && body.selected && !body.error)
       await body.open(path ?? body.selected.chunk.filePath);
-    else if (
-      request.kind === 'files' &&
-      session.mode === 'filename' &&
-      (path || selected) &&
-      !error
-    )
+    else if (request.kind === 'files' && !bodyActive && (path || selected) && !error)
       await bridge.fileAction(path ?? selected!.path);
     else return;
     if (quick) await bridge.hideQuick();
@@ -238,7 +249,7 @@ export function useSearch(quick = false) {
   const keyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (isComposing(event.nativeEvent) || event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      if (request.kind === 'files' && session.mode !== 'filename') {
+      if (request.kind === 'files' && bodyActive) {
         event.preventDefault();
         body.move(event.key === 'ArrowDown' ? 1 : -1);
         return;
@@ -262,7 +273,7 @@ export function useSearch(quick = false) {
   return {
     listId,
     selectedId:
-      request.kind === 'files' && session.mode !== 'filename'
+      request.kind === 'files' && bodyActive
         ? body.selected
           ? `${body.listId}-${body.selected.chunk.id}`
           : undefined
@@ -276,11 +287,12 @@ export function useSearch(quick = false) {
     clips,
     dict,
     body,
+    bodyActive,
     request,
     status: data?.status.revision && data.status.revision > status.revision ? data.status : status,
     data,
     error,
-    loading,
+    loading: loading || awaitingFilename,
     utility,
     selected,
     scopes,

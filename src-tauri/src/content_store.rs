@@ -1029,9 +1029,26 @@ impl ContentStore {
         allowed_content_roots: &[PathBuf],
         cancel: &AtomicBool,
     ) -> Result<usize> {
+        self.purge_for_scopes(allowed_content_roots, &[], cancel)
+    }
+    /// Keep unavailable configured folders cached, without making their text visible.
+    /// Removed folders are deliberately absent from `unavailable_roots`.
+    pub fn purge_for_scopes(
+        &self,
+        allowed_content_roots: &[PathBuf],
+        unavailable_roots: &[PathBuf],
+        cancel: &AtomicBool,
+    ) -> Result<usize> {
         let allowed = roots(allowed_content_roots);
+        let unavailable: Vec<PathBuf> = unavailable_roots
+            .iter()
+            .map(|root| purge_path(root))
+            .collect::<Result<_>>()?;
         self.purge_where(cancel, |path, fingerprint| {
-            visible(path, fingerprint, &allowed).is_none()
+            !unavailable
+                .iter()
+                .any(|root| within(&normal_path(Path::new(path)), root))
+                && visible(path, fingerprint, &allowed).is_none()
         })
     }
     fn purge_where(
@@ -1314,6 +1331,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unavailable_configured_folders_keep_cache_without_authorizing_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("removable");
+        let doc = document(&folder, "source.txt", "reconnectable source");
+        let store = ContentStore::open(&dir.path().join("index.sqlite")).unwrap();
+        store
+            .replace_document(&doc, &[folder.clone()], &cancel())
+            .unwrap();
+        assert_eq!(
+            store
+                .purge_for_scopes(&[], &[folder.clone()], &cancel())
+                .unwrap(),
+            0
+        );
+        assert!(search(&store, "reconnectable", &[]).is_empty());
+        assert_eq!(search(&store, "reconnectable", &[folder]).len(), 1);
+        assert_eq!(store.purge_for_scopes(&[], &[], &cancel()).unwrap(), 1);
+    }
     #[test]
     fn purge_scope_uses_components_and_cascades_sections_and_chunks() {
         let dir = tempfile::tempdir().unwrap();

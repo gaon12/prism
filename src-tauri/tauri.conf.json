@@ -10,7 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "label": "main", "title": "Prism", "width": 1280, "height": 840, "minWidth": 760, "minHeight": 540, "decorations": false }],
+    "windows": [{ "label": "main", "create": false, "title": "Prism", "width": 1280, "height": 840, "minWidth": 760, "minHeight": 540, "decorations": false }],
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: blob:; connect-src ipc: http://ipc.localhost; font-src 'self' data:",
       "devCsp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: blob:; connect-src ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420; font-src 'self' data:"

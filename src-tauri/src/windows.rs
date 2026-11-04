@@ -1,6 +1,22 @@
 use crate::AppState;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+pub fn build_main(app: &AppHandle) -> tauri::Result<()> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "main")
+        .ok_or(tauri::Error::WindowNotFound)?;
+    let mut builder = WebviewWindowBuilder::from_config(app, config)?;
+    if let Some(dir) = app.state::<AppState>().location.webview_dir() {
+        builder = builder.data_directory(dir);
+    }
+    builder.build()?;
+    Ok(())
+}
+
 pub fn build_quick(app: &AppHandle) -> tauri::Result<()> {
     let font_size = app
         .state::<AppState>()
@@ -15,7 +31,12 @@ pub fn build_quick(app: &AppHandle) -> tauri::Result<()> {
         .lock()
         .map(|session| !session.query.trim().is_empty())
         .unwrap_or(false);
-    WebviewWindowBuilder::new(app, "quick", WebviewUrl::App("index.html#quick".into()))
+    let mut builder =
+        WebviewWindowBuilder::new(app, "quick", WebviewUrl::App("index.html#quick".into()));
+    if let Some(dir) = app.state::<AppState>().location.webview_dir() {
+        builder = builder.data_directory(dir);
+    }
+    builder
         .title("Prism — 빠른 검색")
         .inner_size(
             720.0 + extra * 20.0,

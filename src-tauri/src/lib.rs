@@ -37,6 +37,7 @@ use tauri::{
     Emitter, Manager, WindowEvent,
 };
 use tauri_plugin_autostart::ManagerExt as AutostartExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 pub struct AppState {
@@ -46,6 +47,7 @@ pub struct AppState {
     startup_error: Mutex<Option<String>>,
     config_error: Mutex<Option<String>>,
     data_dir: PathBuf,
+    location: app_paths::DataLocation,
     index: index::FileIndex,
     clipboard: clipboard_history::ClipboardService,
     dictionary: Result<dictionary_service::DictionaryService, dictionary_service::DictionaryError>,
@@ -57,9 +59,29 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let mut context = tauri::generate_context!();
+    let exe = std::env::current_exe().unwrap_or_default();
+    let override_dir = if cfg!(debug_assertions) {
+        std::env::var_os("PRISM_DEV_DATA_DIR").map(PathBuf::from)
+    } else {
+        None
+    };
+    let isolated_test = override_dir.is_some();
+    let portable = override_dir.is_none() && app_paths::is_portable(&exe);
+    let test_mode = cfg!(debug_assertions)
+        && std::env::var_os("PRISM_DEV_TEST_MODE").is_some_and(|value| value == "1");
+    // Portable fixtures use real path selection and single-instance handling,
+    // but may never access the user's clipboard or open an unattended error dialog.
+    if test_mode && !isolated_test && !portable {
+        eprintln!("PRISM_DEV_TEST_MODE requires a portable fixture or an isolated data directory.");
+        return;
+    }
+    if portable {
+        context.config_mut().identifier =
+            app_paths::portable_identifier(&context.config().identifier, &exe);
+    }
     let builder = tauri::Builder::default();
     // Isolated debug tests must not hand their launch to an already running user instance.
-    let isolated_test = cfg!(debug_assertions) && std::env::var_os("PRISM_DEV_DATA_DIR").is_some();
     let builder = if isolated_test {
         builder
     } else {
@@ -88,17 +110,38 @@ pub fn run() {
                 .build(),
         )
         .setup(move |app| {
-            let data_dir = app.path().app_config_dir()?;
-            #[cfg(debug_assertions)]
-            let data_dir = std::env::var_os("PRISM_DEV_DATA_DIR")
-                .map(PathBuf::from)
-                .unwrap_or(data_dir);
-            fs::create_dir_all(&data_dir)?;
-            let (settings, config_error) =
+            let location = app_paths::resolve(&exe, app.path().app_config_dir()?, override_dir.clone())
+                .and_then(|location| {
+                    if location.kind == app_paths::InstallKind::Portable
+                        && std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_some()
+                    {
+                        Err("Portable mode cannot use WEBVIEW2_USER_DATA_FOLDER. Remove that environment override so the WebView profile stays in PrismData.".into())
+                    } else {
+                        Ok(location)
+                    }
+                });
+            let location = match location {
+                Ok(location) => location,
+                Err(error) => {
+                    eprintln!("Prism data location failed: {error}");
+                    if isolated_test || test_mode {
+                        return Err(std::io::Error::other(error).into());
+                    }
+                    let handle = app.handle().clone();
+                    app.dialog().message(error).title("Prism — Data folder unavailable")
+                        .kind(MessageDialogKind::Error).show(move |_| handle.exit(1));
+                    return Ok(());
+                }
+            };
+            let data_dir = location.dir.clone();
+            let (mut settings, config_error) =
                 match settings::read_settings(&data_dir.join("settings.json")) {
                     Ok(settings) => (settings, None),
                     Err(error) => (ClientSettings::default(), Some(error)),
                 };
+            if location.kind == app_paths::InstallKind::Portable {
+                settings.start_on_login = false;
+            }
             let session = if settings.remember_search {
                 fs::read_to_string(data_dir.join("session.json"))
                     .ok()
@@ -115,7 +158,8 @@ pub fn run() {
             } else {
                 None
             };
-            let startup_error = if !cfg!(debug_assertions) && config_error.is_none() {
+            let startup_error = if !cfg!(debug_assertions)
+                && location.allows_autostart() && config_error.is_none() {
                 (if settings.start_on_login {
                     app.autolaunch().enable()
                 } else {
@@ -148,7 +192,7 @@ pub fn run() {
                     }
                 },
             );
-            if isolated_test {
+            if isolated_test || test_mode {
                 let source = clipboard_history::MemoryClipboard::default();
                 clipboard.start(source.boxed(), source.boxed());
             } else {
@@ -159,7 +203,7 @@ pub fn run() {
             }
             // Keep large local caches out of the roaming settings profile. Tests always use
             // their explicit isolated directory for every service and model asset.
-            let asset_dir = if isolated_test {
+            let asset_dir = if location.kind != app_paths::InstallKind::Installed {
                 data_dir.clone()
             } else {
                 app.path().app_local_data_dir()?
@@ -176,6 +220,9 @@ pub fn run() {
                 },
             );
             if let Ok(content) = &content {
+                if location.kind == app_paths::InstallKind::Portable {
+                    content.exclude_paths(&[data_dir.clone()]);
+                }
                 content.exclude_paths(&[
                     asset_dir.join("embedding"),
                     asset_dir.join("dictionary"),
@@ -262,6 +309,7 @@ pub fn run() {
                 startup_error: Mutex::new(startup_error),
                 config_error: Mutex::new(config_error),
                 data_dir,
+                location,
                 index,
                 clipboard,
                 dictionary,
@@ -270,6 +318,7 @@ pub fn run() {
                 rag,
                 documents,
             });
+            windows::build_main(app.handle())?;
             windows::build_quick(app.handle())?;
             let open = MenuItem::with_id(app, "open", "Prism 열기", true, None::<&str>)?;
             let quick = MenuItem::with_id(app, "quick", "빠른 검색", true, None::<&str>)?;
@@ -416,7 +465,7 @@ pub fn run() {
             commands::quit_app,
             commands::write_markdown
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("Prism could not start")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {

@@ -26,7 +26,10 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> Result<Client
         .lock()
         .map_err(|_| "Settings are unavailable.")?;
     if config_error.is_some() {
-        let restored = crate::settings::read_settings(&state.data_dir.join("settings.json"))?;
+        let mut restored = crate::settings::read_settings(&state.data_dir.join("settings.json"))?;
+        if state.location.kind == crate::app_paths::InstallKind::Portable {
+            restored.start_on_login = false;
+        }
         let error = app
             .global_shortcut()
             .register(restored.shortcut.as_str())
@@ -60,7 +63,7 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> Result<Client
 }
 
 fn set_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
-    if cfg!(debug_assertions) {
+    if cfg!(debug_assertions) || !app.state::<AppState>().location.allows_autostart() {
         return Ok(());
     }
     if enabled {
@@ -87,6 +90,9 @@ pub fn save_settings(
         return Err(error);
     }
     settings.validate()?;
+    if state.location.kind == crate::app_paths::InstallKind::Portable && settings.start_on_login {
+        return Err("Login startup is unavailable in portable mode.".into());
+    }
     let mut current = state
         .settings
         .lock()
@@ -370,6 +376,7 @@ pub fn recommended_folders(app: AppHandle) -> Vec<RecommendedFolder> {
 pub struct RuntimeInfo {
     native: bool,
     development: bool,
+    install_kind: crate::app_paths::InstallKind,
     shortcut_error: Option<String>,
     startup_error: Option<String>,
 }
@@ -379,6 +386,7 @@ pub fn runtime_info(state: State<'_, AppState>) -> Result<RuntimeInfo, String> {
     Ok(RuntimeInfo {
         native: true,
         development: cfg!(debug_assertions),
+        install_kind: state.location.kind,
         startup_error: state
             .startup_error
             .lock()

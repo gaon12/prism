@@ -1150,3 +1150,1153 @@ async fn blocking<T: Send + 'static>(
 ) -> DocumentResult<T> {
     tokio::task::spawn_blocking(work).await.map_err(storage)?
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        generation_runtime::{
+            GenerationCancellation, GenerationConfig, GenerationError, GenerationErrorCode,
+            GenerationMessage, GenerationResponse,
+        },
+        rag_service::{
+            CheckedSource, GenerationFuture, GenerationMode, GenerationPreferences, PolicyGetter,
+            RagPolicy, RagResult, RagScope, RagSource, RagTransport, SourceResolver, SourceState,
+        },
+        secret_store::{SecretError, SecretProvider, SecretStore, SecretSupport, SecretValue},
+    };
+    use std::{
+        collections::VecDeque,
+        sync::{OnceLock, RwLock},
+    };
+    struct Keys;
+    impl SecretProvider for Keys {
+        fn support(&self) -> SecretSupport {
+            SecretSupport {
+                supported: true,
+                provider: "synthetic".into(),
+                user_bound: false,
+            }
+        }
+        fn get(&self, _: &str) -> Result<Option<SecretValue>, SecretError> {
+            Ok(Some(SecretValue::new("synthetic-fixture-key".into())?))
+        }
+        fn set(&self, _: &str, _: &SecretValue) -> Result<(), SecretError> {
+            Ok(())
+        }
+        fn remove(&self, _: &str) -> Result<(), SecretError> {
+            Ok(())
+        }
+    }
+    struct Sources {
+        private: AtomicBool,
+        changed: AtomicBool,
+        queries: Mutex<Vec<String>>,
+    }
+    fn source(private: bool) -> RagSource {
+        let id = if private { "private" } else { "public" };
+        RagSource {
+            source: SourceRef {
+                chunk_id: format!("chunk_{id}"),
+                scope_id: id.into(),
+                file_path: format!(r"C:\{id}\data.md"),
+                sha256: "a".repeat(64),
+                page: Some(1),
+                paragraph: Some(2),
+            },
+            text: if private {
+                "Evidence based report SYNTHETIC_LOCAL_ONLY_DOCUMENT_CANARY".into()
+            } else {
+                "Evidence based report SYNTHETIC_APPROVED_VALUE: 123.4500".into()
+            },
+        }
+    }
+    impl SourceResolver for Sources {
+        fn retrieve(
+            &self,
+            query: &str,
+            selected: &[String],
+            _: &RagPolicy,
+            _: usize,
+            _: &AtomicBool,
+        ) -> RagResult<Vec<RagSource>> {
+            self.queries.lock().unwrap().push(query.into());
+            if query.len() > 4096 {
+                return Err(crate::rag_service::RagError::new(RagErrorCode::Context));
+            }
+            if query.trim().is_empty() {
+                return Err(crate::rag_service::RagError::new(RagErrorCode::Input));
+            }
+            let mut sources = vec![source(false)];
+            if self.private.load(Ordering::Acquire) {
+                sources.push(source(true));
+            }
+            let terms: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
+            Ok(sources
+                .into_iter()
+                .filter(|source| {
+                    (selected.is_empty() || selected.contains(&source.source.scope_id))
+                        && terms
+                            .iter()
+                            .all(|term| source.text.to_lowercase().contains(term))
+                })
+                .collect())
+        }
+        fn revalidate(
+            &self,
+            refs: &[SourceRef],
+            _: &[String],
+            _: &RagPolicy,
+            _: &AtomicBool,
+        ) -> RagResult<Vec<CheckedSource>> {
+            Ok(refs
+                .iter()
+                .map(|reference| CheckedSource {
+                    source: reference.clone(),
+                    state: if self.changed.load(Ordering::Acquire) {
+                        SourceState::Changed
+                    } else {
+                        SourceState::Current
+                    },
+                    text: Some(source(reference.scope_id == "private").text),
+                })
+                .collect())
+        }
+    }
+    struct Transport {
+        responses: Mutex<VecDeque<Result<String, GenerationErrorCode>>>,
+        calls: Mutex<Vec<(String, String)>>,
+        pending: AtomicBool,
+        hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    }
+    impl Transport {
+        fn push(&self, value: String) {
+            self.responses.lock().unwrap().push_back(Ok(value));
+        }
+    }
+    impl RagTransport for Transport {
+        fn complete<'a>(
+            &'a self,
+            config: &'a GenerationConfig,
+            messages: &'a [GenerationMessage],
+            _: Option<&'a SecretValue>,
+            _: &'a GenerationCancellation,
+        ) -> GenerationFuture<'a> {
+            self.calls.lock().unwrap().push((
+                config.endpoint.clone(),
+                messages
+                    .iter()
+                    .map(|message| message.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ));
+            if let Some(hook) = self.hook.lock().unwrap().clone() {
+                hook();
+            }
+            Box::pin(async move {
+                if self.pending.load(Ordering::Acquire) {
+                    return std::future::pending().await;
+                }
+                match self
+                    .responses
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or(Ok("{}".into()))
+                {
+                    Ok(text) => Ok(GenerationResponse {
+                        text,
+                        model: Some("fixture".into()),
+                        finish_reason: Some("stop".into()),
+                        usage: Some(serde_json::json!({"total_tokens":17,"extra":"provider"})),
+                    }),
+                    Err(code) => Err(GenerationError {
+                        code,
+                        message: "untrusted server body must not escape".into(),
+                    }),
+                }
+            })
+        }
+    }
+    struct Fixture {
+        directory: tempfile::TempDir,
+        service: DocumentService,
+        rag: RagService,
+        policy: Arc<RwLock<RagPolicy>>,
+        sources: Arc<Sources>,
+        transport: Arc<Transport>,
+    }
+    fn fixture() -> Fixture {
+        let directory = tempfile::tempdir().unwrap();
+        let prefs:GenerationPreferences=serde_json::from_value(serde_json::json!({"allowExternalQuestions":true,"maxContextChars":30000,"local":{"endpoint":"http://127.0.0.1:11434/v1","model":"fixture","maxTokens":1024,"temperature":null},"external":{"endpoint":"https://approved.example/v1","model":"fixture","maxTokens":1024,"temperature":null}})).unwrap();
+        let policy = Arc::new(RwLock::new(RagPolicy {
+            revision: 1,
+            prefs,
+            scopes: vec![
+                RagScope {
+                    id: "public".into(),
+                    name: "public".into(),
+                    path: r"C:\public".into(),
+                    content_enabled: true,
+                    external_allowed: true,
+                },
+                RagScope {
+                    id: "private".into(),
+                    name: "private".into(),
+                    path: r"C:\private".into(),
+                    content_enabled: true,
+                    external_allowed: false,
+                },
+            ],
+        }));
+        let owned = policy.clone();
+        let getter: PolicyGetter = Arc::new(move || Ok(owned.read().unwrap().clone()));
+        let sources = Arc::new(Sources {
+            private: AtomicBool::new(false),
+            changed: AtomicBool::new(false),
+            queries: Mutex::new(vec![]),
+        });
+        let transport = Arc::new(Transport {
+            responses: Mutex::new(VecDeque::new()),
+            calls: Mutex::new(vec![]),
+            pending: AtomicBool::new(false),
+            hook: Mutex::new(None),
+        });
+        let rag = RagService::with_transport(
+            directory.path(),
+            getter,
+            sources.clone(),
+            SecretStore::with_provider(Arc::new(Keys)),
+            transport.clone(),
+        )
+        .unwrap();
+        let service = DocumentService::open(directory.path(), rag.clone()).unwrap();
+        Fixture {
+            directory,
+            service,
+            rag,
+            policy,
+            sources,
+            transport,
+        }
+    }
+    fn runtime() -> &'static tokio::runtime::Runtime {
+        static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+        RUNTIME.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap()
+        })
+    }
+    fn run<T>(future: impl std::future::Future<Output = T>) -> T {
+        runtime().block_on(future)
+    }
+    fn create(f: &Fixture) -> DocumentPage {
+        f.service
+            .create(CreateDocument {
+                title: "Synthetic document".into(),
+                purpose: "Evidence based report".into(),
+                scope_ids: vec!["public".into(), "private".into()],
+                template_markdown: None,
+            })
+            .unwrap()
+    }
+    fn plan() -> DocumentPlan {
+        DocumentPlan {
+            title: "Report".into(),
+            sections: vec![PlanSection {
+                id: "summary".into(),
+                heading: "Summary".into(),
+                instruction: "Use evidence".into(),
+            }],
+        }
+    }
+    fn request(page: &DocumentPage, id: &str) -> DocumentGenerateRequest {
+        DocumentGenerateRequest {
+            document_id: page.document.id.clone(),
+            expected_revision_id: page.revision.id.clone(),
+            request_id: id.into(),
+            instruction: "Use exact numbers and citations.".into(),
+            scope_ids: page.revision.scope_ids.clone(),
+        }
+    }
+    fn block(id: &str, markdown: &str) -> DocumentBlock {
+        DocumentBlock {
+            id: id.into(),
+            section_id: Some("summary".into()),
+            kind: DocumentBlockKind::Fact,
+            markdown: markdown.into(),
+            source_labels: vec!["[S1]".into()],
+            claims_verified: true,
+            user_edited: false,
+        }
+    }
+    fn body(id: &str, text: &str) -> String {
+        serde_json::json!({"blocks":[{"id":id,"sectionId":"summary","kind":"fact","markdown":text,"sourceLabels":["[S1]"]}]}).to_string()
+    }
+    fn reviewed(f: &Fixture) -> DocumentPage {
+        let page = create(f);
+        let revision = f
+            .service
+            .save_outline(&page.document.id, &page.revision.id, plan(), true)
+            .unwrap();
+        DocumentPage {
+            document: page.document,
+            revision,
+        }
+    }
+    #[test]
+    fn outline_requires_explicit_review_and_preserves_provider_usage() {
+        run(async {
+            let f = fixture();
+            let page = create(&f);
+            f.transport.push(serde_json::to_string(&plan()).unwrap());
+            let revision = f
+                .service
+                .generate_outline(request(&page, "outline1"))
+                .await
+                .unwrap();
+            assert!(!revision.outline_reviewed);
+            assert_eq!(revision.usage.as_ref().unwrap()["total_tokens"], 17);
+            let outlined = DocumentPage {
+                document: page.document,
+                revision,
+            };
+            assert_eq!(
+                f.service
+                    .generate_body(request(&outlined, "body1"))
+                    .await
+                    .unwrap_err()
+                    .code,
+                DocumentErrorCode::OutlineReviewRequired
+            );
+            let revision = f
+                .service
+                .save_outline(&outlined.document.id, &outlined.revision.id, plan(), true)
+                .unwrap();
+            f.transport.push(body("b1", "Value 123.4500 [S1]"));
+            let generated = f
+                .service
+                .generate_body(request(
+                    &DocumentPage {
+                        document: outlined.document,
+                        revision,
+                    },
+                    "body2",
+                ))
+                .await
+                .unwrap();
+            assert!(generated.markdown.contains("123.4500"));
+            assert!(!generated.claims_verified);
+            assert!(!generated.blocks[0].claims_verified);
+            assert!(!generated.blocks[0].user_edited);
+            assert!(f.rag.list_conversations("", 100).unwrap().is_empty());
+        });
+    }
+    #[test]
+    fn structured_response_is_bounded_and_failure_is_redacted() {
+        run(async {
+            let f = fixture();
+            let page = create(&f);
+            f.transport.push("raw secret SYNTHETIC_BAD_JSON".into());
+            let error = f
+                .service
+                .generate_outline(request(&page, "bad_json"))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, DocumentErrorCode::Malformed);
+            assert!(!error.message.contains("SYNTHETIC"));
+            assert_eq!(
+                f.service.get(&page.document.id, None).unwrap().revision.id,
+                page.revision.id
+            );
+            assert_eq!(
+                f.service.job(&page.document.id).unwrap().unwrap().phase,
+                "failed"
+            );
+            assert!(json_payload(&"x".repeat(MAX_RESPONSE + 1)).is_err());
+            assert!(json_payload("```json\n{}\n``` prose").is_err());
+            assert!(serde_json::from_str::<DocumentPlan>(
+                r#"{"title":"x","sections":[],"extra":1}"#
+            )
+            .is_err());
+        });
+    }
+    #[test]
+    fn unknown_citation_is_unbound_and_fact_is_not_verification() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            f.transport.push(serde_json::json!({"blocks":[{"id":"b1","sectionId":"summary","kind":"fact","markdown":"Claim [S999]","sourceLabels":["[S999]"]}]}).to_string());
+            let revision = f
+                .service
+                .generate_body(request(&page, "unknown"))
+                .await
+                .unwrap();
+            assert!(revision.blocks[0].source_labels.is_empty());
+            assert!(revision.blocks[0].markdown.contains("[unbound S999]"));
+            assert!(!revision.claims_verified);
+            assert!(!f
+                .service
+                .export_markdown(&page.document.id, None, true, true)
+                .unwrap()
+                .contains("[^S999]"));
+        });
+    }
+    #[test]
+    fn model_kinds_remain_proposals_and_only_manual_save_marks_user_edit() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            let kinds = ["fact", "userInput", "aiProposal", "blank"];
+            let blocks:Vec<_>=kinds.iter().enumerate().map(|(index,kind)|serde_json::json!({"id":format!("b{index}"),"sectionId":"summary","kind":kind,"markdown":if *kind=="blank" {""} else {"A classified statement [S1]"},"sourceLabels":if *kind=="blank" {vec![]}else{vec!["[S1]"]}})).collect();
+            f.transport
+                .push(serde_json::json!({"blocks":blocks}).to_string());
+            let revision = f
+                .service
+                .generate_body(request(&page, "all_kinds"))
+                .await
+                .unwrap();
+            assert!(revision
+                .blocks
+                .iter()
+                .all(|block| !block.user_edited && !block.claims_verified));
+            assert_eq!(revision.blocks[1].kind, DocumentBlockKind::UserInput);
+            let exported = f
+                .service
+                .export_markdown(&page.document.id, None, true, true)
+                .unwrap();
+            for kind in kinds {
+                assert!(exported.contains(&format!("prism:{kind}")));
+            }
+            let mut edited = revision.blocks.clone();
+            edited[3].kind = DocumentBlockKind::UserInput;
+            edited[3].markdown = "User supplied missing value".into();
+            let manual = f
+                .service
+                .save_manual(&page.document.id, &revision.id, edited, None)
+                .unwrap();
+            assert!(manual.blocks[3].user_edited);
+            assert!(!manual.blocks[3].claims_verified);
+        });
+    }
+    #[test]
+    fn allowed_external_outline_uses_only_authorized_retrieved_subset() {
+        run(async {
+            let f = fixture();
+            f.policy.write().unwrap().prefs.mode = GenerationMode::External;
+            f.sources.private.store(true, Ordering::Release);
+            let page = create(&f);
+            f.transport.push(serde_json::to_string(&plan()).unwrap());
+            let revision = f
+                .service
+                .generate_outline(request(&page, "external_subset"))
+                .await
+                .unwrap();
+            assert_eq!(revision.provider, Some(ProviderSlot::External));
+            assert!(revision
+                .provenance
+                .iter()
+                .all(|source| source.scope_id == "public"));
+            let calls = f.transport.calls.lock().unwrap();
+            assert!(calls[0].0.starts_with("https://approved.example"));
+            assert!(calls[0].1.contains("SYNTHETIC_APPROVED_VALUE"));
+            assert!(!calls[0].1.contains("SYNTHETIC_LOCAL_ONLY_DOCUMENT_CANARY"));
+        });
+    }
+    #[test]
+    fn manual_blank_fill_restore_and_table_values_are_immutable() {
+        let f = fixture();
+        let page = reviewed(&f);
+        let mut blank = block("blank", "");
+        blank.kind = DocumentBlockKind::Blank;
+        let blank_revision = f
+            .service
+            .save_manual(&page.document.id, &page.revision.id, vec![blank], None)
+            .unwrap();
+        let table = "| item | amount |\n|---|---|\n| planned | 123.4500 |";
+        let filled = f
+            .service
+            .save_manual(
+                &page.document.id,
+                &blank_revision.id,
+                vec![block("blank", table)],
+                None,
+            )
+            .unwrap();
+        assert!(filled.blocks[0].user_edited);
+        assert!(!filled.blocks[0].claims_verified);
+        assert!(filled.markdown.contains(table));
+        let restored = f
+            .service
+            .restore(&page.document.id, &filled.id, &blank_revision.id)
+            .unwrap();
+        assert!(restored.sequence > filled.sequence);
+        assert_eq!(restored.blocks[0].kind, DocumentBlockKind::Blank);
+        assert!(f
+            .service
+            .get(&page.document.id, Some(&filled.id))
+            .unwrap()
+            .revision
+            .markdown
+            .contains(table));
+        assert_eq!(
+            f.service
+                .save_manual(&page.document.id, &filled.id, vec![], None)
+                .unwrap_err()
+                .code,
+            DocumentErrorCode::Conflict
+        );
+    }
+    #[test]
+    fn selection_rewrite_preserves_unselected_unicode_and_other_blocks() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            let revision = f
+                .service
+                .save_manual(
+                    &page.document.id,
+                    &page.revision.id,
+                    vec![
+                        block("b1", "가나다 ABC 라마"),
+                        block("b2", "Untouched 123.4500"),
+                    ],
+                    None,
+                )
+                .unwrap();
+            let base = DocumentPage {
+                document: page.document,
+                revision,
+            };
+            f.transport.push(body("b1", "XYZ [S1]"));
+            let result = f
+                .service
+                .rewrite(DocumentRewriteRequest {
+                    base: request(&base, "selected"),
+                    target_block_ids: vec!["b1".into()],
+                    selection: Some(DocumentSelection {
+                        block_id: "b1".into(),
+                        start: 4,
+                        end: 7,
+                    }),
+                })
+                .await
+                .unwrap();
+            assert!(result.blocks[0].markdown.starts_with("가나다 XYZ"));
+            assert!(result.blocks[0].markdown.ends_with(" 라마"));
+            assert_eq!(result.blocks[1], base.revision.blocks[1]);
+        });
+    }
+    #[test]
+    fn rewrite_cannot_modify_unrelated_blocks_or_rebind_old_labels() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            f.transport.push(body("b1", "Original [S1]"));
+            let generated = f
+                .service
+                .generate_body(request(&page, "first"))
+                .await
+                .unwrap();
+            let original = generated.blocks[0].clone();
+            let base = DocumentPage {
+                document: page.document,
+                revision: generated,
+            };
+            f.transport.push(body("other", "Injected"));
+            assert_eq!(
+                f.service
+                    .rewrite(DocumentRewriteRequest {
+                        base: request(&base, "wrong"),
+                        target_block_ids: vec!["b1".into()],
+                        selection: None
+                    })
+                    .await
+                    .unwrap_err()
+                    .code,
+                DocumentErrorCode::Malformed
+            );
+            assert_eq!(
+                f.service
+                    .get(&base.document.id, None)
+                    .unwrap()
+                    .revision
+                    .blocks[0],
+                original
+            );
+            let mut saved = base.revision.citations.clone();
+            let mut incoming = saved[0].clone();
+            incoming.source.chunk_id = "different".into();
+            incoming.source.sha256 = "b".repeat(64);
+            incoming.label = "S1".into();
+            let mut blocks = vec![block("new", "New [S1] and unknown [S77]")];
+            remap_model_citations(&mut blocks, &mut saved, &[incoming]);
+            assert_eq!(saved[0].source, base.revision.citations[0].source);
+            assert_eq!(blocks[0].source_labels, vec!["[S2]"]);
+            assert!(blocks[0].markdown.contains("[S2]"));
+            assert!(blocks[0].markdown.contains("[unbound S77]"));
+        });
+    }
+    #[test]
+    fn derived_private_text_cannot_become_a_remote_question() {
+        run(async {
+            let f = fixture();
+            f.sources.private.store(true, Ordering::Release);
+            let page = reviewed(&f);
+            f.transport
+                .push(body("b1", "SYNTHETIC_LOCAL_ONLY_DOCUMENT_CANARY [S2]"));
+            let revision = f
+                .service
+                .generate_body(request(&page, "private_body"))
+                .await
+                .unwrap();
+            assert!(revision
+                .provenance
+                .iter()
+                .any(|source| source.scope_id == "private"));
+            f.policy.write().unwrap().prefs.mode = GenerationMode::External;
+            let error = f
+                .service
+                .generate_outline(request(
+                    &DocumentPage {
+                        document: page.document,
+                        revision,
+                    },
+                    "remote",
+                ))
+                .await
+                .unwrap_err();
+            assert_eq!(error.rag.unwrap().code, RagErrorCode::ScopeBlocked);
+            assert_eq!(f.transport.calls.lock().unwrap().len(), 1);
+        });
+    }
+    #[test]
+    fn global_opt_in_does_not_upgrade_old_manual_input() {
+        run(async {
+            let f = fixture();
+            f.policy.write().unwrap().prefs.allow_external_questions = false;
+            let page = create(&f);
+            {
+                let mut policy = f.policy.write().unwrap();
+                policy.prefs.allow_external_questions = true;
+                policy.prefs.mode = GenerationMode::External;
+            }
+            let error = f
+                .service
+                .generate_outline(request(&page, "later_opt_in"))
+                .await
+                .unwrap_err();
+            assert_eq!(error.rag.unwrap().code, RagErrorCode::ScopeBlocked);
+            assert!(f.transport.calls.lock().unwrap().is_empty());
+        });
+    }
+    #[test]
+    fn source_change_blocks_stale_draft_and_current_status_reports_change() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            f.transport.push(body("b1", "Old value [S1]"));
+            let revision = f
+                .service
+                .generate_body(request(&page, "old"))
+                .await
+                .unwrap();
+            f.sources.changed.store(true, Ordering::Release);
+            assert!(f
+                .service
+                .current_citations(&page.document.id, None)
+                .await
+                .unwrap()
+                .iter()
+                .all(|citation| citation.state == SourceState::Changed));
+            let error = f
+                .service
+                .generate_outline(request(
+                    &DocumentPage {
+                        document: page.document,
+                        revision,
+                    },
+                    "stale",
+                ))
+                .await
+                .unwrap_err();
+            assert_eq!(error.rag.unwrap().code, RagErrorCode::SourceChanged);
+            assert_eq!(f.transport.calls.lock().unwrap().len(), 1);
+        });
+    }
+    #[test]
+    fn fallback_reuses_policy_and_blocks_mandatory_private_derivation() {
+        run(async {
+            let f = fixture();
+            f.sources.private.store(true, Ordering::Release);
+            let page = reviewed(&f);
+            f.transport.push(body("b1", "Local canary [S2]"));
+            let revision = f
+                .service
+                .generate_body(request(&page, "initial"))
+                .await
+                .unwrap();
+            {
+                let mut policy = f.policy.write().unwrap();
+                policy.prefs.mode = GenerationMode::Auto;
+                policy.prefs.fallback = true;
+            }
+            f.transport
+                .responses
+                .lock()
+                .unwrap()
+                .push_back(Err(GenerationErrorCode::Network));
+            let error = f
+                .service
+                .generate_outline(request(
+                    &DocumentPage {
+                        document: page.document,
+                        revision,
+                    },
+                    "fallback",
+                ))
+                .await
+                .unwrap_err();
+            assert_eq!(error.rag.unwrap().code, RagErrorCode::ScopeBlocked);
+            assert_eq!(f.transport.calls.lock().unwrap().len(), 2);
+            assert!(f
+                .transport
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(endpoint, _)| endpoint.starts_with("http://127.0.0.1")));
+        });
+    }
+    #[test]
+    fn cancellation_keeps_current_revision_and_restart_persists_versions() {
+        run(async {
+            let f = fixture();
+            let page = create(&f);
+            f.transport.pending.store(true, Ordering::Release);
+            let service = f.service.clone();
+            let request = request(&page, "cancel_me");
+            let task = tokio::spawn(async move { service.generate_outline(request).await });
+            for _ in 0..100 {
+                if !f.transport.calls.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            f.service.cancel(&page.document.id, "stale").unwrap();
+            assert!(!task.is_finished());
+            f.service.cancel(&page.document.id, "cancel_me").unwrap();
+            assert_eq!(
+                task.await.unwrap().unwrap_err().code,
+                DocumentErrorCode::Cancelled
+            );
+            assert_eq!(
+                f.service.get(&page.document.id, None).unwrap().revision.id,
+                page.revision.id
+            );
+            let reopened = DocumentService::open(f.directory.path(), f.rag.clone()).unwrap();
+            assert_eq!(
+                reopened.get(&page.document.id, None).unwrap().revision.id,
+                page.revision.id
+            );
+            assert_eq!(
+                reopened.job(&page.document.id).unwrap().unwrap().phase,
+                "cancelled"
+            );
+        });
+    }
+    #[test]
+    fn manual_edit_during_generation_cannot_be_overwritten_and_duplicate_is_rejected() {
+        run(async {
+            let f = fixture();
+            let page = create(&f);
+            f.transport.push(serde_json::to_string(&plan()).unwrap());
+            let service = f.service.clone();
+            let id = page.document.id.clone();
+            let expected = page.revision.id.clone();
+            *f.transport.hook.lock().unwrap() = Some(Arc::new(move || {
+                service.save_outline(&id, &expected, plan(), true).unwrap();
+            }));
+            let error = f
+                .service
+                .generate_outline(request(&page, "concurrent"))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, DocumentErrorCode::Conflict);
+            let current = f.service.get(&page.document.id, None).unwrap();
+            assert!(current.revision.outline_reviewed);
+            assert_eq!(
+                f.service
+                    .generate_outline(request(&current, "concurrent"))
+                    .await
+                    .unwrap_err()
+                    .code,
+                DocumentErrorCode::Conflict
+            );
+        });
+    }
+    #[test]
+    fn rejected_model_fields_and_duplicate_block_ids_never_become_verified() {
+        let wire = serde_json::json!({"documentId":"doc","expectedRevisionId":"rev","requestId":"req","instruction":"rewrite","targetBlockIds":["b1"],"selection":null});
+        let parsed: DocumentRewriteRequest = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(parsed.base.document_id, "doc");
+        assert_eq!(parsed.target_block_ids, vec!["b1"]);
+        let mut unknown = wire;
+        unknown["unexpected"] = true.into();
+        assert!(serde_json::from_value::<DocumentRewriteRequest>(unknown).is_err());
+        assert!(serde_json::from_str::<ModelBody>(r#"{"blocks":[{"id":"b1","kind":"fact","markdown":"x","sourceLabels":[],"userEdited":true}]}"#).is_err());
+        assert!(serde_json::from_str::<ModelBody>(r#"{"blocks":[{"id":"b1","kind":"fact","markdown":"x","sourceLabels":[],"claimsVerified":true}]}"#).is_err());
+        assert!(validate_blocks(&[block("same", "a"), block("same", "b")], &plan()).is_err());
+        let mut blank = block("blank", "fake amount");
+        blank.kind = DocumentBlockKind::Blank;
+        assert!(validate_blocks(&[blank], &plan()).is_err());
+    }
+    #[test]
+    fn interrupted_jobs_recover_without_advancing_current_revision() {
+        let f = fixture();
+        let page = create(&f);
+        f.service
+            .inner
+            .store
+            .reserve_job(
+                &page.document.id,
+                &page.revision.id,
+                "interrupted",
+                DocumentOperation::Outline,
+            )
+            .unwrap();
+        let reopened = DocumentService::open(f.directory.path(), f.rag.clone()).unwrap();
+        assert_eq!(
+            reopened.job(&page.document.id).unwrap().unwrap().phase,
+            "interrupted"
+        );
+        assert_eq!(
+            reopened.get(&page.document.id, None).unwrap().revision.id,
+            page.revision.id
+        );
+        assert_eq!(
+            reopened
+                .inner
+                .store
+                .reserve_job(
+                    &page.document.id,
+                    &page.revision.id,
+                    "interrupted",
+                    DocumentOperation::Outline
+                )
+                .unwrap_err()
+                .code,
+            DocumentErrorCode::Conflict
+        );
+    }
+    #[test]
+    fn document_conversations_are_hidden_even_when_search_matches() {
+        let f = fixture();
+        let _page = create(&f);
+        let chat = f.rag.create_conversation(Some("Visible chat")).unwrap();
+        assert_eq!(f.rag.list_conversations("", 100).unwrap().len(), 1);
+        assert_eq!(f.rag.list_conversations("Synthetic", 100).unwrap().len(), 0);
+        assert_eq!(
+            f.rag.list_conversations("Visible", 100).unwrap()[0].id,
+            chat.id
+        );
+    }
+    #[test]
+    fn v1_chat_migration_preserves_turns_and_hidden_body_search_stays_hidden() {
+        run(async {
+            let f = fixture();
+            let chat = f.rag.create_conversation(Some("Legacy chat")).unwrap();
+            f.transport.push("LEGACY_BODY_NEEDLE [S1]".into());
+            f.rag
+                .ask(RagRequest {
+                    request_id: "legacy_request".into(),
+                    conversation_id: chat.id.clone(),
+                    question: "Evidence based report".into(),
+                    scope_ids: vec![],
+                    mode: QuestionMode::Documents,
+                    sources_hidden: false,
+                })
+                .await
+                .unwrap();
+            let db =
+                rusqlite::Connection::open(f.directory.path().join("rag/conversations.sqlite3"))
+                    .unwrap();
+            db.execute_batch("ALTER TABLE conversations DROP COLUMN kind; PRAGMA user_version=1;")
+                .unwrap();
+            drop(db);
+            let store = crate::rag_store::RagStore::open(&f.directory.path().join("rag")).unwrap();
+            let visible = store.list("LEGACY_BODY_NEEDLE", 100).unwrap();
+            assert_eq!(visible.len(), 1);
+            assert_eq!(visible[0].id, chat.id);
+            assert_eq!(visible[0].turn_count, 2);
+            let page = create(&f);
+            f.transport.push("HIDDEN_BODY_NEEDLE [S1]".into());
+            let conversation = f
+                .service
+                .inner
+                .store
+                .conversation(&page.document.id)
+                .unwrap();
+            f.rag
+                .ask_for_document(
+                    RagRequest {
+                        request_id: "hidden_request".into(),
+                        conversation_id: conversation,
+                        question: "HIDDEN_QUESTION_NEEDLE".into(),
+                        scope_ids: vec!["public".into()],
+                        mode: QuestionMode::Documents,
+                        sources_hidden: false,
+                    },
+                    RagDocumentInput {
+                        provenance: vec![],
+                        external_input_eligible: true,
+                        retrieval_query: "Evidence based report".into(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(store.list("HIDDEN_BODY_NEEDLE", 100).unwrap().is_empty());
+            assert!(store
+                .list("HIDDEN_QUESTION_NEEDLE", 100)
+                .unwrap()
+                .is_empty());
+            assert_eq!(store.list("", 100).unwrap().len(), 1);
+        });
+    }
+    #[test]
+    fn large_derived_rewrite_keeps_full_payload_but_uses_short_real_source_query() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            let original = format!("{} [S1]", "기존문서🙂 원문값 ".repeat(700));
+            assert!(original.len() > 4096);
+            f.transport.push(body("b1", &original));
+            let revision = f
+                .service
+                .generate_body(request(&page, "long_body"))
+                .await
+                .unwrap();
+            let base = DocumentPage {
+                document: page.document,
+                revision,
+            };
+            f.transport
+                .push(body("b1", "Rewritten approved value [S1]"));
+            let rewritten = f
+                .service
+                .rewrite(DocumentRewriteRequest {
+                    base: request(&base, "long_rewrite"),
+                    target_block_ids: vec!["b1".into()],
+                    selection: None,
+                })
+                .await
+                .unwrap();
+            assert!(rewritten.markdown.contains("Rewritten approved value"));
+            let queries = f.sources.queries.lock().unwrap();
+            assert_eq!(
+                queries.as_slice(),
+                ["Evidence based report", "Evidence based report"]
+            );
+            for query in queries.iter() {
+                assert!(query.len() <= 4096);
+                assert!(!query.contains("Return only JSON"));
+                assert!(!query.contains("기존문서"));
+                assert!(!query.contains("blocks"));
+            }
+            let calls = f.transport.calls.lock().unwrap();
+            assert_eq!(calls.len(), 2);
+            assert!(calls[1].1.contains(&original));
+            assert!(calls[1].1.contains("Return only JSON"));
+        });
+    }
+    #[test]
+    fn query_builder_bounds_utf8_and_excludes_stored_template() {
+        let purpose = "한글🙂検索資料 ".repeat(1000);
+        let stored=serde_json::json!({"purpose":purpose,"templateMarkdown":"TEMPLATE_BODY_MUST_NEVER_BECOME_QUERY"}).to_string();
+        let query = retrieval_query("title", &stored, "rewrite this paragraph").unwrap();
+        assert!(query.len() <= 512);
+        assert!(query.is_char_boundary(query.len()));
+        assert!(query.starts_with("한글🙂検索資料"));
+        assert!(!query.contains("TEMPLATE_BODY"));
+        assert!(!query.contains("rewrite"));
+        assert_eq!(
+            retrieval_query("title", " \n ", "  topic\n evidence  ").unwrap(),
+            "topic evidence"
+        );
+        assert!(retrieval_query(" \t", "\n", "\r").is_err());
+    }
+    #[test]
+    fn source_resolver_requires_actual_query_terms_in_selected_source() {
+        run(async {
+            let f = fixture();
+            let page = f
+                .service
+                .create(CreateDocument {
+                    title: "Missing topic".into(),
+                    purpose: "TOPIC_NOT_INDEXED".into(),
+                    scope_ids: vec!["public".into()],
+                    template_markdown: None,
+                })
+                .unwrap();
+            let error = f
+                .service
+                .generate_outline(request(&page, "no_matching_source"))
+                .await
+                .unwrap_err();
+            assert_eq!(error.rag.unwrap().code, RagErrorCode::NoSources);
+            assert!(f.transport.calls.lock().unwrap().is_empty());
+            assert_eq!(
+                f.sources.queries.lock().unwrap().as_slice(),
+                ["TOPIC_NOT_INDEXED"]
+            );
+        });
+    }
+    #[test]
+    fn manual_save_compares_actual_fields_and_never_trusts_client_flags_or_labels() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            f.transport.push(serde_json::json!({"blocks":[{"id":"b1","sectionId":"summary","kind":"fact","markdown":"First AI statement [S1]","sourceLabels":["[S1]"]},{"id":"b2","sectionId":"summary","kind":"aiProposal","markdown":"Untouched AI statement [S1]","sourceLabels":["[S1]"]}]}).to_string());
+            let generated = f
+                .service
+                .generate_body(request(&page, "manual_base"))
+                .await
+                .unwrap();
+            assert!(generated.blocks.iter().all(|block| !block.user_edited));
+            let mut submitted = generated.blocks.clone();
+            submitted[0].markdown = "Actually edited [S1]".into();
+            submitted[0].user_edited = false;
+            submitted[1].user_edited = true;
+            submitted[1].claims_verified = true;
+            let edited = f
+                .service
+                .save_manual(&page.document.id, &generated.id, submitted, None)
+                .unwrap();
+            assert!(edited.blocks[0].user_edited);
+            assert!(!edited.blocks[1].user_edited);
+            assert!(!edited.blocks[1].claims_verified);
+            let mut submitted = edited.blocks.clone();
+            submitted[0].user_edited = false;
+            let mut new = block("new", "Unknown manual source [S999]");
+            new.source_labels = vec!["[S999]".into()];
+            new.user_edited = false;
+            submitted.push(new);
+            let next = f
+                .service
+                .save_manual(&page.document.id, &edited.id, submitted, None)
+                .unwrap();
+            assert!(next.blocks[0].user_edited);
+            assert!(!next.blocks[1].user_edited);
+            assert!(next.blocks[2].user_edited);
+            assert!(next.blocks[2].source_labels.is_empty());
+            assert!(next.blocks[2].markdown.contains("[unbound S999]"));
+            assert!(next.blocks.iter().all(|block| !block.claims_verified));
+            let mut changed = next.blocks.clone();
+            changed[1].kind = DocumentBlockKind::UserInput;
+            let kind_edit = f
+                .service
+                .save_manual(&page.document.id, &next.id, changed, None)
+                .unwrap();
+            assert!(kind_edit.blocks[1].user_edited);
+        });
+    }
+    #[test]
+    fn empty_document_scopes_are_rejected_before_any_source_or_provider_call() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            let mut empty = request(&page, "empty_scope");
+            empty.scope_ids.clear();
+            assert_eq!(
+                f.service
+                    .generate_outline(empty.clone())
+                    .await
+                    .unwrap_err()
+                    .code,
+                DocumentErrorCode::Input
+            );
+            assert_eq!(
+                f.service
+                    .generate_body(empty.clone())
+                    .await
+                    .unwrap_err()
+                    .code,
+                DocumentErrorCode::Input
+            );
+            assert_eq!(
+                f.service
+                    .rewrite(DocumentRewriteRequest {
+                        base: empty,
+                        target_block_ids: vec!["b1".into()],
+                        selection: None
+                    })
+                    .await
+                    .unwrap_err()
+                    .code,
+                DocumentErrorCode::Input
+            );
+            let conversation = f
+                .service
+                .inner
+                .store
+                .conversation(&page.document.id)
+                .unwrap();
+            let raw = RagRequest {
+                request_id: "raw_empty".into(),
+                conversation_id: conversation.clone(),
+                question: "Structured document payload".into(),
+                scope_ids: vec![],
+                mode: QuestionMode::Documents,
+                sources_hidden: false,
+            };
+            let input = RagDocumentInput {
+                provenance: vec![],
+                external_input_eligible: true,
+                retrieval_query: "Evidence based report".into(),
+            };
+            assert_eq!(
+                f.rag
+                    .ask_for_document(raw.clone(), input.clone())
+                    .await
+                    .unwrap_err()
+                    .code,
+                RagErrorCode::Input
+            );
+            let mut explicit = raw;
+            explicit.scope_ids = vec!["public".into()];
+            let mut general = explicit.clone();
+            general.mode = QuestionMode::General;
+            assert_eq!(
+                f.rag
+                    .ask_for_document(general, input.clone())
+                    .await
+                    .unwrap_err()
+                    .code,
+                RagErrorCode::Input
+            );
+            for bad_query in [
+                String::new(),
+                " ".into(),
+                "x".repeat(4097),
+                "topic\0canary".into(),
+            ] {
+                let mut input = input.clone();
+                input.retrieval_query = bad_query;
+                assert_eq!(
+                    f.rag
+                        .ask_for_document(explicit.clone(), input)
+                        .await
+                        .unwrap_err()
+                        .code,
+                    RagErrorCode::Input
+                );
+            }
+            assert!(f.transport.calls.lock().unwrap().is_empty());
+            assert!(f.sources.queries.lock().unwrap().is_empty());
+            assert!(f.service.job(&page.document.id).unwrap().is_none());
+        });
+    }
+}

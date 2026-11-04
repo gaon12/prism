@@ -20,6 +20,7 @@ mod embedding_runtime;
 mod filename_pattern;
 mod foreground_tracker;
 mod generation_runtime;
+mod hybrid_search;
 mod index;
 mod keyboard_pattern;
 mod model_commands;
@@ -521,6 +522,7 @@ pub fn run() {
             content_commands::content_cancel_search,
             content_commands::search_content,
             content_commands::search_semantic,
+            content_commands::search_hybrid,
             content_commands::content_chunks,
             content_commands::content_file_action,
             rag_commands::rag_create,

@@ -7,6 +7,26 @@ use crate::{
 use std::path::PathBuf;
 use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_opener::OpenerExt;
+#[tauri::command]
+pub async fn search_hybrid(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    query: String,
+    extension: String,
+    scope_id: Option<String>,
+    request_id: String,
+) -> Result<crate::hybrid_search::HybridResponse, ContentError> {
+    let service = state.content.clone()?;
+    let label = window.label().to_string();
+    let cancel = service.begin_search(&label, &request_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = service.hybrid_search(&query, &extension, scope_id.as_deref(), &cancel);
+        service.cancel_search(&label, &request_id);
+        result
+    })
+    .await
+    .map_err(|_| worker_error())?
+}
 fn worker_error() -> ContentError {
     ContentError {
         code: "worker".into(),

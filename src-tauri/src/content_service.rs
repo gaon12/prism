@@ -997,6 +997,54 @@ impl ContentService {
         response.filtered_out += before - response.hits.len();
         Ok(response)
     }
+    pub fn hybrid_search(
+        &self,
+        query: &str,
+        extension: &str,
+        scope_id: Option<&str>,
+        cancel: &AtomicBool,
+    ) -> Result<crate::hybrid_search::HybridResponse> {
+        let ids: Vec<_> = scope_id.map(String::from).into_iter().collect();
+        let semantic = self.semantic_search_in_scopes(query, extension, &ids, 100, cancel)?;
+        let keyword = match self.search_in_scopes(query, extension, &ids, cancel) {
+            Ok(value) => Some(value),
+            // Natural language can exceed the lexical branch's 32-term budget.
+            // Preserve semantic search and explicitly report the skipped branch.
+            Err(error) if error.code.eq_ignore_ascii_case("invalidInput") => None,
+            Err(error) => return Err(error),
+        };
+        let mut result = crate::hybrid_search::fuse(keyword, semantic, 100);
+        if cancel.load(Ordering::Acquire) {
+            return Err(error("cancelled", "Search cancelled."));
+        }
+        let requested_ids: Vec<_> = result.hits.iter().map(|hit| hit.chunk.id.clone()).collect();
+        let current = self
+            .inner
+            .store
+            .chunks_by_ids(&requested_ids, &self.selected_roots(&ids)?, cancel)
+            .map_err(|value| {
+                if cancel.load(Ordering::Acquire) {
+                    error("cancelled", "Search cancelled.")
+                } else {
+                    error("source", &value.message)
+                }
+            })?;
+        let current: HashMap<_, _> = current
+            .into_iter()
+            .map(|chunk| (chunk.id.clone(), chunk))
+            .collect();
+        result.hits.retain(|hit| {
+            !self.is_excluded(&hit.chunk.file_path)
+                && current.get(&hit.chunk.id).is_some_and(|chunk| {
+                    chunk.file_path == hit.chunk.file_path
+                        && chunk.fingerprint == hit.chunk.fingerprint
+                })
+        });
+        if cancel.load(Ordering::Acquire) {
+            return Err(error("cancelled", "Search cancelled."));
+        }
+        Ok(result)
+    }
     pub fn chunks(&self, ids: &[String], cancel: &AtomicBool) -> Result<Vec<ContentChunk>> {
         let mut chunks = self
             .inner

@@ -333,6 +333,11 @@ pub fn install(
         .map_err(|_| "Could not stage Prism's files.".to_string())?;
         fs::copy(setup_exe, staged.join(UNINSTALLER_EXE))
             .map_err(|_| "Could not stage the uninstaller.".to_string())?;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(staged.join(UNINSTALLER_EXE))
+            .and_then(|file| file.sync_all())
+            .map_err(|_| "Could not flush the staged uninstaller.".to_string())?;
         transaction
             .begin_changes()
             .map_err(|_| "Could not save the file recovery map.".to_string())?;
@@ -406,6 +411,11 @@ pub fn install(
                 .map_err(|_| "Could not encode the install record.".to_string())?,
         )
         .map_err(|_| "Could not stage the install record.".to_string())?;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(staged.join(RECORD_FILE))
+            .and_then(|file| file.sync_all())
+            .map_err(|_| "Could not flush the install record.".to_string())?;
         let record_target = safe_path::file(dir, RECORD_FILE)
             .map_err(|_| "The install record path is unsafe.".to_string())?;
         payload::replace_file(&staged.join(RECORD_FILE), &record_target)
@@ -418,9 +428,16 @@ pub fn install(
                 size_kib: folder_size_kib(dir, &files),
             })
             .map_err(|_| "Could not register Prism with Windows.".to_string())?;
+        transaction
+            .finished()
+            .map_err(|_| "Could not finalize the installation recovery record.".to_string())?;
         Ok(())
     })();
     if let Err(message) = result {
+        if transaction.check_shortcut_ownership(system).is_err() {
+            transaction.retain();
+            return Err(format!("{message} A shortcut changed during setup; it and the recovery backups were preserved."));
+        }
         let files_restored = transaction.restore().is_ok();
         let registration_restored =
             !registration_changed || system.restore_registration(&registration).is_ok();
@@ -428,10 +445,9 @@ pub fn install(
             transaction.retain();
             return Err(format!("{message} Recovery was incomplete; backup files were kept in the installation folder."));
         }
-        transaction.finished();
+        transaction.finished().map_err(|_| "The previous installation was restored, but its recovery record could not be finalized. Backups were kept.".to_string())?;
         return Err(format!("{message} The previous installation was restored."));
     }
-    transaction.finished();
     progress(Stage::Done, 1.0);
     Ok(())
 }

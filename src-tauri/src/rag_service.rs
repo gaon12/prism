@@ -1755,3 +1755,980 @@ fn md_escape(text: &str) -> String {
         .collect()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        generation_runtime::TokenParameter,
+        secret_store::{SecretError, SecretProvider},
+    };
+    use std::{
+        collections::VecDeque,
+        sync::{atomic::AtomicUsize, RwLock},
+        time::Instant,
+    };
+    const PRIVATE: &str = "SYNTHETIC_LOCAL_ONLY_CANARY";
+    const PUBLIC: &str = "SYNTHETIC_APPROVED_CONTEXT";
+    #[test]
+    fn canonical_windows_path_aliases_are_redacted_before_model_input() {
+        for (stored, aliases) in [
+            (
+                r"\\?\C:\approved\문서.md",
+                vec![
+                    r"C:\approved\문서.md",
+                    r"\\?\C:\approved\문서.md",
+                    "C:/approved/문서.md",
+                ],
+            ),
+            (
+                r"\\?\UNC\server\share\문서.md",
+                vec![
+                    r"\\server\share\문서.md",
+                    r"\\?\UNC\server\share\문서.md",
+                    "//server/share/문서.md",
+                ],
+            ),
+            (
+                r"C:\approved\문서.md",
+                vec![r"\\?\C:\approved\문서.md", r"c:\APPROVED\문서.md"],
+            ),
+        ] {
+            let mut reference = source("public", PUBLIC).source;
+            reference.file_path = stored.into();
+            for alias in aliases {
+                assert_eq!(
+                    redact_paths(&format!("파일 {alias} 확인"), &[reference.clone()]),
+                    "파일 문서.md 확인"
+                );
+            }
+        }
+    }
+    #[derive(Default)]
+    struct MemoryKeys(Mutex<HashMap<String, String>>);
+    impl SecretProvider for MemoryKeys {
+        fn support(&self) -> SecretSupport {
+            SecretSupport {
+                supported: true,
+                provider: "fixture".into(),
+                user_bound: false,
+            }
+        }
+        fn set(&self, id: &str, key: &SecretValue) -> Result<(), SecretError> {
+            self.0
+                .lock()
+                .unwrap()
+                .insert(id.into(), key.expose().into());
+            Ok(())
+        }
+        fn get(&self, id: &str) -> Result<Option<SecretValue>, SecretError> {
+            self.0
+                .lock()
+                .unwrap()
+                .get(id)
+                .cloned()
+                .map(SecretValue::new)
+                .transpose()
+        }
+        fn remove(&self, id: &str) -> Result<(), SecretError> {
+            self.0.lock().unwrap().remove(id);
+            Ok(())
+        }
+    }
+    struct FakeSources {
+        items: Mutex<Vec<RagSource>>,
+        states: Mutex<HashMap<String, SourceState>>,
+        checks: AtomicUsize,
+        retrieves: AtomicUsize,
+        delay_ms: AtomicUsize,
+        on_check: Mutex<Option<Arc<dyn Fn(usize) + Send + Sync>>>,
+    }
+    impl FakeSources {
+        fn new() -> Self {
+            Self {
+                items: Mutex::new(vec![source("public", PUBLIC), source("private", PRIVATE)]),
+                states: Mutex::new(HashMap::new()),
+                checks: AtomicUsize::new(0),
+                retrieves: AtomicUsize::new(0),
+                delay_ms: AtomicUsize::new(0),
+                on_check: Mutex::new(None),
+            }
+        }
+    }
+    impl SourceResolver for FakeSources {
+        fn retrieve(
+            &self,
+            _: &str,
+            _: &[String],
+            _: &RagPolicy,
+            limit: usize,
+            cancel: &AtomicBool,
+        ) -> RagResult<Vec<RagSource>> {
+            self.retrieves.fetch_add(1, Ordering::SeqCst);
+            let delay = self.delay_ms.load(Ordering::Acquire);
+            if delay > 0 {
+                std::thread::sleep(Duration::from_millis(delay as u64));
+            }
+            if cancel.load(Ordering::Acquire) {
+                return Err(RagError::new(RagErrorCode::Cancelled));
+            }
+            Ok(self
+                .items
+                .lock()
+                .unwrap()
+                .iter()
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+        fn revalidate(
+            &self,
+            refs: &[SourceRef],
+            _: &[String],
+            _: &RagPolicy,
+            cancel: &AtomicBool,
+        ) -> RagResult<Vec<CheckedSource>> {
+            if cancel.load(Ordering::Acquire) {
+                return Err(RagError::new(RagErrorCode::Cancelled));
+            }
+            let count = self.checks.fetch_add(1, Ordering::SeqCst) + 1;
+            let hook = self.on_check.lock().unwrap().clone();
+            if let Some(hook) = hook {
+                hook(count);
+            }
+            let items = self.items.lock().unwrap();
+            let states = self.states.lock().unwrap();
+            Ok(refs
+                .iter()
+                .map(|reference| {
+                    let exact = items.iter().find(|item| item.source == *reference);
+                    let state =
+                        states
+                            .get(&reference.chunk_id)
+                            .copied()
+                            .unwrap_or(if exact.is_some() {
+                                SourceState::Current
+                            } else {
+                                SourceState::Changed
+                            });
+                    CheckedSource {
+                        source: reference.clone(),
+                        state,
+                        text: if state == SourceState::Current {
+                            exact.map(|item| item.text.clone())
+                        } else {
+                            None
+                        },
+                    }
+                })
+                .collect())
+        }
+    }
+    #[derive(Clone)]
+    struct Call {
+        endpoint: String,
+        messages: Vec<GenerationMessage>,
+        key_present: bool,
+    }
+    struct FakeTransport {
+        calls: Mutex<Vec<Call>>,
+        replies: Mutex<VecDeque<Result<GenerationResponse, GenerationError>>>,
+        hook: Mutex<Option<Arc<dyn Fn(usize) + Send + Sync>>>,
+        pending: AtomicBool,
+    }
+    impl FakeTransport {
+        fn new() -> Self {
+            Self {
+                calls: Mutex::new(vec![]),
+                replies: Mutex::new(VecDeque::new()),
+                hook: Mutex::new(None),
+                pending: AtomicBool::new(false),
+            }
+        }
+    }
+    impl RagTransport for FakeTransport {
+        fn complete<'a>(
+            &'a self,
+            config: &'a GenerationConfig,
+            messages: &'a [GenerationMessage],
+            key: Option<&'a SecretValue>,
+            _: &'a GenerationCancellation,
+        ) -> GenerationFuture<'a> {
+            Box::pin(async move {
+                let count = {
+                    let mut calls = self.calls.lock().unwrap();
+                    calls.push(Call {
+                        endpoint: config.endpoint.clone(),
+                        messages: messages.to_vec(),
+                        key_present: key.is_some(),
+                    });
+                    calls.len()
+                };
+                let hook = self.hook.lock().unwrap().clone();
+                if let Some(hook) = hook {
+                    hook(count);
+                }
+                if self.pending.load(Ordering::Acquire) {
+                    return std::future::pending().await;
+                }
+                self.replies
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or_else(|| Ok(reply("Answer [S1]")))
+            })
+        }
+    }
+    struct Fixture {
+        directory: tempfile::TempDir,
+        service: RagService,
+        policy: Arc<RwLock<RagPolicy>>,
+        sources: Arc<FakeSources>,
+        transport: Arc<FakeTransport>,
+        keys: SecretStore,
+    }
+    fn runtime() -> &'static tokio::runtime::Runtime {
+        static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+        RUNTIME.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap()
+        })
+    }
+    fn config(endpoint: &str) -> GenerationConfig {
+        GenerationConfig {
+            endpoint: endpoint.into(),
+            model: "fixture-model".into(),
+            max_tokens: 100,
+            token_parameter: TokenParameter::MaxTokens,
+            temperature: None,
+        }
+    }
+    fn policy() -> RagPolicy {
+        RagPolicy {
+            revision: 1,
+            prefs: GenerationPreferences {
+                local: Some(config("http://localhost:1234/v1")),
+                external: Some(config("https://approved.example/v1")),
+                ..Default::default()
+            },
+            scopes: vec![
+                RagScope {
+                    id: "public".into(),
+                    name: "Public".into(),
+                    path: "C:\\approved".into(),
+                    content_enabled: true,
+                    external_allowed: true,
+                },
+                RagScope {
+                    id: "private".into(),
+                    name: "Private".into(),
+                    path: "C:\\private".into(),
+                    content_enabled: true,
+                    external_allowed: false,
+                },
+            ],
+        }
+    }
+    fn source(scope: &str, text: &str) -> RagSource {
+        RagSource {
+            source: SourceRef {
+                chunk_id: format!("chunk_{scope}"),
+                scope_id: scope.into(),
+                file_path: format!(
+                    "C:\\{}\\document-{scope}.md",
+                    if scope == "public" { "approved" } else { scope }
+                ),
+                sha256: "a".repeat(64),
+                page: Some(1),
+                paragraph: Some(2),
+            },
+            text: text.into(),
+        }
+    }
+    fn reply(text: &str) -> GenerationResponse {
+        GenerationResponse {
+            text: text.into(),
+            model: Some("reported-fixture-model".into()),
+            finish_reason: Some("stop".into()),
+            usage: Some(serde_json::json!({"total_tokens":7,"fixture_extra":true})),
+        }
+    }
+    fn fixture() -> Fixture {
+        let directory = tempfile::tempdir().unwrap();
+        let policy = Arc::new(RwLock::new(policy()));
+        let owned = Arc::clone(&policy);
+        let getter: PolicyGetter = Arc::new(move || Ok(owned.read().unwrap().clone()));
+        let sources = Arc::new(FakeSources::new());
+        let transport = Arc::new(FakeTransport::new());
+        let keys = SecretStore::with_provider(Arc::new(MemoryKeys::default()));
+        let service = RagService::with_transport(
+            directory.path(),
+            getter,
+            sources.clone(),
+            keys.clone(),
+            transport.clone(),
+        )
+        .unwrap();
+        Fixture {
+            directory,
+            service,
+            policy,
+            sources,
+            transport,
+            keys,
+        }
+    }
+    fn request(service: &RagService, conversation: &str, id: &str, question: &str) -> RagRequest {
+        let _ = service;
+        RagRequest {
+            request_id: id.into(),
+            conversation_id: conversation.into(),
+            question: question.into(),
+            scope_ids: vec![],
+            mode: QuestionMode::Documents,
+            sources_hidden: false,
+        }
+    }
+    fn external(fixture: &Fixture) {
+        let mut policy = fixture.policy.write().unwrap();
+        policy.revision += 1;
+        policy.prefs.mode = GenerationMode::External;
+        policy.prefs.allow_external_questions = true;
+        drop(policy);
+        fixture
+            .service
+            .set_api_key(
+                ProviderSlot::External,
+                "https://approved.example/v1",
+                &SecretValue::new("FAKE-KEY-ONLY".into()).unwrap(),
+            )
+            .unwrap();
+    }
+    fn sent_text(call: &Call) -> String {
+        call.messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn external_receives_only_allowed_subset_and_no_full_paths() {
+        let f = fixture();
+        external(&f);
+        let conversation = f.service.create_conversation(None).unwrap();
+        let answer = runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &conversation.id,
+                "subset",
+                "Summarize the permitted evidence.",
+            )))
+            .unwrap();
+        let calls = f.transport.calls.lock().unwrap();
+        let text = sent_text(&calls[0]);
+        assert!(text.contains(PUBLIC));
+        assert!(!text.contains(PRIVATE));
+        assert!(!text.contains("C:\\") && !text.contains("C:/"));
+        assert!(text.contains("document-public.md"));
+        assert!(calls[0].key_present);
+        assert_eq!(calls[0].endpoint, "https://approved.example/v1");
+        assert_eq!(answer.assistant_turn.citations.len(), 1);
+        assert_eq!(answer.assistant_turn.citations[0].source.scope_id, "public");
+        assert_eq!(
+            answer.assistant_turn.usage.as_ref().unwrap()["total_tokens"],
+            7
+        );
+        assert!(!answer.assistant_turn.claims_verified);
+    }
+    #[test]
+    fn global_question_permission_and_zero_allowed_context_block_before_transport() {
+        let f = fixture();
+        {
+            let mut policy = f.policy.write().unwrap();
+            policy.prefs.mode = GenerationMode::External;
+        }
+        let conversation = f.service.create_conversation(None).unwrap();
+        assert_eq!(
+            runtime()
+                .block_on(f.service.ask(request(
+                    &f.service,
+                    &conversation.id,
+                    "blocked_global",
+                    "A question"
+                )))
+                .unwrap_err()
+                .code,
+            RagErrorCode::ScopeBlocked
+        );
+        external(&f);
+        f.sources
+            .items
+            .lock()
+            .unwrap()
+            .retain(|item| item.source.scope_id == "private");
+        assert_eq!(
+            runtime()
+                .block_on(f.service.ask(request(
+                    &f.service,
+                    &conversation.id,
+                    "blocked_scope",
+                    "A document question"
+                )))
+                .unwrap_err()
+                .code,
+            RagErrorCode::ScopeBlocked
+        );
+        assert!(f.transport.calls.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn hidden_uncited_private_provenance_blocks_both_history_roles() {
+        let f = fixture();
+        f.transport
+            .replies
+            .lock()
+            .unwrap()
+            .push_back(Ok(reply(&format!("{PRIVATE} [S1]"))));
+        let conversation = f.service.create_conversation(None).unwrap();
+        let first = runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &conversation.id,
+                "local_first",
+                &format!("Discuss {PRIVATE}"),
+            )))
+            .unwrap();
+        assert!(first
+            .assistant_turn
+            .provenance
+            .iter()
+            .any(|source| source.scope_id == "private"));
+        assert!(
+            !first
+                .assistant_turn
+                .citations
+                .iter()
+                .find(|citation| citation.source.scope_id == "private")
+                .unwrap()
+                .is_cited
+        );
+        f.service
+            .set_sources_hidden(&first.assistant_turn.id, true)
+            .unwrap();
+        external(&f);
+        let second = runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &conversation.id,
+                "external_second",
+                "Summarize permitted material.",
+            )))
+            .unwrap();
+        let calls = f.transport.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(!sent_text(&calls[1]).contains(PRIVATE));
+        assert!(second.omitted_history_pairs >= 1);
+        let page = runtime()
+            .block_on(f.service.conversation(&conversation.id, None, 100))
+            .unwrap();
+        let saved = page
+            .turns
+            .iter()
+            .find(|turn| turn.id == first.assistant_turn.id)
+            .unwrap();
+        assert!(
+            saved.sources_hidden && !saved.provenance.is_empty() && !saved.citations.is_empty()
+        );
+    }
+    #[test]
+    fn fallback_reloads_policy_and_never_sends_after_revocation() {
+        let f = fixture();
+        external(&f);
+        {
+            let mut policy = f.policy.write().unwrap();
+            policy.prefs.mode = GenerationMode::Auto;
+            policy.prefs.fallback = true;
+        }
+        f.transport
+            .replies
+            .lock()
+            .unwrap()
+            .push_back(Err(GenerationError {
+                code: GenerationErrorCode::Network,
+                message: format!("raw provider echo {PRIVATE} FAKE-KEY-ONLY"),
+            }));
+        let policy = Arc::clone(&f.policy);
+        *f.transport.hook.lock().unwrap() = Some(Arc::new(move |count| {
+            if count == 1 {
+                let mut policy = policy.write().unwrap();
+                policy.revision += 1;
+                policy
+                    .scopes
+                    .iter_mut()
+                    .for_each(|scope| scope.external_allowed = false);
+            }
+        }));
+        let conversation = f.service.create_conversation(None).unwrap();
+        let failure = runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &conversation.id,
+                "revoke",
+                "A document question",
+            )))
+            .unwrap_err();
+        assert_eq!(failure.code, RagErrorCode::ScopeBlocked);
+        assert_eq!(f.transport.calls.lock().unwrap().len(), 1);
+        let export = runtime()
+            .block_on(f.service.export_markdown(&conversation.id, true))
+            .unwrap();
+        assert!(!export.contains(PRIVATE) && !export.contains("FAKE-KEY-ONLY"));
+    }
+    #[test]
+    fn permitted_fallback_rebuilds_context_and_drops_local_only_history() {
+        let f = fixture();
+        external(&f);
+        {
+            let mut policy = f.policy.write().unwrap();
+            policy.prefs.mode = GenerationMode::Auto;
+            policy.prefs.fallback = true;
+        }
+        f.transport
+            .replies
+            .lock()
+            .unwrap()
+            .push_back(Err(GenerationError {
+                code: GenerationErrorCode::Network,
+                message: "not exposed".into(),
+            }));
+        let conversation = f.service.create_conversation(None).unwrap();
+        let answer = runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &conversation.id,
+                "fallback",
+                "Summarize evidence",
+            )))
+            .unwrap();
+        let calls = f.transport.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(sent_text(&calls[0]).contains(PRIVATE));
+        assert!(!sent_text(&calls[1]).contains(PRIVATE));
+        assert_eq!(answer.assistant_turn.provider, Some(ProviderSlot::External));
+        assert_eq!(answer.attempts.len(), 2);
+    }
+    #[test]
+    fn changed_deleted_and_outside_sources_are_not_replayed_as_fresh_context() {
+        for state in [
+            SourceState::Changed,
+            SourceState::Deleted,
+            SourceState::OutOfScope,
+        ] {
+            let f = fixture();
+            f.sources.items.lock().unwrap().swap(0, 1);
+            f.transport
+                .replies
+                .lock()
+                .unwrap()
+                .push_back(Ok(reply(&format!("{PRIVATE} [S1]"))));
+            let conversation = f.service.create_conversation(None).unwrap();
+            runtime()
+                .block_on(f.service.ask(request(
+                    &f.service,
+                    &conversation.id,
+                    "before_change",
+                    "Question one",
+                )))
+                .unwrap();
+            f.sources
+                .states
+                .lock()
+                .unwrap()
+                .insert("chunk_private".into(), state);
+            let second = runtime()
+                .block_on(f.service.ask(request(
+                    &f.service,
+                    &conversation.id,
+                    "after_change",
+                    "Question two",
+                )))
+                .unwrap();
+            assert!(!sent_text(&f.transport.calls.lock().unwrap()[1]).contains(PRIVATE));
+            assert!(second.omitted_history_pairs >= 1);
+            let page = runtime()
+                .block_on(f.service.conversation(&conversation.id, None, 100))
+                .unwrap();
+            assert_eq!(
+                page.turns
+                    .iter()
+                    .find(|turn| turn.role == TurnRole::Assistant)
+                    .unwrap()
+                    .citations[0]
+                    .state,
+                state
+            );
+        }
+    }
+    #[test]
+    fn endpoint_change_does_not_reuse_a_saved_api_key() {
+        let f = fixture();
+        external(&f);
+        assert!(
+            f.service
+                .credential_status(
+                    ProviderSlot::External,
+                    "https://approved.example/v1/chat/completions/"
+                )
+                .unwrap()
+                .has_key
+        );
+        assert!(
+            !f.service
+                .credential_status(ProviderSlot::External, "https://different.example/v1")
+                .unwrap()
+                .has_key
+        );
+        {
+            let mut policy = f.policy.write().unwrap();
+            policy.revision += 1;
+            policy.prefs.external.as_mut().unwrap().endpoint =
+                "https://different.example/v1".into();
+        }
+        let conversation = f.service.create_conversation(None).unwrap();
+        assert_eq!(
+            runtime()
+                .block_on(f.service.ask(request(
+                    &f.service,
+                    &conversation.id,
+                    "changed_endpoint",
+                    "Question"
+                )))
+                .unwrap_err()
+                .code,
+            RagErrorCode::Auth
+        );
+        assert!(f.transport.calls.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn source_selection_is_resolver_authority_and_most_specific_scope_controls_egress() {
+        let f = fixture();
+        external(&f);
+        {
+            let mut policy = f.policy.write().unwrap();
+            policy.scopes[0].id = "parent".into();
+            policy.scopes.push(RagScope {
+                id: "child".into(),
+                name: "Child".into(),
+                path: "C:\\approved\\child".into(),
+                content_enabled: true,
+                external_allowed: true,
+            });
+        }
+        let mut child = source("child", PUBLIC);
+        child.source.file_path = "C:\\approved\\child\\note.md".into();
+        *f.sources.items.lock().unwrap() = vec![child];
+        let conversation = f.service.create_conversation(None).unwrap();
+        let mut question = request(&f.service, &conversation.id, "child_scope", "Question");
+        question.scope_ids = vec!["parent".into()];
+        let answer = runtime().block_on(f.service.ask(question)).unwrap();
+        assert_eq!(answer.assistant_turn.citations[0].source.scope_id, "child");
+    }
+    #[test]
+    fn budget_citation_binding_and_explicit_general_mode_remain_honest() {
+        let f = fixture();
+        {
+            let mut policy = f.policy.write().unwrap();
+            policy.prefs.max_context_chars = Some(800);
+            policy.prefs.top_k = Some(1);
+        }
+        f.sources.items.lock().unwrap()[0].text = "한".repeat(5000);
+        f.transport.replies.lock().unwrap().push_back(Ok(reply(
+            "A claimed verified fact [S1] and an invented source [S999].",
+        )));
+        let conversation = f.service.create_conversation(None).unwrap();
+        let answer = runtime()
+            .block_on(
+                f.service
+                    .ask(request(&f.service, &conversation.id, "budget", "요약")),
+            )
+            .unwrap();
+        let calls = f.transport.calls.lock().unwrap();
+        assert!(
+            calls[0]
+                .messages
+                .iter()
+                .map(|message| message.content.chars().count())
+                .sum::<usize>()
+                <= 800
+        );
+        drop(calls);
+        assert_eq!(answer.assistant_turn.unknown_citations, vec!["S999"]);
+        assert_eq!(answer.assistant_turn.evidence, EvidenceStatus::Unverified);
+        assert!(!answer.assistant_turn.claims_verified);
+        f.sources.items.lock().unwrap().clear();
+        assert_eq!(
+            runtime()
+                .block_on(f.service.ask(request(
+                    &f.service,
+                    &conversation.id,
+                    "no_sources",
+                    "Document question"
+                )))
+                .unwrap_err()
+                .code,
+            RagErrorCode::NoSources
+        );
+        let mut general = request(
+            &f.service,
+            &conversation.id,
+            "general",
+            "A general question",
+        );
+        general.mode = QuestionMode::General;
+        let answer = runtime().block_on(f.service.ask(general)).unwrap();
+        assert!(answer.assistant_turn.citations.is_empty());
+        assert_eq!(answer.assistant_turn.evidence, EvidenceStatus::Unverified);
+    }
+    #[test]
+    fn untracked_local_general_history_is_not_replayed_after_external_opt_in() {
+        let f = fixture();
+        f.sources.items.lock().unwrap().clear();
+        f.transport
+            .replies
+            .lock()
+            .unwrap()
+            .push_back(Ok(reply(PRIVATE)));
+        let conversation = f.service.create_conversation(None).unwrap();
+        let mut first = request(&f.service, &conversation.id, "general_local", PRIVATE);
+        first.mode = QuestionMode::General;
+        runtime().block_on(f.service.ask(first)).unwrap();
+        external(&f);
+        let mut second = request(
+            &f.service,
+            &conversation.id,
+            "general_external",
+            "A new general question",
+        );
+        second.mode = QuestionMode::General;
+        let result = runtime().block_on(f.service.ask(second)).unwrap();
+        assert!(result.omitted_history_pairs >= 1);
+        assert!(!sent_text(&f.transport.calls.lock().unwrap()[1]).contains(PRIVATE));
+    }
+    #[test]
+    fn source_hash_change_uses_new_excerpts_and_drops_old_history() {
+        let f = fixture();
+        f.sources
+            .items
+            .lock()
+            .unwrap()
+            .retain(|item| item.source.scope_id == "public");
+        f.sources.items.lock().unwrap()[0].text = PRIVATE.into();
+        f.transport
+            .replies
+            .lock()
+            .unwrap()
+            .push_back(Ok(reply(&format!("{PRIVATE} [S1]"))));
+        let conversation = f.service.create_conversation(None).unwrap();
+        runtime()
+            .block_on(
+                f.service
+                    .ask(request(&f.service, &conversation.id, "old_sha", "Question")),
+            )
+            .unwrap();
+        {
+            let mut items = f.sources.items.lock().unwrap();
+            items[0].source.sha256 = "b".repeat(64);
+            items[0].text = "UPDATED_CURRENT_DOCUMENT".into();
+        }
+        let answer = runtime()
+            .block_on(
+                f.service
+                    .ask(request(&f.service, &conversation.id, "new_sha", "Question")),
+            )
+            .unwrap();
+        let text = sent_text(&f.transport.calls.lock().unwrap()[1]);
+        assert!(text.contains("UPDATED_CURRENT_DOCUMENT") && !text.contains(PRIVATE));
+        assert_eq!(
+            answer.assistant_turn.citations[0].source.sha256,
+            "b".repeat(64)
+        );
+        assert!(answer.omitted_history_pairs >= 1);
+    }
+    #[test]
+    fn policy_change_while_sources_are_prepared_prevents_egress() {
+        let f = fixture();
+        external(&f);
+        let policy = Arc::clone(&f.policy);
+        *f.sources.on_check.lock().unwrap() = Some(Arc::new(move |count| {
+            if count == 1 {
+                let mut policy = policy.write().unwrap();
+                policy.revision += 1;
+                policy
+                    .scopes
+                    .iter_mut()
+                    .for_each(|scope| scope.external_allowed = false);
+            }
+        }));
+        let conversation = f.service.create_conversation(None).unwrap();
+        let error = runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &conversation.id,
+                "prepare_revocation",
+                "Question",
+            )))
+            .unwrap_err();
+        assert_eq!(error.code, RagErrorCode::ScopeBlocked);
+        assert!(f.transport.calls.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn cancellation_during_blocking_retrieval_returns_without_waiting_for_resolver() {
+        let f = fixture();
+        f.sources.delay_ms.store(500, Ordering::Release);
+        let conversation = f.service.create_conversation(None).unwrap();
+        let service = f.service.clone();
+        let question = request(&service, &conversation.id, "cancel_retrieval", "Question");
+        let handle = runtime().spawn(async move { service.ask(question).await });
+        let started = Instant::now();
+        while f.sources.retrieves.load(Ordering::Acquire) == 0 {
+            assert!(started.elapsed() < Duration::from_secs(2));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let started = Instant::now();
+        f.service
+            .cancel(&conversation.id, "cancel_retrieval")
+            .unwrap();
+        let error = runtime().block_on(handle).unwrap().unwrap_err();
+        assert_eq!(error.code, RagErrorCode::Cancelled);
+        assert!(started.elapsed() < Duration::from_millis(450));
+        assert!(f.transport.calls.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn interrupted_pending_turns_and_endpoint_bound_keys_survive_reopen() {
+        let f = fixture();
+        external(&f);
+        let conversation = f.service.create_conversation(None).unwrap();
+        let pending = request(&f.service, &conversation.id, "interrupted", "Question");
+        let policy = f.policy.read().unwrap().clone();
+        f.service
+            .inner
+            .store
+            .reserve(&pending, snapshot(&policy, &[]))
+            .unwrap();
+        let policy = Arc::clone(&f.policy);
+        let getter: PolicyGetter = Arc::new(move || Ok(policy.read().unwrap().clone()));
+        let reopened = RagService::with_transport(
+            f.directory.path(),
+            getter,
+            f.sources.clone(),
+            f.keys.clone(),
+            f.transport.clone(),
+        )
+        .unwrap();
+        assert!(
+            reopened
+                .credential_status(ProviderSlot::External, "https://approved.example/v1")
+                .unwrap()
+                .has_key
+        );
+        let page = runtime()
+            .block_on(reopened.conversation(&conversation.id, None, 100))
+            .unwrap();
+        assert_eq!(page.turns.len(), 2);
+        assert!(page
+            .turns
+            .iter()
+            .all(|turn| turn.status == TurnStatus::Interrupted && !turn.claims_verified));
+    }
+    #[test]
+    fn cancellation_duplicate_guard_and_persistence_survive_restart() {
+        let f = fixture();
+        let conversation = f.service.create_conversation(Some("First")).unwrap();
+        f.transport.pending.store(true, Ordering::Release);
+        let service = f.service.clone();
+        let question = request(&service, &conversation.id, "cancel_me", "Question");
+        let handle = runtime().spawn(async move { service.ask(question).await });
+        let started = Instant::now();
+        while f.transport.calls.lock().unwrap().is_empty() {
+            assert!(started.elapsed() < Duration::from_secs(2));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            runtime()
+                .block_on(f.service.ask(request(
+                    &f.service,
+                    &conversation.id,
+                    "duplicate_active",
+                    "Other question"
+                )))
+                .unwrap_err()
+                .code,
+            RagErrorCode::Busy
+        );
+        let cancel_started = Instant::now();
+        f.service.cancel(&conversation.id, "cancel_me").unwrap();
+        let failure = runtime().block_on(handle).unwrap().unwrap_err();
+        assert_eq!(failure.code, RagErrorCode::Cancelled);
+        assert!(cancel_started.elapsed() < Duration::from_millis(450));
+        f.transport.pending.store(false, Ordering::Release);
+        f.transport
+            .replies
+            .lock()
+            .unwrap()
+            .push_back(Ok(reply("Persisted answer [S1]")));
+        runtime()
+            .block_on(
+                f.service
+                    .ask(request(&f.service, &conversation.id, "persist", "Question")),
+            )
+            .unwrap();
+        f.service
+            .rename_conversation(&conversation.id, "Renamed")
+            .unwrap();
+        assert_eq!(
+            f.service
+                .list_conversations("Persisted answer", 20)
+                .unwrap()
+                .len(),
+            1
+        );
+        let owned = Arc::clone(&f.policy);
+        let getter: PolicyGetter = Arc::new(move || Ok(owned.read().unwrap().clone()));
+        let reopened = RagService::with_transport(
+            f.directory.path(),
+            getter,
+            f.sources.clone(),
+            f.keys.clone(),
+            f.transport.clone(),
+        )
+        .unwrap();
+        let page = runtime()
+            .block_on(reopened.conversation(&conversation.id, None, 100))
+            .unwrap();
+        assert_eq!(page.conversation.title, "Renamed");
+        assert!(page
+            .turns
+            .iter()
+            .any(|turn| turn.text == "Persisted answer [S1]"));
+        assert_eq!(
+            runtime()
+                .block_on(reopened.ask(request(
+                    &reopened,
+                    &conversation.id,
+                    "persist",
+                    "No repeat"
+                )))
+                .unwrap_err()
+                .code,
+            RagErrorCode::DuplicateRequest
+        );
+        assert!(runtime()
+            .block_on(reopened.export_markdown(&conversation.id, true))
+            .unwrap()
+            .contains("SHA-256"));
+        reopened.delete_conversation(&conversation.id).unwrap();
+        assert!(reopened.list_conversations("", 20).unwrap().is_empty());
+    }
+}

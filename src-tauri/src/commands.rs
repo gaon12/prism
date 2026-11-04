@@ -118,18 +118,17 @@ pub fn save_settings(
         let _ = app.global_shortcut().unregister(old_shortcut);
     }
     *current = settings.clone();
-    if let Some(quick) = app.get_webview_window("quick") {
-        let extra = f64::from(settings.font_size.saturating_sub(14));
-        let _ = quick.set_size(tauri::LogicalSize::new(
-            720.0 + extra * 20.0,
-            480.0 + extra * 24.0,
-        ));
-    }
     *state
         .shortcut_error
         .lock()
         .map_err(|_| "Shortcut state is unavailable.")? = None;
     drop(current);
+    let expanded = state
+        .session
+        .lock()
+        .map(|session| !session.query.trim().is_empty())
+        .unwrap_or(false);
+    let _ = windows::resize_quick(&app, expanded);
     if !settings.remember_search {
         let mut session = state
             .session
@@ -144,6 +143,11 @@ pub fn save_settings(
     }
     let _ = app.emit("prism:settings", &settings);
     Ok(settings)
+}
+
+#[tauri::command]
+pub fn resize_quick(app: AppHandle, expanded: bool) -> Result<(), String> {
+    windows::resize_quick(&app, expanded)
 }
 
 #[tauri::command]

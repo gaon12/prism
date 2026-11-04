@@ -17,6 +17,10 @@ export function QuickWindow() {
   const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
   const input = useRef<HTMLInputElement>(null);
   const hasScopes = settings.scopes.some((scope) => scope.filenameEnabled);
+  const expanded = session.query.trim().length > 0;
+  useEffect(() => {
+    void bridge.resizeQuick(expanded).catch((cause) => showToast(errorMessage(cause)));
+  }, [expanded, settings.fontSize]);
   useEffect(() => {
     input.current?.focus();
     if (focusTick) input.current?.select();
@@ -71,32 +75,38 @@ export function QuickWindow() {
           ) : null}
           <Brand />
         </div>
-        <div className="quick-meta">
-          <span>{t('filenameScope')}</span>
-          <button
-            className="text-button"
-            onClick={() => void bridge.hideQuick().catch((cause) => showToast(errorMessage(cause)))}
-          >
-            <kbd>Esc</kbd> {t('close')}
-          </button>
-        </div>
-        <div className="quick-empty">
-          <Folder size={56} strokeWidth={1.4} />
-          <h1>{hasScopes ? t('searchNotConnected') : t('quickNoFolders')}</h1>
-          <p>{hasScopes ? t('engineNext') : t('quickNoFoldersBody')}</p>
-          <button className="button" onClick={openMain}>
-            {t('openMain')}
-          </button>
-        </div>
-        <footer className="quick-footer">
-          <span>
-            <kbd>↑ ↓</kbd> {t('move')}
-            <kbd>Enter</kbd> {t('open')}
-          </span>
-          <button className="text-button" onClick={openMain}>
-            <kbd>Ctrl Enter</kbd> {t('mainWindow')}
-          </button>
-        </footer>
+        {expanded ? (
+          <>
+            <div className="quick-meta">
+              <span>{t('filenameScope')}</span>
+              <button
+                className="text-button"
+                onClick={() =>
+                  void bridge.hideQuick().catch((cause) => showToast(errorMessage(cause)))
+                }
+              >
+                <kbd>Esc</kbd> {t('close')}
+              </button>
+            </div>
+            <div className="quick-empty">
+              <Folder size={56} strokeWidth={1.4} />
+              <h1>{hasScopes ? t('searchNotConnected') : t('quickNoFolders')}</h1>
+              <p>{hasScopes ? t('engineNext') : t('quickNoFoldersBody')}</p>
+              <button className="button" onClick={openMain}>
+                {t('openMain')}
+              </button>
+            </div>
+            <footer className="quick-footer">
+              <span>
+                <kbd>↑ ↓</kbd> {t('move')}
+                <kbd>Enter</kbd> {t('open')}
+              </span>
+              <button className="text-button" onClick={openMain}>
+                <kbd>Ctrl Enter</kbd> {t('mainWindow')}
+              </button>
+            </footer>
+          </>
+        ) : null}
       </main>
     </div>
   );

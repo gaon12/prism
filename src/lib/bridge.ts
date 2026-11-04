@@ -55,6 +55,9 @@ export const bridge = {
     if (native) await invoke('show_quick');
     else window.location.hash = 'quick';
   },
+  async resizeQuick(expanded: boolean) {
+    if (native) await invoke('resize_quick', { expanded });
+  },
   async showMain() {
     if (native) await invoke('show_main');
     else window.location.hash = '';

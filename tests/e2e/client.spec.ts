@@ -171,6 +171,10 @@ test('shows responsive settings and quick search without horizontal overflow', a
   await page.screenshot({ path: join(evidence, 'mobile.png') });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole('button', { name: /빠른 검색/ }).click();
+  await expect(page.locator('.quick-empty')).toHaveCount(0);
+  await page.getByRole('textbox', { name: '검색어', exact: true }).fill('   ');
+  await expect(page.locator('.quick-empty')).toHaveCount(0);
+  await page.getByRole('textbox', { name: '검색어', exact: true }).fill('검색');
   await expect(page.getByRole('heading', { name: '검색할 폴더가 없어요' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole('textbox', { name: '검색어', exact: true }).press('Escape');
@@ -191,7 +195,7 @@ test('captures desktop reference states', async ({ browser }) => {
   await page.screenshot({ path: join(evidence, 'settings.png') });
   await page.getByRole('button', { name: '취소', exact: true }).click();
   await page.getByRole('button', { name: /빠른 검색/ }).click();
-  await expect(page.getByRole('heading', { name: '검색할 폴더가 없어요' })).toBeVisible();
+  await expect(page.locator('.quick-empty')).toHaveCount(0);
   await page.screenshot({ path: join(evidence, 'quick.png') });
   await context.close();
 });

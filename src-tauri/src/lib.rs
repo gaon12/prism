@@ -166,6 +166,7 @@ pub fn run() {
             commands::show_quick,
             commands::show_main,
             commands::hide_quick,
+            commands::resize_quick,
             commands::window_action,
             commands::quit_app,
             commands::write_markdown

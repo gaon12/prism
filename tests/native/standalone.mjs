@@ -59,7 +59,8 @@ try {
   await main.getByRole('heading', { name: '파일 검색', exact: true }).waitFor();
   await main.screenshot({ path: join(evidence, 'standalone-main.png') });
   await main.getByRole('button', { name: '빠른 검색', exact: true }).click();
-  await quick.getByRole('heading', { name: '검색할 폴더가 없어요' }).waitFor();
+  await quick.getByRole('textbox', { name: '검색어', exact: true }).waitFor();
+  assert.equal(await quick.locator('.quick-empty').count(), 0);
   await quick.screenshot({ path: join(evidence, 'standalone-quick.png') });
   await quick.getByRole('textbox', { name: '검색어', exact: true }).press('Control+Enter');
   await main.getByRole('button', { name: '설정', exact: true }).click();

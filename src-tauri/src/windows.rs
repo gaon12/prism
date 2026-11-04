@@ -9,9 +9,22 @@ pub fn build_quick(app: &AppHandle) -> tauri::Result<()> {
         .map(|settings| settings.font_size)
         .unwrap_or(14);
     let extra = f64::from(font_size.saturating_sub(14));
+    let expanded = app
+        .state::<AppState>()
+        .session
+        .lock()
+        .map(|session| !session.query.trim().is_empty())
+        .unwrap_or(false);
     WebviewWindowBuilder::new(app, "quick", WebviewUrl::App("index.html#quick".into()))
         .title("Prism — 빠른 검색")
-        .inner_size(720.0 + extra * 20.0, 480.0 + extra * 24.0)
+        .inner_size(
+            720.0 + extra * 20.0,
+            if expanded {
+                480.0 + extra * 24.0
+            } else {
+                94.0 + extra * 4.0
+            },
+        )
         .decorations(false)
         .transparent(true)
         .shadow(true)
@@ -22,6 +35,29 @@ pub fn build_quick(app: &AppHandle) -> tauri::Result<()> {
         .focused(false)
         .center()
         .build()?;
+    Ok(())
+}
+
+pub fn resize_quick(app: &AppHandle, expanded: bool) -> Result<(), String> {
+    let font_size = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .map_err(|_| "Settings are unavailable.")?
+        .font_size;
+    let extra = f64::from(font_size.saturating_sub(14));
+    if let Some(quick) = app.get_webview_window("quick") {
+        quick
+            .set_size(tauri::LogicalSize::new(
+                720.0 + extra * 20.0,
+                if expanded {
+                    480.0 + extra * 24.0
+                } else {
+                    94.0 + extra * 4.0
+                },
+            ))
+            .map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 

@@ -13,6 +13,7 @@ test('signing configuration is paired and public configs never contain private m
   assert.equal(releasePlan(base).config.plugins.updater.pubkey, '');
   assert.throws(() => releasePlan({ ...base, publicKey: key }));
   assert.throws(() => releasePlan({ ...base, privateKeySet: true }));
+  assert.throws(() => releasePlan({ ...base, publicKey: ' \n' }), /blank/);
   assert.throws(() => releasePlan({ ...base, privateKeySet: true, publicKey: 'invalid' }));
   const plan = releasePlan({ ...base, publicKey: key, privateKeySet: true });
   assert.equal(plan.config.plugins.updater.pubkey, key.trim());

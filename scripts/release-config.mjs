@@ -23,6 +23,7 @@ export function releasePlan({
     throw new Error('Release tag and checked-out application version do not match.');
   if (typeof publicKey !== 'string' || publicKey.length > 8192)
     throw new Error('Invalid updater public key.');
+  if (publicKey.length && !publicKey.trim()) throw new Error('Updater public key is blank.');
   publicKey = publicKey.trim();
   if (Boolean(publicKey) !== Boolean(privateKeySet))
     throw new Error(
@@ -82,7 +83,7 @@ export function writeReleaseConfig(args = process.argv.slice(2)) {
     version,
     ref: process.env.GITHUB_REF ?? '',
     publicKey: process.env.PRISM_UPDATER_PUBLIC_KEY ?? '',
-    privateKeySet: Boolean(process.env.TAURI_SIGNING_PRIVATE_KEY?.trim()),
+    privateKeySet: Boolean(process.env.TAURI_SIGNING_PRIVATE_KEY),
     msixPackageVersion: process.env.PRISM_MSIX_PACKAGE_VERSION || undefined,
   });
   writeFileSync(output, JSON.stringify(plan.config, null, 2) + '\n', { flag: 'wx' });

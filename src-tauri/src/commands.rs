@@ -160,6 +160,9 @@ pub fn save_settings(
             .map(|scope| (&scope.id, &scope.path, scope.content_enabled))
             .collect::<Vec<_>>();
     *current = settings.clone();
+    if let Ok(updates) = &state.updates {
+        updates.set_auto_check(settings.updates.auto_check);
+    }
     if let Ok(documents) = &state.documents {
         documents.cancel_all();
     }

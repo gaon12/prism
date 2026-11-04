@@ -255,6 +255,7 @@ try {
   await main.getByRole('button', { name: '새 대화', exact: true }).click();
   const question = main.getByRole('textbox', { name: '질문', exact: true });
   await question.fill('shared');
+  await main.locator('.chat-retrieval-options > summary').click();
   const selectedScopes = main.getByRole('group', { name: '문서 참조 폴더 선택', exact: true });
   await selectedScopes.getByRole('checkbox').uncheck();
   assert.equal(
@@ -263,10 +264,15 @@ try {
     'Unchecked document scopes must not become backend all-scopes',
   );
   await selectedScopes.getByRole('checkbox').check();
+  await main.locator('.chat-retrieval-options > summary').click();
   await main.getByRole('button', { name: '질문 전송', exact: true }).click();
   const completed = main.locator('.chat-turn[data-role="assistant"][data-status="complete"]');
   await completed.waitFor();
-  assert((await completed.locator('.chat-evidence').innerText()).includes('출처를 다시 확인'));
+  const evidenceText = await completed.locator('.chat-evidence').innerText();
+  assert(
+    evidenceText.includes('출처를 다시 확인'),
+    `Unexpected evidence label: ${evidenceText}; ${await completed.innerText()}`,
+  );
   assert((await completed.innerText()).includes('S999'));
   await completed.getByRole('button', { name: '현재 본문 확인', exact: true }).click();
   await main.locator('.chat-preview pre').waitFor();

@@ -8,6 +8,8 @@ import type { IndexStatus, SearchResponse } from './types';
 import { parseInput } from './utilities';
 import type { UtilityAnswer } from './utilities';
 import { clipboard, useClipboard } from './clipboard';
+import { useDictionary } from './dictionary';
+import { useContentSearch } from './content';
 
 const emptyStatus: IndexStatus = {
   scanning: false,
@@ -22,7 +24,14 @@ export function useSearch(quick = false) {
   const { settings, session } = useClient();
   const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
   const request = parseInput(session.query);
+  const body = useContentSearch(request.kind === 'files' && session.mode !== 'filename');
   const clips = useClipboard(request.kind === 'clipboard', request.input);
+  const dict = useDictionary(
+    request.kind === 'dictionary',
+    request.input,
+    request.dictionaryLanguage,
+    settings.language,
+  );
   const [status, setStatus] = useState(emptyStatus);
   const [response, setResponse] = useState<{ key: string; data: SearchResponse } | null>(null);
   const [failure, setFailure] = useState<{ key: string; message: string } | null>(null);
@@ -42,6 +51,7 @@ export function useSearch(quick = false) {
     session.scopeId,
     scopesKey,
     settings.keyboardCorrection,
+    session.mode,
   ]);
   const utilityKey = JSON.stringify([session.query, settings.calculator]);
   const utilityWorker = useRef<{ worker: Worker; ready: boolean } | null>(null);
@@ -80,7 +90,13 @@ export function useSearch(quick = false) {
     };
   }, [scopesKey]);
   useEffect(() => {
-    if (request.kind !== 'files' || (quick && !request.input) || !scopesKey || !native) {
+    if (
+      request.kind !== 'files' ||
+      session.mode !== 'filename' ||
+      (quick && !request.input) ||
+      !scopesKey ||
+      !native
+    ) {
       setLoading(false);
       return;
     }
@@ -115,6 +131,7 @@ export function useSearch(quick = false) {
     session.scopeId,
     status.revision,
     quick,
+    session.mode,
   ]);
   useEffect(() => {
     if (!['calculator', 'units'].includes(request.kind) || !request.input) return;
@@ -197,8 +214,23 @@ export function useSearch(quick = false) {
     else if (request.kind === 'clipboard' && clips.selected) {
       await clipboard.copy(clips.selected.id);
       showToast(t('copied'));
+    } else if (request.kind === 'dictionary') {
+      await dict.lookup();
+      return;
     } else if (utility?.answer) await copy(utility.answer.value);
-    else if (request.kind === 'files' && (path || selected) && !error)
+    else if (
+      request.kind === 'files' &&
+      session.mode !== 'filename' &&
+      body.selected &&
+      !body.error
+    )
+      await body.open(path ?? body.selected.chunk.filePath);
+    else if (
+      request.kind === 'files' &&
+      session.mode === 'filename' &&
+      (path || selected) &&
+      !error
+    )
       await bridge.fileAction(path ?? selected!.path);
     else return;
     if (quick) await bridge.hideQuick();
@@ -206,6 +238,11 @@ export function useSearch(quick = false) {
   const keyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (isComposing(event.nativeEvent) || event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (request.kind === 'files' && session.mode !== 'filename') {
+        event.preventDefault();
+        body.move(event.key === 'ArrowDown' ? 1 : -1);
+        return;
+      }
       if (request.kind === 'clipboard') {
         event.preventDefault();
         clips.move(event.key === 'ArrowDown' ? 1 : -1);
@@ -225,14 +262,20 @@ export function useSearch(quick = false) {
   return {
     listId,
     selectedId:
-      request.kind === 'clipboard'
-        ? clips.selected
-          ? `${clips.listId}-${clips.selected.id}`
+      request.kind === 'files' && session.mode !== 'filename'
+        ? body.selected
+          ? `${body.listId}-${body.selected.chunk.id}`
           : undefined
-        : selected && data
-          ? `${listId}-${data.results.indexOf(selected)}`
-          : undefined,
+        : request.kind === 'clipboard'
+          ? clips.selected
+            ? `${clips.listId}-${clips.selected.id}`
+            : undefined
+          : selected && data
+            ? `${listId}-${data.results.indexOf(selected)}`
+            : undefined,
     clips,
+    dict,
+    body,
     request,
     status: data?.status.revision && data.status.revision > status.revision ? data.status : status,
     data,

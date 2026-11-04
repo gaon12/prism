@@ -15,8 +15,11 @@ import { useClient, setSession } from '../lib/store';
 import { translate } from '../lib/i18n';
 import { useSearch } from '../lib/use-search';
 import { FileResults, IndexSummary, UtilityResult } from './SearchResults';
-import { native } from '../lib/bridge';
+import { bridge, native } from '../lib/bridge';
+import { ContentResults } from './content/ContentResults';
+import { errorMessage, showToast } from '../lib/store';
 import { ClipboardPanel } from './clipboard/ClipboardPanel';
+import { DictionaryPanel } from './dictionary/DictionaryPanel';
 
 export function SearchView({
   recent,
@@ -57,11 +60,15 @@ export function SearchView({
           ref={input}
           aria-label={t('searchTerm')}
           aria-controls={
-            search.request.kind === 'clipboard'
-              ? search.clips.listId
-              : search.data?.total
-                ? search.listId
+            search.request.kind === 'files' && session.mode !== 'filename'
+              ? search.body.data?.hits.length
+                ? search.body.listId
                 : undefined
+              : search.request.kind === 'clipboard'
+                ? search.clips.listId
+                : search.data?.total
+                  ? search.listId
+                  : undefined
           }
           aria-activedescendant={search.selectedId}
           aria-autocomplete="list"
@@ -87,17 +94,36 @@ export function SearchView({
       <div className="search-toolbar">
         <div className="search-modes">
           <button
-            className={`mode ${search.request.kind === 'files' ? 'active' : ''}`}
+            className={`mode ${search.request.kind === 'files' && session.mode === 'filename' ? 'active' : ''}`}
             onClick={() => {
-              if (search.request.kind !== 'files') setSession({ query: '' });
+              setSession({
+                mode: 'filename',
+                ...(search.request.kind !== 'files' ? { query: search.request.input } : {}),
+              });
             }}
           >
             {t('filename')}
           </button>
-          <button className="mode" disabled title={t('nextSearch')}>
+          <button
+            className={`mode ${search.request.kind === 'files' && session.mode === 'content' ? 'active' : ''}`}
+            onClick={() =>
+              setSession({
+                mode: 'content',
+                ...(search.request.kind !== 'files' ? { query: search.request.input } : {}),
+              })
+            }
+          >
             {t('content')}
           </button>
-          <button className="mode" disabled title={t('nextSearch')}>
+          <button
+            className={`mode ${search.request.kind === 'files' && session.mode === 'semantic' ? 'active' : ''}`}
+            onClick={() =>
+              setSession({
+                mode: 'semantic',
+                ...(search.request.kind !== 'files' ? { query: search.request.input } : {}),
+              })
+            }
+          >
             {t('semantic')}
           </button>
         </div>
@@ -121,11 +147,15 @@ export function SearchView({
             placeholder={t('extensionHint')}
             onChange={(event) => setSession({ extension: event.target.value.replace(/^\./, '') })}
           />
-          <span className="muted">{t('filenameSyntax')}</span>
+          <span className="muted">
+            {t(session.mode === 'filename' ? 'filenameSyntax' : 'contentSyntax')}
+          </span>
         </div>
       ) : null}
       <IndexSummary search={search} />
-      {search.request.kind === 'files' && search.status.warnings.length ? (
+      {search.request.kind === 'files' &&
+      session.mode === 'filename' &&
+      search.status.warnings.length ? (
         <details className="index-warning">
           <summary>
             {search.status.warnings.length} · {t('searchFolders')}
@@ -166,6 +196,18 @@ export function SearchView({
               <p>{t('searchPlaceholder')}</p>
             </EmptyState>
           )
+        ) : search.request.kind === 'files' && session.mode !== 'filename' ? (
+          <ContentResults
+            controller={search.body}
+            onSettings={() =>
+              void bridge.openSettings('scopes').catch((cause) => showToast(errorMessage(cause)))
+            }
+            onModels={() =>
+              void bridge.openSettings('ai').catch((cause) => showToast(errorMessage(cause)))
+            }
+          />
+        ) : search.request.kind === 'dictionary' ? (
+          <DictionaryPanel controller={search.dict} />
         ) : search.request.kind === 'clipboard' ? (
           <ClipboardPanel controller={search.clips} />
         ) : search.request.kind !== 'files' ? (
@@ -221,6 +263,16 @@ export function SearchView({
         <span>
           <code>= 2+3</code> · <code>unit: 10 inch to cm</code> · <code>web: Prism</code>
         </span>
+        <button
+          className="text-button"
+          onClick={() => {
+            setSession({ query: 'dict:' });
+            onRecent(false);
+            input.current?.focus();
+          }}
+        >
+          {t('dictionary')}
+        </button>
         <button
           className="text-button"
           onClick={() => {

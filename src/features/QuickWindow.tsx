@@ -7,6 +7,8 @@ import { isComposing } from '../lib/types';
 import { useSearch } from '../lib/use-search';
 import { FileResults, IndexSummary, UtilityResult } from './SearchResults';
 import { ClipboardPanel } from './clipboard/ClipboardPanel';
+import { DictionaryPanel } from './dictionary/DictionaryPanel';
+import { ContentResults } from './content/ContentResults';
 
 export function QuickWindow() {
   const { settings, session, focusTick } = useClient();
@@ -48,11 +50,15 @@ export function QuickWindow() {
             ref={input}
             aria-label={t('searchTerm')}
             aria-controls={
-              search.request.kind === 'clipboard'
-                ? search.clips.listId
-                : search.data?.total
-                  ? search.listId
+              search.request.kind === 'files' && session.mode !== 'filename'
+                ? search.body.data?.hits.length
+                  ? search.body.listId
                   : undefined
+                : search.request.kind === 'clipboard'
+                  ? search.clips.listId
+                  : search.data?.total
+                    ? search.listId
+                    : undefined
             }
             aria-activedescendant={search.selectedId}
             aria-autocomplete="list"
@@ -76,7 +82,11 @@ export function QuickWindow() {
           <>
             <div className="quick-meta">
               <span>
-                {search.request.kind === 'files' ? t('filenameScope') : t(search.request.kind)}
+                {search.request.kind === 'files'
+                  ? session.mode === 'filename'
+                    ? t('filenameScope')
+                    : t(session.mode)
+                  : t(search.request.kind)}
               </span>
               <button
                 className="text-button"
@@ -87,7 +97,26 @@ export function QuickWindow() {
                 <kbd>Esc</kbd> {t('close')}
               </button>
             </div>
-            {search.request.kind === 'clipboard' ? (
+            {search.request.kind === 'files' && session.mode !== 'filename' ? (
+              <div className="quick-results">
+                <ContentResults
+                  controller={search.body}
+                  compact
+                  onSettings={() =>
+                    void bridge
+                      .openSettings('scopes')
+                      .catch((cause) => showToast(errorMessage(cause)))
+                  }
+                  onModels={() =>
+                    void bridge.openSettings('ai').catch((cause) => showToast(errorMessage(cause)))
+                  }
+                />
+              </div>
+            ) : search.request.kind === 'dictionary' ? (
+              <div className="quick-results">
+                <DictionaryPanel controller={search.dict} compact />
+              </div>
+            ) : search.request.kind === 'clipboard' ? (
               <div className="quick-results">
                 <ClipboardPanel controller={search.clips} compact />
               </div>
@@ -123,9 +152,11 @@ export function QuickWindow() {
                     search.request.kind === 'units' ||
                     search.request.kind === 'clipboard'
                     ? 'copy'
-                    : search.request.kind === 'web'
-                      ? 'web'
-                      : 'open',
+                    : search.request.kind === 'dictionary'
+                      ? 'lookup'
+                      : search.request.kind === 'web'
+                        ? 'web'
+                        : 'open',
                 )}
               </span>
               <button className="text-button" onClick={openMain}>

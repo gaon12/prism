@@ -1,3 +1,4 @@
+mod embedding_runtime;
 mod document_extract;
 mod dictionary_store;
 mod clipboard_history;

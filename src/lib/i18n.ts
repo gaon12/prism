@@ -2,6 +2,27 @@ import type { Language } from './types';
 
 // Each entry is Korean, English, Simplified Chinese, Traditional Chinese, Japanese.
 const messages = {
+  keyboardCorrection: [
+    '한·영 키보드 오입력 보정',
+    'Korean / English keyboard correction',
+    '韩英键盘误输入纠正',
+    '韓英鍵盤誤輸入修正',
+    '韓国語・英語キーボードの誤入力補正',
+  ],
+  keyboardCorrectionHint: [
+    '원문·초성 결과가 없을 때만 두벌식/QWERTY 입력을 보정합니다.',
+    'Try two-set Korean / QWERTY keys only when literal and initial searches find nothing.',
+    '仅在原文和首辅音无结果时尝试两式韩文/QWERTY键位。',
+    '僅在原文和首子音無結果時嘗試兩式韓文/QWERTY鍵位。',
+    '原文・初声で見つからない場合のみ、韓国語2ボル式/QWERTYキーを補正します。',
+  ],
+  keyboardCorrectedNotice: [
+    '한·영 키보드 입력을 보정해 찾은 결과입니다. 입력한 검색어는 유지됩니다.',
+    'Found by Korean / English keyboard correction. Your query is unchanged.',
+    '通过韩英键位纠正找到结果，输入的搜索词未更改。',
+    '透過韓英鍵位修正找到結果，輸入的搜尋詞未變更。',
+    '韓国語・英語のキー補正で見つかった結果です。入力した検索語は維持されます。',
+  ],
   roundedValue: [
     '근삿값 · 유효숫자 {digits}자리로 반올림',
     'Approximate · rounded to {digits} significant digits',

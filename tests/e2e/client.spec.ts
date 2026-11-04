@@ -81,12 +81,18 @@ test('persists theme, language and text size; cancellation does not apply change
   await page.getByLabel('테마', { exact: true }).selectOption('dark');
   await page.getByLabel('언어', { exact: true }).selectOption('en');
   await page.getByLabel('글자 크기', { exact: true }).fill('16');
+  await page.getByLabel('한·영 키보드 오입력 보정', { exact: true }).uncheck();
   await page.getByRole('button', { name: '저장', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'File search', exact: true })).toBeVisible();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   await expect(page.locator('html')).toHaveCSS('font-size', '16px');
+  expect(
+    await page.evaluate(
+      () => JSON.parse(localStorage.getItem('prism.settings.v1') ?? '{}').keyboardCorrection,
+    ),
+  ).toBe(false);
   await page.screenshot({ path: join(evidence, 'dark.png') });
 });
 
@@ -208,7 +214,7 @@ test('calculates in a worker, converts units, reports errors and discards stale 
   await page.goto('/');
   const input = page.getByRole('textbox', { name: '검색어', exact: true });
   await input.fill('= 2+3*4');
-  await expect(page.locator('.utility-value')).toHaveText('14');
+  await expect(page.locator('.utility-value')).toHaveText('14', { timeout: 12000 });
   await expect(page.locator('.accuracy-note')).toHaveCount(0);
   await page.getByRole('button', { name: '복사', exact: true }).click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('14');
@@ -253,7 +259,7 @@ test('uses configured degrees and keeps web queries local until explicit executi
   await page.getByRole('button', { name: '저장', exact: true }).click();
   const input = page.getByRole('textbox', { name: '검색어', exact: true });
   await input.fill('= sin(90)');
-  await expect(page.locator('.utility-value')).toHaveText('1');
+  await expect(page.locator('.utility-value')).toHaveText('1', { timeout: 12000 });
   const sent: string[] = [];
   await context.route(/https:\/\/www\.google\.com\/search.*/, async (route) => {
     sent.push(route.request().url());

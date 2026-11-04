@@ -205,6 +205,11 @@ export function FileResults({
           </button>
         </div>
       </div>
+      {data.keyboardCorrected ? (
+        <p className="keyboard-notice" role="status">
+          {t('keyboardCorrectedNotice')}
+        </p>
+      ) : null}
       <div
         id={search.listId}
         className="file-result-list"

@@ -34,7 +34,13 @@ export function useSearch(quick = false) {
     (scope) => scope.filenameEnabled && (!session.scopeId || scope.id === session.scopeId),
   );
   const scopesKey = scopes.map((scope) => `${scope.id}:${scope.path}`).join('|');
-  const key = JSON.stringify([session.query, session.extension, session.scopeId, scopesKey]);
+  const key = JSON.stringify([
+    session.query,
+    session.extension,
+    session.scopeId,
+    scopesKey,
+    settings.keyboardCorrection,
+  ]);
   const utilityKey = JSON.stringify([session.query, settings.calculator]);
   const utilityWorker = useRef<{ worker: Worker; ready: boolean } | null>(null);
   useEffect(

@@ -175,6 +175,14 @@ mark {
   line-height: 1.8;
   padding-bottom: 16px;
 }
+.keyboard-notice {
+  font-size: 0.82rem;
+  color: var(--accent-text);
+  line-height: 1.8;
+  padding: 9px 10px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--border);
+}
 .interpreted-expression {
   color: var(--muted);
   font-size: 0.88rem;

@@ -16,6 +16,7 @@ export interface ClientSettings {
   fontSize: number;
   shortcut: string;
   rememberSearch: boolean;
+  keyboardCorrection: boolean;
   closeToTray: boolean;
   startOnLogin: boolean;
   scopes: SearchScope[];
@@ -57,6 +58,7 @@ export interface SearchResponse {
   results: FileResult[];
   total: number;
   status: IndexStatus;
+  keyboardCorrected: boolean;
 }
 export const defaultSettings: ClientSettings = {
   schemaVersion: 1,
@@ -66,6 +68,7 @@ export const defaultSettings: ClientSettings = {
   fontSize: 14,
   shortcut: 'Alt+Space',
   rememberSearch: true,
+  keyboardCorrection: true,
   closeToTray: true,
   startOnLogin: true,
   scopes: [],
@@ -99,6 +102,8 @@ export function normalizeSettings(input: unknown): ClientSettings {
         ? value.shortcut.trim()
         : defaultSettings.shortcut,
     rememberSearch: typeof value.rememberSearch === 'boolean' ? value.rememberSearch : true,
+    keyboardCorrection:
+      typeof value.keyboardCorrection === 'boolean' ? value.keyboardCorrection : true,
     closeToTray: typeof value.closeToTray === 'boolean' ? value.closeToTray : true,
     startOnLogin: typeof value.startOnLogin === 'boolean' ? value.startOnLogin : true,
     calculator: {

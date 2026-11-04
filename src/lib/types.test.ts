@@ -25,6 +25,7 @@ describe('persisted client data', () => {
     expect(value.fontSize).toBe(18);
     expect(value.shortcut).toBe('Alt+Space');
     expect(value.rememberSearch).toBe(true);
+    expect(value.keyboardCorrection).toBe(true);
     expect(value.scopes).toEqual([
       { id: 'docs', name: '문서', path: 'C:\\문서', contentEnabled: false, filenameEnabled: true },
     ]);
@@ -33,12 +34,14 @@ describe('persisted client data', () => {
     const settings = normalizeSettings({
       ...defaultSettings,
       rememberSearch: false,
+      keyboardCorrection: false,
       startOnLogin: false,
       scopes: [
         { id: 'one', name: 'One', path: 'C:\\One', filenameEnabled: false, contentEnabled: true },
       ],
     });
     expect(settings.rememberSearch).toBe(false);
+    expect(settings.keyboardCorrection).toBe(false);
     expect(settings.startOnLogin).toBe(false);
     expect(settings.scopes[0]).toMatchObject({ filenameEnabled: false, contentEnabled: true });
   });

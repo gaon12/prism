@@ -199,6 +199,17 @@ export function SettingsDialog({
                   />
                 </label>
                 <label className="setting-check">
+                  <span>{t('keyboardCorrection')}</span>
+                  <input
+                    type="checkbox"
+                    checked={draft.keyboardCorrection}
+                    onChange={(event) =>
+                      setDraft({ ...draft, keyboardCorrection: event.target.checked })
+                    }
+                  />
+                </label>
+                <p className="setting-footnote">{t('keyboardCorrectionHint')}</p>
+                <label className="setting-check">
                   <span>{t('startOnLogin')}</span>
                   <input
                     type="checkbox"

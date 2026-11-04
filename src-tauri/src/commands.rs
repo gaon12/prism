@@ -189,8 +189,13 @@ pub async fn search_files(
     scope_id: Option<String>,
 ) -> Result<crate::index::SearchResponse, String> {
     let index = state.index.clone();
+    let allow_keyboard = state
+        .settings
+        .lock()
+        .map_err(|_| "Settings unavailable.")?
+        .keyboard_correction;
     tauri::async_runtime::spawn_blocking(move || {
-        index.search(&query, &extension, scope_id.as_deref(), 200)
+        index.search_with_keyboard(&query, &extension, scope_id.as_deref(), 200, allow_keyboard)
     })
     .await
     .map_err(|error| error.to_string())?

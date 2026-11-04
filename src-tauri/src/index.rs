@@ -403,6 +403,7 @@ impl FileIndex {
             catalog.status.scanning = !done;
         }
     }
+    #[cfg(test)]
     pub fn search(
         &self,
         query: &str,

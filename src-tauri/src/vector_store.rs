@@ -282,6 +282,7 @@ fn current_path(path: &str, directory: bool) -> Option<PathBuf> {
 struct CurrentFilter {
     documents: Option<HashSet<String>>,
     scopes: Option<Vec<PathBuf>>,
+    extensions: Vec<String>,
 }
 impl CurrentFilter {
     fn new(filter: &ContentSearchFilter) -> Result<Self> {
@@ -292,6 +293,14 @@ impl CurrentFilter {
             ));
         }
         Ok(Self {
+            extensions: crate::content_store::normalized_extensions(&filter.extensions).map_err(
+                |_| {
+                    error(
+                        VectorStoreErrorCode::InvalidInput,
+                        "Vector extension filter is invalid",
+                    )
+                },
+            )?,
             documents: (!filter.document_paths.is_empty()).then(|| {
                 filter
                     .document_paths
@@ -310,9 +319,18 @@ impl CurrentFilter {
         })
     }
     fn matches(&self, chunk: &ContentChunk) -> bool {
-        self.documents
-            .as_ref()
-            .is_none_or(|paths| paths.contains(&key(&chunk.file_path)))
+        (self.extensions.is_empty()
+            || Path::new(&chunk.file_path)
+                .extension()
+                .is_some_and(|extension| {
+                    self.extensions
+                        .iter()
+                        .any(|allowed| extension.to_string_lossy().eq_ignore_ascii_case(allowed))
+                }))
+            && self
+                .documents
+                .as_ref()
+                .is_none_or(|paths| paths.contains(&key(&chunk.file_path)))
             && self.scopes.as_ref().is_none_or(|scopes| {
                 scopes
                     .iter()
@@ -1044,6 +1062,40 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn extension_filters_validate_and_intersect_with_vector_results() {
+        let filter = CurrentFilter::new(&ContentSearchFilter {
+            extensions: vec![".MD".into()],
+            ..Default::default()
+        })
+        .unwrap();
+        let mut chunk = ContentChunk {
+            id: "fixture".into(),
+            file_path: "Guide.md".into(),
+            fingerprint: SourceFingerprint {
+                sha256: "0".repeat(64),
+                size_bytes: 0,
+                modified_unix_ms: None,
+            },
+            section_index: 0,
+            chunk_index: 0,
+            text: String::new(),
+            page: None,
+            paragraph: None,
+            heading: None,
+            char_start: 0,
+            char_end: 0,
+        };
+        assert!(filter.matches(&chunk));
+        chunk.file_path = "Guide.pdf".into();
+        assert!(!filter.matches(&chunk));
+        assert!(CurrentFilter::new(&ContentSearchFilter {
+            extensions: vec!["%".into()],
+            ..Default::default()
+        })
+        .is_err());
     }
 
     #[test]

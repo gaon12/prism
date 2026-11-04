@@ -89,7 +89,7 @@ Requires Node.js 22.12+, Rust 1.94+, and the [Tauri Windows prerequisites](https
 
 Desktop builds link an `rlib` into the executable to keep intermediate disk usage manageable.
 
-`npm run version:check` checks the application version in both manifests and lockfiles. Use `npm run version:bump -- patch` (or `minor`, `major`, an explicit SemVer) to update them together without changing dependency versions or file formatting. The command validates all five files before writing and attempts to restore earlier writes if a write fails; it is not a crash-safe multi-file transaction. Commit the version files together. `npm run test:version` verifies the command against temporary fixtures without changing this checkout's version.
+`npm run version:check` checks app and setup versions across eight configuration, manifest and lockfiles. Use `npm run version:bump -- patch` (or `minor`, `major`, an explicit SemVer) to update them together without changing dependency versions or file formatting. The command validates every file before writing and attempts to restore earlier writes if a write fails; it is not a crash-safe multi-file transaction. Commit the version files together. `npm run test:version` verifies the command against temporary fixtures without changing this checkout's version.
 
 `npm run test:setup-core` checks the [setup core](installer/core/README.md), including deletion boundaries, failed-install recovery and concurrency. It uses fake registration and temporary files; a Windows COM shortcut test stays inside a temporary directory. `npm run test:setup` additionally verifies the real setup UI, silent update, installed app launch and removal inside a sandbox. See the [Windows setup instructions](installer/README.md) for build and executable overrides. Normal-profile registration, signed updater installation and crash recovery remain integration work.
 
@@ -114,6 +114,8 @@ Browser preview does not have native filesystem, global-shortcut or tray access.
 ```sh
 npm run build
 npm test
+npm run test:release
+cargo test --manifest-path tools/update-verifier/Cargo.toml --locked
 cargo test --manifest-path src-tauri/Cargo.toml
 npm run test:e2e
 npm run format:check
@@ -122,10 +124,13 @@ npm run format:check
 ## Build
 
 ```sh
-npm run tauri build
+npm run tauri -- build --no-bundle
+npm run build:setup
 ```
 
-The Windows executable is produced in `src-tauri/target/release/`; the installer is under `src-tauri/target/release/bundle/nsis/`.
+The Windows executable is produced in `src-tauri/target/release/`; Prism's own setup executable is `installer/src-tauri/target/release/prism-setup.exe`. The default app build does not select an installer format. Portable and MSIX packaging use the commands below.
+
+On macOS, explicitly select `--target universal-apple-darwin --bundles app,dmg` after installing both Apple Rust targets. On Linux, select `--bundles appimage`. These builds also need the platform's [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). Actual macOS/Linux compilation and native behavior remain CI/integration checks.
 
 For a standalone development executable with embedded UI:
 
@@ -134,6 +139,18 @@ npm run tauri build -- --debug --no-bundle
 ```
 
 Run `src-tauri/target/debug/prism.exe`. Development builds do not register login startup. A normal desktop build needs WebView2 on Windows.
+
+### Release workflow
+
+The [release workflow](.github/workflows/release.yml) builds Windows setup/portable, universal macOS app/DMG and Linux AppImage downloads. Manual runs build artifacts by default. A matching `v<version>` tag, or a manual run on that tag with `create_draft` selected, can create a draft after all jobs succeed. The workflow never publishes or replaces a release. Unsigned MSIX files stay in a separate `inspection-windows-msix` artifact while signing/distribution is undecided.
+
+For signed updater builds, configure repository variable `PRISM_UPDATER_PUBLIC_KEY` with the public key content and secret `TAURI_SIGNING_PRIVATE_KEY` with the corresponding private key. An optional `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secret supplies its password. Keep private material outside source control. Configure both keys or neither; incomplete settings fail preflight. Without keys, the build disables self-install updates and does not generate `latest.json`. Windows Authenticode, MSIX certificate trust and Apple notarization are separate from updater signing.
+
+`scripts/release-config.mjs` checks all version files and the selected tag, then writes a public-only Tauri overlay with explicit platform bundles. Windows custom setup signing includes `--app-version`. Every updater artifact is checked against the same public key embedded in the app; a different key or signed version fails the job. The draft job rechecks exact download names and SHA-256 sidecars before generating the complete verified manifest. Prerelease Windows builds additionally require repository variable `PRISM_MSIX_PACKAGE_VERSION` to assign a noncolliding four-part package version.
+
+`npm run test:release` builds the small [artifact verifier](tools/update-verifier/README.md) and tests version handling, preflight, checksums and manifest generation. Its final test creates disposable keys, runs the actual Tauri signer on inert fixture bytes, verifies signatures and versions, and removes the temporary key files without printing them. It uses no production keys, certificate trust changes, installer execution or release publishing. `PRISM_UPDATE_VERIFIER` can select a separately built verifier when using a custom Cargo target directory.
+
+Workflow validation covers actionlint, Bash syntax and local helper integration. The Windows unsigned overlay and actual standalone app have been run locally. GitHub-hosted macOS/Linux builds, production signing, notarization and signed updater installation have not been run yet; a green local helper test does not establish those platform results. See the [Tauri updater guide](https://v2.tauri.app/plugin/updater/) for artifact formats and signing, and [GitHub workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax) for job permissions and manual inputs.
 
 ### Windows portable package
 

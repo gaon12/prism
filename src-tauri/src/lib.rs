@@ -1,3 +1,4 @@
+mod vector_store;
 mod clipboard_commands;
 mod clipboard_history;
 mod commands;

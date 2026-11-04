@@ -8,6 +8,7 @@ mod dictionary_commands;
 mod dictionary_provider;
 mod dictionary_service;
 mod dictionary_store;
+mod document_commands;
 mod document_extract;
 mod document_service;
 mod document_store;
@@ -50,6 +51,7 @@ pub struct AppState {
     embedding: Result<embedding_runtime::EmbeddingRuntime, String>,
     content: Result<content_service::ContentService, content_service::ContentError>,
     rag: Result<rag_service::RagService, rag_service::RagError>,
+    documents: Result<document_service::DocumentService, document_service::DocumentError>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -185,6 +187,10 @@ pub fn run() {
                     asset_dir.join("chats"),
                     asset_dir.join("rag"),
                     asset_dir.join("generation-secrets"),
+                    asset_dir.join("documents"),
+                    asset_dir.join("EBWebView"),
+                    asset_dir.join("WebView2"),
+                    data_dir.join("webview"),
                 ]);
             }
             if config_error.is_none() {
@@ -240,6 +246,14 @@ pub fn run() {
                         secret_store::SecretStore::new(asset_dir.clone()),
                     )
                 });
+            let documents = rag
+                .as_ref()
+                .map_err(|_| {
+                    document_service::DocumentError::new(
+                        document_service::DocumentErrorCode::Storage,
+                    )
+                })
+                .and_then(|rag| document_service::DocumentService::open(&asset_dir, rag.clone()));
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 session: Mutex::new(session),
@@ -253,6 +267,7 @@ pub fn run() {
                 embedding,
                 content,
                 rag,
+                documents,
             });
             windows::build_quick(app.handle())?;
             let open = MenuItem::with_id(app, "open", "Prism 열기", true, None::<&str>)?;
@@ -380,6 +395,22 @@ pub fn run() {
             rag_commands::generation_credential_status,
             rag_commands::generation_set_key,
             rag_commands::generation_clear_key,
+            document_commands::doc_create,
+            document_commands::doc_list,
+            document_commands::doc_get,
+            document_commands::doc_current_citations,
+            document_commands::doc_revisions,
+            document_commands::doc_rename,
+            document_commands::doc_delete,
+            document_commands::doc_save_outline,
+            document_commands::doc_save_manual,
+            document_commands::doc_restore,
+            document_commands::doc_export,
+            document_commands::doc_generate_outline,
+            document_commands::doc_generate_body,
+            document_commands::doc_rewrite,
+            document_commands::doc_cancel,
+            document_commands::doc_job,
             commands::window_action,
             commands::quit_app,
             commands::write_markdown
@@ -389,6 +420,9 @@ pub fn run() {
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(documents) = &state.documents {
+                        documents.cancel_all();
+                    }
                     if let Ok(rag) = &state.rag {
                         rag.cancel_all();
                     }

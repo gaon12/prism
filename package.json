@@ -24,6 +24,7 @@
     "build:setup": "cargo build --manifest-path installer/src-tauri/Cargo.toml --release",
     "test:setup": "node tests/native/setup.mjs",
     "test:setup-recovery": "node tests/native/setup-recovery.mjs",
+    "test:setup-previous": "node tests/native/setup-previous.mjs",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:bundle": "node scripts/test-e2e-bundle.mjs",

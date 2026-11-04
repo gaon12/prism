@@ -21,6 +21,7 @@ export interface ClipStatus {
   enabled: boolean;
   paused: boolean;
   count: number;
+  unpinnedCount: number;
   bytes: number;
   revision: number;
   lastError: string | null;

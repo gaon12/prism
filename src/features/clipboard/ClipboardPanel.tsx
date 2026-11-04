@@ -270,7 +270,7 @@ export function ClipboardPanel({
             ))}
             <button
               className="text-button"
-              disabled={busy || !data?.status.count}
+              disabled={busy || !data?.status.unpinnedCount}
               onClick={() => setConfirmation(true)}
             >
               {t('clear')}
@@ -281,7 +281,7 @@ export function ClipboardPanel({
               <span>{t('confirm')}</span>
               <button
                 className="button"
-                disabled={busy}
+                disabled={busy || !data?.status.unpinnedCount}
                 onClick={() =>
                   void run(async () => {
                     await clipboard.clear();

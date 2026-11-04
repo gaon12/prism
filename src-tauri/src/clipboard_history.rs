@@ -101,6 +101,7 @@ pub struct ClipStatus {
     pub enabled: bool,
     pub paused: bool,
     pub count: usize,
+    pub unpinned_count: usize,
     pub bytes: u64,
     pub revision: u64,
     pub last_error: Option<String>,
@@ -432,6 +433,11 @@ impl Store {
             enabled: self.settings.enabled,
             paused,
             count: self.items.len(),
+            unpinned_count: self
+                .items
+                .iter()
+                .filter(|stored| !stored.item.pinned)
+                .count(),
             bytes: self.bytes(),
             revision: self.revision,
             last_error: self.last_error.clone(),
@@ -1623,6 +1629,10 @@ mod tests {
         );
         let reopened = ClipboardService::open(path.clone(), ClipboardSettings::default(), |_| {});
         assert_eq!(reopened.list("", None, 10).unwrap().items, before);
+        let filtered = reopened.list("pinned", None, 1).unwrap();
+        assert_eq!(filtered.items.len(), 1);
+        assert_eq!(filtered.status.count, 3);
+        assert_eq!(filtered.status.unpinned_count, 2);
         let text = before
             .iter()
             .find(|item| item.preview == "persist me")
@@ -1636,6 +1646,7 @@ mod tests {
         assert!(reopened.text(&text.id).is_err());
         reopened.clear(false).unwrap();
         assert_eq!(reopened.list("", None, 10).unwrap().total, 1);
+        assert_eq!(reopened.status().unwrap().unpinned_count, 0);
         reopened.clear(true).unwrap();
         assert_eq!(reopened.status().unwrap().count, 0);
         assert_eq!(fs::read_dir(path.join("blobs")).unwrap().count(), 0);

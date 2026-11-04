@@ -43,6 +43,7 @@ export interface OnboardingProps {
   onFinish: (next: ClientSettings) => Promise<void>;
   /** Closes the tour without changing any settings. */
   onSkip: () => void | Promise<void>;
+  allowStartOnLogin?: boolean;
 }
 
 export function Onboarding({
@@ -51,6 +52,7 @@ export function Onboarding({
   pickFolders,
   onFinish,
   onSkip,
+  allowStartOnLogin = true,
 }: OnboardingProps) {
   const [draft, setDraft] = useState<OnboardingDraft>(() => initialDraft(settings, []));
   const [step, setStep] = useState<StepId>('welcome');
@@ -195,6 +197,7 @@ export function Onboarding({
                 setDraft={setDraft}
                 t={t}
                 heading={heading}
+                allowStartOnLogin={allowStartOnLogin}
               />
             ) : (
               <ReadyStep draft={draft} t={t} heading={heading} />
@@ -475,9 +478,11 @@ function PrivacyStep({
   setDraft,
   t,
   heading,
+  allowStartOnLogin,
 }: StepProps & {
   change: Change;
   setDraft: React.Dispatch<React.SetStateAction<OnboardingDraft>>;
+  allowStartOnLogin: boolean;
 }) {
   // Only folders whose document text is read can contribute text to an AI answer.
   const contentFolders = draft.folders.filter((folder) => folder.selected && folder.content);
@@ -501,9 +506,10 @@ function PrivacyStep({
         </div>
         <Toggle
           checked={draft.startOnLogin}
+          disabled={!allowStartOnLogin}
           onChange={(startOnLogin) => change({ startOnLogin })}
           label={t('startOnLogin')}
-          hint={t('startOnLoginHint')}
+          hint={t(allowStartOnLogin ? 'startOnLoginHint' : 'portableStartup')}
         />
         <Toggle
           checked={draft.allowExternalQuestions}

@@ -150,6 +150,13 @@ const messages = {
     '登入時啟動',
     'ログイン時に開始',
   ],
+  portableStartup: [
+    '포터블에서는 로그인 자동 실행을 사용하지 않아요.',
+    'Login startup is disabled in portable mode.',
+    '便携模式不支持登录时启动。',
+    '可攜模式不支援登入時啟動。',
+    'ポータブル版ではログイン時の自動起動は無効です。',
+  ],
   startOnLoginHint: [
     '단축키가 언제나 바로 동작하도록 백그라운드에서 조용히 대기해요.',
     'Waits quietly in the background so the shortcut always works.',

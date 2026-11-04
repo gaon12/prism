@@ -17,7 +17,13 @@ let state: ClientState = {
   error: null,
   settings: structuredClone(defaultSettings),
   session: structuredClone(emptySession),
-  runtime: { native: false, development: true, shortcutError: null, startupError: null },
+  runtime: {
+    native: false,
+    development: true,
+    installKind: null,
+    shortcutError: null,
+    startupError: null,
+  },
   toast: null,
   focusTick: 0,
 };

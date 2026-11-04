@@ -283,6 +283,7 @@ export default function App() {
       {!quick && needsOnboarding ? (
         <Onboarding
           settings={settings}
+          allowStartOnLogin={runtime.installKind !== 'portable'}
           loadRecommended={bridge.recommendedFolders}
           pickFolders={bridge.chooseFolders}
           onFinish={(next) => saveSettings({ ...next, onboardingVersion: 1 })}

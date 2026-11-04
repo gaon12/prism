@@ -3,6 +3,13 @@ import type { Language } from './types';
 // Each entry is Korean, English, Simplified Chinese, Traditional Chinese, Japanese.
 const messages = {
   aiDocuments: ['AI 문서', 'AI documents', 'AI文档', 'AI文件', 'AI文書'],
+  portableStartup: [
+    '포터블에서는 로그인 자동 실행을 사용하지 않습니다. 이동식 실행 파일 경로를 등록하지 않습니다.',
+    'Login startup is disabled in portable mode. The removable executable path is not registered.',
+    '便携模式不支持登录时启动，不会注册可移动程序路径。',
+    '可攜模式不支援登入時啟動，不會註冊可移動程式路徑。',
+    'ポータブル版ではログイン時の自動起動は無効です。移動可能な実行ファイルのパスを登録しません。',
+  ],
   documentUnsaved: [
     '작성 중인 문서를 먼저 저장하거나 편집을 버리세요. 새 문서 입력 중이면 취소한 뒤 이동하세요.',
     'Save or discard document edits before leaving. Cancel the new-document form to leave it.',

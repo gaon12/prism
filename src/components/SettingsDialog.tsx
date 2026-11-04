@@ -230,10 +230,13 @@ export function SettingsDialog({
                   <input
                     type="checkbox"
                     checked={draft.startOnLogin}
+                    disabled={runtime.installKind === 'portable'}
                     onChange={(event) => setDraft({ ...draft, startOnLogin: event.target.checked })}
                   />
                 </label>
-                {runtime.development ? (
+                {runtime.installKind === 'portable' ? (
+                  <p className="setting-footnote">{t('portableStartup')}</p>
+                ) : runtime.development ? (
                   <p className="setting-footnote">{t('developmentStartup')}</p>
                 ) : null}
               </>

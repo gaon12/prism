@@ -98,7 +98,13 @@ export const bridge = {
   async runtime(): Promise<RuntimeInfo> {
     return native
       ? invoke('runtime_info')
-      : { native: false, development: true, shortcutError: null, startupError: null };
+      : {
+          native: false,
+          development: true,
+          installKind: null,
+          shortcutError: null,
+          startupError: null,
+        };
   },
   async chooseFolders(): Promise<string[]> {
     if (!native) throw new Error('NATIVE_ONLY');

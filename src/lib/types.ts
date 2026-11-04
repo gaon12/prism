@@ -50,6 +50,7 @@ export interface RecommendedFolder {
 export interface RuntimeInfo {
   native: boolean;
   development: boolean;
+  installKind: 'installed' | 'portable' | 'isolated' | null;
   shortcutError: string | null;
   startupError: string | null;
 }

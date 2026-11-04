@@ -11,6 +11,7 @@
     "check": "tsc -b --pretty false",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:bundle": "node scripts/test-e2e-bundle.mjs",
     "test:native": "node tests/native/client.mjs",
     "test:standalone": "node tests/native/standalone.mjs",
     "test:clipboard": "node tests/native/clipboard.mjs",

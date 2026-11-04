@@ -209,6 +209,7 @@ pub fn install(
     progress(Stage::Preparing, 0.0);
     validate_install_dir(dir)?;
     fs::create_dir_all(dir).map_err(|error| format!("Could not create the folder: {error}"))?;
+    let _lock = crate::folder_lock::FolderLock::acquire(dir).map_err(|error| error.to_string())?;
     let previous = checked_record(dir)?;
     let folders = system
         .folders()
@@ -415,6 +416,7 @@ pub fn uninstall(
     progress(Stage::Removing, 0.0);
     let dir = safe_path::root(dir).map_err(|_| "The installation folder is unsafe.".to_string())?;
     let dir = dir.as_path();
+    let _lock = crate::folder_lock::FolderLock::acquire(dir).map_err(|error| error.to_string())?;
     let record = checked_record(dir)?;
     let folders = system
         .folders()

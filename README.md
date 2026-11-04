@@ -113,6 +113,18 @@ npm run tauri build -- --debug --no-bundle
 
 Run `src-tauri/target/debug/prism.exe`. Development builds do not register login startup. A normal desktop build needs WebView2 on Windows.
 
+### Windows portable package
+
+After building the Windows x64 executable, run `npm run package:portable`. It packages `src-tauri/target/release/prism.exe` into a ZIP and SHA-256 checksum under `src-tauri/target/release/bundle/portable/`. To package a standalone debug build for local review:
+
+```sh
+npm run package:portable -- --exe src-tauri/target/debug/prism.exe --out .dev/build/portable
+```
+
+Extract the ZIP into a writable folder and keep `prism.portable` beside `prism.exe`. Settings, clipboard history, documents, conversations, model assets, indexes and both windows' WebView2 storage live in `PrismData/` beside the executable. Moving that folder preserves the managed data; registered source folders still use their configured paths. Saved API keys are bound to the Windows account and must be entered again on a different account. The WebView2 Runtime is required separately.
+
+A blocked data directory stops startup with an error instead of falling back to an installed profile. Portable mode disables login startup, excludes its managed data from content indexing and rejects a `WEBVIEW2_USER_DATA_FOLDER` override. Separate portable copies have independent single-instance identities. To update manually, close Prism, replace the application files and preserve `PrismData/`. Packaging does not sign or publish the application, include downloaded model assets or install WebView2.
+
 After building this standalone debug executable, run `npm run test:standalone`, `npm run test:clipboard` and `npm run test:dictionary` to verify embedded UI, settings and window handoff without Vite. `npm run test:content` additionally requires the pinned model at `.dev/models/embeddinggemma-2-Q8_0.gguf` and runtime archive at `.dev/runtime/llama-b11960-bin-win-cpu-x64.zip`; it imports them into an isolated temporary profile and performs actual embedding/Lance retrieval.
 
 `npm run test:rag` uses generated files, an isolated profile, synthetic credentials and a loopback generation fixture. It checks current evidence, permission/credential boundaries, persisted conversations, cancellation and the actual chat UI without a real provider key or external request.
@@ -122,6 +134,8 @@ After building this standalone debug executable, run `npm run test:standalone`, 
 `npm run test:onboarding` verifies actual bundled first-run completion, shortcut/settings persistence, clipboard opt-out, skip without applying draft choices and restart. Recommended user folders are explicitly unchecked, and the isolated profile uses MemoryClipboard. Existing profiles missing the new completion marker bypass setup; fresh profiles see the tour. Theme/language choices are saved only on completion.
 
 `npm run test:clipboard-ui` checks retention input validation, filtered/global unpinned counts, pinned-only clear controls and keyboard selection scrolling in both windows using 40 generated entries and MemoryClipboard. Clipboard retention fields accept whole item/day/MiB values; invalid input stays editable and cannot be submitted.
+
+`npm run test:portable` requires the same pinned model/runtime and standalone debug executable. It packages and extracts the actual executable, checks copy-specific single-instance behavior, and performs real EmbeddingGemma 2/Lance retrieval before and after moving the application to a Unicode path. It also checks persisted settings, notes, documents, conversations, synthetic clipboard data, account-bound credentials and blocked startup paths. Its debug-only test flag injects MemoryClipboard while retaining actual portable path selection; ordinary isolated native tests continue to use `PRISM_DEV_DATA_DIR`. It does not exercise physical paste, installer/update behavior or actual external generation.
 
 ## Native smoke tests
 

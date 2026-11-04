@@ -11,6 +11,17 @@ describe('explicit utility routing', () => {
     expect(parseInput('wiki: 한글').provider).toBe('wiki');
     expect(parseInput('clip: ㄱㅁㅅ')).toEqual({ kind: 'clipboard', input: 'ㄱㅁㅅ' });
     expect(parseInput('클립보드:')).toEqual({ kind: 'clipboard', input: '' });
+    expect(parseInput('dict:apple')).toEqual({ kind: 'dictionary', input: 'apple' });
+    expect(parseInput('사전:ja りんご')).toEqual({
+      kind: 'dictionary',
+      input: 'りんご',
+      dictionaryLanguage: 'ja',
+    });
+    expect(parseInput('dict:ko')).toEqual({
+      kind: 'dictionary',
+      input: '',
+      dictionaryLanguage: 'ko',
+    });
   });
   it('encodes web queries without interpreting them as URLs or extra parameters', () => {
     const url = new URL(webSearchUrl('google', '한글 & a=1 #topic'));

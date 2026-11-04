@@ -1,0 +1,376 @@
+/* First-run tour. Uses the app's colour tokens (tokens.css), so light/dark themes just work.
+ * Layout: a card with a step rail on the left and the current step on the right. */
+
+.onboarding {
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  color: var(--text);
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--sidebar) 88%, transparent);
+  backdrop-filter: blur(6px);
+}
+.onboarding:not([open]) {
+  display: none;
+}
+
+.onboarding-card {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  width: min(820px, 100%);
+  height: min(560px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--modal-shadow);
+}
+
+/* ---------- Step rail ---------- */
+.onboarding-rail {
+  display: flex;
+  flex-direction: column;
+  padding: 22px 18px;
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
+}
+.onboarding-brand {
+  color: var(--accent);
+  font-size: 17px;
+  font-weight: 600;
+  margin-bottom: 26px;
+}
+.onboarding-rail ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.onboarding-rail li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  color: var(--muted);
+}
+.onboarding-rail li.current {
+  color: var(--text);
+  font-weight: 600;
+  background: var(--hover);
+}
+.onboarding-rail li.done {
+  color: var(--text);
+}
+.onboarding-dot {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.onboarding-rail li.current .onboarding-dot,
+.onboarding-rail li.done .onboarding-dot {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.onboarding-skip {
+  margin-top: auto;
+  align-self: flex-start;
+}
+
+/* ---------- Step content ---------- */
+.onboarding-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.onboarding-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 34px 40px 12px;
+}
+.onboarding-content h2 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  outline: none;
+}
+.onboarding-lead {
+  max-width: 56ch;
+  margin: 10px 0 24px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+.onboarding-footer {
+  display: flex;
+  justify-content: space-between;
+  padding: 14px 40px 22px;
+}
+.onboarding-error {
+  margin: 0 40px;
+  color: var(--danger);
+}
+.onboarding-hint {
+  margin: 10px 0 0;
+  color: var(--muted);
+}
+.onboarding-hint.error {
+  color: var(--danger);
+}
+.onboarding-note {
+  margin: 20px 0 0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--subtle);
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* Language / theme choices as segmented buttons */
+.onboarding-choice {
+  border: 0;
+  margin: 0 0 18px;
+  padding: 0;
+}
+.onboarding-choice legend {
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+.onboarding-segments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.onboarding-segments label {
+  padding: 7px 13px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.onboarding-segments label:hover {
+  background: var(--hover);
+}
+.onboarding-segments label.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.onboarding-segments input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.onboarding-segments label:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Shortcut: the keys themselves are the hero of this step */
+.onboarding-recorder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 116px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  background: var(--subtle);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.onboarding-recorder.recording {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.onboarding-recorder:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.onboarding-recording {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.onboarding-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  vertical-align: middle;
+}
+.onboarding-keys kbd {
+  min-width: 2.2em;
+  padding: 0.3em 0.6em;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 3px;
+  border-radius: 7px;
+  background: var(--surface);
+  font: inherit;
+  font-weight: 600;
+  text-align: center;
+}
+.onboarding-recorder .onboarding-keys kbd {
+  font-size: 22px;
+}
+
+/* Folder list */
+.onboarding-folders {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.onboarding-folders li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+}
+.onboarding-folders li + li {
+  border-top: 1px solid var(--border);
+}
+.onboarding-folders li.off .onboarding-folder-name {
+  color: var(--muted);
+}
+.onboarding-folder-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+.onboarding-folder-name span,
+.onboarding-toggle span:last-child {
+  display: grid;
+  min-width: 0;
+}
+.onboarding-folder-name small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.onboarding-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  color: var(--muted);
+}
+.onboarding-folders input,
+.onboarding-inline input {
+  accent-color: var(--accent);
+}
+
+/* Privacy switches */
+.onboarding-toggles {
+  display: grid;
+  gap: 14px;
+  /* This step has no lead paragraph, so it needs its own space below the title. */
+  margin-top: 22px;
+}
+.onboarding-nested {
+  display: grid;
+  gap: 10px;
+  margin-top: -4px;
+  padding-left: 46px;
+}
+.onboarding-toggle {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  cursor: pointer;
+}
+.onboarding-toggle.disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.onboarding-toggle input {
+  position: absolute;
+  opacity: 0;
+}
+.onboarding-toggle small {
+  margin-top: 3px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.onboarding-switch {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  margin-top: 1px;
+  border-radius: 10px;
+  background: var(--border-strong);
+  transition: background 0.15s;
+}
+.onboarding-switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--surface);
+  transition: transform 0.15s;
+}
+.onboarding-toggle input:checked + .onboarding-switch {
+  background: var(--accent);
+}
+.onboarding-toggle input:checked + .onboarding-switch::after {
+  transform: translateX(14px);
+}
+.onboarding-toggle input:focus-visible + .onboarding-switch {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Tips */
+.onboarding-tips {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding-left: 20px;
+  line-height: 1.6;
+}
+
+@media (max-width: 640px) {
+  .onboarding-card {
+    grid-template-columns: 1fr;
+  }
+  .onboarding-rail {
+    display: none;
+  }
+  .onboarding-content,
+  .onboarding-footer {
+    padding-left: 22px;
+    padding-right: 22px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-switch,
+  .onboarding-switch::after {
+    transition: none;
+  }
+}

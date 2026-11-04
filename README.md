@@ -79,6 +79,8 @@ Installation requires an explicit confirmation. The package download is bounded,
 
 Portable copies, development builds and release builds without an update verification key offer the download page. For installed release builds, supply the public key content through `PRISM_UPDATER_PUBLIC_KEY` when compiling. Keep the signing private key outside the repository. Updater signatures are required independently of Windows Authenticode. Custom Windows update artifacts must be signed with `tauri signer sign --app-version <version>`; `requireSignedVersion` rejects older unbound signatures and a manifest that pairs a new version with an older signed artifact. See the [official Tauri updater guide](https://v2.tauri.app/plugin/updater/).
 
+MSIX copies use their Windows distribution source for updates. They never launch the ordinary installer updater or offer its download button. New-version notices remain available, with guidance to Microsoft Store or the source used to install the package.
+
 The current local preview has no production verification key and does not self-install updates. The standalone setup has separate sandbox verification; signed updater-initiated installation and recovery against a normal installed profile, crash recovery and release publication remain integration work.
 
 ## Development
@@ -145,6 +147,23 @@ Extract the ZIP into a writable folder and keep `prism.portable` beside `prism.e
 
 A blocked data directory stops startup with an error instead of falling back to an installed profile. Portable mode disables login startup, excludes its managed data from content indexing and rejects a `WEBVIEW2_USER_DATA_FOLDER` override. Separate portable copies have independent single-instance identities. To update manually, close Prism, replace the application files and preserve `PrismData/`. Packaging does not sign or publish the application, include downloaded model assets or install WebView2.
 
+### Windows MSIX inspection package
+
+With the Windows SDK installed, run `npm run package:msix` after building the x64 release executable. For a local debug inspection artifact:
+
+```sh
+npm run package:msix -- --exe src-tauri/target/debug/prism.exe --out .dev/build/msix
+npm run test:msix
+```
+
+The script uses MakeAppx validation, private staging and exclusive output creation. It writes the package, SHA-256 checksum and identity metadata; it preserves preexisting output files. Stable app versions map to four-part package versions. Prerelease/build versions require an explicit `--package-version`; `--store` additionally enforces Store version rules. The current `0.1.0` version is not a Store release version. Publisher and identity must match the eventual signing/distribution identity.
+
+Unsigned output is for inspection. Normal installation requires a properly signed package or Store distribution; enabling Developer Mode alone does not make an ordinary unsigned package installable. Optional `--sign-thumbprint` selects an existing certificate in the current user's My store and verifies the signed result. Packaging never creates or trusts a certificate, changes Windows settings or registers a package. See Microsoft's [MSIX signing overview](https://learn.microsoft.com/en-us/windows/msix/package/signing-package-overview) and [Store version rules](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/package-version-numbering).
+
+The app queries its actual Windows package family, keeps settings, assets and WebView data under the package's `LocalState`, and uses a separate single-instance identity. Package data is excluded from content indexing. Releases use the manifest `PrismStartup` task instead of an absolute registry autostart path; Windows user/policy restrictions produce localized guidance. Debug builds do not change login startup. See Microsoft's [desktop startup-task documentation](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/desktop-to-uwp-extensions).
+
+Verification covers real SDK pack/unpack, ordinary-process identity, data-mode policy and synthetic startup-task states. Native update QA also checks the package-specific presentation using a synthetic event. Actual MSIX installation, activation, Windows-managed updates and login startup remain unverified; these tests do not claim that Windows registered a package.
+
 After building this standalone debug executable, run `npm run test:standalone`, `npm run test:clipboard` and `npm run test:dictionary` to verify embedded UI, settings and window handoff without Vite. `npm run test:content` additionally requires the pinned model at `.dev/models/embeddinggemma-2-Q8_0.gguf` and runtime archive at `.dev/runtime/llama-b11960-bin-win-cpu-x64.zip`; it imports them into an isolated temporary profile and performs actual embedding/Lance retrieval.
 
 `npm run test:rag` uses generated files, an isolated profile, synthetic credentials and a loopback generation fixture. It checks current evidence, permission/credential boundaries, persisted conversations, cancellation and the actual chat UI without a real provider key or external request.
@@ -157,7 +176,7 @@ After building this standalone debug executable, run `npm run test:standalone`, 
 
 `npm run test:paste` exercises real clipboard services, IPC and both bundled windows with a synthetic foreground/input backend. It verifies copy-preserving failures, concurrent request rejection, text/link/image restoration, paste/copy buttons, row double-click, Spotlight Enter, window recovery and restart expiry. Rust tests cover partial key batches and bounded release cleanup. Isolated profiles never install the foreground hook or send physical keys. Real Windows hook delivery, focus restrictions and target-application acceptance remain manual integration checks.
 
-`npm run test:updates` uses public synthetic signatures with Tauri's actual verifier to reject changed bytes, wrong keys, version mismatch and unbound signatures. Native settings, release notices, dismissal, offline behavior, bookkeeping exclusion, failed-install recovery and restart persistence use a synthetic transport. It downloads no package and launches no installer; test private keys were deleted after fixture creation. Isolated profiles disable the automatic update worker and use MemoryClipboard.
+`npm run test:updates` uses public synthetic signatures with Tauri's actual verifier to reject changed bytes, wrong keys, version mismatch and unbound signatures. Native settings, release notices, dismissal, offline behavior, bookkeeping exclusion, failed-install recovery and restart persistence use a synthetic transport. A synthetic package event verifies that settings and notification controls do not offer an ordinary installer, even with an inconsistent install flag. It downloads no package and launches no installer; test private keys were deleted after fixture creation. Isolated profiles disable the automatic update worker and use MemoryClipboard.
 
 `npm run test:portable` requires the same pinned model/runtime and standalone debug executable. It packages and extracts the actual executable, checks copy-specific single-instance behavior, and performs real EmbeddingGemma 2/Lance retrieval before and after moving the application to a Unicode path. It also checks persisted settings, notes, documents, conversations, synthetic clipboard data, account-bound credentials and blocked startup paths. Its debug-only test flag injects MemoryClipboard while retaining actual portable path selection; ordinary isolated native tests continue to use `PRISM_DEV_DATA_DIR`. It does not exercise physical paste, installer/update behavior or actual external generation.
 

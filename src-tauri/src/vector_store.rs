@@ -31,7 +31,7 @@ use std::{
 
 const MAX_DIMENSIONS: usize = 4096;
 const MAX_CANDIDATES: usize = 8192;
-const MAX_TOP_K: usize = 100;
+const MAX_TOP_K: usize = 128;
 const MAX_DOCUMENT_CHUNKS: usize = 100_000;
 const MAX_VECTOR_BYTES: usize = 256 * 1024 * 1024;
 const MAX_PURGE_ROWS: usize = 1_000_000;

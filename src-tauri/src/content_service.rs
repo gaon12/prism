@@ -435,6 +435,19 @@ impl ContentService {
             .map_err(|_| error("worker", "Content scopes unavailable."))?;
         Ok(Self::roots(&scopes, scope_id))
     }
+    fn selected_roots(&self, ids: &[String]) -> Result<Vec<PathBuf>> {
+        let scopes = self
+            .inner
+            .scopes
+            .lock()
+            .map_err(|_| error("worker", "Content scopes unavailable."))?;
+        let selected: Vec<_> = scopes
+            .iter()
+            .filter(|scope| ids.is_empty() || ids.contains(&scope.id))
+            .cloned()
+            .collect();
+        Ok(Self::roots(&selected, None))
+    }
     fn issue(&self, path: &Path, code: &str, message: &str) {
         self.update(|status| {
             status.skipped += 1;
@@ -873,7 +886,21 @@ impl ContentService {
         scope_id: Option<&str>,
         cancel: &AtomicBool,
     ) -> Result<ContentSearchResponse> {
-        let roots = self.active_roots(scope_id)?;
+        self.search_in_scopes(
+            query,
+            extension,
+            &scope_id.map(String::from).into_iter().collect::<Vec<_>>(),
+            cancel,
+        )
+    }
+    pub(crate) fn search_in_scopes(
+        &self,
+        query: &str,
+        extension: &str,
+        scope_ids: &[String],
+        cancel: &AtomicBool,
+    ) -> Result<ContentSearchResponse> {
+        let roots = self.selected_roots(scope_ids)?;
         let filter = self.search_filter(extension)?;
         let mut response = self
             .inner
@@ -898,13 +925,32 @@ impl ContentService {
         scope_id: Option<&str>,
         cancel: &AtomicBool,
     ) -> Result<VectorSearchResponse> {
+        self.semantic_search_in_scopes(
+            query,
+            extension,
+            &scope_id.map(String::from).into_iter().collect::<Vec<_>>(),
+            20,
+            cancel,
+        )
+    }
+    pub(crate) fn semantic_search_in_scopes(
+        &self,
+        query: &str,
+        extension: &str,
+        scope_ids: &[String],
+        limit: usize,
+        cancel: &AtomicBool,
+    ) -> Result<VectorSearchResponse> {
+        if !(1..=128).contains(&limit) {
+            return Err(error("input", "Invalid semantic candidate budget."));
+        }
         if query.trim().is_empty() || query.len() > 4096 {
             return Err(error(
                 "input",
                 "Enter a natural-language search up to 4096 bytes.",
             ));
         }
-        let roots = self.active_roots(scope_id)?;
+        let roots = self.selected_roots(scope_ids)?;
         let filter = self.search_filter(extension)?;
         let embedding = self
             .inner
@@ -936,7 +982,7 @@ impl ContentService {
                 &filter,
                 &self.inner.store,
                 &roots,
-                20,
+                limit,
                 4096,
                 cancel,
             ))

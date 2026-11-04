@@ -665,6 +665,39 @@ impl ContentStore {
         })
     }
 
+    /// Enumerate the complete current chunk set for one authorized source. A
+    /// missing/unsafe/out-of-scope path returns no rows, never a broader scan.
+    pub fn chunks_for_document(
+        &self,
+        path: &Path,
+        allowed_content_roots: &[PathBuf],
+        cancel: &AtomicBool,
+    ) -> Result<Vec<ContentChunk>> {
+        check_cancel(cancel)?;
+        let allowed = roots(allowed_content_roots);
+        let Some(canonical) = safe_canonical(path, false) else {
+            return Ok(Vec::new());
+        };
+        if !allowed.iter().any(|root| within(&canonical, root)) {
+            return Ok(Vec::new());
+        }
+        let key = path_key(&canonical);
+        self.run(cancel, |connection| {
+            let sql = format!("{CHUNK_SELECT} WHERE d.path_key=?1 ORDER BY c.section_index,c.chunk_index LIMIT {}", MAX_CHUNKS + 1);
+            let mut statement = connection.prepare(&sql).map_err(storage)?;
+            let mut rows = statement.query([key]).map_err(storage)?;
+            let mut chunks = Vec::new();
+            while let Some(row) = rows.next().map_err(storage)? {
+                check_cancel(cancel)?;
+                if chunks.len() == MAX_CHUNKS { return Err(limit()); }
+                chunks.push(read_chunk(row).map_err(storage)?);
+            }
+            if chunks.first().is_some_and(|chunk| visible(&chunk.file_path, &chunk.fingerprint, &allowed).is_none()) { chunks.clear(); }
+            check_cancel(cancel)?;
+            Ok(chunks)
+        })
+    }
+
     pub fn purge_document(&self, path: &Path, cancel: &AtomicBool) -> Result<usize> {
         let key = path_key(&purge_path(path)?);
         self.run(cancel, |connection| {
@@ -1003,6 +1036,60 @@ mod tests {
             ContentStoreErrorCode::Cancelled
         );
         assert_eq!(search(&store, "original", &roots).len(), 1);
+    }
+
+    #[test]
+    fn document_chunk_enumeration_is_complete_ordered_and_authorized() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("allowed");
+        let outside = dir.path().join("outside");
+        let authorized = vec![root.clone()];
+        let store = ContentStore::open(&dir.path().join("index.sqlite")).unwrap();
+        let doc = document(
+            &root,
+            "source.txt",
+            &format!("{}\nother section", "한글🙂".repeat(900)),
+        );
+        let summary = store
+            .replace_document(&doc, &authorized, &cancel())
+            .unwrap();
+        let chunks = store
+            .chunks_for_document(Path::new(&doc.file_path), &authorized, &cancel())
+            .unwrap();
+        assert_eq!(chunks.len(), summary.chunk_count);
+        assert!(chunks
+            .windows(2)
+            .all(|pair| (pair[0].section_index, pair[0].chunk_index)
+                < (pair[1].section_index, pair[1].chunk_index)));
+        assert!(store
+            .chunks_for_document(&root.join("missing.txt"), &authorized, &cancel())
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .chunks_for_document(Path::new(&doc.file_path), &[], &cancel())
+            .unwrap()
+            .is_empty());
+        let other = document(&outside, "other.txt", "outside fixture");
+        store
+            .replace_document(&other, &[dir.path().to_owned()], &cancel())
+            .unwrap();
+        assert!(store
+            .chunks_for_document(Path::new(&other.file_path), &authorized, &cancel())
+            .unwrap()
+            .is_empty());
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(
+            store
+                .chunks_for_document(Path::new(&doc.file_path), &authorized, &cancelled)
+                .unwrap_err()
+                .code,
+            ContentStoreErrorCode::Cancelled
+        );
+        fs::write(&doc.file_path, "changed").unwrap();
+        assert!(store
+            .chunks_for_document(Path::new(&doc.file_path), &authorized, &cancel())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

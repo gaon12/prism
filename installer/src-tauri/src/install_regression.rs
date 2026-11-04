@@ -89,6 +89,9 @@ fn unsafe_record_entries_are_rejected_before_any_application_file_is_removed() {
             .to_string_lossy()
             .into_owned(),
         "prism.exe:stream".into(),
+        ".prism-previous-1-0/files/prism.exe".into(),
+        ".prism-setup-1-0/state.json".into(),
+        "install.json".into(),
     ] {
         let temp = tempfile::tempdir().unwrap();
         let (system, dir, setup) = setup(temp.path());

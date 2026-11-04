@@ -139,6 +139,7 @@ pub struct ContentDocumentSummary {
     pub format: String,
     pub section_count: usize,
     pub chunk_count: usize,
+    pub extractor_version: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -376,6 +377,10 @@ impl ContentStore {
                 section_index INTEGER NOT NULL, text TEXT NOT NULL, page INTEGER, paragraph INTEGER, heading TEXT,
                 PRIMARY KEY(document_id, section_index)
             );
+            CREATE TABLE IF NOT EXISTS content_extraction_versions (
+                document_id INTEGER PRIMARY KEY REFERENCES content_documents(id) ON DELETE CASCADE,
+                version TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS content_chunks (
                 id TEXT PRIMARY KEY, document_id INTEGER NOT NULL REFERENCES content_documents(id) ON DELETE CASCADE,
                 section_index INTEGER NOT NULL, chunk_index INTEGER NOT NULL, char_start INTEGER NOT NULL, char_end INTEGER NOT NULL,
@@ -582,6 +587,7 @@ impl ContentStore {
             format: document.format.clone(),
             section_count: document.sections.len(),
             chunk_count: chunks.len(),
+            extractor_version: None,
         };
         self.run(cancel, |connection| {
             let tx = connection.transaction().map_err(storage)?;
@@ -906,6 +912,102 @@ impl ContentStore {
         })
     }
 
+    /// Read the current source fingerprint and stored counts without loading
+    /// sections or chunk text. Missing/changed/unauthorized sources are absent.
+    pub fn document_summary(
+        &self,
+        path: &Path,
+        allowed_content_roots: &[PathBuf],
+        cancel: &AtomicBool,
+    ) -> Result<Option<ContentDocumentSummary>> {
+        check_cancel(cancel)?;
+        let allowed = roots(allowed_content_roots);
+        let Some(canonical) = safe_canonical(path, false) else {
+            return Ok(None);
+        };
+        if !allowed.iter().any(|root| within(&canonical, root)) {
+            return Ok(None);
+        }
+        let key = path_key(&canonical);
+        self.run(cancel, |connection| {
+            let summary = connection
+                .query_row(
+                    &format!("{DOCUMENT_SELECT} WHERE path_key=?1"),
+                    [key],
+                    read_summary,
+                )
+                .optional()
+                .map_err(storage)?;
+            Ok(summary.filter(|summary| {
+                visible(&summary.file_path, &summary.fingerprint, &allowed).is_some()
+            }))
+        })
+    }
+
+    /// Stamp only a successfully replaced, still-current source. An interrupted
+    /// parser upgrade leaves older documents unstamped and eligible for retry.
+    pub fn mark_extraction_version(
+        &self,
+        document: &ContentDocumentSummary,
+        version: &str,
+        allowed_roots: &[PathBuf],
+        cancel: &AtomicBool,
+    ) -> Result<()> {
+        if version.is_empty() || version.len() > 128 || version.chars().any(char::is_control) {
+            return Err(error(
+                ContentStoreErrorCode::InvalidInput,
+                "Invalid extraction pipeline version",
+            ));
+        }
+        let current =
+            self.document_summary(Path::new(&document.file_path), allowed_roots, cancel)?;
+        if !current.is_some_and(|current| current.fingerprint == document.fingerprint) {
+            return Err(error(
+                ContentStoreErrorCode::SourceChanged,
+                "Source changed before extraction version commit",
+            ));
+        }
+        let key = path_key(Path::new(&document.file_path));
+        self.run(cancel, |connection| {
+            let changed = connection.execute("INSERT INTO content_extraction_versions(document_id,version) SELECT id,?1 FROM content_documents WHERE path_key=?2 AND sha256=?3 ON CONFLICT(document_id) DO UPDATE SET version=excluded.version", params![version,key,document.fingerprint.sha256]).map_err(storage)?;
+            if changed != 1 { return Err(error(ContentStoreErrorCode::SourceChanged, "Source changed before extraction version commit")); }
+            Ok(())
+        })
+    }
+
+    /// Enumerate visible document metadata only; a budget overflow is an error,
+    /// never a silently truncated project/status listing.
+    pub fn documents(
+        &self,
+        allowed_content_roots: &[PathBuf],
+        cancel: &AtomicBool,
+    ) -> Result<Vec<ContentDocumentSummary>> {
+        check_cancel(cancel)?;
+        let allowed = roots(allowed_content_roots);
+        if allowed.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.run(cancel, |connection| {
+            let mut statement = connection
+                .prepare(&format!("{DOCUMENT_SELECT} ORDER BY file_path"))
+                .map_err(storage)?;
+            let mut rows = statement.query([]).map_err(storage)?;
+            let mut summaries = Vec::new();
+            while let Some(row) = rows.next().map_err(storage)? {
+                check_cancel(cancel)?;
+                let summary = read_summary(row).map_err(storage)?;
+                if visible(&summary.file_path, &summary.fingerprint, &allowed).is_some() {
+                    if summaries.len() == 100_000 {
+                        return Err(limit());
+                    }
+                    summaries.push(summary);
+                }
+            }
+            check_cancel(cancel)?;
+            Ok(summaries)
+        })
+    }
+
     pub fn purge_document(&self, path: &Path, cancel: &AtomicBool) -> Result<usize> {
         let key = path_key(&purge_path(path)?);
         self.run(cancel, |connection| {
@@ -959,6 +1061,21 @@ impl ContentStore {
 }
 
 const CHUNK_SELECT: &str = "SELECT c.id,d.file_path,d.sha256,d.size_bytes,d.modified_unix_ms,c.section_index,c.chunk_index,c.text,s.page,s.paragraph,s.heading,c.char_start,c.char_end FROM content_chunks c JOIN content_documents d ON d.id=c.document_id JOIN content_sections s ON s.document_id=c.document_id AND s.section_index=c.section_index";
+const DOCUMENT_SELECT: &str = "SELECT d.file_path,d.sha256,d.size_bytes,d.modified_unix_ms,d.format,d.section_count,d.chunk_count,v.version FROM content_documents d LEFT JOIN content_extraction_versions v ON v.document_id=d.id";
+fn read_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContentDocumentSummary> {
+    Ok(ContentDocumentSummary {
+        file_path: row.get(0)?,
+        fingerprint: SourceFingerprint {
+            sha256: row.get(1)?,
+            size_bytes: row.get(2)?,
+            modified_unix_ms: row.get(3)?,
+        },
+        format: row.get(4)?,
+        section_count: row.get(5)?,
+        chunk_count: row.get(6)?,
+        extractor_version: row.get(7)?,
+    })
+}
 fn read_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContentChunk> {
     Ok(ContentChunk {
         id: row.get(0)?,
@@ -1250,6 +1367,57 @@ mod tests {
     }
 
     #[test]
+    fn document_metadata_reads_exclude_changed_missing_and_unauthorized_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let inside = dir.path().join("inside");
+        let outside = dir.path().join("outside");
+        let all = vec![dir.path().to_owned()];
+        let allowed = vec![inside.clone()];
+        let store = ContentStore::open(&dir.path().join("index.sqlite")).unwrap();
+        let first = document(&inside, "first.txt", "first source\nsecond section");
+        let empty = document(&inside, "empty.txt", "");
+        let other = document(&outside, "other.txt", "outside source");
+        for doc in [&first, &empty, &other] {
+            store.replace_document(doc, &all, &cancel()).unwrap();
+        }
+        let summary = store
+            .document_summary(Path::new(&first.file_path), &allowed, &cancel())
+            .unwrap()
+            .unwrap();
+        assert_eq!(summary.fingerprint, first.fingerprint);
+        assert_eq!(summary.section_count, 2);
+        assert_eq!(summary.chunk_count, 2);
+        let summaries = store.documents(&allowed, &cancel()).unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert!(summaries
+            .iter()
+            .any(|summary| summary.chunk_count == 0 && summary.fingerprint == empty.fingerprint));
+        assert!(store
+            .document_summary(Path::new(&other.file_path), &allowed, &cancel())
+            .unwrap()
+            .is_none());
+        assert!(store
+            .document_summary(&inside.join("missing.txt"), &allowed, &cancel())
+            .unwrap()
+            .is_none());
+        assert!(store.documents(&[], &cancel()).unwrap().is_empty());
+        fs::write(&first.file_path, "changed source with a new byte count").unwrap();
+        assert!(store
+            .document_summary(Path::new(&first.file_path), &allowed, &cancel())
+            .unwrap()
+            .is_none());
+        fs::remove_file(&empty.file_path).unwrap();
+        assert!(store.documents(&allowed, &cancel()).unwrap().is_empty());
+        assert_eq!(
+            store
+                .documents(&all, &AtomicBool::new(true))
+                .unwrap_err()
+                .code,
+            ContentStoreErrorCode::Cancelled
+        );
+    }
+
+    #[test]
     fn document_chunk_enumeration_is_complete_ordered_and_authorized() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("allowed");
@@ -1438,6 +1606,42 @@ mod tests {
         assert_eq!(search(&store, "공통단어", &roots).len(), 1);
         assert_eq!(detailed(&store, &roots).candidate_count, 4);
         assert!(!detailed(&store, &[]).hard_limit_reached);
+    }
+
+    #[test]
+    fn extraction_versions_survive_restart_and_reset_on_projection_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = vec![dir.path().to_owned()];
+        let path = dir.path().join("index.sqlite");
+        let store = ContentStore::open(&path).unwrap();
+        let mut doc = document(dir.path(), "projection.txt", "projection fixture");
+        let summary = store.replace_document(&doc, &roots, &cancel()).unwrap();
+        assert!(summary.extractor_version.is_none());
+        store
+            .mark_extraction_version(&summary, "parser-v2", &roots, &cancel())
+            .unwrap();
+        drop(store);
+        let store = ContentStore::open(&path).unwrap();
+        assert_eq!(
+            store
+                .document_summary(Path::new(&doc.file_path), &roots, &cancel())
+                .unwrap()
+                .unwrap()
+                .extractor_version
+                .as_deref(),
+            Some("parser-v2")
+        );
+        doc.sections[0].text.push_str(" new derived projection");
+        store.replace_document(&doc, &roots, &cancel()).unwrap();
+        assert!(store
+            .document_summary(Path::new(&doc.file_path), &roots, &cancel())
+            .unwrap()
+            .unwrap()
+            .extractor_version
+            .is_none());
+        assert!(store
+            .mark_extraction_version(&summary, "parser-v3", &[], &cancel())
+            .is_err());
     }
 
     #[test]

@@ -10,6 +10,7 @@
 /installer/**/target/
 /installer/src-tauri/gen/
 /tools/update-verifier/target/
+/tools/platform-qa/target/
 /test-results/
 /playwright-report/
 

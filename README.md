@@ -79,7 +79,7 @@ Installation requires an explicit confirmation. The package download is bounded,
 
 Portable copies, development builds and release builds without an update verification key offer the download page. For installed release builds, supply the public key content through `PRISM_UPDATER_PUBLIC_KEY` when compiling. Keep the signing private key outside the repository. Updater signatures are required independently of Windows Authenticode. Custom Windows update artifacts must be signed with `tauri signer sign --app-version <version>`; `requireSignedVersion` rejects older unbound signatures and a manifest that pairs a new version with an older signed artifact. See the [official Tauri updater guide](https://v2.tauri.app/plugin/updater/).
 
-The current local preview has no production verification key and does not self-install updates. Actual signed installer execution, restart, rollback and release publication remain separate integration work.
+The current local preview has no production verification key and does not self-install updates. The standalone setup has separate sandbox verification; signed updater-initiated installation and recovery against a normal installed profile, crash recovery and release publication remain integration work.
 
 ## Development
 
@@ -89,7 +89,7 @@ Desktop builds link an `rlib` into the executable to keep intermediate disk usag
 
 `npm run version:check` checks the application version in both manifests and lockfiles. Use `npm run version:bump -- patch` (or `minor`, `major`, an explicit SemVer) to update them together without changing dependency versions or file formatting. The command validates all five files before writing and attempts to restore earlier writes if a write fails; it is not a crash-safe multi-file transaction. Commit the version files together. `npm run test:version` verifies the command against temporary fixtures without changing this checkout's version.
 
-`npm run test:setup-core` checks the [setup core](installer/core/README.md) against temporary files and fake system integration, including deletion boundaries and failed-install recovery. It does not install Prism or change Windows registration. The setup UI, actual installed update/restart and crash recovery remain integration work.
+`npm run test:setup-core` checks the [setup core](installer/core/README.md), including deletion boundaries, failed-install recovery and concurrency. It uses fake registration and temporary files; a Windows COM shortcut test stays inside a temporary directory. `npm run test:setup` additionally verifies the real setup UI, silent update, installed app launch and removal inside a sandbox. See the [Windows setup instructions](installer/README.md) for build and executable overrides. Normal-profile registration, signed updater installation and crash recovery remain integration work.
 
 The native LanceDB build also requires `protoc`. Install a compatible [official Protocol Buffers release](https://github.com/protocolbuffers/protobuf/releases) and put its executable on PATH, or set `PROTOC` for the build shell. The Windows vector tests were verified with protoc 34.1.
 

@@ -3,7 +3,8 @@
 `npm run test:setup-core` compiles the same install, payload, path, transaction,
 argument and Windows integration modules used by the setup program, without its
 Tauri/WebView interface. The tests use temporary files and a fake `System`:
-they do not register an application, create system shortcuts or launch Prism.
+they do not register an application, change the user's Desktop links or launch Prism.
+On Windows a real COM shortcut roundtrip is confined to a temporary directory.
 The Windows junction regression creates a junction entirely inside a temporary
 fixture using a hidden PowerShell process.
 
@@ -20,7 +21,12 @@ shortcut uses a temporary file beside its destination, allowing the install and
 Desktop folders to reside on different drives.
 
 An unexpected unwind retains the file map and backups. Automatic recovery after
-a killed process or power loss is not implemented yet. Backend concurrency,
-the setup UI, actual registry/shortcut behavior, installed updater execution,
-restart and MSIX integration remain separate checks. These core tests do not
-make the setup program ready to publish.
+a killed process or power loss is not implemented yet. Native state guards block
+overlapping requests and closing during writes; an OS lock serializes independent
+processes targeting one folder. Launch authorization comes from a completed
+installation rather than a frontend path.
+
+`npm run test:setup` separately exercises the actual setup UI, installed app launch,
+silent updates and both removal modes in a temporary sandbox. Real HKCU writes,
+updater-initiated signed installation, crash recovery and MSIX integration remain
+separate checks. These tests do not make the setup ready to publish.

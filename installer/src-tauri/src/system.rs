@@ -24,7 +24,7 @@ pub const SANDBOX_ENV: &str = "PRISM_SETUP_SANDBOX";
 /// sandboxed install is also uninstalled from the sandbox.
 pub fn current() -> Box<dyn System + Send> {
     match std::env::var_os(SANDBOX_ENV) {
-        Some(root) if !root.is_empty() => Box::new(SandboxSystem {
+        Some(root) => Box::new(SandboxSystem {
             root: PathBuf::from(root),
         }),
         _ => Box::new(WindowsSystem),
@@ -43,9 +43,59 @@ pub struct SandboxSystem {
 }
 
 impl SandboxSystem {
-    fn entry_file(&self) -> PathBuf {
-        self.root.join("uninstall-entry.json")
+    pub fn checked_root(&self) -> io::Result<PathBuf> {
+        if !self.root.is_absolute() || self.root.parent().is_none() {
+            return Err(io::Error::other(
+                "Sandbox mode requires a full private folder path.",
+            ));
+        }
+        crate::safe_path::no_links(&self.root)?;
+        std::fs::create_dir_all(&self.root)?;
+        crate::safe_path::root(&self.root)
     }
+    fn entry_file(&self) -> io::Result<PathBuf> {
+        let root = self.checked_root()?;
+        crate::safe_path::file(&root, "uninstall-entry.json")
+    }
+}
+
+pub fn sandbox_root() -> io::Result<Option<PathBuf>> {
+    match std::env::var_os(SANDBOX_ENV) {
+        Some(root) => SandboxSystem { root: root.into() }.checked_root().map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Sandbox mode must never accept a frontend/record/CLI path outside its own root.
+pub fn check_sandbox_destination(path: &Path) -> io::Result<()> {
+    let Some(root) = sandbox_root()? else {
+        return Ok(());
+    };
+    crate::safe_path::no_links(path)?;
+    let mut ancestor = path.to_path_buf();
+    let mut missing = Vec::new();
+    while !ancestor.exists() {
+        missing.push(
+            ancestor
+                .file_name()
+                .ok_or_else(|| io::Error::other("Invalid sandbox destination."))?
+                .to_owned(),
+        );
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| io::Error::other("Invalid sandbox destination."))?
+            .to_path_buf();
+    }
+    let mut resolved = std::fs::canonicalize(ancestor)?;
+    for name in missing.into_iter().rev() {
+        resolved.push(name);
+    }
+    if !resolved.starts_with(root) {
+        return Err(io::Error::other(
+            "Sandbox destination is outside its private folder.",
+        ));
+    }
+    Ok(())
 }
 
 impl System for SandboxSystem {
@@ -53,8 +103,8 @@ impl System for SandboxSystem {
         WindowsSystem.shortcut_points_to(link, target)
     }
     fn capture_registration(&self) -> io::Result<Vec<u8>> {
-        crate::safe_path::no_links(&self.entry_file())?;
-        let bytes = match std::fs::read(self.entry_file()) {
+        crate::safe_path::no_links(&self.entry_file()?)?;
+        let bytes = match std::fs::read(self.entry_file()?) {
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(error),
@@ -62,19 +112,20 @@ impl System for SandboxSystem {
         Ok(serde_json::to_vec(&bytes)?)
     }
     fn restore_registration(&self, snapshot: &[u8]) -> io::Result<()> {
-        crate::safe_path::no_links(&self.entry_file())?;
+        crate::safe_path::no_links(&self.entry_file()?)?;
         let previous: Option<Vec<u8>> = serde_json::from_slice(snapshot)?;
         match previous {
-            Some(bytes) => std::fs::write(self.entry_file(), bytes),
+            Some(bytes) => std::fs::write(self.entry_file()?, bytes),
             None => self.remove_uninstall_entry(),
         }
     }
     fn folders(&self) -> io::Result<Folders> {
+        let root = self.checked_root()?;
         let folders = Folders {
-            local_app_data: self.root.join("LocalAppData"),
-            app_data: self.root.join("RoamingAppData"),
-            desktop: self.root.join("Desktop"),
-            start_menu: self.root.join("StartMenu"),
+            local_app_data: root.join("LocalAppData"),
+            app_data: root.join("RoamingAppData"),
+            desktop: root.join("Desktop"),
+            start_menu: root.join("StartMenu"),
         };
         for dir in [
             &folders.local_app_data,
@@ -88,7 +139,7 @@ impl System for SandboxSystem {
     }
 
     fn create_shortcut(&self, link: &Path, target: &Path, description: &str) -> io::Result<()> {
-        if !link.starts_with(&self.root) {
+        if !link.starts_with(self.checked_root()?) {
             return Err(io::Error::other(
                 "Sandbox: shortcut outside the sandbox refused.",
             ));
@@ -102,18 +153,18 @@ impl System for SandboxSystem {
             "installLocation": entry.install_dir,
             "estimatedSizeKib": entry.size_kib,
         });
-        std::fs::write(self.entry_file(), serde_json::to_vec_pretty(&json)?)
+        std::fs::write(self.entry_file()?, serde_json::to_vec_pretty(&json)?)
     }
 
     fn remove_uninstall_entry(&self) -> io::Result<()> {
-        match std::fs::remove_file(self.entry_file()) {
+        match std::fs::remove_file(self.entry_file()?) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
             _ => Ok(()),
         }
     }
 
     fn existing_install(&self) -> Option<(PathBuf, Option<String>)> {
-        let bytes = std::fs::read(self.entry_file()).ok()?;
+        let bytes = std::fs::read(self.entry_file().ok()?).ok()?;
         let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
         let dir = PathBuf::from(json["installLocation"].as_str()?);
         let version = json["displayVersion"].as_str().map(str::to_owned);
@@ -146,6 +197,19 @@ mod imp {
         io::Error::other(error.message())
     }
 
+    // Filesystem validation uses canonical extended paths, but ShellLink rejects that
+    // spelling for these parameters. Convert only at the shell API boundary.
+    fn shell_path(path: &Path) -> PathBuf {
+        let value = path.to_string_lossy();
+        if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+            PathBuf::from(format!(r"\\{rest}"))
+        } else if let Some(rest) = value.strip_prefix(r"\\?\") {
+            PathBuf::from(rest)
+        } else {
+            path.to_path_buf()
+        }
+    }
+
     /// Asks Windows where a "known folder" (Desktop, Start menu, ...) is for this user.
     /// This respects folders the user moved, e.g. a Desktop redirected to OneDrive.
     fn known_folder(id: &GUID) -> io::Result<PathBuf> {
@@ -170,7 +234,7 @@ mod imp {
                 let shell_link: IShellLinkW =
                     CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).map_err(to_io)?;
                 let file: IPersistFile = shell_link.cast().map_err(to_io)?;
-                file.Load(&HSTRING::from(link.as_os_str()), STGM_READ)
+                file.Load(&HSTRING::from(shell_path(link).as_os_str()), STGM_READ)
                     .map_err(to_io)?;
                 let mut buffer = vec![0u16; 32768];
                 shell_link
@@ -271,21 +335,21 @@ mod imp {
                 let shell_link: IShellLinkW =
                     CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).map_err(to_io)?;
                 shell_link
-                    .SetPath(&HSTRING::from(target.as_os_str()))
+                    .SetPath(&HSTRING::from(shell_path(target).as_os_str()))
                     .map_err(to_io)?;
                 if let Some(folder) = target.parent() {
                     shell_link
-                        .SetWorkingDirectory(&HSTRING::from(folder.as_os_str()))
+                        .SetWorkingDirectory(&HSTRING::from(shell_path(folder).as_os_str()))
                         .map_err(to_io)?;
                 }
                 shell_link
                     .SetDescription(&HSTRING::from(description))
                     .map_err(to_io)?;
                 shell_link
-                    .SetIconLocation(&HSTRING::from(target.as_os_str()), 0)
+                    .SetIconLocation(&HSTRING::from(shell_path(target).as_os_str()), 0)
                     .map_err(to_io)?;
                 let file: IPersistFile = shell_link.cast().map_err(to_io)?;
-                file.Save(&HSTRING::from(link.as_os_str()), true)
+                file.Save(&HSTRING::from(shell_path(link).as_os_str()), true)
                     .map_err(to_io)
             }
         }
@@ -417,3 +481,34 @@ mod imp {
 
 #[cfg(not(windows))]
 pub use imp::{free_bytes, webview2_installed};
+
+#[cfg(test)]
+mod sandbox_tests {
+    use super::*;
+    #[test]
+    fn empty_and_relative_sandbox_roots_fail_instead_of_using_windows() {
+        for root in [PathBuf::new(), PathBuf::from("relative-sandbox")] {
+            let sandbox = SandboxSystem { root };
+            assert!(sandbox.folders().is_err());
+            assert!(sandbox.capture_registration().is_err());
+            assert!(sandbox.remove_uninstall_entry().is_err());
+        }
+    }
+    #[test]
+    #[cfg(windows)]
+    fn windows_shell_links_roundtrip_only_inside_a_temporary_sandbox() {
+        let temporary = tempfile::tempdir().unwrap();
+        let sandbox = SandboxSystem {
+            root: temporary.path().into(),
+        };
+        let folders = sandbox.folders().unwrap();
+        let target = folders.local_app_data.join("prism.exe");
+        std::fs::write(&target, b"fixture target, never executed").unwrap();
+        let link = crate::safe_path::file(&folders.desktop, "Prism.lnk").unwrap();
+        sandbox.create_shortcut(&link, &target, "Fixture").unwrap();
+        assert!(sandbox.shortcut_points_to(&link, &target).unwrap());
+        assert!(!sandbox
+            .shortcut_points_to(&link, &folders.local_app_data.join("other.exe"))
+            .unwrap());
+    }
+}

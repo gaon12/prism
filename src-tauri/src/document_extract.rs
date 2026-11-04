@@ -5,6 +5,7 @@ use quick_xml::{events::Event, Reader};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     fs::{self, File, Metadata},
     io::{Cursor, Read},
     path::Path,
@@ -222,6 +223,7 @@ pub fn is_supported_extension(extension: &str) -> bool {
             | "bat"
             | "vue"
             | "svelte"
+            | "pptx"
             | "docx"
             | "hwpx"
             | "pdf"
@@ -270,6 +272,7 @@ pub fn extract_document(
     let mut output = Collector::new(options, cancel);
     match extension.as_str() {
         "docx" | "hwpx" => extract_zip(&bytes, &extension, &mut output)?,
+        "pptx" => extract_office(&bytes, &extension, &mut output)?,
         "hwp" => extract_hwp(&bytes, &mut output)?,
         "pdf" => extract_pdf(&bytes, &mut output)?,
         "html" | "htm" => extract_html(&decode_text(&bytes)?, &mut output)?,
@@ -1331,6 +1334,236 @@ fn aligned_table_cells(row: &XmlNode, header: bool, max: usize) -> Result<Vec<St
     }
     Ok(result)
 }
+struct OfficePackage<'a> {
+    zip: zip::ZipArchive<Cursor<&'a [u8]>>,
+    names: BTreeMap<String, usize>,
+    read_bytes: u64,
+}
+impl<'a> OfficePackage<'a> {
+    fn new(bytes: &'a [u8], out: &Collector<'_>) -> Result<Self> {
+        if bytes.starts_with(&[0xd0, 0xcf, 0x11, 0xe0]) {
+            let compound = cfb::CompoundFile::open(Cursor::new(bytes)).map_err(|_| corrupt())?;
+            return Err(
+                if compound.is_stream("/EncryptionInfo") || compound.is_stream("/EncryptedPackage")
+                {
+                    encrypted()
+                } else {
+                    corrupt()
+                },
+            );
+        }
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(zip_error)?;
+        if zip.len() > out.options.max_archive_entries {
+            return Err(limit());
+        }
+        let mut names = BTreeMap::new();
+        let mut total = 0u64;
+        for index in 0..zip.len() {
+            check_cancel(out.cancel)?;
+            let entry = zip.by_index(index).map_err(zip_error)?;
+            let name = entry.name().map_err(zip_error)?.into_owned();
+            if entry.enclosed_name().is_none()
+                || name.contains(['\\', ':', '\0'])
+                || entry.unix_mode().is_some_and(|m| m & 0o170000 == 0o120000)
+            {
+                return Err(err(
+                    ExtractErrorCode::UnsafePath,
+                    "Unsafe archive member path",
+                ));
+            }
+            if entry.encrypted() {
+                return Err(encrypted());
+            }
+            total = total.checked_add(entry.size()).ok_or_else(limit)?;
+            if total > out.options.max_expanded_bytes {
+                return Err(limit());
+            }
+            if names.insert(name, index).is_some() {
+                return Err(corrupt());
+            }
+        }
+        Ok(Self {
+            zip,
+            names,
+            read_bytes: 0,
+        })
+    }
+    fn optional(&mut self, name: &str, out: &Collector<'_>) -> Result<Option<XmlNode>> {
+        let Some(&index) = self.names.get(name) else {
+            return Ok(None);
+        };
+        let input = self.zip.by_index(index).map_err(zip_error)?;
+        let data = bounded_read(
+            input,
+            out.options
+                .max_expanded_bytes
+                .saturating_sub(self.read_bytes),
+            out.cancel,
+        )?;
+        self.read_bytes = self
+            .read_bytes
+            .checked_add(data.len() as u64)
+            .ok_or_else(limit)?;
+        Ok(Some(xml_tree(&data, out)?))
+    }
+    fn xml(&mut self, name: &str, out: &Collector<'_>) -> Result<XmlNode> {
+        self.optional(name, out)?.ok_or_else(corrupt)
+    }
+    fn relations(
+        &mut self,
+        part: &str,
+        out: &Collector<'_>,
+    ) -> Result<BTreeMap<String, (String, String)>> {
+        let (dir, file) = part.rsplit_once('/').unwrap_or(("", part));
+        let relname = if dir.is_empty() {
+            format!("_rels/{file}.rels")
+        } else {
+            format!("{dir}/_rels/{file}.rels")
+        };
+        let mut result = BTreeMap::new();
+        if let Some(root) = self.optional(&relname, out)? {
+            for rel in descendants(&root, "Relationship") {
+                if attr(rel, "TargetMode") == Some("External") {
+                    continue;
+                }
+                let id = attr(rel, "Id").ok_or_else(corrupt)?;
+                let target = resolve_part(part, attr(rel, "Target").ok_or_else(corrupt)?)?;
+                if result
+                    .insert(id.into(), (target, attr(rel, "Type").unwrap_or("").into()))
+                    .is_some()
+                {
+                    return Err(corrupt());
+                }
+            }
+        }
+        Ok(result)
+    }
+}
+fn resolve_part(base: &str, target: &str) -> Result<String> {
+    if target.contains(['\\', ':', '\0', '?', '#']) {
+        return Err(err(
+            ExtractErrorCode::UnsafePath,
+            "Unsafe package relationship",
+        ));
+    }
+    let mut parts: Vec<&str> = if target.starts_with('/') {
+        Vec::new()
+    } else {
+        base.rsplit_once('/')
+            .map(|(dir, _)| dir.split('/').collect())
+            .unwrap_or_default()
+    };
+    for part in target.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop().ok_or_else(|| {
+                    err(ExtractErrorCode::UnsafePath, "Unsafe package relationship")
+                })?;
+            }
+            _ => parts.push(part),
+        }
+    }
+    if parts.is_empty() {
+        return Err(corrupt());
+    }
+    Ok(parts.join("/"))
+}
+fn relationship_id(node: &XmlNode) -> Option<&str> {
+    node.attrs
+        .iter()
+        .find(|(k, _)| k.ends_with(":id"))
+        .map(|(_, v)| v.as_str())
+        .or_else(|| attr(node, "id"))
+}
+fn extract_office(bytes: &[u8], _format: &str, out: &mut Collector<'_>) -> Result<()> {
+    let mut package = OfficePackage::new(bytes, out)?;
+    extract_pptx(&mut package, out)
+}
+fn presentation_text(
+    node: &XmlNode,
+    page: u32,
+    notes: bool,
+    out: &mut Collector<'_>,
+) -> Result<()> {
+    check_cancel(out.cancel)?;
+    if notes
+        && node.name == "sp"
+        && descendants(node, "ph")
+            .any(|ph| matches!(attr(ph, "type"), Some("sldNum" | "dt" | "hdr" | "ftr")))
+    {
+        return Ok(());
+    }
+    if node.name == "tbl" {
+        let rows: Vec<_> = node.children.iter().filter(|n| n.name == "tr").collect();
+        let headers = rows
+            .first()
+            .map(|r| aligned_table_cells(r, true, out.options.max_sections))
+            .transpose()?
+            .unwrap_or_default();
+        let explicit =
+            descendants(node, "tblPr").any(|n| matches!(attr(n, "firstRow"), Some("1" | "true")));
+        let context = format!(
+            "{}; table header={}",
+            out.heading.as_deref().unwrap_or("Slide"),
+            if explicit {
+                "declared"
+            } else {
+                "first-row inferred"
+            }
+        );
+        for row in rows {
+            let p = out.next_paragraph();
+            emit_row(
+                &aligned_table_cells(row, false, out.options.max_sections)?,
+                &headers,
+                &context,
+                p,
+                Some(page),
+                out,
+            )?;
+        }
+        return Ok(());
+    }
+    if node.name == "p" {
+        let p = out.next_paragraph();
+        let mut text = String::new();
+        xml_inline(node, &mut text);
+        out.push(&text, Some(page), p)?;
+        return Ok(());
+    }
+    for child in &node.children {
+        presentation_text(child, page, notes, out)?;
+    }
+    Ok(())
+}
+fn extract_pptx(package: &mut OfficePackage<'_>, out: &mut Collector<'_>) -> Result<()> {
+    let root = package.xml("ppt/presentation.xml", out)?;
+    let relationships = package.relations("ppt/presentation.xml", out)?;
+    for (index, slide) in descendants(&root, "sldId").enumerate() {
+        let page = u32::try_from(index + 1).map_err(|_| limit())?;
+        let (path, kind) = relationships
+            .get(relationship_id(slide).ok_or_else(corrupt)?)
+            .ok_or_else(corrupt)?;
+        if !kind.ends_with("/slide") {
+            return Err(corrupt());
+        }
+        let slide = package.xml(path, out)?;
+        out.paragraph = 0;
+        out.heading = Some(format!("Slide {page}"));
+        presentation_text(&slide, page, false, out)?;
+        for (_, (note_path, note_type)) in package.relations(path, out)? {
+            if note_type.ends_with("/notesSlide") {
+                let notes = package.xml(&note_path, out)?;
+                out.paragraph = 0;
+                out.heading = Some(format!("Slide {page} / Notes"));
+                presentation_text(&notes, page, true, out)?;
+            }
+        }
+    }
+    Ok(())
+}
+#[derive(Default)]
 fn emit_cell(
     value: &str,
     label: &str,
@@ -1839,6 +2072,45 @@ mod tests {
                 .unwrap_err()
                 .code,
             ExtractErrorCode::LimitExceeded
+        );
+    }
+    #[test]
+    fn pptx_uses_relationship_order_and_distinct_notes() {
+        let bytes = zip_file(&[
+            (
+                "ppt/presentation.xml",
+                r#"<presentation xmlns:r="urn:r"><sldIdLst><sldId id="256" r:id="last"/><sldId id="900" r:id="first"/></sldIdLst></presentation>"#,
+            ),
+            (
+                "ppt/_rels/presentation.xml.rels",
+                r#"<Relationships><Relationship Id="first" Type="urn:office/slide" Target="slides/slide1.xml"/><Relationship Id="last" Type="urn:office/slide" Target="slides/slide9.xml"/></Relationships>"#,
+            ),
+            (
+                "ppt/slides/slide9.xml",
+                "<sld><p><r><t>첫 번째 한국어</t></r></p></sld>",
+            ),
+            (
+                "ppt/slides/slide1.xml",
+                "<sld><p><r><t>두 번째</t></r></p></sld>",
+            ),
+            (
+                "ppt/slides/_rels/slide9.xml.rels",
+                r#"<Relationships><Relationship Id="n" Type="urn:office/notesSlide" Target="../notesSlides/notesSlide4.xml"/></Relationships>"#,
+            ),
+            (
+                "ppt/notesSlides/notesSlide4.xml",
+                r#"<notes><sp><nvSpPr><nvPr><ph type="body"/></nvPr></nvSpPr><p><t>발표자 메모</t></p></sp><sp><nvSpPr><nvPr><ph type="sldNum"/></nvPr></nvSpPr><p><t>999</t></p></sp></notes>"#,
+            ),
+        ]);
+        let doc = extract("presentation.pptx", &bytes).unwrap();
+        assert_eq!(doc.sections.len(), 3);
+        assert_eq!(doc.sections[0].page, Some(1));
+        assert_eq!(doc.sections[1].heading.as_deref(), Some("Slide 1 / Notes"));
+        assert_eq!(doc.sections[2].page, Some(2));
+        assert!(!doc.sections.iter().any(|s| s.text == "999"));
+        assert_eq!(
+            doc.fingerprint.sha256,
+            format!("{:x}", Sha256::digest(&bytes))
         );
     }
     #[test]

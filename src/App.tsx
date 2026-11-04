@@ -1,3 +1,269 @@
+import { useEffect, useState } from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import {
+  Search,
+  MessageSquare,
+  FileText,
+  Zap,
+  Minus,
+  Square,
+  X,
+  Check,
+  AlertCircle,
+} from 'lucide-react';
+import { Brand } from './components/Brand';
+import { Sidebar } from './components/Sidebar';
+import { SettingsDialog } from './components/SettingsDialog';
+import type { SettingsTab } from './components/SettingsDialog';
+import { RecommendedDialog } from './components/RecommendedDialog';
+import { SearchView } from './features/SearchView';
+import { ChatView } from './features/ChatView';
+import { DocumentsView } from './features/DocumentsView';
+import { QuickWindow } from './features/QuickWindow';
+import { bridge, native } from './lib/bridge';
+import {
+  useClient,
+  initialize,
+  addFolders,
+  showToast,
+  clearToast,
+  errorMessage,
+  switchWindow,
+} from './lib/store';
+import { languageNames, translate } from './lib/i18n';
+import { isComposing } from './lib/types';
+import type { RecommendedFolder, Tab } from './lib/types';
+
+function useQuickMode() {
+  const nativeQuick = native && getCurrentWindow().label === 'quick';
+  const [quick, setQuick] = useState(nativeQuick || window.location.hash === '#quick');
+  useEffect(() => {
+    if (native) return;
+    const change = () => setQuick(window.location.hash === '#quick');
+    window.addEventListener('hashchange', change);
+    return () => window.removeEventListener('hashchange', change);
+  }, []);
+  useEffect(() => {
+    document.body.classList.toggle('native-quick', nativeQuick);
+    document.documentElement.classList.toggle('native-quick', nativeQuick);
+  }, [nativeQuick]);
+  return quick;
+}
+
 export default function App() {
-  return <main><h1>Prism</h1><p>로컬 작업 공간을 준비하고 있습니다.</p></main>;
+  const state = useClient();
+  const { settings, runtime } = state;
+  const [tab, setTab] = useState<Tab>('search');
+  const [recent, setRecent] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
+  const [recommended, setRecommended] = useState<RecommendedFolder[] | null>(null);
+  const quick = useQuickMode();
+  const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
+  useEffect(() => {
+    void initialize();
+  }, []);
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const apply = () => {
+      document.documentElement.dataset.theme =
+        settings.theme === 'system' ? (media.matches ? 'dark' : 'light') : settings.theme;
+    };
+    apply();
+    media.addEventListener('change', apply);
+    document.documentElement.style.fontSize = `${settings.fontSize}px`;
+    document.documentElement.lang = settings.language;
+    return () => media.removeEventListener('change', apply);
+  }, [settings.theme, settings.fontSize, settings.language]);
+  useEffect(() => {
+    if (!state.toast) return;
+    const timer = setTimeout(clearToast, 4200);
+    return () => clearTimeout(timer);
+  }, [state.toast]);
+  useEffect(() => {
+    if (runtime.shortcutError)
+      showToast(`${translate(settings.language, 'shortcutConflict')} ${runtime.shortcutError}`);
+  }, [runtime.shortcutError, settings.language]);
+  useEffect(() => {
+    if (runtime.startupError)
+      showToast(`${translate(settings.language, 'startOnLogin')}: ${runtime.startupError}`);
+  }, [runtime.startupError, settings.language]);
+  useEffect(() => {
+    if (native) return;
+    const handler = (event: KeyboardEvent) => {
+      if (
+        !isComposing(event) &&
+        event.altKey &&
+        event.code === 'Space' &&
+        !settingsTab &&
+        !recommended
+      ) {
+        event.preventDefault();
+        void (quick ? switchWindow('main') : switchWindow('quick')).catch((cause) =>
+          showToast(errorMessage(cause)),
+        );
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [quick, settingsTab, recommended]);
+  const add = () => {
+    void addFolders()
+      .then((added) => {
+        if (added) showToast(t('folderAdded'));
+      })
+      .catch((cause) =>
+        showToast(errorMessage(cause) === 'NATIVE_ONLY' ? t('nativeOnly') : errorMessage(cause)),
+      );
+  };
+  const chooseRecommended = () => {
+    void bridge
+      .recommendedFolders()
+      .then((folders) => {
+        if (folders.length) setRecommended(folders);
+        else showToast(runtime.native ? t('recommendedUnavailable') : t('nativeOnly'));
+      })
+      .catch((cause) => showToast(errorMessage(cause)));
+  };
+  const windowAction = (action: 'minimize' | 'maximize' | 'close') => {
+    if (!native) {
+      showToast(t('nativeOnly'));
+      return;
+    }
+    void bridge.windowAction(action).catch((cause) => showToast(errorMessage(cause)));
+  };
+  if (state.error)
+    return (
+      <main className="load-state">
+        <AlertCircle size={30} />
+        <h1>{t('loadError')}</h1>
+        <p>{state.error}</p>
+        <button className="button" onClick={() => void initialize()}>
+          {t('retry')}
+        </button>
+      </main>
+    );
+  if (!state.ready)
+    return (
+      <main className="load-state">
+        <Brand wordmark />
+        <span className="loading-dot" />
+      </main>
+    );
+  return (
+    <>
+      {quick ? (
+        <QuickWindow />
+      ) : (
+        <div className="app-shell">
+          <header className="titlebar" data-tauri-drag-region>
+            <div className="titlebar-brand" data-tauri-drag-region>
+              <Brand wordmark />
+            </div>
+            <nav className="main-tabs" aria-label="Prism">
+              {(
+                [
+                  { id: 'search', icon: Search },
+                  { id: 'chat', icon: MessageSquare },
+                  { id: 'documents', icon: FileText },
+                ] as const
+              ).map((item) => (
+                <button
+                  key={item.id}
+                  className={`main-tab ${tab === item.id ? 'active' : ''}`}
+                  aria-current={tab === item.id ? 'page' : undefined}
+                  onClick={() => setTab(item.id)}
+                >
+                  <item.icon size={19} />
+                  {t(item.id)}
+                </button>
+              ))}
+            </nav>
+            <div className="titlebar-spacer" data-tauri-drag-region />
+            <button
+              className="button quick-launch"
+              aria-label={t('quickSearch')}
+              onClick={() =>
+                void switchWindow('quick').catch((cause) => showToast(errorMessage(cause)))
+              }
+            >
+              <Zap size={17} />
+              <span>{t('quickSearch')}</span>
+              <kbd>{settings.shortcut.replaceAll('+', ' ')}</kbd>
+            </button>
+            <div className="window-controls">
+              <button aria-label="Minimize" onClick={() => windowAction('minimize')}>
+                <Minus size={17} />
+              </button>
+              <button aria-label="Maximize" onClick={() => windowAction('maximize')}>
+                <Square size={14} />
+              </button>
+              <button
+                className="close-window"
+                aria-label="Close window"
+                onClick={() => windowAction('close')}
+              >
+                <X size={18} />
+              </button>
+            </div>
+          </header>
+          <div className="workspace">
+            <Sidebar
+              recent={recent}
+              onRecent={(value) => {
+                setTab('search');
+                setRecent(value);
+              }}
+              onSettings={() => setSettingsTab('general')}
+              onAddFolder={add}
+            />
+            <main className="main-content">
+              {tab === 'search' ? (
+                <SearchView
+                  recent={recent}
+                  onRecent={setRecent}
+                  onAddFolder={add}
+                  onRecommended={chooseRecommended}
+                  onSettings={() => setSettingsTab('scopes')}
+                />
+              ) : tab === 'chat' ? (
+                <ChatView onSettings={() => setSettingsTab('scopes')} />
+              ) : (
+                <DocumentsView />
+              )}
+            </main>
+          </div>
+          <footer className="statusbar">
+            <span>
+              <i className="status-dot" />
+              {runtime.native ? t('localWorkspace') : t('browserPreview')}
+            </span>
+            <div>
+              <button onClick={() => setSettingsTab('general')}>
+                {languageNames[settings.language]}
+              </button>
+              <span className="status-separator" />
+              <button onClick={() => setSettingsTab('general')}>
+                {settings.theme === 'system' ? t('systemTheme') : t(settings.theme)}
+              </button>
+            </div>
+          </footer>
+        </div>
+      )}
+      {settingsTab ? (
+        <SettingsDialog initialTab={settingsTab} onClose={() => setSettingsTab(null)} />
+      ) : null}
+      {recommended ? (
+        <RecommendedDialog folders={recommended} onClose={() => setRecommended(null)} />
+      ) : null}
+      {state.toast ? (
+        <div className="toast" role="status">
+          <Check size={16} />
+          <span>{state.toast}</span>
+          <button className="icon-button small" aria-label={t('close')} onClick={clearToast}>
+            <X size={15} />
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
 }

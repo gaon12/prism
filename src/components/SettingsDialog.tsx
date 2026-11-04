@@ -1,0 +1,300 @@
+import { useEffect, useRef, useState } from 'react';
+import { X, Plus, Trash2, Folder, Settings2, Keyboard, Folders, LogOut } from 'lucide-react';
+import { bridge } from '../lib/bridge';
+import { useClient, saveSettings, scopesFromPaths, showToast, errorMessage } from '../lib/store';
+import { languageNames, translate } from '../lib/i18n';
+import type { Language, Theme } from '../lib/types';
+export type SettingsTab = 'general' | 'scopes' | 'shortcuts';
+
+export function SettingsDialog({
+  initialTab,
+  onClose,
+}: {
+  initialTab: SettingsTab;
+  onClose: () => void;
+}) {
+  const { settings, runtime } = useClient();
+  const [draft, setDraft] = useState(() => structuredClone(settings));
+  const [tab, setTab] = useState(initialTab);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
+  useEffect(() => {
+    dialog.current?.showModal();
+  }, []);
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await saveSettings(draft);
+      showToast(translate(draft.language, 'saved'));
+      onClose();
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const addScope = async () => {
+    try {
+      const paths = await bridge.chooseFolders();
+      setDraft((value) => ({ ...value, scopes: scopesFromPaths(paths, value.scopes) }));
+    } catch (cause) {
+      setError(errorMessage(cause) === 'NATIVE_ONLY' ? t('nativeOnly') : errorMessage(cause));
+    }
+  };
+  return (
+    <dialog
+      ref={dialog}
+      className="modal settings-modal"
+      aria-labelledby="settings-title"
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
+      onClick={(event) => {
+        if (event.target === event.currentTarget && !busy) onClose();
+      }}
+    >
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
+        }}
+      >
+        <div className="modal-header">
+          <div>
+            <Settings2 size={20} />
+            <h2 id="settings-title">{t('settings')}</h2>
+          </div>
+          <button type="button" className="icon-button" aria-label={t('close')} onClick={onClose}>
+            <X size={19} />
+          </button>
+        </div>
+        <div className="settings-layout">
+          <nav className="settings-nav" aria-label={t('settings')}>
+            {(
+              [
+                { id: 'general', icon: Settings2 },
+                { id: 'scopes', icon: Folders },
+                { id: 'shortcuts', icon: Keyboard },
+              ] as const
+            ).map((item) => (
+              <button
+                type="button"
+                key={item.id}
+                className={`rail-item ${tab === item.id ? 'active' : ''}`}
+                onClick={() => setTab(item.id)}
+              >
+                <item.icon size={17} />
+                {t(item.id)}
+              </button>
+            ))}
+          </nav>
+          <div className="settings-body">
+            {tab === 'general' ? (
+              <>
+                <div className="setting-field">
+                  <label htmlFor="theme">{t('theme')}</label>
+                  <select
+                    id="theme"
+                    value={draft.theme}
+                    onChange={(event) => setDraft({ ...draft, theme: event.target.value as Theme })}
+                  >
+                    <option value="system">{t('system')}</option>
+                    <option value="light">{t('light')}</option>
+                    <option value="dark">{t('dark')}</option>
+                  </select>
+                </div>
+                <div className="setting-field">
+                  <label htmlFor="language">{t('language')}</label>
+                  <select
+                    id="language"
+                    value={draft.language}
+                    onChange={(event) =>
+                      setDraft({ ...draft, language: event.target.value as Language })
+                    }
+                  >
+                    {Object.entries(languageNames).map(([code, name]) => (
+                      <option key={code} value={code}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="setting-field">
+                  <label htmlFor="font-size">{t('fontSize')}</label>
+                  <div className="range-field">
+                    <input
+                      id="font-size"
+                      type="range"
+                      min="12"
+                      max="18"
+                      step="1"
+                      value={draft.fontSize}
+                      onChange={(event) =>
+                        setDraft({ ...draft, fontSize: Number(event.target.value) })
+                      }
+                    />
+                    <output htmlFor="font-size">{draft.fontSize}px</output>
+                  </div>
+                </div>
+                <div className="settings-divider" />
+                <label className="setting-check">
+                  <span>{t('rememberSearch')}</span>
+                  <input
+                    type="checkbox"
+                    checked={draft.rememberSearch}
+                    onChange={(event) =>
+                      setDraft({ ...draft, rememberSearch: event.target.checked })
+                    }
+                  />
+                </label>
+                <label className="setting-check">
+                  <span>{t('closeToTray')}</span>
+                  <input
+                    type="checkbox"
+                    checked={draft.closeToTray}
+                    onChange={(event) => setDraft({ ...draft, closeToTray: event.target.checked })}
+                  />
+                </label>
+                <label className="setting-check">
+                  <span>{t('startOnLogin')}</span>
+                  <input
+                    type="checkbox"
+                    checked={draft.startOnLogin}
+                    onChange={(event) => setDraft({ ...draft, startOnLogin: event.target.checked })}
+                  />
+                </label>
+                {runtime.development ? (
+                  <p className="setting-footnote">{t('developmentStartup')}</p>
+                ) : null}
+              </>
+            ) : null}
+            {tab === 'scopes' ? (
+              <>
+                <div className="section-title">
+                  <h3>{t('searchFolders')}</h3>
+                  <button type="button" className="button compact" onClick={() => void addScope()}>
+                    <Plus size={15} />
+                    {t('addFolder')}
+                  </button>
+                </div>
+                <p className="setting-description">{t('scopeDescription')}</p>
+                {draft.scopes.length ? (
+                  <div className="scope-list">
+                    {draft.scopes.map((scope) => (
+                      <div className="scope-setting" key={scope.id}>
+                        <div className="scope-setting-title">
+                          <Folder size={18} />
+                          <div>
+                            <strong>{scope.name}</strong>
+                            <span title={scope.path}>{scope.path}</span>
+                          </div>
+                          <button
+                            type="button"
+                            className="icon-button"
+                            aria-label={`${t('remove')}: ${scope.name}`}
+                            onClick={() =>
+                              setDraft({
+                                ...draft,
+                                scopes: draft.scopes.filter((item) => item.id !== scope.id),
+                              })
+                            }
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                        <div className="scope-checkboxes">
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={scope.filenameEnabled}
+                              onChange={(event) =>
+                                setDraft({
+                                  ...draft,
+                                  scopes: draft.scopes.map((item) =>
+                                    item.id === scope.id
+                                      ? { ...item, filenameEnabled: event.target.checked }
+                                      : item,
+                                  ),
+                                })
+                              }
+                            />
+                            {t('filenameScope')}
+                          </label>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={scope.contentEnabled}
+                              onChange={(event) =>
+                                setDraft({
+                                  ...draft,
+                                  scopes: draft.scopes.map((item) =>
+                                    item.id === scope.id
+                                      ? { ...item, contentEnabled: event.target.checked }
+                                      : item,
+                                  ),
+                                })
+                              }
+                            />
+                            {t('contentScope')}
+                          </label>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="scope-empty">{t('noScopes')}</p>
+                )}
+                <p className="setting-footnote">{t('engineNext')}</p>
+              </>
+            ) : null}
+            {tab === 'shortcuts' ? (
+              <>
+                <h3>{t('quickSearch')}</h3>
+                <p className="setting-description">{t('shortcutDescription')}</p>
+                <label className="shortcut-label" htmlFor="shortcut">
+                  {t('shortcuts')}
+                </label>
+                <input
+                  id="shortcut"
+                  className="shortcut-input"
+                  value={draft.shortcut}
+                  onChange={(event) => setDraft({ ...draft, shortcut: event.target.value })}
+                />
+                <p className="setting-footnote">{t('shortcutHint')}</p>
+                {!runtime.native ? <p className="setting-footnote">{t('nativeOnly')}</p> : null}
+              </>
+            ) : null}
+            {error ? (
+              <p className="form-error" role="alert">
+                {error}
+              </p>
+            ) : null}
+          </div>
+        </div>
+        <div className="modal-footer">
+          <span>{t('settingsHint')}</span>
+          <button type="button" className="button" onClick={onClose} disabled={busy}>
+            {t('cancel')}
+          </button>
+          <button className="button primary" disabled={busy}>
+            {t('save')}
+          </button>
+        </div>
+        {runtime.native ? (
+          <button
+            type="button"
+            className="quit-button"
+            onClick={() => void bridge.quit().catch((cause) => setError(errorMessage(cause)))}
+          >
+            <LogOut size={14} />
+            {t('quit')}
+          </button>
+        ) : null}
+      </form>
+    </dialog>
+  );
+}

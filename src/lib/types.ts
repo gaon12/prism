@@ -1,3 +1,5 @@
+import { defaultGeneration, normalizeGeneration } from './generation';
+import type { GenerationPreferences } from './generation';
 export type Language = 'ko' | 'en' | 'zh-CN' | 'zh-TW' | 'ja';
 export type Theme = 'system' | 'light' | 'dark';
 export type Tab = 'search' | 'chat' | 'documents';
@@ -7,6 +9,7 @@ export interface SearchScope {
   path: string;
   filenameEnabled: boolean;
   contentEnabled: boolean;
+  externalAllowed: boolean;
 }
 export interface ClientSettings {
   schemaVersion: number;
@@ -20,6 +23,7 @@ export interface ClientSettings {
   closeToTray: boolean;
   startOnLogin: boolean;
   scopes: SearchScope[];
+  generation: GenerationPreferences;
   calculator: { precision: number; angle: 'rad' | 'deg' };
   clipboard: {
     enabled: boolean;
@@ -81,6 +85,7 @@ export const defaultSettings: ClientSettings = {
   closeToTray: true,
   startOnLogin: true,
   scopes: [],
+  generation: structuredClone(defaultGeneration),
   calculator: { precision: 12, angle: 'rad' },
   clipboard: {
     enabled: true,
@@ -128,6 +133,7 @@ export function normalizeSettings(input: unknown): ClientSettings {
       precision: Math.min(15, Math.max(6, Math.round(Number(value.calculator?.precision) || 12))),
       angle: value.calculator?.angle === 'deg' ? 'deg' : 'rad',
     },
+    generation: normalizeGeneration(value.generation),
     clipboard: {
       enabled: value.clipboard?.enabled !== false,
       captureImages: value.clipboard?.captureImages !== false,
@@ -152,6 +158,7 @@ export function normalizeSettings(input: unknown): ClientSettings {
             name: typeof scope.name === 'string' ? scope.name : scopeName(scope.path),
             filenameEnabled: scope.filenameEnabled !== false,
             contentEnabled: scope.contentEnabled === true,
+            externalAllowed: scope.externalAllowed === true,
           }))
       : [],
   };

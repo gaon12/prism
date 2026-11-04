@@ -949,6 +949,7 @@ mod tests {
             path: path.to_string_lossy().into_owned(),
             filename_enabled: true,
             content_enabled: false,
+            external_allowed: false,
         }
     }
     fn wait(index: &FileIndex, check: impl Fn() -> bool) {
@@ -1193,6 +1194,7 @@ mod performance_tests {
             path: dir.path().to_string_lossy().into_owned(),
             filename_enabled: true,
             content_enabled: false,
+            external_allowed: false,
         }]);
         settle(&index, 3);
         let generation = index.generation.load(Ordering::SeqCst);
@@ -1249,6 +1251,7 @@ mod performance_tests {
             path: dir.to_string_lossy().into_owned(),
             filename_enabled: true,
             content_enabled: false,
+            external_allowed: false,
         };
         let index = FileIndex::new();
         index.configure(vec![scope(first.path(), "a"), scope(second.path(), "b")]);
@@ -1298,6 +1301,7 @@ mod performance_tests {
             path: dir.path().to_string_lossy().into_owned(),
             filename_enabled: true,
             content_enabled: false,
+            external_allowed: false,
         }]);
         settle(&index, 5);
         fs::rename(&folder, dir.path().join("새폴더")).unwrap();
@@ -1340,6 +1344,7 @@ mod bench {
             path: root.to_string_lossy().into_owned(),
             filename_enabled: true,
             content_enabled: false,
+            external_allowed: false,
         }]);
         while index.status().unwrap().scanning || index.status().unwrap().count < 100_101 {
             std::thread::sleep(Duration::from_millis(20));

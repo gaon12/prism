@@ -120,6 +120,7 @@ export function scopesFromPaths(
       path,
       filenameEnabled: true,
       contentEnabled: false,
+      externalAllowed: false,
     });
   }
   return [...existing, ...added];

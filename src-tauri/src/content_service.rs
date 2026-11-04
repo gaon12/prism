@@ -1018,6 +1018,7 @@ mod tests {
             path: documents.to_string_lossy().into(),
             filename_enabled: true,
             content_enabled: false,
+            external_allowed: false,
         };
         service.configure(vec![scope.clone()]).unwrap();
         wait_ready(&service);
@@ -1141,6 +1142,7 @@ mod tests {
                 path: folder.to_string_lossy().into(),
                 filename_enabled: true,
                 content_enabled: true,
+                external_allowed: false,
             },
             SearchScope {
                 id: "private".into(),
@@ -1148,6 +1150,7 @@ mod tests {
                 path: private.to_string_lossy().into(),
                 filename_enabled: true,
                 content_enabled: false,
+                external_allowed: false,
             },
         ];
         service.configure(scopes).unwrap();

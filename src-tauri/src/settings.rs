@@ -10,6 +10,8 @@ pub struct SearchScope {
     pub path: String,
     pub filename_enabled: bool,
     pub content_enabled: bool,
+    #[serde(default)]
+    pub external_allowed: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -28,6 +30,7 @@ pub struct ClientSettings {
     pub scopes: Vec<SearchScope>,
     pub calculator: CalculatorSettings,
     pub clipboard: crate::clipboard_history::ClipboardSettings,
+    pub generation: crate::rag_service::GenerationPreferences,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,6 +64,7 @@ impl Default for ClientSettings {
             scopes: vec![],
             calculator: CalculatorSettings::default(),
             clipboard: crate::clipboard_history::ClipboardSettings::default(),
+            generation: crate::rag_service::GenerationPreferences::default(),
         }
     }
 }
@@ -68,6 +72,7 @@ impl Default for ClientSettings {
 impl ClientSettings {
     pub fn validate(&self) -> Result<(), String> {
         self.clipboard.validate()?;
+        self.generation.validate().map_err(|error| error.message)?;
         if !(6..=15).contains(&self.calculator.precision)
             || !["rad", "deg"].contains(&self.calculator.angle.as_str())
         {
@@ -183,6 +188,7 @@ mod tests {
             path: dir.path().to_string_lossy().into(),
             filename_enabled: true,
             content_enabled: false,
+            external_allowed: false,
         });
         write_json(&path, &settings).unwrap();
         settings.theme = "dark".into();
@@ -220,6 +226,7 @@ mod tests {
             path: "../Documents".into(),
             filename_enabled: true,
             content_enabled: false,
+            external_allowed: false,
         });
         assert!(settings.validate().is_err());
     }

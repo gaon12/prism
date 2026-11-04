@@ -54,7 +54,14 @@ describe('persisted client data', () => {
     expect(value.rememberSearch).toBe(true);
     expect(value.keyboardCorrection).toBe(true);
     expect(value.scopes).toEqual([
-      { id: 'docs', name: '문서', path: 'C:\\문서', contentEnabled: false, filenameEnabled: true },
+      {
+        id: 'docs',
+        name: '문서',
+        path: 'C:\\문서',
+        contentEnabled: false,
+        filenameEnabled: true,
+        externalAllowed: false,
+      },
     ]);
   });
   it('keeps explicit false values and independent filename / AI scopes', () => {

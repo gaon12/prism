@@ -225,6 +225,9 @@ pub fn is_supported_extension(extension: &str) -> bool {
             | "svelte"
             | "pptx"
             | "xlsx"
+            | "odt"
+            | "ods"
+            | "odp"
             | "docx"
             | "hwpx"
             | "pdf"
@@ -273,7 +276,7 @@ pub fn extract_document(
     let mut output = Collector::new(options, cancel);
     match extension.as_str() {
         "docx" | "hwpx" => extract_zip(&bytes, &extension, &mut output)?,
-        "pptx" | "xlsx" => extract_office(&bytes, &extension, &mut output)?,
+        "pptx" | "xlsx" | "odt" | "ods" | "odp" => extract_office(&bytes, &extension, &mut output)?,
         "hwp" => extract_hwp(&bytes, &mut output)?,
         "pdf" => extract_pdf(&bytes, &mut output)?,
         "html" | "htm" => extract_html(&decode_text(&bytes)?, &mut output)?,
@@ -1481,7 +1484,8 @@ fn extract_office(bytes: &[u8], format: &str, out: &mut Collector<'_>) -> Result
     let mut package = OfficePackage::new(bytes, out)?;
     match format {
         "pptx" => extract_pptx(&mut package, out),
-        _ => extract_xlsx(&mut package, out),
+        "xlsx" => extract_xlsx(&mut package, out),
+        _ => extract_odf(&mut package, format, out),
     }
 }
 fn presentation_text(
@@ -2000,6 +2004,114 @@ fn extract_xlsx(package: &mut OfficePackage<'_>, out: &mut Collector<'_>) -> Res
     }
     Ok(())
 }
+fn odf_inline(node: &XmlNode, text: &mut String, out: &Collector<'_>) -> Result<()> {
+    check_cancel(out.cancel)?;
+    match node.name.as_str() {
+        "#text" => {
+            text.push_str(&node.text);
+            return Ok(());
+        }
+        "s" => {
+            let count = repeat_count(node, "c")?;
+            let remaining = out.options.max_text_bytes.saturating_sub(text.len());
+            if count as u64 > remaining as u64 {
+                return Err(limit());
+            }
+            text.extend(std::iter::repeat_n(' ', count as usize));
+            return Ok(());
+        }
+        "tab" => {
+            text.push('\t');
+            return Ok(());
+        }
+        "line-break" => {
+            text.push('\n');
+            return Ok(());
+        }
+        "annotation" | "tracked-changes" | "binary-data" | "scripts" | "script" => return Ok(()),
+        _ => {}
+    }
+    for child in &node.children {
+        odf_inline(child, text, out)?;
+        if text.len() > out.options.max_text_bytes {
+            return Err(limit());
+        }
+    }
+    Ok(())
+}
+fn odf_cell_text(node: &XmlNode, out: &Collector<'_>) -> Result<String> {
+    let mut result = String::new();
+    for child in &node.children {
+        if matches!(child.name.as_str(), "p" | "h") {
+            if !result.is_empty() {
+                result.push('\n');
+            }
+            odf_inline(child, &mut result, out)?;
+        }
+        // Nested tables have their own explicit boundary, rather than merging cells.
+        else if child.name == "table" {
+            result.push_str("\n[nested table]\n");
+            for row in descendants(child, "table-row") {
+                let mut cells = Vec::new();
+                for cell in row.children.iter().filter(|n| n.name == "table-cell") {
+                    cells.push(odf_cell_text(cell, out)?);
+                }
+                result.push_str(&cells.join("\t"));
+                result.push('\n');
+            }
+        }
+    }
+    Ok(result)
+}
+fn repeat_count(node: &XmlNode, key: &str) -> Result<u32> {
+    let count = attr(node, key)
+        .unwrap_or("1")
+        .parse::<u32>()
+        .map_err(|_| corrupt())?;
+    if count == 0 {
+        return Err(corrupt());
+    }
+    Ok(count)
+}
+fn odf_value(cell: &XmlNode, out: &Collector<'_>) -> Result<(String, String)> {
+    let display = odf_cell_text(cell, out)?;
+    let kind = attr(cell, "value-type").unwrap_or("string");
+    let raw = match kind {
+        "float" | "percentage" | "currency" => attr(cell, "value"),
+        "date" => attr(cell, "date-value"),
+        "time" => attr(cell, "time-value"),
+        "boolean" => attr(cell, "boolean-value"),
+        "string" => attr(cell, "string-value"),
+        "void" => None,
+        _ => return Err(corrupt()),
+    };
+    let plain = if display.is_empty() {
+        raw.unwrap_or("").to_owned()
+    } else {
+        display
+    };
+    if plain.is_empty() && attr(cell, "formula").is_none() {
+        return Ok((String::new(), String::new()));
+    }
+    let detail = if let Some(raw) = raw {
+        format!(
+            "[{kind}; raw={raw}{}] {plain}",
+            attr(cell, "currency")
+                .map(|s| format!("; currency={s}"))
+                .unwrap_or_default()
+        )
+    } else {
+        format!("[{kind}] {plain}")
+    };
+    Ok((
+        plain,
+        if attr(cell, "formula").is_some() {
+            format!("[formula cached result; not recalculated] {detail}")
+        } else {
+            detail
+        },
+    ))
+}
 fn emit_cell(
     value: &str,
     label: &str,
@@ -2038,6 +2150,169 @@ fn emit_cell(
     out.heading = previous;
     Ok(())
 }
+fn odf_table(table: &XmlNode, page: Option<u32>, out: &mut Collector<'_>) -> Result<()> {
+    fn rows<'a>(node: &'a XmlNode, header: bool, items: &mut Vec<(&'a XmlNode, bool)>) {
+        for child in &node.children {
+            match child.name.as_str() {
+                "table-row" => items.push((child, header)),
+                "table" => {}
+                _ => rows(child, header || child.name == "table-header-rows", items),
+            }
+        }
+    }
+    let mut source_rows = Vec::new();
+    rows(table, false, &mut source_rows);
+    let mut headers: BTreeMap<usize, String> = BTreeMap::new();
+    let explicit = source_rows.iter().any(|(_, h)| *h);
+    let mut row_index = 1u32;
+    let name = attr(table, "name").unwrap_or("Table");
+    let previous = out.heading.clone();
+    let context = format!(
+        "{} / Sheet/table {name}; header={}",
+        previous.as_deref().unwrap_or("Document"),
+        if explicit {
+            "declared"
+        } else {
+            "first-row inferred"
+        }
+    );
+    for (row, is_header) in source_rows {
+        check_cancel(out.cancel)?;
+        let repeat = repeat_count(row, "number-rows-repeated")?;
+        let next = row_index.checked_add(repeat).ok_or_else(limit)?;
+        let mut cells: Vec<(usize, String, String)> = Vec::new();
+        let mut column = 0usize;
+        for cell in row
+            .children
+            .iter()
+            .filter(|n| matches!(n.name.as_str(), "table-cell" | "covered-table-cell"))
+        {
+            let count = repeat_count(cell, "number-columns-repeated")? as usize;
+            let end = column.checked_add(count).ok_or_else(limit)?;
+            if cell.name == "table-cell" {
+                let (plain, value) = odf_value(cell, out)?;
+                if !value.is_empty() {
+                    if count > out.options.max_sections
+                        || cells.len().saturating_add(count) > out.options.max_sections
+                    {
+                        return Err(limit());
+                    }
+                    for c in column..end {
+                        cells.push((c, plain.clone(), value.clone()));
+                    }
+                }
+            }
+            column = end;
+        }
+        // Large empty repeat tails are a logical position, not expanded allocations.
+        if !cells.is_empty() {
+            if repeat as usize > out.options.max_sections.saturating_sub(out.sections.len()) {
+                return Err(limit());
+            }
+            if is_header || (!explicit && headers.is_empty()) {
+                for (c, plain, _) in &cells {
+                    let entry = headers.entry(*c).or_default();
+                    if !entry.is_empty() && entry != plain {
+                        entry.push_str(" / ");
+                    }
+                    if !entry.ends_with(plain) {
+                        entry.push_str(plain);
+                    }
+                }
+            }
+            let key = cells.first().map(|(_, p, _)| p.as_str()).unwrap_or("");
+            for row_number in row_index..next {
+                for (c, _, value) in &cells {
+                    let generic = format!("Column {}", column_name(*c));
+                    let label = headers.get(c).filter(|v| !v.is_empty()).unwrap_or(&generic);
+                    let address = format!("{}{}", column_name(*c), row_number);
+                    emit_cell(value, label, key, &address, &context, row_number, page, out)?;
+                }
+            }
+        }
+        row_index = next;
+    }
+    out.heading = previous;
+    Ok(())
+}
+fn odf_body(node: &XmlNode, page: Option<u32>, out: &mut Collector<'_>) -> Result<()> {
+    check_cancel(out.cancel)?;
+    match node.name.as_str() {
+        "annotation" | "tracked-changes" | "binary-data" | "scripts" | "script" => return Ok(()),
+        "table" => return odf_table(node, page, out),
+        "p" | "h" => {
+            let mut text = String::new();
+            odf_inline(node, &mut text, out)?;
+            let p = out.next_paragraph();
+            if node.name == "h" {
+                out.heading = Some(text.clone());
+            }
+            out.push(&text, page, p)?;
+            return Ok(());
+        }
+        _ => {}
+    }
+    for child in &node.children {
+        odf_body(child, page, out)?;
+    }
+    Ok(())
+}
+fn extract_odf(
+    package: &mut OfficePackage<'_>,
+    format: &str,
+    out: &mut Collector<'_>,
+) -> Result<()> {
+    if let Some(manifest) = package.optional("META-INF/manifest.xml", out)? {
+        if descendants(&manifest, "encryption-data").next().is_some() {
+            return Err(encrypted());
+        }
+    }
+    let root = package.xml("content.xml", out)?;
+    let body = descendants(&root, "body").next().ok_or_else(corrupt)?;
+    if format == "odp" {
+        let presentation = body
+            .children
+            .iter()
+            .find(|n| n.name == "presentation")
+            .ok_or_else(corrupt)?;
+        for (index, page) in presentation
+            .children
+            .iter()
+            .filter(|n| n.name == "page")
+            .enumerate()
+        {
+            let page_number = u32::try_from(index + 1).map_err(|_| limit())?;
+            out.paragraph = 0;
+            out.heading = Some(format!(
+                "Slide {page_number}; {}",
+                attr(page, "name").unwrap_or("")
+            ));
+            for child in &page.children {
+                if child.name == "notes" {
+                    out.heading = Some(format!("Slide {page_number} / Notes"));
+                    odf_body(child, Some(page_number), out)?;
+                    out.heading = Some(format!("Slide {page_number}"));
+                } else {
+                    odf_body(child, Some(page_number), out)?;
+                }
+            }
+        }
+        Ok(())
+    } else {
+        let expected = if format == "ods" {
+            "spreadsheet"
+        } else {
+            "text"
+        };
+        let document = body
+            .children
+            .iter()
+            .find(|n| n.name == expected)
+            .ok_or_else(corrupt)?;
+        odf_body(document, None, out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2647,6 +2922,90 @@ mod tests {
             .contains("12:00:00"));
     }
     #[test]
+    fn odt_mixed_text_order_utf16_and_declared_table_header() {
+        let xml = r#"<document-content><body><text><h>계약</h><p>Hello <span>한국</span>!<s c="2"/>끝<tab/>값<line-break/>다음</p><table name="합계"><table-header-rows><table-row><table-cell><p>제품</p></table-cell><table-cell><p>비용</p></table-cell></table-row></table-header-rows><table-row><table-cell><p>차</p></table-cell><table-cell value-type="float" value="42"><p>42</p></table-cell></table-row></table></text></body></document-content>"#;
+        // ZIP fixture contains actual UTF-16 encoded XML bytes.
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            writer
+                .start_file("content.xml", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            use std::io::Write;
+            writer.write_all(&[0xff, 0xfe]).unwrap();
+            writer.write_all(&utf16(xml)).unwrap();
+            writer.finish().unwrap();
+        }
+        let doc = extract("contract.odt", &cursor.into_inner()).unwrap();
+        assert_eq!(doc.sections[1].text, "Hello 한국!  끝\t값\n다음");
+        let cost = doc
+            .sections
+            .iter()
+            .find(|s| s.text.ends_with("[float; raw=42] 42"))
+            .unwrap();
+        assert!(cost.text.contains("비용"));
+        assert!(cost.text.contains("key=차"));
+        assert_eq!(cost.paragraph, Some(2));
+        assert!(cost.heading.as_deref().unwrap().contains("header=declared"));
+    }
+    #[test]
+    fn ods_repeated_cells_rows_typed_cache_and_empty_tails() {
+        let xml = r#"<document-content><body><spreadsheet><table name="매출"><table-row><table-cell><p>항목</p></table-cell><table-cell><p>증가율</p></table-cell><table-cell><p>기준일</p></table-cell></table-row><table-row number-rows-repeated="2"><table-cell><p>차</p></table-cell><table-cell value-type="percentage" value="0.25" formula="of:=1/4"><p>25%</p></table-cell><table-cell value-type="date" date-value="2026-11-04"/></table-row><table-row number-rows-repeated="1000000"><table-cell number-columns-repeated="1000000"/></table-row><table-row><table-cell><p>후속</p></table-cell><table-cell value-type="boolean" boolean-value="true" number-columns-repeated="2"/></table-row></table></spreadsheet></body></document-content>"#;
+        let doc = extract("report.ods", &zip_file(&[("content.xml", xml)])).unwrap();
+        assert_eq!(doc.sections.len(), 12);
+        assert!(doc
+            .sections
+            .iter()
+            .any(|s| s.paragraph == Some(3) && s.text.contains("25%")));
+        assert!(doc
+            .sections
+            .iter()
+            .any(|s| s.paragraph == Some(1_000_004) && s.text.contains("cell=C1000004")));
+        assert!(doc
+            .sections
+            .iter()
+            .any(|s| s.text.contains("date; raw=2026-11-04")));
+        assert!(doc
+            .sections
+            .iter()
+            .any(|s| s.text.contains("formula cached result; not recalculated")));
+    }
+    #[test]
+    fn odp_pages_notes_tables_and_unsafe_xml() {
+        let xml="<document-content><body><presentation><page name=\"첫 장\"><frame><p>슬라이드 본문</p></frame><notes><p>발표 메모</p></notes></page><page><p>다음 장</p></page></presentation></body></document-content>";
+        let doc = extract("talk.odp", &zip_file(&[("content.xml", xml)])).unwrap();
+        assert_eq!(doc.sections[0].page, Some(1));
+        assert!(doc.sections[1]
+            .heading
+            .as_deref()
+            .unwrap()
+            .contains("Notes"));
+        assert_eq!(doc.sections[2].page, Some(2));
+        let bad = zip_file(&[(
+            "content.xml",
+            "<!DOCTYPE x [<!ENTITY x SYSTEM 'https://example.invalid/private'>]><x>&x;</x>",
+        )]);
+        assert_eq!(
+            extract("bad.ods", &bad).unwrap_err().code,
+            ExtractErrorCode::CorruptDocument
+        );
+        assert_eq!(
+            extract(
+                "encrypted.odt",
+                &zip_file(&[
+                    (
+                        "META-INF/manifest.xml",
+                        "<manifest><file-entry><encryption-data/></file-entry></manifest>"
+                    ),
+                    ("content.xml", xml)
+                ])
+            )
+            .unwrap_err()
+            .code,
+            ExtractErrorCode::Encrypted
+        );
+    }
+    #[test]
     fn tables_repeat_header_and_row_key_in_long_unicode_fragments() {
         let value = "매출한글🙂".repeat(700);
         let doc = extract("long.csv", format!("품목,설명\n한국차,{value}").as_bytes()).unwrap();
@@ -2677,6 +3036,54 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("header=declared"));
+    }
+    #[test]
+    fn office_relationship_escape_repeats_metadata_budgets_and_cancellation() {
+        let bad = xlsx_parts("<worksheet/>", &[], "0");
+        // A syntactically valid workbook relationship cannot leave package root.
+        let escape = zip_file(&[
+            (
+                "xl/workbook.xml",
+                r#"<workbook xmlns:r="urn:r"><sheets><sheet name="x" r:id="x"/></sheets></workbook>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<Relationships><Relationship Id="x" Type="urn:office/worksheet" Target="../../outside.xml"/></Relationships>"#,
+            ),
+        ]);
+        assert_eq!(
+            extract("unsafe.xlsx", &escape).unwrap_err().code,
+            ExtractErrorCode::UnsafePath
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("limited.ods");
+        let repeated=zip_file(&[("content.xml","<document-content><body><spreadsheet><table><table-row number-rows-repeated=\"1000000\"><table-cell><p>반복</p></table-cell></table-row></table></spreadsheet></body></document-content>")]);
+        fs::write(&path, repeated).unwrap();
+        assert_eq!(
+            extract_document(&path, &ExtractOptions::default(), &AtomicBool::new(false))
+                .unwrap_err()
+                .code,
+            ExtractErrorCode::LimitExceeded
+        );
+        let options = ExtractOptions {
+            max_text_bytes: 40,
+            ..Default::default()
+        };
+        fs::write(&path,zip_file(&[("content.xml","<document-content><body><spreadsheet><table><table-row><table-cell><p>표</p></table-cell></table-row></table></spreadsheet></body></document-content>")])).unwrap();
+        assert_eq!(
+            extract_document(&path, &options, &AtomicBool::new(false))
+                .unwrap_err()
+                .code,
+            ExtractErrorCode::LimitExceeded
+        );
+        let path = dir.path().join("cancel.xlsx");
+        fs::write(&path, bad).unwrap();
+        assert_eq!(
+            extract_document(&path, &ExtractOptions::default(), &AtomicBool::new(true))
+                .unwrap_err()
+                .code,
+            ExtractErrorCode::Cancelled
+        );
     }
     #[test]
     fn hwpx_explicit_cell_columns_and_docx_header_span_stay_aligned() {

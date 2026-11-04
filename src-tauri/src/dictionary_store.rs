@@ -173,7 +173,7 @@ impl DictionaryStore {
             let manifest: PackManifest =
                 serde_json::from_str(&metadata).map_err(|_| "Dictionary metadata is damaged.")?;
             let mut url = tauri::Url::parse("https://en.wiktionary.org/wiki/").unwrap();
-            url.path_segments_mut().unwrap().push(&term);
+            url.path_segments_mut().unwrap().pop_if_empty().push(&term);
             Ok(Definition {
                 term,
                 language: language.into(),
@@ -374,6 +374,28 @@ mod tests {
             definition_language: "ko".into(),
         }
     }
+    #[test]
+    fn wiktionary_attribution_has_one_escaped_headword_segment() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = DictionaryStore::open(directory.path()).unwrap();
+        let mut source = manifest();
+        source.language = "en".into();
+        source.source_url = "https://kaikki.org/dictionary/English/".into();
+        store
+            .import(
+                b"{\"word\":\"apple/branch#1\",\"senses\":[{\"glosses\":[\"fixture\"]}]}\n"
+                    .as_slice(),
+                source,
+                &AtomicBool::new(false),
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(
+            store.lookup("en", "apple/branch#1").unwrap()[0].source_url,
+            "https://en.wiktionary.org/wiki/apple%2Fbranch%231"
+        );
+    }
+
     #[test]
     fn imports_normalized_words_aliases_and_rolls_back_invalid_updates() {
         let directory = tempfile::tempdir().unwrap();

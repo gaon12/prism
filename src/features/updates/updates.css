@@ -1,0 +1,81 @@
+.update-banner,
+.update-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.update-banner {
+  padding: 14px 18px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  flex-shrink: 0;
+}
+.update-banner > strong {
+  flex: 1;
+  min-width: 180px;
+  overflow-wrap: anywhere;
+}
+.update-panel {
+  border-top: 1px solid var(--border);
+  margin-top: 24px;
+  padding-top: 20px;
+}
+.update-panel h3 {
+  margin: 0 0 12px;
+}
+.update-panel h3 small {
+  font-weight: 400;
+  font-size: 0.85em;
+}
+.update-panel > p {
+  margin: 10px 0;
+  line-height: 1.6;
+}
+.update-panel .setting-check {
+  margin-top: 12px;
+}
+.update-panel .inline-error,
+.update-dialog .inline-error {
+  color: var(--danger);
+}
+.update-panel .update-actions {
+  margin-top: 14px;
+}
+.update-notes {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 180px;
+  overflow: auto;
+}
+.update-dialog {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+}
+.update-dialog::backdrop {
+  background: rgb(0 0 0 / 0.3);
+  backdrop-filter: blur(4px);
+}
+.update-dialog h2 {
+  margin: 0 0 14px;
+}
+.update-dialog p {
+  margin: 12px 0;
+  line-height: 1.65;
+}
+.update-dialog .inline-error {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--subtle);
+}
+.update-dialog .update-actions {
+  justify-content: flex-end;
+  margin-top: 22px;
+}

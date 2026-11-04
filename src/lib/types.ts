@@ -25,6 +25,7 @@ export interface ClientSettings {
   startOnLogin: boolean;
   scopes: SearchScope[];
   generation: GenerationPreferences;
+  updates: { autoCheck: boolean };
   calculator: { precision: number; angle: 'rad' | 'deg' };
   clipboard: {
     enabled: boolean;
@@ -89,6 +90,7 @@ export const defaultSettings: ClientSettings = {
   startOnLogin: true,
   scopes: [],
   generation: structuredClone(defaultGeneration),
+  updates: { autoCheck: true },
   calculator: { precision: 12, angle: 'rad' },
   clipboard: {
     enabled: true,
@@ -138,6 +140,7 @@ export function normalizeSettings(input: unknown): ClientSettings {
       angle: value.calculator?.angle === 'deg' ? 'deg' : 'rad',
     },
     generation: normalizeGeneration(value.generation),
+    updates: { autoCheck: value.updates?.autoCheck !== false },
     clipboard: {
       enabled: value.clipboard?.enabled !== false,
       captureImages: value.clipboard?.captureImages !== false,

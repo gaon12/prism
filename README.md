@@ -32,6 +32,8 @@ Document creation does not call AI. Choose explicit content scopes, generate and
 
 ## Search and quick tools
 
+Natural-language result lists combine content keyword and vector ranks by default. In **AI/model settings**, turn off **Combine content keyword results with natural-language search** for cosine ranking alone. Combined results label keyword/semantic provenance and a **fusion rank score**, which is not cosine similarity or a probability. The service rechecks current scopes and source fingerprints after combining results; both branches use the same extension filter. If a long query exceeds the lexical term budget, semantic results remain available with an explicit notice. Partial-result counts sum both branches and may include duplicate evaluations. Automatic mode selection and use of hybrid retrieval in RAG remain pending.
+
 Plain input searches filenames and paths. Space-separated terms are combined with AND; double quotes keep a phrase together. Search is case-insensitive and normalizes Unicode for matching while preserving distinct filesystem paths. A selected folder limits the scope. The main window lists indexed items even with empty input; the quick window shows only its input until a non-whitespace value is entered.
 
 Korean initials work alongside literal terms and filters: `ㄱㅁㅅ ext:hwpx` can find `공문서.hwpx`. Mixed input such as `ㄱ문서` keeps `문서` literal rather than matching every word with initials `ㄱㅁㅅ`. Doubled consonants remain distinct, and both compatibility jamo (`ㄱ`) and modern leading jamo (`ᄀ`) are supported. Literal filename matches rank ahead of initial matches.

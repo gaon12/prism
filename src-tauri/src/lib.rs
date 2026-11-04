@@ -253,6 +253,7 @@ pub fn run() {
             dictionary_commands::dictionary_import,
             dictionary_commands::dictionary_download,
             dictionary_commands::dictionary_remove,
+            dictionary_commands::dictionary_open_source,
             commands::window_action,
             commands::quit_app,
             commands::write_markdown

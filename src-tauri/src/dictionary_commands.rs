@@ -4,7 +4,27 @@ use crate::{
     AppState,
 };
 use std::path::PathBuf;
-use tauri::State;
+use tauri::{AppHandle, State};
+use tauri_plugin_opener::OpenerExt;
+#[tauri::command]
+pub async fn dictionary_open_source(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed = tauri::Url::parse(&url).map_err(|_| "Invalid dictionary source URL.")?;
+    if url.len() > 2048
+        || !["https", "http"].contains(&parsed.scheme())
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err("Invalid dictionary source URL.".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        app.opener()
+            .open_url(parsed.as_str(), None::<&str>)
+            .map_err(|_| "Could not open the dictionary source.".to_string())
+    })
+    .await
+    .map_err(|_| "Dictionary worker stopped.")?
+}
 fn service(
     state: &AppState,
 ) -> Result<crate::dictionary_service::DictionaryService, DictionaryError> {

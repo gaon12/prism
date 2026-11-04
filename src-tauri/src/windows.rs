@@ -108,10 +108,17 @@ fn position_quick(quick: &tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+pub fn capture_paste_target(app: &AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        state.paste_targets.capture(state.paste_input.as_ref());
+    }
+}
+
 pub fn show_main_window(app: &AppHandle) -> Result<(), String> {
     let main = app
         .get_webview_window("main")
         .ok_or("Main window is unavailable.")?;
+    capture_paste_target(app);
     main.show().map_err(|error| error.to_string())?;
     main.unminimize().map_err(|error| error.to_string())?;
     main.set_focus().map_err(|error| error.to_string())?;
@@ -122,6 +129,7 @@ pub fn show_main_window(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn show_quick_window(app: &AppHandle) -> Result<(), String> {
+    capture_paste_target(app);
     let state = app.state::<AppState>();
     let remember = state
         .settings

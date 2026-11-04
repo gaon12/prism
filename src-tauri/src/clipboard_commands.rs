@@ -3,7 +3,7 @@ use crate::{
     clipboard_history::{ClipItem, ClipKind, ClipListResponse, ClipStatus},
     AppState,
 };
-use tauri::State;
+use tauri::{Manager, State, WebviewWindow};
 
 #[tauri::command]
 pub async fn clipboard_list(
@@ -41,6 +41,75 @@ pub async fn clipboard_copy(state: State<'_, AppState>, id: String) -> Result<()
     tauri::async_runtime::spawn_blocking(move || service.copy_to_clipboard(&id))
         .await
         .map_err(|_| "Clipboard request failed.")?
+}
+#[tauri::command]
+pub async fn clipboard_paste(
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+    id: String,
+) -> Result<crate::paste_target::PasteOutcome, String> {
+    let service = state.clipboard.clone();
+    let targets = state.paste_targets.clone();
+    let backend = state.paste_input.clone();
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut hidden = Vec::new();
+        let outcome = targets.paste_with(
+            backend.as_ref(),
+            || service.copy_to_clipboard(&id),
+            || {
+                for label in ["quick", "main"] {
+                    if let Some(window) = app.get_webview_window(label) {
+                        if window.is_visible().map_err(|_| "Window unavailable.")? {
+                            window.hide().map_err(|_| "Could not hide Prism.")?;
+                            hidden.push(window);
+                        }
+                    }
+                }
+                Ok(())
+            },
+        );
+        if !outcome.pasted && !hidden.is_empty() {
+            for hidden in hidden {
+                let _ = hidden.show();
+            }
+            // Do not recapture the target during failure recovery.
+            let _ = window.set_focus();
+        }
+        outcome
+    })
+    .await
+    .map_err(|_| "Clipboard paste request failed.".into())
+}
+
+/// Inert in release builds and ordinary installed debug profiles.
+#[tauri::command]
+pub fn paste_fixture(
+    state: State<'_, AppState>,
+    mode: Option<String>,
+) -> Result<serde_json::Value, String> {
+    #[cfg(debug_assertions)]
+    if let (Some(input), Some(clipboard)) = (&state.input_fixture, &state.clipboard_fixture) {
+        if let Some(mode) = mode {
+            input.configure(&mode)?;
+            state.paste_targets.clear();
+            state.paste_targets.capture(input.as_ref());
+            input.arm();
+        }
+        let mut snapshot = input.snapshot();
+        snapshot["clipboard"] = match clipboard.content() {
+            Some(crate::clipboard_history::ClipContent::Text(text)) => {
+                serde_json::json!({"kind":"text","text":text})
+            }
+            Some(crate::clipboard_history::ClipContent::Image { width, height, .. }) => {
+                serde_json::json!({"kind":"image","width":width,"height":height})
+            }
+            None => serde_json::Value::Null,
+        };
+        return Ok(snapshot);
+    }
+    let _ = (state, mode);
+    Err("Synthetic paste fixtures require an isolated debug profile.".into())
 }
 #[tauri::command]
 pub async fn clipboard_pin(

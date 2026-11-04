@@ -15,10 +15,14 @@ mod document_service;
 mod document_store;
 mod embedding_runtime;
 mod filename_pattern;
+mod foreground_tracker;
 mod generation_runtime;
 mod index;
 mod keyboard_pattern;
 mod model_commands;
+#[cfg(debug_assertions)]
+mod paste_fixture;
+mod paste_target;
 mod process_job;
 mod rag_commands;
 mod rag_service;
@@ -50,6 +54,12 @@ pub struct AppState {
     location: app_paths::DataLocation,
     index: index::FileIndex,
     clipboard: clipboard_history::ClipboardService,
+    paste_targets: std::sync::Arc<paste_target::PasteTargets>,
+    paste_input: std::sync::Arc<dyn paste_target::InputBackend + Send + Sync>,
+    #[cfg(debug_assertions)]
+    input_fixture: Option<std::sync::Arc<paste_fixture::MemoryInput>>,
+    #[cfg(debug_assertions)]
+    clipboard_fixture: Option<clipboard_history::MemoryClipboard>,
     dictionary: Result<dictionary_service::DictionaryService, dictionary_service::DictionaryError>,
     embedding: Result<embedding_runtime::EmbeddingRuntime, String>,
     content: Result<content_service::ContentService, content_service::ContentError>,
@@ -192,8 +202,9 @@ pub fn run() {
                     }
                 },
             );
-            if isolated_test || test_mode {
-                let source = clipboard_history::MemoryClipboard::default();
+            let memory_clipboard = (isolated_test || test_mode)
+                .then(clipboard_history::MemoryClipboard::default);
+            if let Some(source) = &memory_clipboard {
                 clipboard.start(source.boxed(), source.boxed());
             } else {
                 clipboard.start(
@@ -302,6 +313,19 @@ pub fn run() {
                     )
                 })
                 .and_then(|rag| document_service::DocumentService::open(&asset_dir, rag.clone()));
+            #[cfg(debug_assertions)]
+            let input_fixture = (isolated_test || test_mode)
+                .then(|| std::sync::Arc::new(paste_fixture::MemoryInput::default()));
+            let paste_input: std::sync::Arc<dyn paste_target::InputBackend + Send + Sync> = {
+                #[cfg(debug_assertions)]
+                if let Some(fixture) = &input_fixture {
+                    fixture.clone()
+                } else {
+                    std::sync::Arc::from(paste_target::system_backend())
+                }
+                #[cfg(not(debug_assertions))]
+                std::sync::Arc::from(paste_target::system_backend())
+            };
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 session: Mutex::new(session),
@@ -312,12 +336,28 @@ pub fn run() {
                 location,
                 index,
                 clipboard,
+                paste_targets: std::sync::Arc::new(paste_target::PasteTargets::default()),
+                paste_input,
+                #[cfg(debug_assertions)]
+                input_fixture,
+                #[cfg(debug_assertions)]
+                clipboard_fixture: memory_clipboard,
                 dictionary,
                 embedding,
                 content,
                 rag,
                 documents,
             });
+            if !isolated_test && !test_mode {
+                let state = app.state::<AppState>();
+                if let Err(error) = foreground_tracker::start(&state.paste_targets) {
+                    state.paste_targets.disable();
+                    if let Ok(mut message) = state.startup_error.lock() {
+                        message.get_or_insert(error);
+                    }
+                }
+            }
+            windows::capture_paste_target(app.handle());
             windows::build_main(app.handle())?;
             windows::build_quick(app.handle())?;
             let open = MenuItem::with_id(app, "open", "Prism 열기", true, None::<&str>)?;
@@ -406,6 +446,8 @@ pub fn run() {
             clipboard_commands::clipboard_text,
             clipboard_commands::clipboard_thumbnail,
             clipboard_commands::clipboard_copy,
+            clipboard_commands::clipboard_paste,
+            clipboard_commands::paste_fixture,
             clipboard_commands::clipboard_pin,
             clipboard_commands::clipboard_delete,
             clipboard_commands::clipboard_clear,
@@ -469,6 +511,7 @@ pub fn run() {
         .expect("Prism could not start")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                foreground_tracker::stop();
                 if let Some(state) = app.try_state::<AppState>() {
                     if let Ok(documents) = &state.documents {
                         documents.cancel_all();

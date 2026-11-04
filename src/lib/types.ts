@@ -21,6 +21,14 @@ export interface ClientSettings {
   startOnLogin: boolean;
   scopes: SearchScope[];
   calculator: { precision: number; angle: 'rad' | 'deg' };
+  clipboard: {
+    enabled: boolean;
+    captureImages: boolean;
+    maxItems: number;
+    maxAgeDays: number;
+    maxBytes: number;
+    onboarded: boolean;
+  };
 }
 export interface SearchSession {
   query: string;
@@ -73,6 +81,14 @@ export const defaultSettings: ClientSettings = {
   startOnLogin: true,
   scopes: [],
   calculator: { precision: 12, angle: 'rad' },
+  clipboard: {
+    enabled: true,
+    captureImages: true,
+    maxItems: 500,
+    maxAgeDays: 30,
+    maxBytes: 256 * 1024 ** 2,
+    onboarded: false,
+  },
 };
 export const emptySession: SearchSession = {
   query: '',
@@ -110,6 +126,19 @@ export function normalizeSettings(input: unknown): ClientSettings {
       precision: Math.min(15, Math.max(6, Math.round(Number(value.calculator?.precision) || 12))),
       angle: value.calculator?.angle === 'deg' ? 'deg' : 'rad',
     },
+    clipboard: {
+      enabled: value.clipboard?.enabled !== false,
+      captureImages: value.clipboard?.captureImages !== false,
+      maxItems: finiteInteger(value.clipboard?.maxItems, 500, 10, 10000),
+      maxAgeDays: finiteInteger(value.clipboard?.maxAgeDays, 30, 0, 3650),
+      maxBytes: finiteInteger(
+        value.clipboard?.maxBytes,
+        256 * 1024 ** 2,
+        16 * 1024 ** 2,
+        8 * 1024 ** 3,
+      ),
+      onboarded: value.clipboard?.onboarded === true,
+    },
     scopes: Array.isArray(value.scopes)
       ? value.scopes
           .filter(
@@ -124,6 +153,12 @@ export function normalizeSettings(input: unknown): ClientSettings {
           }))
       : [],
   };
+}
+
+function finiteInteger(value: unknown, fallback: number, min: number, max: number) {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(max, Math.max(min, Math.round(value)))
+    : fallback;
 }
 
 export function rememberQuery(session: SearchSession): SearchSession {

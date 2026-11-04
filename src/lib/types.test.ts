@@ -11,6 +11,28 @@ import {
 } from './types';
 
 describe('persisted client data', () => {
+  it('migrates old clipboard settings and preserves explicit off and unlimited retention', () => {
+    expect(normalizeSettings({}).clipboard).toEqual(defaultSettings.clipboard);
+    expect(
+      normalizeSettings({
+        clipboard: {
+          enabled: false,
+          captureImages: false,
+          maxAgeDays: 0,
+          maxBytes: Infinity,
+          maxItems: -1,
+          onboarded: true,
+        },
+      }).clipboard,
+    ).toEqual({
+      enabled: false,
+      captureImages: false,
+      maxAgeDays: 0,
+      maxBytes: 256 * 1024 ** 2,
+      maxItems: 10,
+      onboarded: true,
+    });
+  });
   it('recovers malformed optional settings without rendering invalid controls', () => {
     const value = normalizeSettings({
       theme: 'unknown',

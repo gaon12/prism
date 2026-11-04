@@ -17,6 +17,8 @@ Content search, RAG, AI-generated answers, dictionaries and clipboard history ar
 
 Plain input searches filenames and paths. Space-separated terms are combined with AND; double quotes keep a phrase together. Search is case-insensitive and normalizes Unicode for matching while preserving distinct filesystem paths. A selected folder limits the scope. The main window lists indexed items even with empty input; the quick window shows only its input until a non-whitespace value is entered.
 
+Korean initials work alongside literal terms and filters: `ㄱㅁㅅ ext:hwpx` can find `공문서.hwpx`. Mixed input such as `ㄱ문서` keeps `문서` literal rather than matching every word with initials `ㄱㅁㅅ`. Doubled consonants remain distinct, and both compatibility jamo (`ㄱ`) and modern leading jamo (`ᄀ`) are supported. Literal filename matches rank ahead of initial matches.
+
 | Input                                     | Action                                                             |
 | ----------------------------------------- | ------------------------------------------------------------------ |
 | `공문서 계획`                             | Names/paths containing both terms                                  |

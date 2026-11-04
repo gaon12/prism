@@ -1,4 +1,5 @@
 mod commands;
+mod filename_pattern;
 mod index;
 mod settings;
 mod windows;

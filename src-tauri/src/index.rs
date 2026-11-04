@@ -1,3 +1,4 @@
+use crate::filename_pattern::{initial_projection, FilenamePattern};
 use crate::settings::SearchScope;
 use chrono::{Datelike, Local, NaiveDate, TimeZone};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -56,6 +57,8 @@ struct Entry {
     name: String,
     searchable_path: String,
     extension: String,
+    initials_path: Option<String>,
+    initials_name: Option<String>,
     seen: u64,
 }
 #[derive(Clone, Default, Serialize)]
@@ -339,6 +342,8 @@ impl FileIndex {
                         let key = path_key(path);
                         let name = entry.file_name().to_string_lossy().to_string();
                         batch.push(Entry {
+                            initials_path: initial_projection(&normalized(&key)),
+                            initials_name: initial_projection(&normalized(&name)),
                             seen: generation,
                             result: FileResult {
                                 path: display_path(path),
@@ -480,7 +485,7 @@ impl Ord for Ranked<'_> {
     }
 }
 struct Query {
-    terms: Vec<String>,
+    terms: Vec<FilenamePattern>,
     extensions: Vec<HashSet<String>>,
     dates: Vec<(i64, i64)>,
     exact: String,
@@ -529,10 +534,15 @@ impl Query {
             } else if let Some(date) = lower.strip_prefix("edit-date:") {
                 parsed.dates.push(date_range(date)?);
             } else {
-                parsed.terms.push(lower);
+                parsed.terms.push(FilenamePattern::new(lower));
             }
         }
-        parsed.exact = parsed.terms.join(" ");
+        parsed.exact = parsed
+            .terms
+            .iter()
+            .map(FilenamePattern::text)
+            .collect::<Vec<_>>()
+            .join(" ");
         Ok(parsed)
     }
     fn extensions(value: &str) -> Result<HashSet<String>, String> {
@@ -555,7 +565,7 @@ impl Query {
     fn matches(&self, entry: &Entry) -> bool {
         self.terms
             .iter()
-            .all(|term| entry.searchable_path.contains(term))
+            .all(|term| term.matches(&entry.searchable_path, entry.initials_path.as_deref()))
             && self
                 .extensions
                 .iter()
@@ -572,10 +582,26 @@ impl Query {
             0
         } else if entry.name.starts_with(&self.exact) {
             1
-        } else if self.terms.iter().all(|term| entry.name.contains(term)) {
+        } else if self
+            .terms
+            .iter()
+            .all(|term| term.literal_matches(&entry.name))
+        {
             2
-        } else {
+        } else if self
+            .terms
+            .iter()
+            .all(|term| term.literal_matches(&entry.searchable_path))
+        {
             3
+        } else if self
+            .terms
+            .iter()
+            .all(|term| term.matches(&entry.name, entry.initials_name.as_deref()))
+        {
+            4
+        } else {
+            5
         }
     }
 }
@@ -711,6 +737,25 @@ mod tests {
         assert_eq!(result.results.len(), 2);
         assert_eq!(result.results[0].name, "가.txt");
         assert_eq!(index.search("가나다", "", None, 20).unwrap().total, 2);
+        assert_eq!(index.search("ㄱㄴㄷ", "", None, 20).unwrap().total, 2);
         assert!(!under("c:/docs-private/x", "c:/docs"));
+    }
+    #[test]
+    fn initial_queries_preserve_filters_and_prioritize_literal_names() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["공문서.hwpx", "공문서.txt", "김민수.hwpx", "ㄱㅁㅅ.hwpx"] {
+            fs::write(dir.path().join(name), "").unwrap();
+        }
+        let index = FileIndex::new();
+        index.configure(vec![scope(dir.path(), "all")]);
+        wait(&index, || index.status().unwrap().count == 5);
+        let result = index.search("ㄱㅁㅅ ext:hwpx", "", None, 20).unwrap();
+        assert_eq!(result.total, 3);
+        assert_eq!(result.results[0].name, "ㄱㅁㅅ.hwpx");
+        assert_eq!(
+            index.search("ㄱ문서 ext:hwpx", "", None, 20).unwrap().total,
+            1
+        );
+        assert_eq!(index.search("ㄱㅁㅅ", "txt", None, 20).unwrap().total, 1);
     }
 }

@@ -56,17 +56,20 @@ function jsonFields(text, paths) {
   });
 }
 
-function cargoField(text, lock) {
+function cargoField(text, lock, packageName = 'prism') {
   const blocks = [
     ...text.matchAll(/^\[\[?package\]?\][^\S\r\n]*\r?\n[\s\S]*?(?=^\[|(?![\s\S]))/gm),
   ];
   const matches = blocks.filter((block) =>
     lock
-      ? block[0].startsWith('[[package]]') && /^name\s*=\s*"prism"\s*$/m.test(block[0])
+      ? block[0].startsWith('[[package]]') &&
+        block[0].match(/^name\s*=\s*"([^"\r\n]+)"\s*$/m)?.[1] === packageName
       : block[0].startsWith('[package]'),
   );
   if (matches.length !== 1) throw new Error('Expected one Prism Cargo package.');
   const block = matches[0];
+  if (block[0].match(/^name\s*=\s*"([^"\r\n]+)"\s*$/m)?.[1] !== packageName)
+    throw new Error(`Expected Cargo package ${packageName}.`);
   const fields = [...block[0].matchAll(/^([ \t]*version[ \t]*=[ \t]*")([^"\r\n]+)(")/gm)];
   if (fields.length !== 1) throw new Error('Expected one Cargo package version.');
   const field = fields[0];
@@ -99,6 +102,9 @@ function main() {
     ['src-tauri/tauri.conf.json', (text) => jsonFields(text, [['version']])],
     ['src-tauri/Cargo.toml', (text) => cargoField(text, false)],
     ['src-tauri/Cargo.lock', (text) => cargoField(text, true)],
+    ['installer/src-tauri/tauri.conf.json', (text) => jsonFields(text, [['version']])],
+    ['installer/src-tauri/Cargo.toml', (text) => cargoField(text, false, 'prism-setup')],
+    ['installer/src-tauri/Cargo.lock', (text) => cargoField(text, true, 'prism-setup')],
   ];
   // Read and validate every file before the first write.
   const files = specs.map(([path, fields]) => {
@@ -110,7 +116,7 @@ function main() {
   const current = versions[0];
   if (new Set(versions).size !== 1 || typeof current !== 'string' || !semver.test(current)) {
     throw new Error(
-      'Application versions differ or are invalid. Repair the five version files first.',
+      'Application/setup versions differ or are invalid. Repair the eight version files first.',
     );
   }
   if (target === '--check') {

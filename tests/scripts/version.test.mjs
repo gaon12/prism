@@ -12,11 +12,15 @@ const paths = [
   'src-tauri/tauri.conf.json',
   'src-tauri/Cargo.toml',
   'src-tauri/Cargo.lock',
+  'installer/src-tauri/tauri.conf.json',
+  'installer/src-tauri/Cargo.toml',
+  'installer/src-tauri/Cargo.lock',
 ];
 function fixture(t, version = '0.1.0') {
   const root = mkdtempSync(join(tmpdir(), 'prism-version-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, 'src-tauri'));
+  mkdirSync(join(root, 'installer/src-tauri'), { recursive: true });
   // Nested versions come before the root version to catch naive first-match replacement.
   const content = [
     `{ "example": { "version": "0.1.0" }, "name": "prism", "version": "${version}", "dependencies": { "example": "0.1.0" } }\r\n`,
@@ -37,6 +41,11 @@ function fixture(t, version = '0.1.0') {
     `[package]\r\nname = "prism"\r\nauthors = ["Prism"]\r\nversion = "${version}" # preserve comment\r\n[dependencies]\r\nexample = "0.1.0"\r\n`,
     `# generated lockfile\nversion = 4\n\n[[package]]\nname = "example"\nversion = "0.1.0"\n\n[[package]]\nname = "prism"\nversion = "${version}"\ndependencies = [\n "example",\n]\n`,
   ];
+  content.push(
+    content[2],
+    content[3].replace('name = "prism"', 'name = "prism-setup"'),
+    content[4].replace('name = "prism"', 'name = "prism-setup"'),
+  );
   paths.forEach((path, i) => writeFileSync(join(root, path), content[i]));
   const snapshot = () => paths.map((path) => readFileSync(join(root, path), 'utf8'));
   const run = (...args) =>
@@ -71,8 +80,13 @@ test('bump updates manifests and lockfiles while preserving dependencies and for
           '"node_modules/example": {\n      "version": "0.2.0"',
           '"node_modules/example": {\n      "version": "0.1.0"',
         );
-    if (i === 4)
-      return text.replace('name = "prism"\nversion = "0.1.0"', 'name = "prism"\nversion = "0.2.0"');
+    if (i === 4 || i === 7) {
+      const name = i === 4 ? 'prism' : 'prism-setup';
+      return text.replace(
+        `name = "${name}"\nversion = "0.1.0"`,
+        `name = "${name}"\nversion = "0.2.0"`,
+      );
+    }
     return text
       .replace('version = "0.1.0"', 'version = "0.2.0"')
       .replace('"version": "0.1.0"', '"version": "0.2.0"');
@@ -123,6 +137,25 @@ test('a stale lockfile is rejected before any version is written', (t) => {
 test('missing or malformed later files cannot leave partially bumped manifests', (t) => {
   const f = fixture(t);
   writeFileSync(join(f.root, paths[4]), 'invalid Cargo lockfile');
+  const before = f.snapshot();
+  assert.notEqual(f.run('patch').status, 0);
+  assert.deepEqual(f.snapshot(), before);
+});
+
+test('stale setup metadata and lockfile fail before changing any app version', (t) => {
+  for (const index of [5, 6, 7]) {
+    const f = fixture(t);
+    writeFileSync(join(f.root, paths[index]), f.content[index].replaceAll('0.1.0', '0.0.9'));
+    const before = f.snapshot();
+    assert.notEqual(f.run('--check').status, 0);
+    assert.notEqual(f.run('patch').status, 0);
+    assert.deepEqual(f.snapshot(), before);
+  }
+});
+
+test('a different Cargo package cannot masquerade as setup metadata', (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.root, paths[6]), f.content[6].replace('prism-setup', 'different-installer'));
   const before = f.snapshot();
   assert.notEqual(f.run('patch').status, 0);
   assert.deepEqual(f.snapshot(), before);

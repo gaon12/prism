@@ -45,6 +45,7 @@ test('unexpected files, directories, stale versions and orphan checksums never b
     'Prism_0.0.9_x64-setup.exe',
     'folder',
     'Prism_0.1.0_universal.dmg.sha256',
+    'Prism_0.1.0_universal.app.tar.gz.sig',
   ]) {
     const f = await fixture(t);
     if (name === 'folder') await mkdir(join(f.directory, name));
@@ -52,6 +53,9 @@ test('unexpected files, directories, stale versions and orphan checksums never b
     await assert.rejects(f.run({ write: true }));
     assert.equal((await readdir(f.directory)).length, 2);
   }
+  const empty = await fixture(t);
+  await writeFile(join(empty.directory, empty.files[0]), '');
+  await assert.rejects(empty.run({ write: true }), /Unexpected/);
 });
 test('actual checksum CLI rejects incomplete sets and malformed options', async (t) => {
   const f = await fixture(t);

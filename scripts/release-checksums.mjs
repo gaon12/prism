@@ -27,11 +27,16 @@ export async function checksums({ directory, version, write = false, complete = 
   const files = [];
   for (const name of names) {
     const base = name.endsWith('.sha256') ? name.slice(0, -7) : name;
-    if (!allowed.has(base) || !(await lstat(join(directory, name))).isFile())
+    const metadata = await lstat(join(directory, name));
+    if (!allowed.has(base) || !metadata.isFile() || metadata.size === 0)
       throw new Error(`Unexpected download file/type: ${name}`);
     if (name.endsWith('.sha256')) {
       if (!present.has(base)) throw new Error(`Checksum has no download: ${name}`);
-    } else files.push(name);
+    } else {
+      if (name.endsWith('.sig') && !present.has(name.slice(0, -4)))
+        throw new Error(`Signature has no download: ${name}`);
+      files.push(name);
+    }
   }
   if (!files.length || (complete && primary.some((name) => !present.has(name))))
     throw new Error('Required release downloads are missing.');

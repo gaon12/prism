@@ -374,17 +374,23 @@ pub fn install(
             let link = safe_path::file(folder, "Prism.lnk")
                 .map_err(|_| "A shortcut path is unsafe.".to_string())?;
             if enabled {
-                // Remove the existing directory entry before the shell saves a new link,
-                // so a hard link cannot turn Save into an overwrite of a different file.
-                match fs::remove_file(&link) {
-                    Err(error) if error.kind() != io::ErrorKind::NotFound => {
-                        return Err("Could not replace a shortcut.".into())
-                    }
-                    _ => {}
+                if link.exists() && !system.shortcut_points_to(&link, &app).unwrap_or(false) {
+                    return Err("A shortcut changed during setup; it was preserved.".into());
                 }
+                let label = if folder == &folders.desktop {
+                    "desktop"
+                } else {
+                    "start-menu"
+                };
+                let staged_name = format!(".prism-shortcuts/{label}.lnk");
+                let staged_link = safe_path::create_parent(&staged, &staged_name)
+                    .map_err(|_| "Could not prepare a shortcut staging path.".to_string())?;
                 system
-                    .create_shortcut(&link, &app, "Search files, documents and clipboard")
+                    .create_shortcut(&staged_link, &app, "Search files, documents and clipboard")
                     .map_err(|_| "Could not create a shortcut.".to_string())?;
+                transaction
+                    .publish(&staged_link, folder, "Prism.lnk")
+                    .map_err(|_| "Could not replace a shortcut.".to_string())?;
                 shortcuts.push(folder.join("Prism.lnk"));
             } else if previous
                 .shortcuts

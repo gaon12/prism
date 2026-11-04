@@ -65,9 +65,7 @@ test('reviews fresh settings without side effects and retries a failed completio
   expect(errors).toEqual([]);
 });
 
-test('mobile skip discards draft choices and existing profiles bypass the tour', async ({
-  page,
-}) => {
+test('mobile skip discards draft choices', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
   const dialog = page.getByRole('dialog');
@@ -80,10 +78,19 @@ test('mobile skip discards draft choices and existing profiles bypass the tour',
   expect(
     await page.evaluate(() => JSON.parse(localStorage.getItem('prism.settings.v1')!)),
   ).toMatchObject({ onboardingVersion: 1, language: 'ko', scopes: [] });
-  await page.evaluate(() =>
+});
+
+test('existing profiles bypass the tour on startup', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  // Seed the existing profile before loading app code; keep this startup fixture
+  // independent from the previous scenario's live settings store and async work.
+  await page.addInitScript(() =>
     localStorage.setItem('prism.settings.v1', JSON.stringify({ language: 'ja', theme: 'dark' })),
   );
-  await page.reload();
+  await page.goto('/');
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.locator('html')).toHaveAttribute('lang', 'ja');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  expect(errors).toEqual([]);
 });

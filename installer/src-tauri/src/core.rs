@@ -2,6 +2,7 @@
 pub mod args;
 pub mod folder_lock;
 pub mod install;
+pub mod journal;
 pub mod operation;
 pub mod payload;
 pub mod safe_path;

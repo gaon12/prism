@@ -14,6 +14,7 @@
 mod args;
 mod folder_lock;
 mod install;
+mod journal;
 #[cfg(test)]
 mod install_regression;
 mod operation;

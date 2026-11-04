@@ -24,7 +24,7 @@ test('renders the empty library without fabricated files', async ({ page }) => {
   await expect(page).toHaveTitle('Prism');
   await expect(page.getByRole('heading', { name: '검색할 폴더를 추가하세요' })).toBeVisible();
   await expect(page.getByText('브라우저 미리보기', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: '본문', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '본문', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: '폴더 추가', exact: true }).last().click();
   await expect(page.getByRole('status')).toContainText('데스크톱 앱');
   await page.getByRole('status').getByRole('button').click();
@@ -44,6 +44,26 @@ test('clipboard command stays native-only in browser preview and empty quick sta
   await page.getByRole('textbox', { name: '검색어', exact: true }).fill(' ');
   await expect(page.locator('.quick-results')).toHaveCount(0);
   await expect(page.locator('.quick-empty')).toHaveCount(0);
+});
+
+test('content and semantic modes persist without fabricated browser results', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '본문', exact: true }).click();
+  await expect(page.locator('.content-panel')).toContainText('데스크톱');
+  const input = page.getByRole('textbox', { name: '검색어', exact: true });
+  await input.fill('제주 출장 경비');
+  await page.getByRole('button', { name: '자연어', exact: true }).click();
+  await expect(input).toHaveValue('제주 출장 경비');
+  await page.getByRole('button', { name: /빠른 검색/ }).click();
+  await expect(page.getByRole('main', { name: '빠른 검색', exact: true })).toBeVisible();
+  await expect(input).toBeFocused();
+  await expect(page.locator('.content-panel')).toContainText('데스크톱');
+  await input.press('Control+Enter');
+  await expect(page.getByRole('button', { name: '자연어', exact: true })).toHaveClass(/active/);
+  await page.getByRole('button', { name: '설정', exact: true }).click();
+  await page.getByRole('button', { name: 'AI·모델', exact: true }).click();
+  await expect(page.locator('.embedding-panel')).toContainText('데스크톱');
+  await page.getByRole('button', { name: '취소', exact: true }).click();
 });
 
 test('transfers query and filters to quick search and handles IME Enter', async ({ page }) => {

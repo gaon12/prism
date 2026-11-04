@@ -9,6 +9,8 @@
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri",
     "check": "tsc -b --pretty false",
+    "version:check": "node scripts/bump-version.mjs --check",
+    "version:bump": "node scripts/bump-version.mjs",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:bundle": "node scripts/test-e2e-bundle.mjs",

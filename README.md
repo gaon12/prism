@@ -12,12 +12,17 @@ Windows-first desktop search workspace built with Tauri 2, Rust, React and TypeS
 - CortexJS calculator, math.js unit conversions, explicit web-search commands and persistent clipboard history in both windows. Empty quick search stays compact without a result or empty-state panel.
 - Scoped local content search, source locations and live document updates, plus real EmbeddingGemma 2 / LanceDB natural-language search with explicit model installation and startup.
 - Four-language dictionary lookup and transactional offline packs, with attributed definitions and separate online-cache/offline states.
+- Persistent RAG conversations with explicit local/external provider settings, current source previews, cancellation and Markdown export.
 
-RAG chat and AI document generation are still being integrated. The filename index is an in-memory directory traversal implementation rebuilt at startup, not the planned NTFS MFT/USN backend or an Everything-level performance claim. Filename-only scopes collect names, paths and metadata; document contents are read only within separately enabled content/AI scopes. Symlinks and junctions below a registered root are not followed.
+AI document generation is still being integrated. The filename index is an in-memory directory traversal implementation rebuilt at startup, not the planned NTFS MFT/USN backend or an Everything-level performance claim. Filename-only scopes collect names, paths and metadata; document contents are read only within separately enabled content/AI scopes. Symlinks and junctions below a registered root are not followed.
 
 Content search stores source fingerprints, sections and bounded chunks in local SQLite, with trigram FTS acceleration and explicit partial-result diagnostics. Text/Markdown/code, CSV/TSV, HTML, PDF, DOCX, HWP/HWPX, PPTX, XLSX and ODT/ODS/ODP have extraction readers. Tables retain headers, row keys and cell locations. Cached spreadsheet formulas are not recalculated. Scanned textless PDFs report OCR required; password-based decryption and OCR are not implemented yet. Extraction has bounded file/archive/text budgets and reports skipped documents rather than claiming complete coverage.
 
 Natural-language search uses the actual `google/embeddinggemma-2` model and native LanceDB cosine retrieval. Model/runtime imports are hash-verified. The current packaged runtime supports Windows x64 CPU; model download and startup are explicit actions under AI/model settings. It does not generate chat answers. File changes trigger reconciliation, current sources are rechecked before results/file actions, and unavailable configured folders remain cached without exposing unavailable text. Internal application caches are excluded from content ingestion.
+
+RAG chat connects a user-run OpenAI-compatible local server or an external HTTPS provider; Prism does not download or start a generative model. Defaults are local, with external questions and fallback disabled. External RAG requires both question opt-in and separate permission for each folder's content. Provider changes and fallback cannot expand those permissions. Credentials are bound to the profile, provider slot and API base; Windows uses user-bound DPAPI, while unsupported credential stores return an explicit error instead of saving plaintext.
+
+Each provider attempt rechecks current policy and source hashes. Both history roles retain hidden/uncited provenance, so revoked, changed, deleted or out-of-scope evidence is omitted rather than replayed. Document questions with no evidence do not silently become general chat. Source links and model citations are unverified references; unknown labels remain unlinked, and reported usage is never estimated. Conversations support search, rename/delete, paging, explicit cancellation and Markdown export. Tests exercise the actual native RAG/source/SQLite/DPAPI path with a synthetic loopback completion server; actual external generation is not verified by that fixture.
 
 ## Search and quick tools
 
@@ -105,6 +110,8 @@ npm run tauri build -- --debug --no-bundle
 Run `src-tauri/target/debug/prism.exe`. Development builds do not register login startup. A normal desktop build needs WebView2 on Windows.
 
 After building this standalone debug executable, run `npm run test:standalone`, `npm run test:clipboard` and `npm run test:dictionary` to verify embedded UI, settings and window handoff without Vite. `npm run test:content` additionally requires the pinned model at `.dev/models/embeddinggemma-2-Q8_0.gguf` and runtime archive at `.dev/runtime/llama-b11960-bin-win-cpu-x64.zip`; it imports them into an isolated temporary profile and performs actual embedding/Lance retrieval.
+
+`npm run test:rag` uses generated files, an isolated profile, synthetic credentials and a loopback generation fixture. It checks current evidence, permission/credential boundaries, persisted conversations, cancellation and the actual chat UI without a real provider key or external request.
 
 ## Native smoke tests
 

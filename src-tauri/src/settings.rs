@@ -28,6 +28,7 @@ pub struct ClientSettings {
     pub remember_search: bool,
     pub keyboard_correction: bool,
     pub hybrid_search: bool,
+    pub automatic_semantic: bool,
     pub close_to_tray: bool,
     pub start_on_login: bool,
     pub scopes: Vec<SearchScope>,
@@ -81,6 +82,7 @@ impl Default for ClientSettings {
             remember_search: true,
             keyboard_correction: true,
             hybrid_search: true,
+            automatic_semantic: true,
             close_to_tray: true,
             start_on_login: true,
             scopes: vec![],
@@ -149,6 +151,7 @@ impl ClientSettings {
 #[serde(rename_all = "camelCase")]
 pub enum SearchMode {
     #[default]
+    Auto,
     Filename,
     Content,
     Semantic,
@@ -157,12 +160,16 @@ pub enum SearchMode {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SearchSession {
+    #[serde(default = "legacy_search_mode")]
     pub mode: SearchMode,
     pub query: String,
     pub scope_id: Option<String>,
     pub extension: String,
     pub selected_path: Option<String>,
     pub recent_queries: Vec<String>,
+}
+fn legacy_search_mode() -> SearchMode {
+    SearchMode::Filename
 }
 
 pub fn read_settings(path: &Path) -> Result<ClientSettings, String> {
@@ -199,6 +206,23 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn new_sessions_use_auto_but_legacy_and_explicit_modes_survive() {
+        assert_eq!(
+            serde_json::to_value(SearchSession::default()).unwrap()["mode"],
+            "auto"
+        );
+        for (value, expected) in [
+            (serde_json::json!({"query":"legacy"}), "filename"),
+            (serde_json::json!({"mode":"auto"}), "auto"),
+            (serde_json::json!({"mode":"semantic"}), "semantic"),
+        ] {
+            let session: SearchSession = serde_json::from_value(value).unwrap();
+            assert_eq!(serde_json::to_value(session).unwrap()["mode"], expected);
+        }
+        let settings: ClientSettings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(settings.automatic_semantic);
+    }
 
     #[test]
     fn only_new_profiles_require_onboarding_and_completion_survives_reopen() {
@@ -233,11 +257,13 @@ mod tests {
         write_json(&path, &settings).unwrap();
         settings.theme = "dark".into();
         settings.hybrid_search = false;
+        settings.automatic_semantic = false;
         settings.revision = 1;
         write_json(&path, &settings).unwrap();
         let loaded = read_settings(&path).unwrap();
         assert_eq!(loaded.theme, "dark");
         assert!(!loaded.hybrid_search);
+        assert!(!loaded.automatic_semantic);
         assert_eq!(loaded.revision, 1);
         assert_eq!(loaded.scopes[0].name, "문서");
         assert!(!loaded.scopes[0].content_enabled);

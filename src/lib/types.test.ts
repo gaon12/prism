@@ -22,6 +22,8 @@ describe('persisted client data', () => {
     expect(normalizeSettings({ onboardingVersion: 1 }).onboardingVersion).toBe(1);
   });
   it('keeps legacy search mode on filenames and preserves an explicit content mode', () => {
+    expect(normalizeSession(undefined).mode).toBe('auto');
+    expect(normalizeSession({ mode: 'auto' }).mode).toBe('auto');
     expect(normalizeSession({ query: '기획' }).mode).toBe('filename');
     expect(normalizeSession({ mode: 'content', query: '기획' }).mode).toBe('content');
     expect(normalizeSession({ mode: 'unknown', query: '기획' }).query).toBe('기획');
@@ -100,6 +102,7 @@ describe('persisted client data', () => {
       }),
     ).toEqual({
       ...emptySession,
+      mode: 'filename',
       recentQueries: ['문서'],
       extension: 'pdf',
       selectedPath: 'C:\\문서.pdf',

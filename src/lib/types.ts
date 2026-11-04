@@ -22,6 +22,7 @@ export interface ClientSettings {
   rememberSearch: boolean;
   keyboardCorrection: boolean;
   hybridSearch: boolean;
+  automaticSemantic: boolean;
   closeToTray: boolean;
   startOnLogin: boolean;
   scopes: SearchScope[];
@@ -38,7 +39,7 @@ export interface ClientSettings {
   };
 }
 export interface SearchSession {
-  mode: 'filename' | 'content' | 'semantic';
+  mode: 'auto' | 'filename' | 'content' | 'semantic';
   query: string;
   scopeId: string | null;
   extension: string;
@@ -88,6 +89,7 @@ export const defaultSettings: ClientSettings = {
   rememberSearch: true,
   keyboardCorrection: true,
   hybridSearch: true,
+  automaticSemantic: true,
   closeToTray: true,
   startOnLogin: true,
   scopes: [],
@@ -104,7 +106,7 @@ export const defaultSettings: ClientSettings = {
   },
 };
 export const emptySession: SearchSession = {
-  mode: 'filename',
+  mode: 'auto',
   query: '',
   scopeId: null,
   extension: '',
@@ -136,6 +138,7 @@ export function normalizeSettings(input: unknown): ClientSettings {
     keyboardCorrection:
       typeof value.keyboardCorrection === 'boolean' ? value.keyboardCorrection : true,
     hybridSearch: value.hybridSearch !== false,
+    automaticSemantic: value.automaticSemantic !== false,
     closeToTray: typeof value.closeToTray === 'boolean' ? value.closeToTray : true,
     startOnLogin: typeof value.startOnLogin === 'boolean' ? value.startOnLogin : true,
     calculator: {
@@ -210,7 +213,10 @@ export function normalizeSession(input: unknown): SearchSession {
   if (!input || typeof input !== 'object') return structuredClone(emptySession);
   const value = input as Partial<SearchSession>;
   return {
-    mode: value.mode === 'content' || value.mode === 'semantic' ? value.mode : 'filename',
+    mode:
+      value.mode === 'auto' || value.mode === 'content' || value.mode === 'semantic'
+        ? value.mode
+        : 'filename',
     query: typeof value.query === 'string' ? value.query : '',
     scopeId: typeof value.scopeId === 'string' ? value.scopeId : null,
     extension: typeof value.extension === 'string' ? value.extension : '',

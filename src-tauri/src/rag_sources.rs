@@ -247,6 +247,71 @@ fn reference(chunk: &ContentChunk, scope: String) -> SourceRef {
     }
 }
 impl SourceResolver for ContentSources {
+    fn retrieve_set(
+        &self,
+        question: &str,
+        scope_ids: &[String],
+        policy: &RagPolicy,
+        selection: Option<&crate::selection_set::SavedSelection>,
+        top_k: usize,
+        cancel: &AtomicBool,
+    ) -> RagResult<Vec<RagSource>> {
+        let Some(selection) = selection else {
+            return self.retrieve_selected(question, scope_ids, policy, None, top_k, cancel);
+        };
+        cancel_check(cancel)?;
+        let folders = selected(policy, scope_ids)?;
+        if folders.is_empty() {
+            return Ok(vec![]);
+        }
+        let ids: Vec<_> = folders.iter().map(|(id, _)| id.clone()).collect();
+        let roots: Vec<_> = folders.iter().map(|(_, root)| root.clone()).collect();
+        let prepared = match self.0.prepare_semantic_query(question, cancel) {
+            Ok(value) => Some(value),
+            Err(error) if error.code == "model" || error.code == "modelNotRunning" => None,
+            Err(error) => return Err(source_error(&error.code)),
+        };
+        let limit = top_k.clamp(1, 128);
+        let mut after = 0;
+        let mut best = Vec::new();
+        loop {
+            cancel_check(cancel)?;
+            let batch = selection.batch_in_roots(after, Some(&roots))?;
+            let Some(last) = batch.last() else { break };
+            after = last.id;
+            let paths: Vec<_> = batch.into_iter().map(|file| file.path).collect();
+            let candidates: Vec<(ContentChunk, f64)> = if let Some(query) = &prepared {
+                let filter = crate::content_store::ContentSearchFilter {
+                    document_paths: paths,
+                    ..Default::default()
+                };
+                self.0
+                    .run_semantic_query(query, &filter, &ids, limit, cancel)
+                    .map_err(|e| source_error(&e.code))?
+                    .hits
+                    .into_iter()
+                    .map(|hit| (hit.chunk, 1.0 - f64::from(hit.cosine_distance)))
+                    .collect()
+            } else {
+                self.0
+                    .search_selected(question, "", &ids, Some(&paths), cancel)
+                    .map_err(|e| source_error(&e.code))?
+                    .hits
+                    .into_iter()
+                    .map(|hit| (hit.chunk, hit.score))
+                    .collect()
+            };
+            best.extend(candidates);
+            best.sort_by(|left: &(ContentChunk, f64), right| {
+                right
+                    .1
+                    .total_cmp(&left.1)
+                    .then_with(|| left.0.id.cmp(&right.0.id))
+            });
+            best.truncate(limit);
+        }
+        authorize(best, &folders, policy, limit, cancel)
+    }
     fn retrieve(
         &self,
         question: &str,
@@ -304,40 +369,66 @@ impl SourceResolver for ContentSources {
             }
             Err(_) => return Err(RagError::new(RagErrorCode::SourceChanged)),
         };
-        let mut candidates: Vec<(ContentChunk, f64)> = candidates;
-        candidates.sort_by(|left, right| right.1.total_cmp(&left.1));
-        let mut seen = HashSet::new();
-        let mut hashes = HashMap::new();
-        let mut result = Vec::new();
-        for (chunk, _) in candidates {
-            cancel_check(cancel)?;
-            if !seen.insert(chunk.id.clone()) {
-                continue;
-            }
-            let path = Path::new(&chunk.file_path);
-            let Some(scope) = scope_for(path, policy, &folders) else {
-                continue;
-            };
-            let sha = match hashes.entry(chunk.file_path.clone()) {
-                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(current_sha(path, cancel)?)
-                }
-            };
-            if sha.as_deref() != Some(chunk.fingerprint.sha256.as_str()) {
-                continue;
-            }
-            result.push(RagSource {
-                source: reference(&chunk, scope),
-                text: chunk.text,
-            });
-            if result.len() >= top_k.clamp(1, 128) {
-                break;
-            }
-        }
-        Ok(result)
+        authorize(candidates, &folders, policy, top_k, cancel)
     }
     fn revalidate(
+        &self,
+        sources: &[SourceRef],
+        scope_ids: &[String],
+        policy: &RagPolicy,
+        cancel: &AtomicBool,
+    ) -> RagResult<Vec<CheckedSource>> {
+        self.revalidate_current(sources, scope_ids, policy, cancel)
+    }
+}
+fn source_error(code: &str) -> RagError {
+    RagError::new(match code {
+        "cancelled" => RagErrorCode::Cancelled,
+        "input" | "invalidInput" => RagErrorCode::Context,
+        _ => RagErrorCode::SourceChanged,
+    })
+}
+fn authorize(
+    mut candidates: Vec<(ContentChunk, f64)>,
+    folders: &[(String, String)],
+    policy: &RagPolicy,
+    top_k: usize,
+    cancel: &AtomicBool,
+) -> RagResult<Vec<RagSource>> {
+    candidates.sort_by(|left, right| right.1.total_cmp(&left.1));
+    let mut seen = HashSet::new();
+    let mut hashes = HashMap::new();
+    let mut result = Vec::new();
+    for (chunk, _) in candidates {
+        cancel_check(cancel)?;
+        if !seen.insert(chunk.id.clone()) {
+            continue;
+        }
+        let path = Path::new(&chunk.file_path);
+        let Some(scope) = scope_for(path, policy, folders) else {
+            continue;
+        };
+        let sha = match hashes.entry(chunk.file_path.clone()) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(current_sha(path, cancel)?)
+            }
+        };
+        if sha.as_deref() != Some(chunk.fingerprint.sha256.as_str()) {
+            continue;
+        }
+        result.push(RagSource {
+            source: reference(&chunk, scope),
+            text: chunk.text,
+        });
+        if result.len() >= top_k.clamp(1, 128) {
+            break;
+        }
+    }
+    Ok(result)
+}
+impl ContentSources {
+    fn revalidate_current(
         &self,
         sources: &[SourceRef],
         scope_ids: &[String],

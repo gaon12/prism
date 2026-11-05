@@ -27,6 +27,10 @@ use std::{
 use walkdir::WalkDir;
 
 const DIMENSIONS: usize = 768;
+pub(crate) struct SemanticQuery {
+    vector: Vec<f32>,
+    fingerprint: String,
+}
 const EXTRACTOR_VERSION: &str = "office-tables-v2";
 fn path_key(path: &Path) -> String {
     let value = path.to_string_lossy().replace('\\', "/");
@@ -987,10 +991,20 @@ impl ContentService {
                 "Enter a natural-language search up to 4096 bytes.",
             ));
         }
-        let roots = self.selected_roots(scope_ids)?;
         let mut filter = self.search_filter(extension)?;
         if let Some(paths) = documents {
             filter.document_paths = paths.to_vec();
+        }
+        let prepared = self.prepare_semantic_query(query, cancel)?;
+        self.run_semantic_query(&prepared, &filter, scope_ids, limit, cancel)
+    }
+    pub(crate) fn prepare_semantic_query(
+        &self,
+        query: &str,
+        cancel: &AtomicBool,
+    ) -> Result<SemanticQuery> {
+        if query.trim().is_empty() || query.len() > 4096 {
+            return Err(error("input", "Enter a search up to 4096 bytes."));
         }
         let embedding = self
             .inner
@@ -1012,14 +1026,33 @@ impl ContentService {
         let fingerprint = embedding
             .fingerprint(DIMENSIONS)
             .map_err(|message| error("model", &message))?;
+        Ok(SemanticQuery {
+            vector: query_vector,
+            fingerprint,
+        })
+    }
+    pub(crate) fn run_semantic_query(
+        &self,
+        query: &SemanticQuery,
+        filter: &ContentSearchFilter,
+        scope_ids: &[String],
+        limit: usize,
+        cancel: &AtomicBool,
+    ) -> Result<VectorSearchResponse> {
+        if !(1..=128).contains(&limit)
+            || !filter.document_paths.is_empty() && filter.document_paths.len() > 256
+        {
+            return Err(error("input", "Invalid semantic candidate budget."));
+        }
+        let roots = self.selected_roots(scope_ids)?;
         let vector = self.vector()?;
         let mut response = self
             .inner
             .runtime
             .block_on(vector.search(
-                &query_vector,
-                &fingerprint,
-                &filter,
+                &query.vector,
+                &query.fingerprint,
+                filter,
                 &self.inner.store,
                 &roots,
                 limit,

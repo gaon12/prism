@@ -291,6 +291,43 @@ pub struct CheckedSource {
     pub text: Option<String>,
 }
 pub trait SourceResolver: Send + Sync {
+    fn retrieve_set(
+        &self,
+        question: &str,
+        scope_ids: &[String],
+        policy: &RagPolicy,
+        selection: Option<&crate::selection_set::SavedSelection>,
+        top_k: usize,
+        cancel: &AtomicBool,
+    ) -> RagResult<Vec<RagSource>> {
+        let Some(selection) = selection else {
+            return self.retrieve_selected(question, scope_ids, policy, None, top_k, cancel);
+        };
+        let mut after = 0;
+        let mut result = Vec::new();
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                return Err(RagError::new(RagErrorCode::Cancelled));
+            }
+            let batch = selection.batch(after)?;
+            let Some(last) = batch.last() else {
+                break;
+            };
+            after = last.id;
+            let paths: Vec<_> = batch.into_iter().map(|file| file.path).collect();
+            result.extend(self.retrieve_selected(
+                question,
+                scope_ids,
+                policy,
+                Some(&paths),
+                top_k,
+                cancel,
+            )?);
+            result.truncate(top_k);
+        }
+        result.truncate(top_k);
+        Ok(result)
+    }
     /// Production resolvers must apply this restriction before their result cap.
     /// The default keeps simpler resolvers safe even if they return fewer hits.
     fn retrieve_selected(

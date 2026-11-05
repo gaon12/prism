@@ -73,9 +73,11 @@ try {
     ),
     'same DOM row survives indexing',
   );
+  await main.screenshot({ path: join(directory, 'refresh-pending.png') });
   await main.evaluate(() => window.__restoreIndexFetch());
   await main.getByRole('option').filter({ hasText: 'needle-second.md' }).waitFor();
   await until(() => action.isEnabled(), 'fresh selection enabled after real response');
+  await main.screenshot({ path: join(directory, 'refresh-complete.png') });
   assert.equal((await invoke('index_status')).count, 3);
   assert.deepEqual(instance.errors, []);
   console.log(

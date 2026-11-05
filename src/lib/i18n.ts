@@ -39,11 +39,11 @@ const messages = {
     '電源につなぐと続きから作成します。ファイル名の索引と検索は止まりません。',
   ],
   chatWaitsForIndex: [
-    '색인이 끝나면 검색 결과 전체로 대화할 수 있어요.',
-    'You can chat with all results when indexing finishes.',
-    '索引完成后即可与全部搜索结果对话。',
-    '索引完成後即可與全部搜尋結果對話。',
-    'インデックス作成が終わると、すべての検索結果と対話できます。',
+    '색인과 검색 결과 갱신이 끝나면 전체 결과로 대화할 수 있어요.',
+    'You can chat with all results after indexing and result updates finish.',
+    '索引和搜索结果更新完成后即可与全部结果对话。',
+    '索引和搜尋結果更新完成後即可與全部結果對話。',
+    'インデックス作成と検索結果の更新が終わると、すべての結果と対話できます。',
   ],
   chatWithResults: [
     '검색 결과로 대화',

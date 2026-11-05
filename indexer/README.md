@@ -59,7 +59,7 @@ cargo run --release --manifest-path indexer/Cargo.toml -p prism-ntfs-windows --e
 
 It prints aggregate counts and timing, never paths or file contents, and does
 not request elevation or install a service. In an ordinary-privilege session,
-`PermissionDenied` and exit code 2 are expected. Current verification is 46
+`PermissionDenied` and exit code 2 are expected. Current verification is 47
 tests on Windows and 29 portable tests under Linux; all-target Clippy passes
 on both. These checks do not prove live C-drive speed.
 

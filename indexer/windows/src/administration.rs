@@ -418,6 +418,24 @@ fn file_identity(handle: &OwnedHandle) -> io::Result<FILE_ID_INFO> {
     }
     Ok(identity)
 }
+fn configuration_command(buffer: &[usize], pointer: *const u16) -> io::Result<String> {
+    let begin = buffer.as_ptr() as usize;
+    let end = begin
+        .checked_add(std::mem::size_of_val(buffer))
+        .ok_or_else(denied)?;
+    let address = pointer as usize;
+    if address < begin || address >= end || !address.is_multiple_of(2) {
+        return Err(denied());
+    }
+    // The checked pointer lies inside this initialized aligned output buffer.
+    // Never scan beyond its end, even if the service configuration is invalid.
+    let units = unsafe { std::slice::from_raw_parts(pointer, (end - address) / 2) };
+    let length = units
+        .iter()
+        .position(|unit| *unit == 0)
+        .ok_or_else(denied)?;
+    String::from_utf16(&units[..length]).map_err(|_| denied())
+}
 
 /// Initial optional installation only. An existing service or unknown binary
 /// is left untouched; replacement/update policy is intentionally separate.
@@ -575,15 +593,7 @@ pub fn uninstall() -> io::Result<()> {
     if unsafe { QueryServiceConfigW(service.raw(), config, needed, &mut needed) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    let binary = unsafe { (*config).lpBinaryPathName };
-    let mut length = 0;
-    unsafe {
-        while *binary.add(length) != 0 {
-            length += 1;
-        }
-    }
-    let binary = String::from_utf16(unsafe { std::slice::from_raw_parts(binary, length) })
-        .map_err(|_| denied())?;
+    let binary = configuration_command(&buffer, unsafe { (*config).lpBinaryPathName })?;
     if !binary.eq_ignore_ascii_case(&command(&target))
         || unsafe { (*config).dwServiceType } != SERVICE_WIN32_OWN_PROCESS
     {
@@ -671,5 +681,28 @@ mod tests {
                 "{sddl}"
             );
         }
+    }
+    #[test]
+    fn configuration_strings_are_bounded_by_the_owned_query_buffer() {
+        let mut buffer = vec![0usize; 4];
+        let units = unsafe {
+            std::slice::from_raw_parts_mut(
+                buffer.as_mut_ptr().cast::<u16>(),
+                std::mem::size_of_val(buffer.as_slice()) / 2,
+            )
+        };
+        units[..3].copy_from_slice(&[b'a' as u16, b'b' as u16, 0]);
+        assert_eq!(
+            configuration_command(&buffer, buffer.as_ptr().cast()).unwrap(),
+            "ab"
+        );
+        assert!(configuration_command(&buffer, null()).is_err());
+        assert!(
+            configuration_command(&buffer, (buffer.as_ptr() as usize + 1) as *const u16).is_err()
+        );
+        let end = unsafe { buffer.as_ptr().add(buffer.len()) }.cast::<u16>();
+        assert!(configuration_command(&buffer, end).is_err());
+        buffer.fill(usize::MAX);
+        assert!(configuration_command(&buffer, buffer.as_ptr().cast()).is_err());
     }
 }

@@ -4,6 +4,7 @@ import { EmbeddingPanel } from '../features/models/EmbeddingPanel';
 import { GenerationPanel } from '../features/generation/GenerationPanel';
 import { UpdatePanel } from '../features/updates/UpdatePanel';
 import { DiagnosticPanel } from '../features/diagnostics/DiagnosticPanel';
+import { OcrSettings } from '../features/content/OcrSettings';
 import { generationCredentials } from '../lib/rag';
 import { bridge } from '../lib/bridge';
 import { useClient, saveSettings, scopesFromPaths, showToast, errorMessage } from '../lib/store';
@@ -380,6 +381,13 @@ export function SettingsDialog({
                   <p className="scope-empty">{t('noScopes')}</p>
                 )}
                 <p className="setting-footnote">{t('engineNext')}</p>
+                <div className="settings-divider" />
+                <OcrSettings
+                  value={draft.ocr}
+                  onChange={(ocr) => setDraft((current) => ({ ...current, ocr }))}
+                  language={settings.language}
+                  native={runtime.native}
+                />
               </>
             ) : null}
             {tab === 'shortcuts' ? (

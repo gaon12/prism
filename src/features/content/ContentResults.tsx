@@ -37,6 +37,18 @@ function issueKey(code: string): MessageKey {
       return 'corrupt';
     case 'ocrrequired':
       return 'ocr';
+    case 'ocrunavailable':
+      return 'ocrUnavailable';
+    case 'ocrlanguageunavailable':
+      return 'ocrLanguageUnavailable';
+    case 'ocrnotext':
+      return 'ocrNoText';
+    case 'ocrtimedout':
+      return 'ocrTimedOut';
+    case 'ocrbusy':
+      return 'ocrBusy';
+    case 'ocrfailed':
+      return 'ocrFailed';
     case 'limitexceeded':
     case 'toolarge':
       return 'budget';

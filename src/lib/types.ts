@@ -28,6 +28,7 @@ export interface ClientSettings {
   scopes: SearchScope[];
   generation: GenerationPreferences;
   updates: { autoCheck: boolean };
+  ocr: { enabled: boolean; language: string };
   calculator: { precision: number; angle: 'rad' | 'deg' };
   clipboard: {
     enabled: boolean;
@@ -95,6 +96,7 @@ export const defaultSettings: ClientSettings = {
   scopes: [],
   generation: structuredClone(defaultGeneration),
   updates: { autoCheck: true },
+  ocr: { enabled: false, language: 'auto' },
   calculator: { precision: 12, angle: 'rad' },
   clipboard: {
     enabled: true,
@@ -147,6 +149,13 @@ export function normalizeSettings(input: unknown): ClientSettings {
     },
     generation: normalizeGeneration(value.generation),
     updates: { autoCheck: value.updates?.autoCheck !== false },
+    ocr: {
+      enabled: value.ocr?.enabled === true,
+      language:
+        typeof value.ocr?.language === 'string' && /^[a-zA-Z0-9_-]{1,48}$/.test(value.ocr.language)
+          ? value.ocr.language
+          : 'auto',
+    },
     clipboard: {
       enabled: value.clipboard?.enabled !== false,
       captureImages: value.clipboard?.captureImages !== false,

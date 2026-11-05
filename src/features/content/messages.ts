@@ -2,6 +2,48 @@ import type { Language } from '../../lib/types';
 
 // Korean, English, Simplified Chinese, Traditional Chinese, Japanese.
 const messages = {
+  ocrUnavailable: [
+    '로컬 OCR 엔진이 없습니다. OS의 OCR·언어 팩 설치 상태를 확인하세요.',
+    'No local OCR engine is available. Check the operating system’s OCR and language packs.',
+    '没有可用的本机OCR引擎，请检查操作系统的OCR与语言包。',
+    '沒有可用的本機OCR引擎，請檢查作業系統的OCR與語言套件。',
+    'ローカルOCRが利用できません。OSのOCRと言語パックを確認してください。',
+  ],
+  ocrLanguageUnavailable: [
+    '선택한 OCR 언어 팩이 없습니다. OS에 설치한 뒤 설정에서 다시 확인하세요.',
+    'The selected OCR language pack is missing. Install it in the operating system, then check again in settings.',
+    '缺少所选OCR语言包。安装后请在设置中重新检查。',
+    '缺少所選OCR語言套件。安裝後請在設定中重新檢查。',
+    '選択したOCR言語パックがありません。OSにインストールして設定で再確認してください。',
+  ],
+  ocrNoText: [
+    'OCR을 실행했지만 읽을 수 있는 글자가 없습니다.',
+    'OCR ran but found no readable text.',
+    'OCR已完成，但未发现可读文字。',
+    'OCR已完成，但未發現可讀文字。',
+    'OCRを実行しましたが、読み取れる文字がありません。',
+  ],
+  ocrTimedOut: [
+    'OCR 처리 시간이 초과됐습니다. 문서를 나누어 다시 시도하세요.',
+    'OCR reached its time budget. Split the document and retry.',
+    'OCR处理超时，请拆分文档后重试。',
+    'OCR處理逾時，請分割文件後重試。',
+    'OCRの処理時間を超えました。文書を分割して再試行してください。',
+  ],
+  ocrBusy: [
+    '이전 OCR 작업이 정리 중입니다. 잠시 후 다시 색인하세요.',
+    'A previous OCR operation is still finishing. Retry indexing shortly.',
+    '先前OCR任务仍在结束中，请稍后重新索引。',
+    '先前OCR工作仍在結束中，請稍後重新索引。',
+    '前のOCR処理が終了中です。少し待って再インデックスしてください。',
+  ],
+  ocrFailed: [
+    '로컬 OCR 처리에 실패했습니다.',
+    'Local OCR failed.',
+    '本机OCR处理失败。',
+    '本機OCR處理失敗。',
+    'ローカルOCRに失敗しました。',
+  ],
   unlockPdf: ['암호 입력', 'Enter password', '输入密码', '輸入密碼', 'パスワードを入力'],
   unlockTitle: [
     '암호 PDF 다시 색인',

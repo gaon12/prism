@@ -11,6 +11,17 @@ import {
 } from './types';
 
 describe('persisted client data', () => {
+  it('migrates OCR as opt-in and rejects malformed language settings', () => {
+    expect(normalizeSettings({}).ocr).toEqual({ enabled: false, language: 'auto' });
+    expect(normalizeSettings({ ocr: { enabled: 'yes', language: '../../private' } }).ocr).toEqual({
+      enabled: false,
+      language: 'auto',
+    });
+    expect(normalizeSettings({ ocr: { enabled: true, language: 'ko' } }).ocr).toEqual({
+      enabled: true,
+      language: 'ko',
+    });
+  });
   it('defaults to combined content retrieval and preserves an explicit opt-out', () => {
     expect(normalizeSettings({}).hybridSearch).toBe(true);
     expect(normalizeSettings({ hybridSearch: false }).hybridSearch).toBe(false);

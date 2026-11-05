@@ -1,7 +1,8 @@
 # Optional Windows NTFS index service
 
-This is the optional NTFS backend approved for Prism. **The service is not
-installed or registered yet.** The app now prefers an already running service
+This is the optional NTFS backend approved for Prism. Initial elevated
+installation and SCM startup have been verified on the development machine.
+The app prefers an already running service
 for complete drive-root reconciliations and otherwise uses the parallel folder
 walker. A 5–7 second C-drive index is still unverified.
 
@@ -25,12 +26,16 @@ Implemented:
   extents, rather than assuming the MFT is contiguous.
 - `windows`: read-only volume handles, NTFS 3.x geometry, page-aligned buffers,
   overlapped sector-aligned reads and owned cancellation cleanup. Actual native
-  I/O tests use a test-owned regular file; live privileged volume reads remain
-  unverified.
+  I/O tests use a test-owned regular file. Explicit live read-only C-volume
+  probes also exercise metadata collection and journal replay.
 - A private snapshot builder replays the USN interval after a bulk scan, then
   re-reads complete metadata families. Deleted or reused references, directory
   renames and torn records are handled before publication. Deterministic
   driver/journal fixtures test this ordering on the independent NTFS image.
+  Raw disk records require valid sector markers and restoration. Completed
+  filesystem-driver record buffers are already restored; cached metadata edits
+  can leave their old update-sequence arrays stale, so these buffers are
+  structurally validated without applying that array a second time.
 - An SCM-hosted Windows service and local-only named pipe support bounded
   snapshot requests, cancellation, deadlines and completion acknowledgements.
   The ordinary-user client verifies the pipe server against the running SCM
@@ -49,8 +54,7 @@ Implemented:
   the stricter policy because name lookup can fail during network outages.
   Starting/removing verifies the exact own-process LocalSystem service before
   acting. The host itself accepts only `--service`; it cannot install itself.
-  Elevated deployment is not verified yet;
-  this is initial-install support, with update/recovery still pending.
+  Initial elevated deployment is verified; update/recovery remains pending.
 
 Run `cargo test --manifest-path indexer/Cargo.toml --locked` and
 `cargo clippy --manifest-path indexer/Cargo.toml --locked --all-targets -- -D warnings`.
@@ -67,7 +71,7 @@ cargo run --release --manifest-path indexer/Cargo.toml -p prism-ntfs-windows --e
 It prints aggregate counts and timing, never paths or file contents, and does
 not request elevation or install a service. In an ordinary-privilege session,
 `PermissionDenied` and exit code 2 are expected. With the administrative helper
-enabled, verification is 54 tests on Windows and 30 portable tests under Linux;
+enabled, verification is 55 tests on Windows and 31 portable tests under Linux;
 all-target Clippy passes. These checks do not prove live C-drive speed.
 
 The app's Windows build compiles and embeds both images automatically. For
@@ -85,13 +89,15 @@ environment variable can choose a payload or destination at runtime.
 
 Remaining integration:
 
-1. Verify the implemented adapter against a live, explicitly authorized NTFS
-   volume, including journal replay and recovery under real churn. MFT records
+1. Continue live churn/recovery coverage. The C-volume collector completed four
+   consecutive read-only probes after correcting cached-record decoding; this
+   does not measure IPC or app search readiness. MFT records
    can contain resident payload bytes; those are ignored and never returned by
    the metadata protocol, used as AI input, or retained in the catalog.
-2. Verify the service through an actual SCM installation. Current native pipe
-   tests use a private test endpoint; they do not impersonate an installed
-   service. Delta requests currently return `JournalGap`, explicitly requiring
+2. Verify complete snapshots through the installed service after deploying
+   the cached-record fix. Initial authenticated ordinary-client snapshots
+   exposed the decoding error; private pipe fixtures are not a substitute for
+   this live check. Delta requests currently return `JournalGap`, requiring
    a new snapshot rather than claiming an unchanged catalog.
 3. Finish service progress details and USN-based incremental updates. The app
    already validates the complete snapshot before publication, cancels idle

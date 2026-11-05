@@ -80,6 +80,9 @@ impl Geometry {
 
 pub struct RecordBuffer {
     pub bytes: Vec<u8>,
+    /// True only for completed FSCTL_GET_NTFS_FILE_RECORD output: sector
+    /// trailers are already restored and cached edits can leave its USA stale.
+    /// Raw volume/test-image bytes must leave this false.
     pub kernel_fixups: bool,
 }
 impl RecordBuffer {

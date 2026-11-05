@@ -100,9 +100,11 @@ pub fn parse_record(
     parse_decoded(number, &bytes).map(Some)
 }
 
-/// Kernel IOCTL buffers can already have their sector fixups applied. This
-/// entry point must only receive FSCTL_GET_NTFS_FILE_RECORD output. Raw volume
-/// reads always use `parse_record`, which requires intact on-disk markers.
+/// Decode the filesystem driver's in-memory FILE record. This entry point
+/// must only receive completed FSCTL_GET_NTFS_FILE_RECORD output. The driver
+/// has already restored sector trailers; later cached metadata edits can make
+/// the saved update-sequence array stale. It is not an on-disk checksum for
+/// this buffer. Raw volume reads must use `parse_record` instead.
 pub fn parse_kernel_record(
     number: u64,
     sector_size: usize,
@@ -156,22 +158,23 @@ pub(crate) fn decoded_record(
     {
         return Err(ParseError::Bounds);
     }
+    if kernel {
+        // Do not infer disk-vs-memory encoding from coincidentally equal tail
+        // words: restoring an old USA word here could overwrite a newer name
+        // or attribute. Header/attribute/identity checks still apply, while
+        // the completed driver call is the boundary for sector restoration.
+        return Ok(Some(bytes[..used].to_vec()));
+    }
     let mut fixed = bytes.to_vec();
     let marker = u16_at(bytes, usa)?;
     let protected =
         (1..usa_count).all(|sector| u16_at(bytes, sector * sector_size - 2) == Ok(marker));
-    let applied = kernel
-        && (1..usa_count).all(|sector| {
-            u16_at(bytes, sector * sector_size - 2) == u16_at(bytes, usa + sector * 2)
-        });
-    if !protected && !applied {
+    if !protected {
         return Err(ParseError::Fixup);
     }
     for sector in 1..usa_count {
         let end = sector * sector_size - 2;
-        if protected {
-            fixed[end..end + 2].copy_from_slice(slice(bytes, usa + sector * 2, 2)?);
-        }
+        fixed[end..end + 2].copy_from_slice(slice(bytes, usa + sector * 2, 2)?);
     }
     fixed.truncate(used);
     Ok(Some(fixed))
@@ -775,10 +778,54 @@ mod tests {
                 .size,
             Some(5)
         );
-        applied[1022..1024].copy_from_slice(&original[1022..1024]);
+    }
+    #[test]
+    fn driver_records_preserve_cached_edits_across_stale_sector_fixup_words() {
+        let parent = FileReference(5 | (1 << 48));
+        // The filename crosses the first sector trailer, so an incorrect
+        // restoration would silently substitute an old character in its name.
+        let text = "n".repeat(220);
+        let mut name = vec![0; 66 + text.len() * 2];
+        put64(&mut name, 0, parent.0);
+        name[64] = text.len() as u8;
+        name[65] = 1;
+        for (index, unit) in text.encode_utf16().enumerate() {
+            put16(&mut name, 66 + index * 2, unit);
+        }
+        let original = encoded(vec![resident(0x30, &name)]);
+        let mut cached = original.clone();
+        for (sector, end) in [(1, 510), (2, 1022)] {
+            cached[end..end + 2].copy_from_slice(&original[48 + sector * 2..50 + sector * 2]);
+        }
+        // A metadata edit in the filesystem cache does not regenerate the
+        // on-disk USA array before FSCTL_GET_NTFS_FILE_RECORD returns it.
+        cached[510..512].copy_from_slice(&(b'z' as u16).to_le_bytes());
+        cached[1022..1024].copy_from_slice(&123u16.to_le_bytes());
+        let record = parse_kernel_record(18, 512, &cached).unwrap().unwrap();
         assert_eq!(
-            parse_kernel_record(18, 512, &applied).unwrap_err(),
+            record.names[0].name.chars().filter(|c| *c == 'z').count(),
+            1
+        );
+        assert_eq!(record.names[0].name.len(), text.len());
+        assert_eq!(
+            parse_record(18, 512, &cached).unwrap_err(),
             ParseError::Fixup
+        );
+        // Even a coincidence matching every old marker must not cause the
+        // kernel path to overwrite freshly edited metadata with USA contents.
+        put16(&mut cached, 48, b'z' as u16);
+        put16(&mut cached, 1022, b'z' as u16);
+        assert!(parse_kernel_record(18, 512, &cached)
+            .unwrap()
+            .unwrap()
+            .names[0]
+            .name
+            .contains('z'));
+        // Cached buffers are still subject to structural bounds validation.
+        cached[4..6].copy_from_slice(&1022u16.to_le_bytes());
+        assert_eq!(
+            parse_kernel_record(18, 512, &cached).unwrap_err(),
+            ParseError::Bounds
         );
     }
 }

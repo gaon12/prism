@@ -17,7 +17,7 @@ import { bridge, native } from '../../lib/bridge';
 import { content } from '../../lib/content';
 import type { ContentController } from '../../lib/content';
 import { translate } from '../../lib/i18n';
-import { showToast, useClient } from '../../lib/store';
+import { errorMessage, saveSettings, showToast, useClient } from '../../lib/store';
 import { contentText } from './messages';
 import { matchedSegments } from '../../lib/text-match';
 import './content.css';
@@ -89,7 +89,7 @@ export function ContentResults({
   onSettings: () => void;
   onModels: () => void;
 }) {
-  const { settings } = useClient();
+  const { settings, session } = useClient();
   const language = settings.language;
   const t = (key: MessageKey, values?: Record<string, string | number>) =>
     contentText(language, key, values);
@@ -112,6 +112,33 @@ export function ContentResults({
   ]);
   const selectedId = selected?.chunk.id;
   const hasScopes = controller.scopes.length > 0;
+  // Folders the user already searches by name (in the current scope filter) whose content
+  // indexing is still off. New folders start with it off, so this is the usual reason
+  // content search and embeddings have nothing to work with.
+  const offScopes = settings.scopes.filter(
+    (scope) =>
+      scope.filenameEnabled &&
+      !scope.contentEnabled &&
+      (!session.scopeId || scope.id === session.scopeId),
+  );
+  const [enabling, setEnabling] = useState(false);
+  /** Turns on local content indexing for those folders. External AI access stays off. */
+  const enableContent = async () => {
+    setEnabling(true);
+    try {
+      const ids = new Set(offScopes.map((scope) => scope.id));
+      await saveSettings({
+        ...settings,
+        scopes: settings.scopes.map((scope) =>
+          ids.has(scope.id) ? { ...scope, contentEnabled: true } : scope,
+        ),
+      });
+    } catch (cause) {
+      showToast(errorMessage(cause));
+    } finally {
+      setEnabling(false);
+    }
+  };
   const indexing =
     status.phase === 'indexing' || status.phase === 'scanning' || status.phase === 'embedding';
   const paused = status.phase === 'cancelled' || status.phase === 'paused';
@@ -395,10 +422,22 @@ export function ContentResults({
           <div className="content-empty">
             <Folder size={compact ? 30 : 42} strokeWidth={1.4} aria-hidden="true" />
             <h2>{t('noScopes')}</h2>
-            <p>{t('scopeHint')}</p>
-            <button type="button" className="button" onClick={onSettings}>
-              {t('chooseScopes')}
-            </button>
+            <p>{t(offScopes.length ? 'enableContentHint' : 'scopeHint')}</p>
+            <div className="content-empty-actions">
+              {offScopes.length ? (
+                <button
+                  type="button"
+                  className="button primary"
+                  disabled={!native || enabling}
+                  onClick={() => void enableContent()}
+                >
+                  {t('enableContent', { count: offScopes.length })}
+                </button>
+              ) : null}
+              <button type="button" className="button" onClick={onSettings}>
+                {t('chooseScopes')}
+              </button>
+            </div>
           </div>
         ) : queryEmpty ? (
           <div className="content-empty">

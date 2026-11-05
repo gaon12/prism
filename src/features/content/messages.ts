@@ -198,6 +198,20 @@ const messages = {
     '目前範圍尚未啟用內文與AI資料夾。',
     'この範囲に本文・AI検索用のフォルダーがありません。',
   ],
+  enableContentHint: [
+    '파일명으로 찾는 폴더도 본문 색인은 따로 켜야 합니다. 켜면 이 PC 안에서만 내용을 읽어 색인하고, 외부 AI로는 보내지 않습니다.',
+    'Folders searched by name need content indexing turned on separately. It reads files only on this PC and sends nothing to external AI.',
+    '按文件名搜索的文件夹需要另外开启正文索引。开启后只在本机读取并建立索引，不会发送给外部AI。',
+    '以檔名搜尋的資料夾需要另外開啟內文索引。開啟後只在本機讀取並建立索引，不會傳送給外部AI。',
+    'ファイル名で検索するフォルダーも、本文インデックスは別に有効にする必要があります。このPC内でのみ読み取り、外部AIには送りません。',
+  ],
+  enableContent: [
+    '폴더 {count}개 본문 색인 켜기',
+    'Index content in {count} folders',
+    '为{count}个文件夹开启正文索引',
+    '為{count}個資料夾開啟內文索引',
+    '{count}個のフォルダーで本文インデックスを有効化',
+  ],
   chooseScopes: [
     '검색 폴더 설정',
     'Choose search folders',

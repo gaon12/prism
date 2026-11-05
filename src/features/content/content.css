@@ -373,3 +373,11 @@
     margin-left: 0;
   }
 }
+
+/* Empty state actions: the one-click fix first, the full settings second. */
+.content-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}

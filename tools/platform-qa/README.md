@@ -7,6 +7,14 @@ identity files directly. It avoids the Tauri, WebView
 and Lance build requirements so these modules can also be checked in a Linux shell.
 It does not replace the full application tests or native desktop QA.
 
+Collections checks include the actual EPUB container/package/spine parser,
+bounded local CSS/resource rewriting, unscripted HTML/SVG documents, font
+obfuscation metadata and current-source cache admission. They do not render
+browser pixels. The separate `npm run test:collections-epub` test exercises the
+bundled Windows reader and WebP rendering using [independent EPUB fixtures](../../tests/fixtures/epub/README.md).
+This is not evidence of Mac/Linux desktop EPUB rendering or complete reading-system
+conformance.
+
 ```sh
 cargo test --manifest-path tools/platform-qa/Cargo.toml --locked
 cargo clippy --manifest-path tools/platform-qa/Cargo.toml --locked --all-targets -- -D warnings

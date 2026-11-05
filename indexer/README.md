@@ -42,9 +42,20 @@ Implemented:
   family reads abort instead of inventing deletion of a still-present base.
   The optional `cache` codec persists names/metadata/checkpoints with a bounded,
   versioned SHA-256 payload and physical-device/geometry checks. Digest
-  verification precedes catalog allocation. Native protected-file persistence
-  and reuse by the service are still being connected; these core APIs alone
-  do not accelerate the currently installed host.
+  verification precedes catalog allocation. The Windows backend now loads this
+  cache and replays the journal before serving a snapshot; incompatible caches
+  and lost journals require a fresh scan.
+- Persistent metadata uses a fixed private service subdirectory, exact protected
+  ownership/ACL checks and regular single-link files. Immutable read handles
+  prevent changes during hash verification and decoding. Writes use a bounded
+  staging file, fsync and same-directory replacement. Per-drive slots have a
+  combined 2 GiB committed budget; one shared staging file can temporarily add
+  at most the codec's 1 GiB payload bound plus its header. Only reserved, verified
+  cache files can be evicted. Unknown children are preserved.
+  A single full-catalog owner serializes snapshots and deferred writes; idle
+  service memory does not retain a catalog for every drive. Deferred persistence
+  follows record transfer and has its own shutdown/deadline checks. Cache failure
+  does not relax filesystem trust or invalidate an otherwise verified snapshot.
 - An SCM-hosted Windows service and local-only named pipe support bounded
   snapshot requests, cancellation, deadlines and completion acknowledgements.
   The ordinary-user client verifies the pipe server against the running SCM
@@ -91,9 +102,21 @@ cargo run --release --manifest-path indexer/Cargo.toml -p prism-ntfs-windows --e
 It prints aggregate counts and timing, never paths or file contents, and does
 not request elevation or install a service. In an ordinary-privilege session,
 `PermissionDenied` and exit code 2 are expected. With the administrative helper
-and optional cache codec enabled (`--features admin,prism-ntfs-core/cache`),
-verification is 65 tests on Windows and 38 portable tests under Linux;
+and cache codec enabled (`--features admin,prism-ntfs-core/cache`),
+verification is 69 tests on Windows and 38 portable tests under Linux;
 all-target Clippy passes. These checks do not prove live C-drive speed.
+
+An ordinary-user probe of the actual installed service is also available:
+
+```sh
+cargo run --release --manifest-path indexer/Cargo.toml -p prism-ntfs-windows --example service_probe -- --drive C
+```
+
+It reports aggregate snapshot counts/time without using an app profile or
+clipboard. `--churn` additionally creates and cleans up only its own temporary
+files to verify Unicode names, renames, deletions, descendant paths and sizes;
+`--parallel` checks two concurrent clients. These options never install or
+elevate a service.
 
 The app's Windows build compiles and embeds both images automatically. For
 standalone helper validation, build the real host first (PowerShell):
@@ -115,19 +138,24 @@ Remaining integration:
    does not measure IPC or app search readiness. MFT records
    can contain resident payload bytes; those are ignored and never returned by
    the metadata protocol, used as AI input, or retained in the catalog.
-2. Expand live installed-service coverage. After deploying the cached-record
-   fix, two authenticated ordinary-client snapshots returned about 2.19 million
-   paths in 16.0–16.4 seconds. The production filename-index harness reached
-   collection completion in 14.9 seconds; this is not a 5–7 second claim.
+2. Expand live installed-service coverage. With the first synchronous disk-cache
+   implementation, ordinary debug snapshots of about 2.19 million C-drive paths
+   took 18.0 seconds cold and 10.8 seconds warm. Process read I/O fell from
+   6.75 GB to 341 MB; these are process counters, not physical-disk measurements.
+   A release probe verified actual owned-file churn. Against that same installed
+   host, the updated production filename client reached search readiness in
+   9.9 seconds versus 10.6 seconds before its allocation changes, with sampled
+   peak private memory reduced from 1.99 GB to 1.28 GB. These separate runs are
+   not a 5–7 second cold claim, nor proof of the newer deferred/per-drive cache.
    Delta requests currently return `JournalGap`, requiring
    a new snapshot rather than claiming an unchanged catalog.
-3. Connect persistent protected storage and the core USN refresh/cache codec
-   to the service, and finish service progress details. The app
+3. Verify the newer deferred/per-drive persistence through actual deployment,
+   restart and concurrent-client checks, and finish service progress details. The app
    already validates the complete snapshot before publication, cancels idle
    requests on scope revocation, filters to the active root, and retains the
    parallel walker for unavailable services, subfolders and other OSes.
 4. Verify elevated deployment and complete rollback/recovery, version update
-   handling and installer removal integration. The Windows app now embeds the
+   handling, cache cleanup and installer removal integration. The Windows app now embeds the
    matching helper and offers explicit UAC actions under search-scope settings.
    Read-only preflight precedes UAC; isolated profiles reject all changes before
    extraction. Native UI tests use real SCM/IPC and never fake an installation.

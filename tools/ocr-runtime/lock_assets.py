@@ -180,7 +180,7 @@ def main():
                     bootstrap=BOOTSTRAP.decode(), workerSha256=hashlib.sha256(worker).hexdigest(),
                     inventorySha256=digest_inventory(inventory), fileCount=len(inventory),
                     expandedBytes=sum(f["bytes"] for f in inventory), assets=assets)
-    args.output.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    args.output.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
     if root:
         (root / "inventory.json").write_text(json.dumps(inventory, separators=(",", ":")), encoding="utf-8")
     print(json.dumps(dict(target=TARGET, assets=len(assets), files=len(inventory),

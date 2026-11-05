@@ -5,6 +5,13 @@ edition = "2021"
 rust-version = "1.94"
 publish = false
 
+[profile.dev.package."sha2:0.10.9"]
+opt-level = 3
+[profile.dev.package."digest:0.10.7"]
+opt-level = 3
+[profile.dev.package."zlib-rs:0.6.8"]
+opt-level = 3
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -14,6 +21,7 @@ walkdir = "2.5.0"
 sha2 = "0.10"
 getrandom = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "system-proxy"] }
+tokio = { version = "1.54.1", features = ["rt", "time"] }
 zip = { version = "9.3", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"

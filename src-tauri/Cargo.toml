@@ -68,6 +68,15 @@ zbus-secret-service-keyring-store = { version = "=1.0.1", default-features = fal
 [dev-dependencies]
 tempfile = "3"
 
+# Large verified model files and wheel archives must remain usable in a debug
+# app too. Optimize only these CPU-heavy dependencies; app checks stay enabled.
+[profile.dev.package."sha2:0.10.9"]
+opt-level = 3
+[profile.dev.package."digest:0.10.7"]
+opt-level = 3
+[profile.dev.package."zlib-rs:0.6.8"]
+opt-level = 3
+
 [patch.crates-io]
 # Windows long-path handling for Lance's atomic local transaction persistence.
 tempfile = { path = "vendor/tempfile" }

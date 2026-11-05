@@ -43,11 +43,34 @@ pub fn fuse(
             .as_ref()
             .is_some_and(|value| value.hard_limit_reached);
     let keyword_skipped = keyword.is_none();
+    let hits = fuse_ranked(
+        keyword.map(|value| value.hits).unwrap_or_default(),
+        semantic.hits,
+        limit,
+    );
+    HybridResponse {
+        hits,
+        candidate_count: keyword_candidates + semantic.candidate_count,
+        candidate_limit,
+        hard_limit_reached,
+        keyword_candidates,
+        semantic_candidates: semantic.candidate_count,
+        keyword_skipped,
+    }
+}
+
+/// Inputs must be globally ranked within each branch. Batch-local ranks would
+/// give unrelated files in every later batch an artificial rank-one vote.
+pub(crate) fn fuse_ranked(
+    keyword: Vec<crate::content_store::ContentSearchHit>,
+    semantic: Vec<crate::vector_store::VectorSearchHit>,
+    limit: usize,
+) -> Vec<HybridHit> {
     let mut hits = HashMap::<String, HybridHit>::new();
     let mut conflicts = HashSet::new();
     let mut seen = HashSet::new();
-    if let Some(keyword) = keyword {
-        for (index, hit) in keyword.hits.into_iter().enumerate() {
+    {
+        for (index, hit) in keyword.into_iter().enumerate() {
             if !seen.insert(hit.chunk.id.clone()) {
                 continue;
             }
@@ -64,7 +87,7 @@ pub fn fuse(
         }
     }
     seen.clear();
-    for (index, hit) in semantic.hits.into_iter().enumerate() {
+    for (index, hit) in semantic.into_iter().enumerate() {
         if !hit.cosine_distance.is_finite() || !seen.insert(hit.chunk.id.clone()) {
             continue;
         }
@@ -102,15 +125,7 @@ pub fn fuse(
             .then_with(|| left.chunk.id.cmp(&right.chunk.id))
     });
     hits.truncate(limit);
-    HybridResponse {
-        hits,
-        candidate_count: keyword_candidates + semantic.candidate_count,
-        candidate_limit,
-        hard_limit_reached,
-        keyword_candidates,
-        semantic_candidates: semantic.candidate_count,
-        keyword_skipped,
-    }
+    hits
 }
 
 #[cfg(test)]

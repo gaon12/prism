@@ -905,8 +905,29 @@ impl ContentService {
         scope_ids: &[String],
         cancel: &AtomicBool,
     ) -> Result<ContentSearchResponse> {
+        self.search_selected(query, extension, scope_ids, None, cancel)
+    }
+    pub(crate) fn search_selected(
+        &self,
+        query: &str,
+        extension: &str,
+        scope_ids: &[String],
+        documents: Option<&[String]>,
+        cancel: &AtomicBool,
+    ) -> Result<ContentSearchResponse> {
         let roots = self.selected_roots(scope_ids)?;
-        let filter = self.search_filter(extension)?;
+        let mut filter = self.search_filter(extension)?;
+        if let Some(paths) = documents {
+            filter.document_paths = paths.to_vec();
+        }
+        if documents.is_some_and(<[String]>::is_empty) {
+            return Ok(ContentSearchResponse {
+                hits: vec![],
+                candidate_count: 0,
+                candidate_limit: 100,
+                hard_limit_reached: false,
+            });
+        }
         let mut response = self
             .inner
             .store
@@ -946,6 +967,17 @@ impl ContentService {
         limit: usize,
         cancel: &AtomicBool,
     ) -> Result<VectorSearchResponse> {
+        self.semantic_search_selected(query, extension, scope_ids, limit, None, cancel)
+    }
+    pub(crate) fn semantic_search_selected(
+        &self,
+        query: &str,
+        extension: &str,
+        scope_ids: &[String],
+        limit: usize,
+        documents: Option<&[String]>,
+        cancel: &AtomicBool,
+    ) -> Result<VectorSearchResponse> {
         if !(1..=128).contains(&limit) {
             return Err(error("input", "Invalid semantic candidate budget."));
         }
@@ -956,7 +988,10 @@ impl ContentService {
             ));
         }
         let roots = self.selected_roots(scope_ids)?;
-        let filter = self.search_filter(extension)?;
+        let mut filter = self.search_filter(extension)?;
+        if let Some(paths) = documents {
+            filter.document_paths = paths.to_vec();
+        }
         let embedding = self
             .inner
             .embedding
@@ -1188,6 +1223,28 @@ mod tests {
         assert_eq!(value.semantic_state, SemanticState::NotRunning);
         assert!(!value.keyword_skipped);
         assert!(!value.hits.is_empty());
+        let paths = vec![docs.join("guide.md").to_string_lossy().into_owned()];
+        assert!(!service
+            .search_selected("본문토큰", "", &["docs".into()], Some(&paths), &cancel)
+            .unwrap()
+            .hits
+            .is_empty());
+        assert!(service
+            .search_selected("본문토큰", "", &["docs".into()], Some(&[]), &cancel)
+            .unwrap()
+            .hits
+            .is_empty());
+        assert!(service
+            .search_selected(
+                "본문토큰",
+                "",
+                &["docs".into()],
+                Some(&["missing.md".into()]),
+                &cancel
+            )
+            .unwrap()
+            .hits
+            .is_empty());
         assert!(!service
             .automatic_search("본문토큰", "pdf,.MD", Some("docs"), false, true, &cancel)
             .unwrap()

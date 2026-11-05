@@ -255,38 +255,55 @@ impl SourceResolver for ContentSources {
         top_k: usize,
         cancel: &AtomicBool,
     ) -> RagResult<Vec<RagSource>> {
+        self.retrieve_selected(question, scope_ids, policy, None, top_k, cancel)
+    }
+    fn retrieve_selected(
+        &self,
+        question: &str,
+        scope_ids: &[String],
+        policy: &RagPolicy,
+        documents: Option<&[String]>,
+        top_k: usize,
+        cancel: &AtomicBool,
+    ) -> RagResult<Vec<RagSource>> {
         cancel_check(cancel)?;
+        if documents.is_some_and(<[String]>::is_empty) {
+            return Ok(vec![]);
+        }
         let folders = selected(policy, scope_ids)?;
         if folders.is_empty() {
             return Ok(vec![]);
         }
         let ids: Vec<_> = folders.iter().map(|(id, _)| id.clone()).collect();
-        let candidates =
-            match self
+        let candidates = match self.0.semantic_search_selected(
+            question,
+            "",
+            &ids,
+            top_k.clamp(1, 128),
+            documents,
+            cancel,
+        ) {
+            Ok(response) => response
+                .hits
+                .into_iter()
+                .map(|hit| (hit.chunk, 1.0 - f64::from(hit.cosine_distance)))
+                .collect(),
+            Err(error) if error.code == "model" || error.code == "modelNotRunning" => self
                 .0
-                .semantic_search_in_scopes(question, "", &ids, top_k.clamp(1, 128), cancel)
-            {
-                Ok(response) => response
-                    .hits
-                    .into_iter()
-                    .map(|hit| (hit.chunk, 1.0 - f64::from(hit.cosine_distance)))
-                    .collect(),
-                Err(error) if error.code == "model" || error.code == "modelNotRunning" => self
-                    .0
-                    .search_in_scopes(question, "", &ids, cancel)
-                    .map_err(|_| RagError::new(RagErrorCode::SourceChanged))?
-                    .hits
-                    .into_iter()
-                    .map(|hit| (hit.chunk, hit.score))
-                    .collect(),
-                Err(error) if error.code == "cancelled" => {
-                    return Err(RagError::new(RagErrorCode::Cancelled))
-                }
-                Err(error) if error.code == "input" => {
-                    return Err(RagError::new(RagErrorCode::Context))
-                }
-                Err(_) => return Err(RagError::new(RagErrorCode::SourceChanged)),
-            };
+                .search_selected(question, "", &ids, documents, cancel)
+                .map_err(|_| RagError::new(RagErrorCode::SourceChanged))?
+                .hits
+                .into_iter()
+                .map(|hit| (hit.chunk, hit.score))
+                .collect(),
+            Err(error) if error.code == "cancelled" => {
+                return Err(RagError::new(RagErrorCode::Cancelled))
+            }
+            Err(error) if error.code == "input" => {
+                return Err(RagError::new(RagErrorCode::Context))
+            }
+            Err(_) => return Err(RagError::new(RagErrorCode::SourceChanged)),
+        };
         let mut candidates: Vec<(ContentChunk, f64)> = candidates;
         candidates.sort_by(|left, right| right.1.total_cmp(&left.1));
         let mut seen = HashSet::new();

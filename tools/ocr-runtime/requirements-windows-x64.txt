@@ -1,0 +1,10 @@
+# Maintainer input, not a command executed on users' machines. The generated
+# asset lock pins every wheel's official URL, byte length and SHA-256.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0+cpu
+torchvision==0.28.0+cpu
+transformers==5.18.0
+paddleocr[doc-parser]==3.7.0
+paddlex==3.7.2
+pillow==12.2.0
+pypdfium2==5.13.0

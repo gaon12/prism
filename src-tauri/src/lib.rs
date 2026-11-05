@@ -529,6 +529,8 @@ pub fn run() {
             content_commands::content_chunks,
             content_commands::content_file_action,
             rag_commands::rag_create,
+            rag_commands::rag_create_from_search,
+            rag_commands::rag_set_selection,
             rag_commands::rag_list,
             rag_commands::rag_rename,
             rag_commands::rag_delete,

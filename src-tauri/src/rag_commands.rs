@@ -20,6 +20,23 @@ pub async fn rag_create(
     blocking(move || service.create_conversation(title.as_deref())).await
 }
 #[tauri::command]
+pub async fn rag_create_from_search(
+    state: State<'_, AppState>,
+    selection: crate::chat_selection::ChatSelection,
+) -> RagResult<ConversationSummary> {
+    let service = service(&state)?;
+    blocking(move || service.create_from_search(selection)).await
+}
+#[tauri::command]
+pub async fn rag_set_selection(
+    state: State<'_, AppState>,
+    id: String,
+    selection: Option<crate::chat_selection::ChatSelection>,
+) -> RagResult<()> {
+    let service = service(&state)?;
+    blocking(move || service.set_selection(&id, selection)).await
+}
+#[tauri::command]
 pub async fn rag_list(
     state: State<'_, AppState>,
     query: String,

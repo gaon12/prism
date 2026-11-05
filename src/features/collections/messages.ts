@@ -1,5 +1,12 @@
 import type { Language } from '../../lib/types';
 const messages = {
+  chapterPosition: [
+    '{n} / {total} 장',
+    '{n} / {total} sections',
+    '{n} / {total} 章',
+    '{n} / {total} 章',
+    '{n} / {total} 章',
+  ],
   previousUnits: [
     '이전 권·회차 목록',
     'Previous volumes/chapters',

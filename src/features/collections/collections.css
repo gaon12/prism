@@ -520,6 +520,23 @@
   line-height: 1.7;
   color: var(--danger);
 }
+.collection-epub {
+  width: 100%;
+  max-width: 1000px;
+  margin: auto;
+  text-align: left;
+}
+.collection-epub > div {
+  max-width: 100%;
+  margin: auto;
+}
+.collection-epub iframe {
+  display: block;
+  border: 0;
+  background: white;
+  transform-origin: top left;
+  color-scheme: light;
+}
 @media (max-width: 900px) {
   .collection-workspace {
     padding: 20px;

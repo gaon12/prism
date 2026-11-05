@@ -51,7 +51,7 @@ export interface Page {
   unitId: string;
   sourceId: string;
   position: number;
-  location: { kind: 'image' | 'pdf' | 'text'; entry: string | null; number: number };
+  location: { kind: 'image' | 'pdf' | 'text' | 'epub'; entry: string | null; number: number };
   title: string;
   sourceHash: string;
 }
@@ -62,8 +62,16 @@ export interface Listing<T> {
 }
 export interface Media {
   pageId: string;
+  sourceHash: string;
   dataUrl: string | null;
   text: string | null;
+  document: EpubDocument | null;
+}
+export interface EpubDocument {
+  html: string;
+  width: number;
+  height: number;
+  fixed: boolean;
 }
 export interface Reading {
   workId: string;
@@ -133,9 +141,10 @@ export const library = {
       workId,
       pageId,
     }),
-  media: (pageId: string, thumbnail = false) =>
-    invoke<Media>('collection_media', { pageId, thumbnail }),
-  cover: (workId: string) => invoke<Media>('collection_cover', { workId }),
+  media: async (pageId: string, thumbnail = false) =>
+    completeMedia(await invoke<Media>('collection_media', { pageId, thumbnail }), thumbnail),
+  cover: async (workId: string) =>
+    completeMedia(await invoke<Media>('collection_cover', { workId }), true),
   reading: (workId: string) => invoke<Reading>('collection_reading', { workId }),
   saveReading: (workId: string, pageId: string | null, completed: boolean) =>
     serialReading(workId, () =>
@@ -161,6 +170,16 @@ export const library = {
   openSource: (id: string, reveal = false) =>
     invoke<void>('collection_open_source', { id, reveal }),
 };
+async function completeMedia(media: Media, thumbnail: boolean): Promise<Media> {
+  if (!thumbnail || !media.document) return media;
+  const { epubThumbnail } = await import('./epub-render');
+  const dataUrl = await epubThumbnail(media.document);
+  return invoke<Media>('collection_cache_epub', {
+    pageId: media.pageId,
+    sourceHash: media.sourceHash,
+    dataUrl,
+  });
+}
 const readingWrites = new Map<string, Promise<unknown>>();
 function serialReading<T>(key: string, operation: () => Promise<T>): Promise<T> {
   const next = (readingWrites.get(key) ?? Promise.resolve()).catch(() => {}).then(operation);

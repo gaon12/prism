@@ -5,6 +5,7 @@ import { library, readingSettled, mediaTask } from './api';
 import type { Unit, Work } from './api';
 import { useRemote } from './hooks';
 import { failureKey, libraryText } from './messages';
+import { EpubPage } from './EpubPage';
 export function PageReader({
   work,
   unit,
@@ -131,6 +132,23 @@ export function PageReader({
         {!error && media.data?.dataUrl ? (
           <img src={media.data.dataUrl} alt={t('pagePosition', { n: offset + 1, total })} />
         ) : null}
+        {!error && media.data?.document ? (
+          <EpubPage
+            key={media.data.pageId}
+            book={media.data.document}
+            fitWidth={fitWidth}
+            title={page?.title ?? work.title}
+            onKey={(key) => {
+              if (key === 'Escape') {
+                close();
+                return;
+              }
+              const rtl = work.metadata.direction === 'rightToLeft';
+              if (key === 'PageDown' || key === (rtl ? 'ArrowLeft' : 'ArrowRight')) next();
+              else previous();
+            }}
+          />
+        ) : null}
         {!error && media.data?.text !== null && media.data?.text !== undefined ? (
           <article className="collection-reader-text">
             <p className="collection-text-label">
@@ -157,7 +175,12 @@ export function PageReader({
             )}
           </button>
           <span aria-live="polite">
-            {t('pagePosition', { n: Math.min(offset + 1, total), total })}
+            {t(
+              media.data?.document && !media.data.document.fixed
+                ? 'chapterPosition'
+                : 'pagePosition',
+              { n: Math.min(offset + 1, total), total },
+            )}
           </span>
           <button
             type="button"
@@ -174,9 +197,11 @@ export function PageReader({
           </button>
         </div>
         <div>
-          <button type="button" className="button" onClick={() => setFitWidth((value) => !value)}>
-            {t(fitWidth ? 'fitPage' : 'fitWidth')}
-          </button>
+          {!media.data?.document || media.data.document.fixed ? (
+            <button type="button" className="button" onClick={() => setFitWidth((value) => !value)}>
+              {t(fitWidth ? 'fitPage' : 'fitWidth')}
+            </button>
+          ) : null}
           <label>
             <input
               type="checkbox"

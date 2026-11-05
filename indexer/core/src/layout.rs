@@ -98,7 +98,9 @@ impl RecordBuffer {
 
 pub trait Source {
     /// Read exactly the requested physical bytes. Implementations must reject
-    /// out-of-volume ranges, use read-only handles and bound stalled I/O.
+    /// out-of-volume ranges and use read-only handles. Native I/O must request
+    /// cancellation at its deadline and retain storage until completion;
+    /// transports separately bound how long a client waits for driver cleanup.
     fn read_exact_at(&mut self, offset: u64, bytes: &mut [u8]) -> Result<()>;
     /// Return this exact MFT number and sequence (if nonzero), never the lower
     /// in-use record that FSCTL_GET_NTFS_FILE_RECORD can return for a hole.

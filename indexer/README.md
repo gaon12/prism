@@ -18,33 +18,55 @@ Implemented:
 - An independent public mkntfs image exercises 581 records, file sizes, and
   all 512 subdirectories. Adversarial unit tests cover bounds, torn sectors,
   cycles, cancellation, protocol lengths and path escapes.
+- MFT bootstrap resolves fragmented data extents and resident/nonresident
+  attribute lists. Bulk reads use bounded 4 MiB blocks and validate exact
+  extension references, contiguous VCN coverage and nonoverlapping physical
+  extents, rather than assuming the MFT is contiguous.
+- `windows`: read-only volume handles, NTFS 3.x geometry, page-aligned buffers,
+  overlapped sector-aligned reads and owned cancellation cleanup. Actual native
+  I/O tests use a test-owned regular file; live privileged volume reads remain
+  unverified.
+- A private snapshot builder replays the USN interval after a bulk scan, then
+  re-reads complete metadata families. Deleted or reused references, directory
+  renames and torn records are handled before publication. Deterministic
+  driver/journal fixtures test this ordering on the independent NTFS image.
 
 Run `cargo test --manifest-path indexer/Cargo.toml --locked` and
 `cargo clippy --manifest-path indexer/Cargo.toml --locked --all-targets -- -D warnings`.
-The current crates have no runtime dependency other than each other. `flate2`
-is a test-only dependency for the compressed public fixture.
+The core/protocol crates have no external runtime dependencies. The Windows
+adapter uses `windows-sys`; `flate2` and `tempfile` are test-only dependencies.
+
+An explicit read-only probe is available for an already authorized Windows
+administrator shell:
+
+```sh
+cargo run --release --manifest-path indexer/Cargo.toml -p prism-ntfs-windows --example snapshot_probe -- --drive C
+```
+
+It prints aggregate counts and timing, never paths or file contents, and does
+not request elevation or install a service. In an ordinary-privilege session,
+`PermissionDenied` and exit code 2 are expected. Current verification is 25
+tests on Windows and 22 portable tests under Linux; all-target Clippy passes
+on both. These checks do not prove live C-drive speed.
 
 Remaining integration:
 
-1. A Windows read-only volume adapter must resolve the complete MFT data
-   runlist, including attribute-list extensions, and stream records in bounded
-   blocks. It must not assume that the MFT is contiguous. MFT records can
-   contain resident payload bytes; those are ignored and never returned by the
-   metadata protocol, used as AI input, or retained in the catalog.
-2. Capture a journal checkpoint before the snapshot, then replay changes before
-   publishing it. Detect journal replacement/wrap and fail into a fresh snapshot.
-   USN timestamps are journal-event times, not file modification times; preserve
-   the standard-information timestamp and actual unnamed data size instead.
-3. Implement the Windows service and local-only named pipe. Restrict its ACL,
+1. Verify the implemented adapter against a live, explicitly authorized NTFS
+   volume, including journal replay and recovery under real churn. MFT records
+   can contain resident payload bytes; those are ignored and never returned by
+   the metadata protocol, used as AI input, or retained in the catalog.
+2. Implement the Windows service and local-only named pipe. Restrict its ACL,
    reject remote clients, verify the server against SCM, bound concurrent
-   requests, apply I/O deadlines and propagate disconnect/cancellation.
-4. Connect the ordinary-privilege app, active-scope filtering, status/progress,
+   requests, apply I/O deadlines and propagate disconnect/cancellation. Bind a
+   response to the volume serial number of the client's authorized root before
+   accepting paths, so per-user drive mappings cannot confuse volume identity.
+3. Connect the ordinary-privilege app, active-scope filtering, status/progress,
    incremental updates and immediate scope revocation. Keep the parallel walker
    for unavailable services, non-NTFS disks, network folders and other OSes.
-5. Add an optional, one-time UAC service installation into an administrator-owned
+4. Add an optional, one-time UAC service installation into an administrator-owned
    location, uninstall/update handling and installer/portable UI. Installation
    must be explicit; ordinary app startup must never silently elevate itself.
-6. Verify the live service and compare the same drive against the current
+5. Verify the live service and compare the same drive against the current
    walker. Fixture success is not a claim of Everything-level speed.
 
 Implementation references: Microsoft's [file record segment header](https://learn.microsoft.com/en-us/windows/win32/devnotes/file-record-segment-header),

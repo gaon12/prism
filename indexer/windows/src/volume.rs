@@ -155,7 +155,8 @@ impl Device {
             // SAFETY: cancel only this owned operation, then drain it before
             // releasing OVERLAPPED, its input, event or output allocation.
             // A defective driver can delay cancellation cleanup; a service
-            // client has a separate pipe deadline and need not await cleanup.
+            // transports must enforce separate pipe deadlines so clients do
+            // not depend on a stalled driver's cleanup completing promptly.
             unsafe {
                 CancelIoEx(self.raw(), pending);
                 GetOverlappedResult(self.raw(), pending, &mut transferred, 1);

@@ -5,6 +5,8 @@ pub mod collection_store;
 pub mod collection_import;
 #[path = "../../../src-tauri/src/collection_render.rs"]
 pub mod collection_render;
+#[path = "../../../src-tauri/src/collection_service.rs"]
+pub mod collection_service;
 #[path = "../../../src-tauri/src/ocr.rs"]
 pub mod ocr;
 // Full-app callers are absent here. Keep the existing source modules' style

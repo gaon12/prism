@@ -434,29 +434,201 @@ mod win {
     };
 }
 
+/// macOS and Linux (X11) talk to the desktop through small system tools instead of new
+/// native dependencies:
+/// - macOS: `lsappinfo` reads the front app (no permission needed); `osascript` with System
+///   Events activates it and presses Cmd+V. That needs the Accessibility permission for
+///   Prism; without it the tool fails and the paste reports `InputBlocked` (copy is kept).
+/// - Linux: `xdotool` on an X11 session. Pure Wayland sessions are reported as unsupported.
+///
+/// "Window" here is the app's process id on macOS and the X11 window id on Linux.
+/// Every tool runs without a shell, with fixed arguments and a short timeout.
 #[cfg(not(windows))]
 impl InputBackend for SystemBackend {
     fn supported(&self) -> bool {
-        false
+        unix_desktop::supported()
     }
     fn current_pid(&self) -> u32 {
         std::process::id()
     }
     fn foreground(&self) -> Option<WindowId> {
-        None
+        unix_desktop::foreground()
     }
-    fn window_pid(&self, _: WindowId) -> Option<u32> {
-        None
+    fn window_pid(&self, window: WindowId) -> Option<u32> {
+        unix_desktop::window_pid(window)
     }
-    fn focus(&self, _: WindowId) -> bool {
-        false
+    fn focus(&self, window: WindowId) -> bool {
+        unix_desktop::focus(window)
     }
-    fn send_ctrl_v(&self, _: WindowId, _: u32) -> bool {
-        false
+    fn send_ctrl_v(&self, window: WindowId, pid: u32) -> bool {
+        // Recheck right before the keystroke: the same target must still be in front.
+        unix_desktop::foreground() == Some(window)
+            && unix_desktop::window_pid(window) == Some(pid)
+            && unix_desktop::paste()
     }
     fn sleep(&self, duration: Duration) {
         std::thread::sleep(duration);
     }
+}
+
+/// Runs a system tool with fixed arguments and returns its stdout when it exits successfully
+/// within `timeout`. A tool that hangs is killed, so it can never freeze Prism.
+#[cfg(not(windows))]
+fn run_tool(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut text = String::new();
+                if let Some(mut out) = child.stdout.take() {
+                    use std::io::Read;
+                    let _ = out.read_to_string(&mut text);
+                }
+                return status.success().then_some(text);
+            }
+            Ok(None) if start.elapsed() < timeout => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod unix_desktop {
+    use super::{run_tool, WindowId};
+    use std::time::Duration;
+
+    const TOOL_TIMEOUT: Duration = Duration::from_secs(2);
+
+    pub fn supported() -> bool {
+        std::path::Path::new("/usr/bin/osascript").is_file()
+            && std::path::Path::new("/usr/bin/lsappinfo").is_file()
+    }
+    pub fn foreground() -> Option<WindowId> {
+        let front = run_tool("/usr/bin/lsappinfo", &["front"], TOOL_TIMEOUT)?;
+        let front = front.trim();
+        if front.is_empty() {
+            return None;
+        }
+        let info = run_tool(
+            "/usr/bin/lsappinfo",
+            &["info", "-only", "pid", front],
+            TOOL_TIMEOUT,
+        )?;
+        super::parse_lsappinfo_pid(&info).map(|pid| pid as WindowId)
+    }
+    pub fn window_pid(window: WindowId) -> Option<u32> {
+        let pid = u32::try_from(window).ok().filter(|pid| *pid > 0)?;
+        // kill(pid, 0) only checks that the process still exists; it sends nothing.
+        (unsafe { libc::kill(pid as libc::pid_t, 0) } == 0).then_some(pid)
+    }
+    pub fn focus(window: WindowId) -> bool {
+        let Some(pid) = window_pid(window) else {
+            return false;
+        };
+        let script = format!(
+            "tell application \"System Events\" to set frontmost of (first process whose unix id is {pid}) to true"
+        );
+        run_tool("/usr/bin/osascript", &["-e", &script], TOOL_TIMEOUT).is_some()
+    }
+    pub fn paste() -> bool {
+        run_tool(
+            "/usr/bin/osascript",
+            &[
+                "-e",
+                "tell application \"System Events\" to keystroke \"v\" using command down",
+            ],
+            TOOL_TIMEOUT,
+        )
+        .is_some()
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+mod unix_desktop {
+    use super::{run_tool, WindowId};
+    use std::time::Duration;
+
+    const TOOL_TIMEOUT: Duration = Duration::from_secs(2);
+
+    /// X11 with xdotool installed. Wayland-only sessions cannot be driven this way.
+    pub fn supported() -> bool {
+        // Checked once per run: the session type and installed tools do not change.
+        static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *SUPPORTED.get_or_init(|| {
+            std::env::var_os("DISPLAY").is_some_and(|value| !value.is_empty())
+                && run_tool("xdotool", &["version"], TOOL_TIMEOUT).is_some()
+        })
+    }
+    pub fn foreground() -> Option<WindowId> {
+        let text = run_tool("xdotool", &["getactivewindow"], TOOL_TIMEOUT)?;
+        super::parse_number(&text)
+            .and_then(|id| WindowId::try_from(id).ok())
+            .filter(|id| *id > 0)
+    }
+    pub fn window_pid(window: WindowId) -> Option<u32> {
+        let id = window.to_string();
+        let text = run_tool("xdotool", &["getwindowpid", &id], TOOL_TIMEOUT)?;
+        super::parse_number(&text).and_then(|pid| u32::try_from(pid).ok())
+    }
+    pub fn focus(window: WindowId) -> bool {
+        let id = window.to_string();
+        run_tool("xdotool", &["windowactivate", &id], TOOL_TIMEOUT).is_some()
+    }
+    pub fn paste() -> bool {
+        // --clearmodifiers temporarily lifts keys the user is still holding (e.g. the
+        // shortcut's modifiers) so the target receives a clean Ctrl+V.
+        run_tool(
+            "xdotool",
+            &["key", "--clearmodifiers", "ctrl+v"],
+            TOOL_TIMEOUT,
+        )
+        .is_some()
+    }
+}
+
+#[cfg(all(not(windows), not(unix)))]
+mod unix_desktop {
+    use super::WindowId;
+    pub fn supported() -> bool {
+        false
+    }
+    pub fn foreground() -> Option<WindowId> {
+        None
+    }
+    pub fn window_pid(_: WindowId) -> Option<u32> {
+        None
+    }
+    pub fn focus(_: WindowId) -> bool {
+        false
+    }
+    pub fn paste() -> bool {
+        false
+    }
+}
+
+/// `lsappinfo info -only pid ASN:...` prints `"pid"=1234`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_lsappinfo_pid(text: &str) -> Option<u32> {
+    let value = text.split('=').nth(1)?.trim();
+    value.parse().ok().filter(|pid| *pid > 0)
+}
+
+/// xdotool prints one decimal number and a newline.
+#[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
+fn parse_number(text: &str) -> Option<u64> {
+    text.trim().parse().ok()
 }
 
 #[cfg(test)]
@@ -465,6 +637,16 @@ mod tests {
     use std::{cell::RefCell, collections::HashMap};
 
     const PRISM: u32 = 100;
+
+    #[test]
+    fn unix_tool_output_parsers() {
+        // Tool output as printed, including the trailing newline.
+        assert_eq!(parse_lsappinfo_pid("\"pid\"=4321\n"), Some(4321));
+        assert_eq!(parse_lsappinfo_pid(""), None);
+        assert_eq!(parse_lsappinfo_pid("\"pid\"=0"), None);
+        assert_eq!(parse_number("77594625\n"), Some(77_594_625));
+        assert_eq!(parse_number("Error: no window"), None);
+    }
 
     /// Fake window manager: no real windows, keyboard or clipboard are touched.
     #[derive(Default)]

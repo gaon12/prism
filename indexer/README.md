@@ -93,10 +93,12 @@ Remaining integration:
    already validates the complete snapshot before publication, cancels idle
    requests on scope revocation, filters to the active root, and retains the
    parallel walker for unavailable services, subfolders and other OSes.
-4. Connect and verify the optional one-time UAC action, helper packaging,
-   deployment rollback/recovery, update handling and installer/portable UI.
-   Installation must be explicit; ordinary app startup must never silently
-   elevate itself. Permission refusals must not modify system directory ACLs.
+4. Verify elevated deployment and complete rollback/recovery, version update
+   handling and installer removal integration. The Windows app now embeds the
+   matching helper and offers explicit UAC actions under search-scope settings.
+   Read-only preflight precedes UAC; isolated profiles reject all changes before
+   extraction. Native UI tests use real SCM/IPC and never fake an installation.
+   Permission refusals must not modify system directory ACLs.
 5. Verify the live service and compare the same drive against the current
    walker. Fixture success is not a claim of Everything-level speed.
 

@@ -12,10 +12,48 @@ fn unsafe_path() -> io::Error {
     )
 }
 
+/// macOS installs these three root-owned aliases itself. This exception is
+/// deliberately unrelated to user-selected roots: selecting a linked folder
+/// must not turn an arbitrary symlink into an authorized source.
+#[cfg(target_os = "macos")]
+fn system_alias(path: &Path, metadata: &fs::Metadata) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let target = match path.to_str() {
+        Some("/var") => "/private/var",
+        Some("/tmp") => "/private/tmp",
+        Some("/etc") => "/private/etc",
+        _ => return Ok(false),
+    };
+    if !metadata.file_type().is_symlink() || metadata.uid() != 0 {
+        return Ok(false);
+    }
+    // Apple uses relative targets (private/var, etc.). Accept the identical
+    // absolute spelling too, but never canonicalize an arbitrary link target.
+    let link = fs::read_link(path)?;
+    if link != Path::new(target) && link != Path::new(target).strip_prefix("/").unwrap() {
+        return Ok(false);
+    }
+    // Neither the alias nor its target's directory entry may be replaced by
+    // an ordinary user. Do not test /private/tmp for non-writability: that
+    // directory is intentionally a shared, sticky temporary directory.
+    for anchor in [Path::new("/"), Path::new("/private")] {
+        let meta = fs::symlink_metadata(anchor)?;
+        if !meta.is_dir() || meta.uid() != 0 || meta.mode() & 0o022 != 0 {
+            return Ok(false);
+        }
+    }
+    let destination = fs::symlink_metadata(target)?;
+    Ok(destination.is_dir() && destination.uid() == 0)
+}
+
 pub(crate) fn no_links(path: &Path) -> io::Result<()> {
     for part in path.ancestors().filter(|part| !part.as_os_str().is_empty()) {
         let metadata = fs::symlink_metadata(part)?;
         if metadata.file_type().is_symlink() {
+            #[cfg(target_os = "macos")]
+            if system_alias(part, &metadata)? {
+                continue;
+            }
             return Err(unsafe_path());
         }
         #[cfg(windows)]
@@ -29,7 +67,7 @@ pub(crate) fn no_links(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// A current absolute path, with all aliases expanded and no linked ancestors.
+/// A current absolute path, allowing only verified macOS system aliases.
 /// Keep Rust's native canonical spelling (including Windows' extended prefix).
 pub(crate) fn canonical(path: &Path) -> io::Result<PathBuf> {
     if !path.is_absolute() {
@@ -220,5 +258,40 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(canonical(&link).is_err());
         assert!(comparison(&link.join("missing.md")).is_err());
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_system_aliases_resolve_but_nested_links_do_not() {
+        for (alias, target) in [
+            ("/var", "/private/var"),
+            ("/tmp", "/private/tmp"),
+            ("/etc", "/private/etc"),
+        ] {
+            let alias = Path::new(alias);
+            let metadata = fs::symlink_metadata(alias).unwrap();
+            assert!(system_alias(alias, &metadata).unwrap());
+            assert_eq!(canonical(alias).unwrap(), fs::canonicalize(target).unwrap());
+        }
+        // Use the actual OS alias, independently of the runner's TMPDIR. This
+        // must not quietly pass after CI changes its temp directory to /Users.
+        let directory = tempfile::tempdir_in("/tmp").unwrap();
+        let file = directory.path().join("source.md");
+        fs::write(&file, "owned source").unwrap();
+        let resolved = fs::canonicalize(&file).unwrap();
+        assert_eq!(canonical(&file).unwrap(), resolved);
+        fs::remove_file(&file).unwrap();
+        assert_eq!(comparison(&file).unwrap(), resolved);
+        for name in ["tmp", "var", "etc", "ordinary-link"] {
+            let link = directory.path().join(name);
+            std::os::unix::fs::symlink("/private/tmp", &link).unwrap();
+            let metadata = fs::symlink_metadata(&link).unwrap();
+            assert!(!system_alias(&link, &metadata).unwrap());
+            assert!(canonical(&link).is_err());
+            assert!(comparison(&link.join("missing.md")).is_err());
+        }
+        // Correct spelling alone is insufficient: a normal directory cannot
+        // supply the symlink metadata required by the system-alias exception.
+        let metadata = fs::symlink_metadata(directory.path()).unwrap();
+        assert!(!system_alias(Path::new("/tmp"), &metadata).unwrap());
     }
 }

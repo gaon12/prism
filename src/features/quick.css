@@ -94,6 +94,7 @@
 .quick-empty p {
   font-size: 0.94rem;
   color: var(--muted);
+  flex-wrap: wrap;
   line-height: 1.8;
   margin: 10px 0 25px;
   max-width: 520px;
@@ -125,6 +126,7 @@
 }
 .quick-footer .text-button {
   font-size: 0.8rem;
+  gap: 5px;
 }
 .native-quick .quick-backdrop {
   padding: 0;

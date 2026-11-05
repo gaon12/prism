@@ -1118,6 +1118,15 @@ export function ChatView({
     );
   }, [ready, scopeKey]);
   useEffect(() => {
+    if (!initialConversationId) return;
+    // Spotlight can hand off while this view is already mounted. Treat the new
+    // target like an explicit sidebar selection and invalidate late creates.
+    selectionEpoch.current++;
+    setSelectedId(initialConversationId);
+    setQuery('');
+    setRefresh((value) => value + 1);
+  }, [initialConversationId]);
+  useEffect(() => {
     if (!native) return;
     const epoch = ++listEpoch.current;
     let disposed = false;

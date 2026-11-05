@@ -63,6 +63,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('search');
   const searchContext = useRef<ChatSelection | null>(null);
   const [initialChat, setInitialChat] = useState<string | null>(null);
+  const [incomingChat, setIncomingChat] = useState<string | null>(null);
   const chatPending = useRef(false);
   const creationRequest = useRef<string | null>(null);
   const [creatingSearchChat, setCreatingSearchChat] = useState(false);
@@ -91,8 +92,8 @@ export default function App() {
     } else setTab(next);
     return true;
   };
-  const openSearchChat = async () => {
-    const selection = searchContext.current;
+  const openSearchChat = async (provided?: ChatSelection) => {
+    const selection = provided ?? searchContext.current;
     if (!native || !selection || chatPending.current) return;
     chatPending.current = true;
     setCreatingSearchChat(true);
@@ -100,12 +101,13 @@ export default function App() {
     const requestId = crypto.randomUUID();
     creationRequest.current = requestId;
     try {
-      const conversation = selection.filenameSearch
-        ? await rag.createFilenameSearch(selection.filenameSearch, requestId)
-        : await rag.createFromSearch(selection);
+      const conversation = await rag.createSearch(selection, requestId);
       if (intent === tabIntent.current) {
-        setInitialChat(conversation.id);
-        setTab('chat');
+        if (quick) await rag.openMainChat(conversation.id);
+        else {
+          setInitialChat(conversation.id);
+          setTab('chat');
+        }
       } else await rag.remove(conversation.id);
     } catch (cause) {
       if (intent === tabIntent.current) showToast(errorMessage(cause));
@@ -118,6 +120,43 @@ export default function App() {
   useEffect(() => {
     void initialize();
   }, []);
+  useEffect(() => {
+    if (!native || quick) return;
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    const take = async () => {
+      try {
+        const id = await rag.takeChatHandoff();
+        if (!disposed && id) setIncomingChat(id);
+      } catch (cause) {
+        if (!disposed) showToast(errorMessage(cause));
+      }
+    };
+    void rag
+      .subscribeChatHandoff(() => void take())
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else {
+          stop = unlisten;
+          void take();
+        }
+      })
+      .catch((cause) => {
+        if (!disposed) showToast(errorMessage(cause));
+      });
+    return () => {
+      disposed = true;
+      stop?.();
+    };
+  }, [quick]);
+  useEffect(() => {
+    if (!incomingChat || !state.ready || quick || needsOnboarding || documentDirty) return;
+    tabIntent.current++;
+    if (creationRequest.current) void content.cancel(creationRequest.current).catch(() => {});
+    setInitialChat(incomingChat);
+    setTab('chat');
+    setIncomingChat(null);
+  }, [incomingChat, state.ready, quick, needsOnboarding, documentDirty]);
   useEffect(() => {
     let disposed = false;
     let stop: (() => void) | undefined;
@@ -228,7 +267,16 @@ export default function App() {
   return (
     <>
       {quick ? (
-        <QuickWindow />
+        <QuickWindow
+          onContextChange={contextChanged}
+          onChat={(selection) => void openSearchChat(selection)}
+          creatingChat={creatingSearchChat}
+          onCancelChat={() => {
+            tabIntent.current++;
+            if (creationRequest.current)
+              void content.cancel(creationRequest.current).catch(() => {});
+          }}
+        />
       ) : (
         <div className="app-shell">
           <header className="titlebar" data-tauri-drag-region>
@@ -293,6 +341,11 @@ export default function App() {
             />
             <main className="main-content">
               <UpdateBanner blocked={needsOnboarding || documentDirty} />
+              {incomingChat && documentDirty ? (
+                <div className="chat-handoff-notice" role="status">
+                  {t('chatWaitingForDocument')}
+                </div>
+              ) : null}
               {!needsOnboarding ? <ClipboardNotice /> : null}
               {tab === 'search' ? (
                 <SearchView
@@ -302,7 +355,7 @@ export default function App() {
                   onRecommended={chooseRecommended}
                   onSettings={() => setSettingsTab('scopes')}
                   onContextChange={contextChanged}
-                  onChat={() => void openSearchChat()}
+                  onChat={(selection) => void openSearchChat(selection)}
                   creatingChat={creatingSearchChat}
                   onCancelChat={() => {
                     tabIntent.current++;

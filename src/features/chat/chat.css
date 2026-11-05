@@ -563,6 +563,21 @@ dialog.chat-preview::backdrop {
   gap: 12px;
   margin: 12px 0;
 }
+.chat-handoff-notice {
+  margin: 16px 32px 0;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+@media (max-width: 580px) {
+  .chat-handoff-notice {
+    margin: 12px 16px 0;
+  }
+}
 @media (max-width: 980px) {
   .chat-layout {
     grid-template-columns: 185px minmax(0, 1fr);

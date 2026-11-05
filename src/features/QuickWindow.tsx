@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
-import { Search, Folder, X } from 'lucide-react';
+import { Search, Folder, X, MessageSquare } from 'lucide-react';
 import { Brand } from '../components/Brand';
-import { bridge } from '../lib/bridge';
+import { bridge, native } from '../lib/bridge';
 import { useClient, setSession, switchWindow, showToast, errorMessage } from '../lib/store';
 import { isComposing } from '../lib/types';
 import { useSearch } from '../lib/use-search';
@@ -9,13 +9,31 @@ import { FileResults, IndexSummary, UtilityResult } from './SearchResults';
 import { ClipboardPanel } from './clipboard/ClipboardPanel';
 import { DictionaryPanel } from './dictionary/DictionaryPanel';
 import { ContentResults } from './content/ContentResults';
+import { selectionForSearch } from '../lib/search-selection';
+import type { ChatSelection } from '../lib/rag';
 
-export function QuickWindow() {
+export function QuickWindow({
+  onContextChange,
+  onChat,
+  creatingChat,
+  onCancelChat,
+}: {
+  onContextChange: (selection: ChatSelection | null) => void;
+  onChat: (selection: ChatSelection) => void;
+  creatingChat: boolean;
+  onCancelChat: () => void;
+}) {
   const { settings, session, focusTick } = useClient();
   const search = useSearch(true);
   const { t } = search;
   const input = useRef<HTMLInputElement>(null);
   const expanded = session.query.trim().length > 0;
+  const selection = selectionForSearch(search, session, settings);
+  const selectionKey = JSON.stringify(selection);
+  useEffect(() => {
+    onContextChange(JSON.parse(selectionKey) as ChatSelection | null);
+    return () => onContextChange(null);
+  }, [selectionKey, onContextChange]);
   useEffect(() => {
     void bridge.resizeQuick(expanded).catch((cause) => showToast(errorMessage(cause)));
   }, [expanded, settings.fontSize]);
@@ -24,25 +42,27 @@ export function QuickWindow() {
     if (focusTick) input.current?.select();
   }, [focusTick]);
   const openMain = () => {
+    if (creatingChat) onCancelChat();
     void switchWindow('main').catch((cause) => showToast(errorMessage(cause)));
   };
-  useEffect(() => {
-    const keydown = (event: KeyboardEvent) => {
-      if (isComposing(event)) return;
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        void bridge.hideQuick().catch((cause) => showToast(errorMessage(cause)));
-      }
-      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-        event.preventDefault();
-        void switchWindow('main').catch((cause) => showToast(errorMessage(cause)));
-      }
-    };
-    window.addEventListener('keydown', keydown);
-    return () => window.removeEventListener('keydown', keydown);
-  }, []);
   return (
-    <div className="quick-backdrop">
+    <div
+      className="quick-backdrop"
+      onKeyDown={(event) => {
+        if (isComposing(event.nativeEvent)) return;
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          if (creatingChat) onCancelChat();
+          void bridge.hideQuick().catch((cause) => showToast(errorMessage(cause)));
+        }
+        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault();
+          if (event.shiftKey) {
+            if (native && selection && !creatingChat) onChat(selection);
+          } else openMain();
+        }
+      }}
+    >
       <main className={`quick-panel ${expanded ? 'expanded' : ''}`} aria-label={t('quickSearch')}>
         <div className="quick-search-box">
           <Search size={25} />
@@ -162,6 +182,22 @@ export function QuickWindow() {
                           : 'open',
                 )}
               </span>
+              {selection ? (
+                <button
+                  className="text-button"
+                  disabled={!native || creatingChat}
+                  onClick={() => onChat(selection)}
+                  title="Ctrl Shift Enter"
+                >
+                  <MessageSquare size={14} />
+                  {t(creatingChat ? 'creatingSearchChat' : 'chatWithResults')}
+                </button>
+              ) : null}
+              {creatingChat ? (
+                <button className="text-button" onClick={onCancelChat}>
+                  {t('cancel')}
+                </button>
+              ) : null}
               <button className="text-button" onClick={openMain}>
                 <kbd>Ctrl Enter</kbd> {t('mainWindow')}
               </button>

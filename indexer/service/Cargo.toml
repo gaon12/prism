@@ -5,5 +5,17 @@ edition = "2021"
 rust-version = "1.94"
 publish = false
 
+[features]
+admin = []
+
+[[bin]]
+name = "prism-file-index"
+path = "src/main.rs"
+
+[[bin]]
+name = "prism-file-index-admin"
+path = "src/admin.rs"
+required-features = ["admin"]
+
 [dependencies]
 prism-ntfs-windows = { path = "../windows" }

@@ -3,12 +3,11 @@
 use crate::{scm, security::Descriptor};
 use std::{
     ffi::OsString,
-    fs::{self, File, OpenOptions},
-    io,
+    fs::{self, File},
+    io::{self, Write},
     mem::size_of,
     os::windows::{
         ffi::OsStringExt,
-        fs::OpenOptionsExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
     path::{Path, PathBuf},
@@ -462,14 +461,9 @@ pub fn check_install_location() -> io::Result<()> {
 
 /// Initial optional installation only. An existing service or unknown binary
 /// is left untouched; replacement/update policy is intentionally separate.
-pub fn install() -> io::Result<()> {
+pub fn install(payload: &[u8]) -> io::Result<()> {
     require_administrator()?;
-    if std::env::current_exe()?.file_name() != Some(std::ffi::OsStr::new("prism-file-index.exe")) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Run installation through the dedicated filename service helper.",
-        ));
-    }
+    validate_payload(payload)?;
     let manager = ServiceHandle::new(unsafe {
         OpenSCManagerW(
             null(),
@@ -530,11 +524,7 @@ pub fn install() -> io::Result<()> {
     // or recursively delete a pre-existing file or directory.
     let result = (|| {
         let mut destination = unsafe { File::from_raw_handle(raw) };
-        let mut source = OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ)
-            .open(std::env::current_exe()?)?;
-        io::copy(&mut source, &mut destination)?;
+        destination.write_all(payload)?;
         destination.sync_all()?;
         drop(destination);
         protected_handle(&open_metadata(&target, false)?, &file_descriptor)?;
@@ -575,34 +565,33 @@ pub fn install() -> io::Result<()> {
     result
 }
 
-/// Remove only Prism's exact protected service. Never follow a name collision
-/// to another executable, stop another process, or remove unrelated data.
-pub fn uninstall() -> io::Result<()> {
-    require_administrator()?;
+struct VerifiedService {
+    _manager: ServiceHandle,
+    service: ServiceHandle,
+    directory: PathBuf,
+    target: PathBuf,
+    directory_handle: OwnedHandle,
+    _parents: Vec<OwnedHandle>,
+}
+fn verified_service(access: u32) -> io::Result<VerifiedService> {
     let manager =
         ServiceHandle::new(unsafe { OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT) })?;
     let service = ServiceHandle::new(unsafe {
         OpenServiceW(
             manager.raw(),
             wide(scm::SERVICE_NAME).as_ptr(),
-            SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS | SERVICE_STOP | DELETE,
+            SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS | access,
         )
     })?;
     let directory = installation_directory()?;
-    let _parents = lock_ancestors(directory.parent().ok_or_else(denied)?)?;
+    let parents = lock_ancestors(directory.parent().ok_or_else(denied)?)?;
     let directory_handle = open_metadata(&directory, true)?;
     protected_handle(&directory_handle, &Descriptor::parse(DIRECTORY_ACL)?)?;
     let target = directory.join("prism-file-index.exe");
-    let installed = open_metadata(&target, false)?;
-    protected_handle(&installed, &Descriptor::parse(FILE_ACL)?)?;
-    let current = file_identity(&open_metadata(&std::env::current_exe()?, false)?)?;
-    let installed_identity = file_identity(&installed)?;
-    if current.VolumeSerialNumber == installed_identity.VolumeSerialNumber
-        && current.FileId.Identifier == installed_identity.FileId.Identifier
-    {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Use the helper supplied with the app to remove the service, not its running installed executable."));
-    }
-    drop(installed);
+    protected_handle(
+        &open_metadata(&target, false)?,
+        &Descriptor::parse(FILE_ACL)?,
+    )?;
     let mut needed = 0;
     // A Vec of usize supplies the alignment required by QUERY_SERVICE_CONFIGW.
     unsafe {
@@ -619,33 +608,205 @@ pub fn uninstall() -> io::Result<()> {
     let binary = configuration_command(&buffer, unsafe { (*config).lpBinaryPathName })?;
     if !binary.eq_ignore_ascii_case(&command(&target))
         || unsafe { (*config).dwServiceType } != SERVICE_WIN32_OWN_PROCESS
+        || !configuration_command(&buffer, unsafe { (*config).lpServiceStartName })?
+            .eq_ignore_ascii_case("LocalSystem")
     {
         return Err(denied());
     }
-    stop(&service)?;
-    if unsafe { DeleteService(service.raw()) } == 0 {
+    Ok(VerifiedService {
+        _manager: manager,
+        service,
+        directory,
+        target,
+        directory_handle,
+        _parents: parents,
+    })
+}
+/// Read-only ownership check before the app offers a start or removal action.
+pub fn check_owned_service() -> io::Result<()> {
+    verified_service(0).map(|_| ())
+}
+/// Explicit start only. Ordinary app startup never calls this function.
+pub fn start() -> io::Result<()> {
+    require_administrator()?;
+    let verified = verified_service(SERVICE_START)?;
+    match service_state(&verified.service)? {
+        SERVICE_RUNNING => return Ok(()),
+        SERVICE_START_PENDING => return wait_state(&verified.service, SERVICE_RUNNING),
+        SERVICE_STOP_PENDING => wait_state(&verified.service, SERVICE_STOPPED)?,
+        _ => {}
+    }
+    if unsafe { StartServiceW(verified.service.raw(), 0, null()) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    drop(service);
-    fs::remove_file(&target)?;
-    drop(directory_handle);
-    match fs::remove_dir(&directory) {
+    wait_state(&verified.service, SERVICE_RUNNING)
+}
+/// Remove only the exact protected service. The parent directory guards stay
+/// alive across deletion; unrelated files prevent directory removal and remain.
+pub fn uninstall() -> io::Result<()> {
+    require_administrator()?;
+    let verified = verified_service(SERVICE_STOP | DELETE)?;
+    let current = file_identity(&open_metadata(&std::env::current_exe()?, false)?)?;
+    let installed = file_identity(&open_metadata(&verified.target, false)?)?;
+    if current.VolumeSerialNumber == installed.VolumeSerialNumber
+        && current.FileId.Identifier == installed.FileId.Identifier
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Remove the service through the dedicated management helper.",
+        ));
+    }
+    stop(&verified.service)?;
+    if unsafe { DeleteService(verified.service.raw()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    drop(verified.service);
+    // SCM can report STOPPED just before the process image is released. Give
+    // that image/antivirus lock a bounded grace period; never kill by PID/name.
+    remove_after_stop(&verified.target, Duration::from_secs(5))?;
+    drop(verified.directory_handle);
+    match fs::remove_dir(&verified.directory) {
         Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::DirectoryNotEmpty | io::ErrorKind::NotFound
+            ) || matches!(error.raw_os_error(), Some(5 | 32 | 33)) =>
+        {
+            Ok(())
+        }
         Err(error) => Err(error),
     }
+}
+fn remove_after_stop(path: &Path, limit: Duration) -> io::Result<()> {
+    let start = Instant::now();
+    loop {
+        match fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if matches!(error.raw_os_error(), Some(5 | 32 | 33)) => {
+                if start.elapsed() >= limit {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Service executable is still in use.",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+/// Stable process results consumed by the ordinary app; no raw path or system
+/// diagnostic crosses the elevation boundary through an error message.
+pub fn exit_code(error: &io::Error) -> i32 {
+    if let Some(code) = error.raw_os_error().filter(|code| *code > 0) {
+        return code;
+    }
+    match error.kind() {
+        io::ErrorKind::PermissionDenied => 5,
+        io::ErrorKind::AlreadyExists => 183,
+        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => 87,
+        io::ErrorKind::NotFound => 2,
+        io::ErrorKind::TimedOut => 1460,
+        io::ErrorKind::Unsupported => 50,
+        _ => 1,
+    }
+}
+/// Sanity-check the compiled service image without opening files or SCM.
+pub fn validate_payload(bytes: &[u8]) -> io::Result<()> {
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid embedded service executable.",
+        )
+    };
+    if !(64..=16 * 1024 * 1024).contains(&bytes.len()) || !bytes.starts_with(b"MZ") {
+        return Err(invalid());
+    }
+    let offset = u32::from_le_bytes(bytes[60..64].try_into().unwrap()) as usize;
+    if offset < 64 {
+        return Err(invalid());
+    }
+    let header = bytes
+        .get(offset..offset.checked_add(26).ok_or_else(invalid)?)
+        .ok_or_else(invalid)?;
+    let machine = if cfg!(target_arch = "x86_64") {
+        0x8664u16
+    } else if cfg!(target_arch = "aarch64") {
+        0xaa64
+    } else {
+        0x14c
+    };
+    let magic = if cfg!(target_pointer_width = "64") {
+        0x20bu16
+    } else {
+        0x10b
+    };
+    if &header[..4] != b"PE\0\0"
+        || header[4..6] != machine.to_le_bytes()
+        || header[24..26] != magic.to_le_bytes()
+    {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
+    fn deletion_waits_for_an_owned_file_lock_and_preserves_it_on_timeout() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("service-image-fixture.bin");
+        fs::write(&path, b"public fixture").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&path)
+            .unwrap();
+        assert_eq!(
+            remove_after_stop(&path, Duration::from_millis(5))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert!(path.exists());
+        let holder = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            drop(file);
+        });
+        remove_after_stop(&path, Duration::from_secs(2)).unwrap();
+        holder.join().unwrap();
+        assert!(!path.exists());
+    }
+    #[test]
+    fn corrupt_embedded_images_are_rejected_before_deployment() {
+        for bytes in [vec![], vec![0; 64], {
+            let mut value = vec![0; 64];
+            value[..2].copy_from_slice(b"MZ");
+            value[60..64].copy_from_slice(&u32::MAX.to_le_bytes());
+            value
+        }] {
+            assert_eq!(
+                validate_payload(&bytes).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        assert_eq!(exit_code(&denied()), 5);
+        assert_eq!(
+            exit_code(&io::Error::new(io::ErrorKind::TimedOut, "")),
+            1460
+        );
+        assert_eq!(exit_code(&io::Error::from_raw_os_error(1058)), 1058);
+    }
+    #[test]
     fn unprivileged_management_is_rejected_before_any_installation_work() {
         if is_elevated().unwrap() {
             return;
         }
         assert_eq!(
-            install().unwrap_err().kind(),
+            install(&[]).unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
         );
         assert_eq!(

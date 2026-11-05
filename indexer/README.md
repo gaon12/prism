@@ -37,12 +37,15 @@ Implemented:
   process and binds replies to both the serial and kernel device of the open
   NTFS root handle. Protocol v2 rejects a different cloned volume even when its
   serial matches. Connecting or invoking `--service` never installs or elevates.
-- Explicit administrative `--install`/`--uninstall` helper entry points now
-  exist. They require an already elevated token, use a fixed Program Files
+- A separate `prism-file-index-admin` helper embeds the compiled host payload.
+  Its explicit `--install`/`--start`/`--uninstall` entry points require an
+  already elevated token, use a fixed Program Files
   directory with administrator ownership and protected ACLs, and reject
   writable ancestors or reparse points. Existing services/binaries are left
   untouched. Removal checks the exact service executable before stopping it.
-  Elevated deployment and the app's UAC/packaging flow are not verified yet;
+  Starting/removing verifies the exact own-process LocalSystem service before
+  acting. The host itself accepts only `--service`; it cannot install itself.
+  Elevated deployment is not verified yet;
   this is initial-install support, with update/recovery still pending.
 
 Run `cargo test --manifest-path indexer/Cargo.toml --locked` and
@@ -59,9 +62,22 @@ cargo run --release --manifest-path indexer/Cargo.toml -p prism-ntfs-windows --e
 
 It prints aggregate counts and timing, never paths or file contents, and does
 not request elevation or install a service. In an ordinary-privilege session,
-`PermissionDenied` and exit code 2 are expected. Current verification is 47
-tests on Windows and 29 portable tests under Linux; all-target Clippy passes
-on both. These checks do not prove live C-drive speed.
+`PermissionDenied` and exit code 2 are expected. With the administrative helper
+enabled, verification is 51 tests on Windows and 30 portable tests under Linux;
+all-target Clippy passes. These checks do not prove live C-drive speed.
+
+The app's Windows build compiles and embeds both images automatically. For
+standalone helper validation, build the real host first (PowerShell):
+
+```powershell
+cargo build --manifest-path indexer/Cargo.toml --target-dir indexer/target --locked --release -p prism-file-index --bin prism-file-index
+$env:PRISM_INDEX_SERVICE_PAYLOAD = (Resolve-Path indexer/target/release/prism-file-index.exe).Path
+cargo test --manifest-path indexer/Cargo.toml --target-dir indexer/target --locked --all-targets --features admin
+cargo build --manifest-path indexer/Cargo.toml --target-dir indexer/target --locked --release -p prism-file-index --bin prism-file-index-admin --features admin
+```
+
+The helper embeds these bytes during compilation; neither callers nor an
+environment variable can choose a payload or destination at runtime.
 
 Remaining integration:
 

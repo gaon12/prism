@@ -47,6 +47,7 @@
     "test:chat-entry": "node tests/native/search-chat-entry.mjs",
     "test:short-paths": "node tests/native/short-paths.mjs",
     "test:documents": "node tests/native/documents.mjs",
+    "test:collections": "node tests/native/collections.mjs",
     "test:onboarding": "node tests/native/onboarding.mjs",
     "test:portable": "node tests/native/portable.mjs",
     "package:portable": "node scripts/package-portable.mjs",

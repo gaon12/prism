@@ -2766,7 +2766,15 @@ mod tests {
     fn supplied_pdf_password_preserves_raw_fingerprint_and_page_numbers() {
         for (bytes, password) in [
             (
+                include_bytes!("../../tests/fixtures/encrypted-pdf/rc4-40.pdf").as_slice(),
+                "fixture-user-password",
+            ),
+            (
                 include_bytes!("../../tests/fixtures/encrypted-pdf/rc4-128.pdf").as_slice(),
+                "fixture-user-password",
+            ),
+            (
+                include_bytes!("../../tests/fixtures/encrypted-pdf/aes128.pdf").as_slice(),
                 "fixture-user-password",
             ),
             (

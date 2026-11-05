@@ -11,7 +11,7 @@ and authentication of the padded user password for legacy owner passwords.
 Algorithm 2 must derive the file key from that recovered user password, rather
 than from the accepted owner password itself. No cipher implementation changes.
 
-Independent pypdf-generated RC4-128 and AES-256 fixtures exercise both password
+Independent pypdf-generated RC4-40/128 and AES-128/256 fixtures exercise both password
 roles, wrong passwords, page contents, and the unchanged encrypted original in
 Prism's document_extract tests. The same patched source is used by application
 and standalone platform QA. Re-evaluate this patch when upgrading lopdf.

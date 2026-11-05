@@ -1,5 +1,6 @@
 """Regenerate synthetic PDFs with pypdf + cryptography (test tooling only)."""
 from pathlib import Path
+import sys
 
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
@@ -8,9 +9,13 @@ ROOT = Path(__file__).resolve().parent
 OWNER_PASSWORD = "fixture-owner-password"  # Public fixture data, not a credential.
 
 for name, algorithm, password in [
+    ("rc4-40.pdf", "RC4-40", "fixture-user-password"),
     ("rc4-128.pdf", "RC4-128", "fixture-user-password"),
+    ("aes128.pdf", "AES-128", "fixture-user-password"),
     ("aes256.pdf", "AES-256", "암호-fixture-密碼"),
 ]:
+    if len(sys.argv) > 1 and name not in sys.argv[1:]:
+        continue
     writer = PdfWriter()
     font = writer._add_object(DictionaryObject({
         NameObject("/Type"): NameObject("/Font"),

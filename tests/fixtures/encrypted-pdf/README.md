@@ -4,7 +4,9 @@ numbers after decryption. The PDFs contain no user documents or credentials.
 
 | File          | Encryption   | User password           | Owner password           |
 | ------------- | ------------ | ----------------------- | ------------------------ |
+| `rc4-40.pdf`  | RC4, 40 bit  | `fixture-user-password` | `fixture-owner-password` |
 | `rc4-128.pdf` | RC4, 128 bit | `fixture-user-password` | `fixture-owner-password` |
+| `aes128.pdf`  | AES, 128 bit | `fixture-user-password` | `fixture-owner-password` |
 | `aes256.pdf`  | AES, 256 bit | `암호-fixture-密碼`     | `fixture-owner-password` |
 
 These public passwords are deliberately test data. Application tests copy the

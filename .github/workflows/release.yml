@@ -168,6 +168,19 @@ jobs:
           if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'Microsoft bootstrapper signature verification failed.' }
           $process = Start-Process -FilePath $bootstrapper -ArgumentList '/silent', '/install' -WindowStyle Hidden -Wait -PassThru
           if ($process.ExitCode -notin @(0, 3010)) { throw "WebView2 setup failed: $($process.ExitCode)" }
+      - name: Let the setup tests reach the setup WebView on the elevated runner
+        # The setup tests drive the real setup window over the WebView debug port. WebView2 150+
+        # ignores --remote-debugging-port from WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS when the app
+        # runs elevated, and GitHub runners run as admin (MicrosoftEdge/WebView2Feedback#5645).
+        # A machine policy is still honoured, so set one for prism-setup.exe only, on this
+        # disposable runner. The tests read the same fixed port from PRISM_SETUP_CDP_PORT.
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key -Name 'prism-setup.exe' -PropertyType String -Force `
+            -Value '--remote-debugging-port=9339 --remote-debugging-address=127.0.0.1' | Out-Null
       - name: Verify release setup recovery and previous-version restoration
         # Native recovery uses inert crash fixtures and never starts the embedded app.
         if: matrix.platform == 'windows'
@@ -175,6 +188,7 @@ jobs:
         env:
           PRISM_SETUP_EXE: ${{ github.workspace }}/installer/src-tauri/target/release/prism-setup.exe
           PRISM_SETUP_EXPECTED_EXE: ${{ github.workspace }}/src-tauri/target/release/prism.exe
+          PRISM_SETUP_CDP_PORT: '9339'
         run: |
           npm run test:setup-recovery
           npm run test:setup-previous

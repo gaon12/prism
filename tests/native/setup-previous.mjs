@@ -4,11 +4,10 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium } from '@playwright/test';
-import { until, untilWebView } from './harness.mjs';
+import { setupDebugPort, until, untilWebView } from './harness.mjs';
 import { recoveryFixture } from './setup-fixture.mjs';
 
 const executable = resolve(
@@ -71,10 +70,7 @@ assert.equal(await hash(join(app, 'prism.exe')), currentHash);
 const userData = join(root, 'AppData', 'user-document.md');
 await mkdir(join(root, 'AppData'), { recursive: true });
 await writeFile(userData, 'newer user data');
-const server = createServer();
-await new Promise((done) => server.listen(0, '127.0.0.1', done));
-const port = server.address().port;
-await new Promise((done) => server.close(done));
+const port = await setupDebugPort();
 const child = spawn(executable, [`/D=${app}`], {
   env: {
     ...environment,

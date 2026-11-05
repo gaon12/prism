@@ -14,6 +14,21 @@ export async function until(check, label, timeout = 25_000) {
   throw new Error(`Timed out: ${label}`);
 }
 
+// Pick the WebView debug port for a setup test.
+// Normally any free port works, passed through WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS.
+// WebView2 150+ ignores that variable when the app runs elevated, and CI runners run as admin.
+// There CI writes a machine policy with a fixed port for prism-setup.exe and tells us the port
+// through PRISM_SETUP_CDP_PORT (see .github/workflows/release.yml).
+export async function setupDebugPort() {
+  const fixed = Number(process.env.PRISM_SETUP_CDP_PORT);
+  if (Number.isInteger(fixed) && fixed > 1024 && fixed < 65536) return fixed;
+  const server = createServer();
+  await new Promise((done) => server.listen(0, '127.0.0.1', done));
+  const port = server.address().port;
+  await new Promise((done) => server.close(done));
+  return port;
+}
+
 // The very first WebView2 start on a fresh CI machine can take much longer than on a warm PC.
 export const WEBVIEW_START_TIMEOUT = 90_000;
 

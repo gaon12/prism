@@ -253,6 +253,35 @@ pub fn recognize(
         Err(error(Code::Unavailable))
     }
 }
+/// Render an already-authorized PDF page without recognizing text or changing
+/// OCR preferences. Gallery callers provide bounded immutable bytes, never a
+/// path; the existing native async lifetime/cancellation lease is shared.
+pub(crate) fn render_pdf_page(
+    bytes: &[u8],
+    page: u32,
+    dimension: u32,
+    cancel: &AtomicBool,
+) -> Result<Vec<u8>> {
+    if bytes.is_empty() || bytes.len() > 128 << 20 || page == 0 || !(1..=4096).contains(&dimension)
+    {
+        return Err(error(Code::InvalidInput));
+    }
+    let control = Control {
+        cancel,
+        deadline: Instant::now() + Duration::from_secs(20),
+        lease: Lease::acquire()?,
+    };
+    control.check()?;
+    #[cfg(windows)]
+    {
+        platform::render_pdf_page(bytes, page, dimension, &control)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (bytes, page, dimension, control);
+        Err(error(Code::Unavailable))
+    }
+}
 /// Use only positive finite dimensions and floor each axis so neither the pixel
 /// area nor longest edge exceeds its budget after fitting.
 #[cfg(any(windows, test))]

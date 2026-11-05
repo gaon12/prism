@@ -32,6 +32,8 @@ chrono = "0.4"
 tauri-plugin-clipboard-manager = "2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "system-proxy"] }
 png = "0.18"
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"] }
+base64 = "0.22"
 sha2 = "0.10"
 rusqlite = { version = "0.37", features = ["bundled"] }
 scraper = "0.24"

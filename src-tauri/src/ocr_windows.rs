@@ -447,3 +447,53 @@ pub(super) fn recognize(
     control.check()?;
     Ok(pages)
 }
+
+pub(super) fn render_pdf_page(
+    bytes: &[u8],
+    number: u32,
+    dimension: u32,
+    control: &Control<'_>,
+) -> Result<Vec<u8>> {
+    Apartment::ensure()?;
+    control.check()?;
+    let source = stream(bytes, control)?;
+    let document = decode(
+        PdfDocument::LoadFromStreamAsync(&source).map_err(corrupt)?,
+        control,
+    )?;
+    if number == 0 || number > document.PageCount().map_err(corrupt)? {
+        return Err(error(Code::InvalidInput));
+    }
+    let page = document.GetPage(number - 1).map_err(corrupt)?;
+    let size = page.Size().map_err(corrupt)?;
+    let (width, height) = fitted(
+        size.Width.into(),
+        size.Height.into(),
+        dimension,
+        4_000_000,
+        true,
+    )?;
+    let options = PdfPageRenderOptions::new().map_err(failed)?;
+    options.SetDestinationWidth(width).map_err(failed)?;
+    options.SetDestinationHeight(height).map_err(failed)?;
+    let rendered = InMemoryRandomAccessStream::new().map_err(failed)?;
+    decode(
+        page.RenderWithOptionsToStreamAsync(&rendered, &options)
+            .map_err(corrupt)?,
+        control,
+    )?;
+    let length = rendered.Size().map_err(failed)?;
+    if length == 0 || length > 32 << 20 {
+        return Err(error(Code::LimitExceeded));
+    }
+    let reader = DataReader::CreateDataReader(&rendered.GetInputStreamAt(0).map_err(failed)?)
+        .map_err(failed)?;
+    let loaded = decode(reader.LoadAsync(length as u32).map_err(failed)?, control)?;
+    if loaded != length as u32 {
+        return Err(error(Code::CorruptDocument));
+    }
+    let mut bytes = vec![0; length as usize];
+    reader.ReadBytes(&mut bytes).map_err(failed)?;
+    control.check()?;
+    Ok(bytes)
+}

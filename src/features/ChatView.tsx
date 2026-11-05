@@ -22,7 +22,7 @@ import type {
   RagJob,
   SourceRef,
 } from '../lib/rag';
-import { useClient } from '../lib/store';
+import { setSession, useClient } from '../lib/store';
 import type { Language, SearchScope } from '../lib/types';
 import { chatText } from './chat/messages';
 import type { ChatMessage } from './chat/messages';
@@ -1095,11 +1095,20 @@ export function ChatView({
   onModels?: () => void;
   initialConversationId?: string | null;
 }) {
-  const { settings, ready } = useClient();
+  const { settings, ready, session } = useClient();
   const language = settings.language;
   const t = (key: ChatMessage) => chatText(language, key);
   const searchId = useId();
-  const scopes = settings.scopes.filter((scope) => scope.contentEnabled);
+  // A folder opened in the library (left sidebar) is the "project": like opening a folder in
+  // an editor, chat then answers only from that folder. With no folder open, every content
+  // folder is available and the user picks among them.
+  const project = session.scopeId
+    ? (settings.scopes.find((scope) => scope.id === session.scopeId) ?? null)
+    : null;
+  const scopes = settings.scopes.filter(
+    (scope) => scope.contentEnabled && (!project || scope.id === project.id),
+  );
+  const lastProject = useRef<string | null>(null);
   const scopeKey = JSON.stringify(
     scopes.map((scope) => [scope.id, scope.path, scope.externalAllowed]),
   );
@@ -1131,8 +1140,12 @@ export function ChatView({
   }, []);
   useEffect(() => {
     if (!ready) return;
+    // Opening or closing a project starts from "all allowed folders" again, so a choice made
+    // inside one project never silently narrows the next one.
+    const projectChanged = lastProject.current !== (project?.id ?? null);
+    lastProject.current = project?.id ?? null;
     setSelectedScopeIds((previous) =>
-      previous === null
+      previous === null || projectChanged
         ? scopes.map((scope) => scope.id)
         : previous.filter((id) => scopes.some((scope) => scope.id === id)),
     );
@@ -1219,6 +1232,23 @@ export function ChatView({
           </button>
         </div>
       </header>
+      {project ? (
+        <div className="chat-project" role="status">
+          <FolderSearch size={14} aria-hidden="true" />
+          <span>
+            {chatText(language, project.contentEnabled ? 'projectScope' : 'projectNoContent', {
+              name: project.name,
+            })}
+          </span>
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => setSession({ scopeId: null })}
+          >
+            {t('projectLeave')}
+          </button>
+        </div>
+      ) : null}
       {!native ? (
         <div className="chat-native-only" role="status">
           <MessageSquareText size={48} strokeWidth={1.25} />

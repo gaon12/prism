@@ -736,3 +736,17 @@ dialog.chat-preview::backdrop {
 .chat-citations li > .text-button {
   margin-left: auto;
 }
+
+/* The open project (library folder) that limits chat, with a way back to all folders. */
+.chat-project {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: -6px 0 12px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.chat-project > svg {
+  color: var(--accent);
+}

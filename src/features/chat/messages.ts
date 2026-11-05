@@ -507,6 +507,27 @@ const messages = {
     '請輸入1–200個字元的對話名稱，不含控制字元。',
     '対話の名前は制御文字を含めず1–200文字で入力してください。',
   ],
+  projectScope: [
+    '"{name}" 폴더를 열어 두어 이 폴더의 문서로만 답합니다.',
+    'The "{name}" folder is open, so answers use only its documents.',
+    '已打开“{name}”文件夹，只根据其中的文档作答。',
+    '已開啟「{name}」資料夾，只根據其中的文件作答。',
+    '「{name}」フォルダーを開いているため、その文書だけで答えます。',
+  ],
+  projectNoContent: [
+    '"{name}" 폴더를 열어 두었지만 본문 색인이 꺼져 있어 참조할 문서가 없습니다.',
+    'The "{name}" folder is open, but its content indexing is off, so there is nothing to use.',
+    '已打开“{name}”文件夹，但其正文索引已关闭，没有可用文档。',
+    '已開啟「{name}」資料夾，但其內文索引已關閉，沒有可用文件。',
+    '「{name}」フォルダーを開いていますが、本文インデックスがオフのため使える文書がありません。',
+  ],
+  projectLeave: [
+    '모든 폴더 사용',
+    'Use all folders',
+    '使用全部文件夹',
+    '使用全部資料夾',
+    'すべてのフォルダーを使う',
+  ],
   sendShortcut: [
     'Ctrl+Enter로 보내기',
     'Ctrl+Enter to send',

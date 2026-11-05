@@ -39,6 +39,7 @@
     "test:content": "node tests/native/content.mjs",
     "test:pdf-unlock": "node tests/native/pdf-unlock.mjs",
     "test:ocr": "node tests/native/ocr.mjs",
+    "test:indexing-ui": "node tests/native/indexing-ui.mjs",
     "test:dictionary": "node tests/native/dictionary.mjs",
     "test:rag": "node tests/native/rag.mjs",
     "test:search-chat": "node tests/native/search-chat.mjs",

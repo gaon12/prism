@@ -182,11 +182,13 @@ export function QuickWindow({
                           : 'open',
                 )}
               </span>
-              {selection ? (
+              {search.request.kind === 'files' ? (
                 <button
                   className="text-button"
-                  disabled={!native || creatingChat}
-                  onClick={() => onChat(selection)}
+                  disabled={!native || creatingChat || !selection}
+                  onClick={() => {
+                    if (selection) onChat(selection);
+                  }}
                   title="Ctrl Shift Enter"
                 >
                   <MessageSquare size={14} />

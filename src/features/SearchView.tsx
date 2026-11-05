@@ -139,13 +139,15 @@ export function SearchView({
           {session.extension ? <span className="filter-dot" /> : null}
         </button>
       </div>
-      {selection ? (
+      {search.request.kind === 'files' ? (
         <div className="search-chat-action">
           <button
             type="button"
             className="button"
-            disabled={!native || creatingChat}
-            onClick={() => onChat(selection)}
+            disabled={!native || creatingChat || !selection}
+            onClick={() => {
+              if (selection) onChat(selection);
+            }}
           >
             <MessageSquare size={16} />
             {t(creatingChat ? 'creatingSearchChat' : 'chatWithResults')}
@@ -156,7 +158,7 @@ export function SearchView({
             </button>
           ) : null}
           <small className="muted">
-            {selection.filenameSearch || selection.keywordSearch
+            {!selection || selection.filenameSearch || selection.keywordSearch
               ? t('allFilenameChatHint')
               : t('searchChatHint').replace('{count}', String(selection.documents.length))}
           </small>

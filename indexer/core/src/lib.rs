@@ -7,6 +7,7 @@ use prism_ntfs_protocol::{DriveLetter, FileRecord};
 use std::collections::{HashMap, HashSet};
 pub mod journal;
 pub mod layout;
+pub mod snapshot;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FileReference(pub u64);
@@ -283,22 +284,99 @@ fn parse_decoded(number: u64, bytes: &[u8]) -> Result<MetadataRecord> {
 #[derive(Default)]
 pub struct CatalogBuilder {
     records: HashMap<u64, MetadataRecord>,
-    extensions: Vec<MetadataRecord>,
+    families: HashMap<u64, Vec<u64>>,
 }
 impl CatalogBuilder {
     pub fn insert(&mut self, record: MetadataRecord) -> Result<()> {
-        if self.records.len() + self.extensions.len() >= 10_000_000 {
+        if self.records.len() >= 10_000_000
+            && !self.records.contains_key(&record.reference.number())
+        {
             return Err(ParseError::Limit);
         }
-        if record.base.is_some() {
-            self.extensions.push(record);
-        } else {
-            self.records.insert(record.reference.number(), record);
+        self.remove_number(record.reference.number());
+        if let Some(base) = record.base {
+            self.families
+                .entry(base.number())
+                .or_default()
+                .push(record.reference.number());
+        }
+        self.records.insert(record.reference.number(), record);
+        Ok(())
+    }
+    fn remove_number(&mut self, number: u64) {
+        if let Some(record) = self.records.remove(&number) {
+            if let Some(base) = record.base {
+                if let Some(family) = self.families.get_mut(&base.number()) {
+                    family.retain(|member| *member != number);
+                    if family.is_empty() {
+                        self.families.remove(&base.number());
+                    }
+                }
+            }
+        }
+    }
+    pub fn remove(&mut self, reference: FileReference) {
+        if !self
+            .records
+            .get(&reference.number())
+            .is_some_and(|record| record.reference == reference)
+        {
+            return;
+        }
+        self.remove_number(reference.number());
+        if let Some(family) = self.families.remove(&reference.number()) {
+            for member in family {
+                self.remove_number(member);
+            }
+        }
+    }
+    pub(crate) fn discard_number(&mut self, number: u64) {
+        self.remove_number(number);
+        if let Some(family) = self.families.remove(&number) {
+            for member in family {
+                self.remove_number(member);
+            }
+        }
+    }
+    /// Replace a complete base/extension family after journal replay. Indexed
+    /// family members avoid a full-catalog retain for every changed file.
+    pub fn replace_family(&mut self, family: Vec<MetadataRecord>) -> Result<()> {
+        let base = family
+            .first()
+            .filter(|record| record.base.is_none())
+            .ok_or(ParseError::Attribute)?
+            .reference;
+        let mut seen = HashSet::new();
+        for (index, record) in family.iter().enumerate() {
+            if !seen.insert(record.reference.number()) || (index > 0 && record.base != Some(base)) {
+                return Err(ParseError::Attribute);
+            }
+        }
+        if self.records.len().saturating_add(family.len()) > 10_000_000 {
+            return Err(ParseError::Limit);
+        }
+        self.remove_number(base.number());
+        if let Some(members) = self.families.remove(&base.number()) {
+            for member in members {
+                self.remove_number(member);
+            }
+        }
+        for record in family {
+            self.insert(record)?;
         }
         Ok(())
     }
     pub fn finish(mut self) -> Result<Catalog> {
-        for extension in self.extensions {
+        let extension_numbers: Vec<_> = self
+            .records
+            .iter()
+            .filter_map(|(&number, record)| record.base.map(|_| number))
+            .collect();
+        let extensions: Vec<_> = extension_numbers
+            .into_iter()
+            .filter_map(|number| self.records.remove(&number))
+            .collect();
+        for extension in extensions {
             let base = extension.base.unwrap();
             if let Some(record) = self
                 .records
@@ -322,6 +400,9 @@ impl CatalogBuilder {
             }
         }
         for record in self.records.values_mut() {
+            if record.names.len() <= 1 {
+                continue;
+            }
             if record.names.iter().any(|name| name.namespace != 2) {
                 record.names.retain(|name| name.namespace != 2);
             }
@@ -342,43 +423,52 @@ pub struct Catalog {
     directories: HashMap<FileReference, Option<String>>,
 }
 impl Catalog {
-    fn parent_path(&mut self, drive: DriveLetter, reference: FileReference) -> Option<String> {
+    fn parent_path<'a>(
+        records: &HashMap<u64, MetadataRecord>,
+        directories: &'a mut HashMap<FileReference, Option<String>>,
+        drive: DriveLetter,
+        reference: FileReference,
+    ) -> Option<&'a str> {
+        if directories.contains_key(&reference) {
+            return directories.get(&reference).and_then(Option::as_deref);
+        }
         let mut current = reference;
         let mut chain = vec![];
         let mut seen = HashSet::new();
-        let mut path =
-            loop {
-                if let Some(path) = self.directories.get(&current) {
-                    break path.clone();
-                }
-                if !seen.insert(current) || chain.len() > 16384 {
-                    break None;
-                }
-                let Some(record) = self.records.get(&current.number()).filter(|record| {
-                    record.reference == current && record.is_dir && !record.alias()
-                }) else {
-                    break None;
-                };
-                if current.number() == 5 {
-                    break Some(drive.root());
-                }
-                if current.number() < 16 {
-                    break None;
-                }
-                let Some(name) = record.names.first() else {
-                    break None;
-                };
-                chain.push((current, name.name.clone()));
-                current = name.parent;
+        let mut path = loop {
+            if let Some(path) = directories.get(&current) {
+                break path.clone();
+            }
+            if !seen.insert(current) || chain.len() > 16384 {
+                break None;
+            }
+            let Some(record) = records
+                .get(&current.number())
+                .filter(|record| record.reference == current && record.is_dir && !record.alias())
+            else {
+                break None;
             };
+            if current.number() == 5 {
+                break Some(drive.root());
+            }
+            if current.number() < 16 {
+                break None;
+            }
+            let Some(name) = record.names.first() else {
+                break None;
+            };
+            chain.push((current, name.name.clone()));
+            current = name.parent;
+        };
         for (reference, name) in chain.into_iter().rev() {
             path = path.and_then(|parent| {
                 let next = join_path(&parent, &name);
                 drive.contains(&next).then_some(next)
             });
-            self.directories.insert(reference, path.clone());
+            directories.insert(reference, path.clone());
         }
-        path
+        directories.entry(reference).or_insert(path);
+        directories.get(&reference).and_then(Option::as_deref)
     }
     /// Records are visited in deterministic MFT-number order. Callback failure
     /// (including cancellation or a closed pipe) stops without finishing a
@@ -412,10 +502,11 @@ impl Catalog {
                 continue;
             };
             let modified_ms = record.modified_ms;
-            let names = record.names.clone();
-            for name in names {
-                if let Some(parent) = self.parent_path(drive, name.parent) {
-                    let path = join_path(&parent, &name.name);
+            for name in &record.names {
+                if let Some(parent) =
+                    Self::parent_path(&self.records, &mut self.directories, drive, name.parent)
+                {
+                    let path = join_path(parent, &name.name);
                     if drive.contains(&path) {
                         visit(FileRecord {
                             path,

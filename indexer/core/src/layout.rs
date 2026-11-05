@@ -247,7 +247,7 @@ fn list_entries(bytes: &[u8]) -> Result<Vec<ListEntry>> {
             return Err(Error::Corrupt);
         }
         let entry = slice(bytes, offset, length)?;
-        if entry[6] == 0 && (kind == 0x80 || kind == 0x20) {
+        if entry[6] == 0 {
             entries.push(ListEntry {
                 kind,
                 reference: FileReference(u64_at(entry, 16)?),
@@ -261,6 +261,109 @@ fn list_entries(bytes: &[u8]) -> Result<Vec<ListEntry>> {
         offset = offset.checked_add(length).ok_or(Error::Corrupt)?;
     }
     Ok(entries)
+}
+
+fn attribute_list(
+    source: &mut impl Source,
+    geometry: Geometry,
+    record: &[u8],
+    check: &mut impl FnMut() -> Result<()>,
+) -> Result<Vec<ListEntry>> {
+    let mut entries = vec![];
+    for attribute in attributes(record)? {
+        if attribute[9] != 0 || u32_at(attribute, 0)? != 0x20 {
+            continue;
+        }
+        if attribute[8] == 0 {
+            entries.extend(list_entries(resident(attribute)?)?);
+        } else {
+            let part = mapping_pairs(attribute, geometry)?;
+            if part.lowest != 0 {
+                return Err(Error::Unsupported);
+            }
+            let size = part.size.ok_or(Error::Corrupt)?;
+            if size > MAX_LIST_BYTES {
+                return Err(Error::Limit);
+            }
+            let extents = checked_extents(BTreeMap::from([(0, part)]), size, geometry)?;
+            let mut data = vec![0; size as usize];
+            check()?;
+            read_mapped(source, geometry, &extents, 0, &mut data)?;
+            entries.extend(list_entries(&data)?);
+        }
+        if entries.len() > MAX_EXTENSION_RECORDS {
+            return Err(Error::Limit);
+        }
+    }
+    Ok(entries)
+}
+
+/// Fetch the complete current metadata family, including names or the initial
+/// unnamed data-size attribute held in extension records. Only $ATTRIBUTE_LIST
+/// metadata is followed; user $DATA stream contents are never read.
+pub fn metadata_family(
+    source: &mut impl Source,
+    geometry: Geometry,
+    reference: FileReference,
+    mut check: impl FnMut() -> Result<()>,
+) -> Result<Vec<crate::MetadataRecord>> {
+    check()?;
+    let mut base = source.file_record(reference)?.decode(geometry)?;
+    if reference.sequence() != 0 && u16_at(&base, 16)? != reference.sequence() {
+        return Err(Error::Changed);
+    }
+    let parent = FileReference(u64_at(&base, 32)?);
+    let number = if parent.0 != 0 {
+        base = source.file_record(parent)?.decode(geometry)?;
+        if u16_at(&base, 16)? != parent.sequence() || u64_at(&base, 32)? != 0 {
+            return Err(Error::Changed);
+        }
+        parent.number()
+    } else {
+        reference.number()
+    };
+    let base_reference = FileReference(number | (u64::from(u16_at(&base, 16)?) << 48));
+    let mut loaded: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+    for entry in attribute_list(source, geometry, &base, &mut check)? {
+        if !matches!(entry.kind, 0x10 | 0x30 | 0xc0 | 0x80)
+            || (entry.kind == 0x80 && entry.lowest != 0)
+        {
+            continue;
+        }
+        check()?;
+        let record = if entry.reference == base_reference {
+            &base
+        } else {
+            if let std::collections::btree_map::Entry::Vacant(slot) =
+                loaded.entry(entry.reference.0)
+            {
+                let record = source.file_record(entry.reference)?.decode(geometry)?;
+                if u16_at(&record, 16)? != entry.reference.sequence()
+                    || u64_at(&record, 32)? != base_reference.0
+                {
+                    return Err(Error::Changed);
+                }
+                slot.insert(record);
+            }
+            &loaded[&entry.reference.0]
+        };
+        if !attributes(record)?.iter().any(|attribute| {
+            u32_at(attribute, 0) == Ok(entry.kind)
+                && attribute[9] == 0
+                && u16_at(attribute, 14) == Ok(entry.instance)
+                && (attribute[8] == 0 || u64_at(attribute, 16) == Ok(entry.lowest))
+        }) {
+            return Err(Error::Changed);
+        }
+    }
+    let mut family = vec![crate::parse_decoded(number, &base)?];
+    for (reference, record) in loaded {
+        family.push(crate::parse_decoded(
+            FileReference(reference).number(),
+            &record,
+        )?);
+    }
+    Ok(family)
 }
 
 fn checked_extents(
@@ -362,38 +465,16 @@ impl MftLayout {
         let base_reference = FileReference(u64::from(u16_at(&base, 16)?) << 48);
         let base_attributes = attributes(&base)?;
         let mut parts = BTreeMap::new();
-        let mut lists = vec![];
+        let lists = attribute_list(source, geometry, &base, &mut check)?;
         for attribute in &base_attributes {
             if attribute[9] != 0 {
                 continue;
             }
-            match u32_at(attribute, 0)? {
-                0x80 => {
-                    let part = mapping_pairs(attribute, geometry)?;
-                    if parts.insert(part.lowest, part).is_some() {
-                        return Err(Error::Corrupt);
-                    }
+            if u32_at(attribute, 0)? == 0x80 {
+                let part = mapping_pairs(attribute, geometry)?;
+                if parts.insert(part.lowest, part).is_some() {
+                    return Err(Error::Corrupt);
                 }
-                0x20 => {
-                    if attribute[8] == 0 {
-                        lists.extend(list_entries(resident(attribute)?)?);
-                    } else {
-                        let part = mapping_pairs(attribute, geometry)?;
-                        if part.lowest != 0 {
-                            return Err(Error::Unsupported);
-                        }
-                        let size = part.size.ok_or(Error::Corrupt)?;
-                        if size > MAX_LIST_BYTES {
-                            return Err(Error::Limit);
-                        }
-                        let extents = checked_extents(BTreeMap::from([(0, part)]), size, geometry)?;
-                        let mut data = vec![0; size as usize];
-                        check()?;
-                        read_mapped(source, geometry, &extents, 0, &mut data)?;
-                        lists.extend(list_entries(&data)?);
-                    }
-                }
-                _ => {}
             }
         }
         let size = parts
@@ -732,5 +813,77 @@ mod tests {
             Err(Error::Cancelled)
         ));
         assert!(source.reads.is_empty());
+    }
+    #[test]
+    fn metadata_replay_replaces_extended_names_without_reading_user_data() {
+        let base = (2u64 << 48) | 18;
+        let extension = (3u64 << 48) | 42;
+        let mut entries = list(base, extension, 0);
+        put32(&mut entries, 56, 0x30);
+        let mut value = vec![0; 66 + 12];
+        put64(&mut value, 0, (1u64 << 48) | 5);
+        value[64] = 6;
+        value[65] = 1;
+        for (index, unit) in "new.md".encode_utf16().enumerate() {
+            put16(&mut value, 66 + index * 2, unit);
+        }
+        let mut name = vec![0; (24 + value.len()).next_multiple_of(8)];
+        let length = name.len();
+        put32(&mut name, 0, 0x30);
+        put32(&mut name, 4, length as u32);
+        put16(&mut name, 14, 7);
+        put32(&mut name, 16, value.len() as u32);
+        put16(&mut name, 20, 24);
+        name[24..24 + value.len()].copy_from_slice(&value);
+        let mut source = fragmented();
+        source.records = BTreeMap::from([
+            (
+                18,
+                record(2, 0, vec![part(0, 63, 1, &[0x11, 64, 100, 0]), entries]),
+            ),
+            (42, record(3, base, vec![name])),
+        ]);
+        let family =
+            metadata_family(&mut source, geometry(), FileReference(base), || Ok(())).unwrap();
+        assert_eq!(family.len(), 2);
+        assert!(
+            source.reads.is_empty(),
+            "unnamed data extents must not be followed for file metadata"
+        );
+        let mut builder = crate::CatalogBuilder::default();
+        builder
+            .insert(crate::MetadataRecord {
+                reference: FileReference((1u64 << 48) | 5),
+                base: None,
+                is_dir: true,
+                names: vec![],
+                size: Some(0),
+                modified_ms: None,
+                attributes: 0,
+                reparse_tag: None,
+            })
+            .unwrap();
+        builder.insert(family[0].clone()).unwrap();
+        let mut stale = family[1].clone();
+        stale.reference = FileReference((1u64 << 48) | 43);
+        stale.names[0].name = "old.md".into();
+        builder.insert(stale).unwrap();
+        builder.replace_family(family).unwrap();
+        builder.remove(FileReference((1u64 << 48) | 18));
+        let mut files = vec![];
+        builder
+            .finish()
+            .unwrap()
+            .visit(
+                prism_ntfs_protocol::DriveLetter::new(b'C').unwrap(),
+                |file| {
+                    files.push(file);
+                    Ok::<_, ()>(())
+                },
+            )
+            .unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[1].path, "C:\\new.md");
+        assert_eq!(files[1].size, 65536);
     }
 }

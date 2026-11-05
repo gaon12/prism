@@ -29,11 +29,13 @@ fn normalized(value: &str) -> String {
         .replace('\\', "/")
 }
 fn path_key(path: &Path) -> String {
-    let value = path.to_string_lossy();
+    path_key_text(&path.to_string_lossy())
+}
+fn path_key_text(value: &str) -> String {
     let value = value
         .strip_prefix(r"\\?\UNC\")
         .map(|tail| Cow::Owned(format!(r"\\{tail}")))
-        .unwrap_or_else(|| Cow::Borrowed(value.strip_prefix(r"\\?\").unwrap_or(&value)));
+        .unwrap_or_else(|| Cow::Borrowed(value.strip_prefix(r"\\?\").unwrap_or(value)));
     #[cfg(windows)]
     if value.is_ascii() {
         // One allocation for the common whole-drive case, rather than copying
@@ -126,7 +128,7 @@ impl Entry {
             search.rfind('/').map_or(0, |index| index + 1)
         } as u32;
         Self {
-            path: display_path(&raw.path).into(),
+            path: raw.path.into(),
             initials_path: (!ascii)
                 .then(|| initial_projection(&search))
                 .flatten()
@@ -166,7 +168,7 @@ impl Entry {
         self.is_dir == raw.is_dir
             && self.size == raw.size
             && self.modified_ms == raw.modified_ms
-            && *self.path == *display_path(&raw.path)
+            && self.path.as_ref() == raw.path
     }
     fn result(&self) -> FileResult {
         let name = self
@@ -185,7 +187,7 @@ impl Entry {
 }
 /// Metadata collected by the walker before deciding whether an entry must be rebuilt.
 struct Raw {
-    path: PathBuf,
+    path: String,
     key: String,
     has_name: bool,
     is_dir: bool,
@@ -697,7 +699,7 @@ impl FileIndex {
                             .ok()
                             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
                             .map(|duration| duration.as_millis() as i64),
-                        path: entry.into_path(),
+                        path: display_path(entry.path()),
                     });
                     if batch.len() >= 512 {
                         self.publish(generation, sweep, batch, *skipped, false);
@@ -1388,7 +1390,7 @@ mod performance_tests {
             is_dir: false,
             size: 1,
             modified_ms: Some(modified),
-            path,
+            path: display_path(&path),
         }
     }
     #[test]

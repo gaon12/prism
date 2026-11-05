@@ -150,11 +150,17 @@ impl FileIndex {
                     let mut batch = records
                         .into_iter()
                         .map(|record| {
-                            let path = PathBuf::from(record.path);
+                            // The wire path is already validated UTF-8. Keep
+                            // it directly rather than converting to UTF-16 and
+                            // back for every entry on a Windows volume.
                             Raw {
-                                key: path_key(&path),
-                                has_name: path.file_name().is_some_and(|name| !name.is_empty()),
-                                path,
+                                key: path_key_text(&record.path),
+                                has_name: record
+                                    .path
+                                    .rsplit(['\\', '/'])
+                                    .next()
+                                    .is_some_and(|name| !name.is_empty()),
+                                path: record.path,
                                 is_dir: record.is_dir,
                                 size: record.size,
                                 modified_ms: record.modified_ms,
@@ -332,5 +338,82 @@ mod tests {
         assert_eq!(catalog.entries.len(), 8192);
         assert_eq!(catalog.status.count, 8192);
         assert!(catalog.entries.values().all(|entry| entry.seen == 9));
+    }
+
+    #[test]
+    fn late_snapshot_failure_never_publishes_private_batches() {
+        for failure in 0..3 {
+            let (index, _owner) = isolated();
+            let dir = tempfile::tempdir().unwrap();
+            index
+                .collect_service_snapshot(1, dir.path(), 1, |_, receive| {
+                    receive(Event::Records(vec![record(dir.path(), "existing.md")]))?;
+                    Ok(1)
+                })
+                .unwrap();
+            let result = index.collect_service_snapshot(1, dir.path(), 2, |_, receive| {
+                // A large private reply must still insert nothing when its
+                // final validation fails or the authorized root is revoked.
+                for batch in 0..64 {
+                    receive(Event::Records(
+                        (0..32)
+                            .map(|n| record(dir.path(), &format!("비공개-{batch}-{n}.md")))
+                            .collect(),
+                    ))?;
+                    assert_eq!(index.status().unwrap().count, 1);
+                }
+                match failure {
+                    0 => Err(io::Error::new(io::ErrorKind::UnexpectedEof, "partial")),
+                    1 => Ok(0),
+                    _ => {
+                        index.generation.store(2, Ordering::Release);
+                        Ok(1)
+                    }
+                }
+            });
+            assert!(result.is_err());
+            let catalog = index.catalog.read().unwrap();
+            assert_eq!(catalog.entries.len(), 1);
+            assert_eq!(catalog.status.revision, 1);
+            let entry = catalog.entries.values().next().unwrap();
+            assert_eq!(entry.name(), "existing.md");
+            assert_eq!(entry.seen, 1, "a rejected sweep cannot refresh old rows");
+        }
+    }
+
+    #[test]
+    fn streamed_paths_preserve_unicode_search_display_and_metadata_updates() {
+        let (index, _owner) = isolated();
+        let dir = tempfile::tempdir().unwrap();
+        let mut rows = vec![
+            record(dir.path(), "Report.MD"),
+            record(dir.path(), "한글-😀.TXT"),
+            record(dir.path(), "한글.TXT"),
+        ];
+        for sweep in [1, 2, 3] {
+            if sweep == 3 {
+                rows[0].size = 84;
+                rows[0].modified_ms = Some(99);
+            }
+            index
+                .collect_service_snapshot(1, dir.path(), sweep, |_, receive| {
+                    receive(Event::Records(rows.clone()))?;
+                    Ok(1)
+                })
+                .unwrap();
+            assert_eq!(
+                index.status().unwrap().revision,
+                if sweep < 3 { 1 } else { 2 }
+            );
+        }
+        let korean = index.search("한글", "txt", None, 10).unwrap();
+        assert_eq!(korean.total, 2);
+        assert!(korean.results.iter().any(|hit| hit.name == "한글-😀.TXT"));
+        assert!(korean.results.iter().any(|hit| hit.name == "한글.TXT"));
+        let english = index.search("report", "md", None, 10).unwrap();
+        assert_eq!(english.total, 1);
+        assert_eq!(english.results[0].name, "Report.MD");
+        assert_eq!(english.results[0].size, 84);
+        assert_eq!(english.results[0].modified_ms, Some(99));
     }
 }

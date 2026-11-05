@@ -1,7 +1,8 @@
 # Platform module checks
 
 This independent crate compiles the production runtime inventory, archive extraction,
-embedding process and credential store files directly. It avoids the Tauri, WebView
+embedding process, credential store, document extraction, text repository and path
+identity files directly. It avoids the Tauri, WebView
 and Lance build requirements so these modules can also be checked in a Linux shell.
 It does not replace the full application tests or native desktop QA.
 
@@ -18,6 +19,18 @@ An unresponsive-launcher check also exercises the ten-second handshake timeout
 and two-second shutdown grace period, then verifies private-group cleanup. It
 never signals a cached process ID after its child may have been reaped.
 macOS and Linux ordinary tests do not access the system credential store.
+
+The [native path policy workflow](../../.github/workflows/path-policy.yml) runs
+these library tests on macOS with `TMPDIR=/var/tmp`. It intentionally exercises
+Apple's real `/var` alias rather than replacing it with a plain runner directory.
+Dedicated tests create owned fixtures explicitly under `/tmp`, check all three
+system aliases, reject nested user symlinks, and verify extraction, scoped
+keyword search and deletion of cached metadata. The exception requires exact
+root aliases, root ownership, their expected `/private` targets and protected
+parent directories. It never authorizes an arbitrary selected symlink.
+Cross-target compilation alone does not establish these runtime results.
+The harness locally allows the imported modules' existing style lint baseline
+and application-only dead code; the full application still reports those lints.
 
 Four expensive or OS-dependent checks are opt-in:
 

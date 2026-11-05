@@ -16,7 +16,7 @@ Windows-first desktop search workspace built with Tauri 2, Rust, React and TypeS
 - Persistent RAG conversations with explicit local/external provider settings, current source previews, cancellation and Markdown export.
 - Source-based Markdown document drafts with reviewed outlines, manual and selected-text editing, stable citations and immutable revision history.
 
-The filename index is an in-memory directory traversal implementation rebuilt at startup, not the planned NTFS MFT/USN backend or an Everything-level performance claim. Filename-only scopes collect names, paths and metadata; document contents are read only within separately enabled content/AI scopes. Symlinks and junctions below a registered root are not followed.
+The filename index is an in-memory directory traversal implementation rebuilt at startup, not the planned NTFS MFT/USN backend or an Everything-level performance claim. Filename-only scopes collect names, paths and metadata; document contents are read only within separately enabled content/AI scopes. Symlinks and junctions below a registered root are not followed. Content extraction, search and RAG share the same path policy. On macOS, the exact OS-managed `/var`, `/tmp` and `/etc` aliases are accepted after checking ownership, protected parents and their expected `/private` targets; user symlinks remain rejected. See Apple's [filesystem definitions](https://github.com/apple-oss-distributions/files/blob/main/Makefile). Native Mac verification of this change remains pending.
 
 Content search stores source fingerprints, sections and bounded chunks in local SQLite, with trigram FTS acceleration and explicit partial-result diagnostics. Text/Markdown/code, CSV/TSV, HTML, PDF, DOCX, HWP/HWPX, PPTX, XLSX and ODT/ODS/ODP have extraction readers. Tables retain headers, row keys and cell locations. Cached spreadsheet formulas are not recalculated. Scanned textless PDFs report OCR required; password-based decryption and OCR are not implemented yet. Extraction has bounded file/archive/text budgets and reports skipped documents rather than claiming complete coverage.
 
@@ -135,7 +135,7 @@ Browser preview does not have native filesystem, global-shortcut or tray access.
 
 ## Checks
 
-The [independent platform checks](tools/platform-qa/README.md) compile the exact runtime and credential modules without Tauri/Lance and document opt-in real archive, model, and OS-store tests. `npm run test:platform-ui` verifies the bundled Windows settings UI with synthetic platform responses; it does not establish macOS/Linux native behavior.
+The [independent platform checks](tools/platform-qa/README.md) compile the exact runtime, credential, extraction, text repository and path modules without Tauri/Lance and document opt-in real archive, model, and OS-store tests. `npm run test:platform-ui` verifies the bundled Windows settings UI with synthetic platform responses; it does not establish macOS/Linux native behavior.
 
 ```sh
 npm run build

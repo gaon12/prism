@@ -248,25 +248,9 @@ fn within(path: &Path, root: &Path) -> bool {
     true
 }
 fn no_links(path: &Path) -> bool {
-    path.ancestors()
-        .filter(|p| !p.as_os_str().is_empty())
-        .all(|ancestor| {
-            let Ok(meta) = fs::symlink_metadata(ancestor) else {
-                return false;
-            };
-            if meta.file_type().is_symlink() {
-                return false;
-            }
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::MetadataExt;
-                if meta.file_attributes() & 0x400 != 0 {
-                    return false;
-                }
-            }
-            true
-        })
+    crate::path_identity::no_links(path).is_ok()
 }
+
 fn current_path(path: &str, directory: bool) -> Option<PathBuf> {
     let absolute = std::path::absolute(path).ok()?;
     if !no_links(&absolute) {

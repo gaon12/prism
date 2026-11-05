@@ -43,25 +43,9 @@ fn cancel_check(cancel: &AtomicBool) -> RagResult<()> {
     }
 }
 fn no_links(path: &Path) -> bool {
-    path.ancestors()
-        .filter(|part| !part.as_os_str().is_empty())
-        .all(|part| {
-            let Ok(metadata) = part.symlink_metadata() else {
-                return false;
-            };
-            if metadata.file_type().is_symlink() {
-                return false;
-            }
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::MetadataExt;
-                if metadata.file_attributes() & 0x400 != 0 {
-                    return false;
-                }
-            }
-            true
-        })
+    crate::path_identity::no_links(path).is_ok()
 }
+
 fn selected(policy: &RagPolicy, ids: &[String]) -> RagResult<Vec<(String, String)>> {
     if ids.iter().any(|id| {
         !policy

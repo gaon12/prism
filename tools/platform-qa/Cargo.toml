@@ -17,7 +17,7 @@ tar = "0.4"
 zeroize = "1"
 quick-xml = "0.38"
 encoding_rs = "0.8"
-pdf-extract = "0.10"
+pdf-extract = "=0.12.1"
 cfb = "0.14"
 rusqlite = { version = "0.37", features = ["bundled"] }
 unicode-normalization = "0.1"
@@ -43,3 +43,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 tempfile = "3"
 
 [workspace]
+
+[patch.crates-io]
+pdf-extract = { path = "../../src-tauri/vendor/pdf-extract" }
+lopdf = { path = "../../src-tauri/vendor/lopdf" }

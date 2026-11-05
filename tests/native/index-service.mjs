@@ -43,11 +43,14 @@ try {
   );
   const before = await invoke('index_service_status');
   assert.equal(before.managementAllowed, false);
-  assert.equal(before.canInstall || before.canStart || before.canRemove, false);
+  assert.equal(
+    before.canInstall || before.canStart || before.canUpgrade || before.canRemove,
+    false,
+  );
   const helperFolders = async () =>
     (await readdir(tmpdir())).filter((name) => name.startsWith('Prism-index-helper-')).sort();
   const stagedBefore = await helperFolders();
-  for (const action of ['install', 'start', 'uninstall']) {
+  for (const action of ['install', 'start', 'upgrade', 'uninstall']) {
     // Playwright wraps rejected plain objects as "page.evaluate: Object".
     // Preserve the actual native error as data, without replacing the IPC.
     const result = await main.evaluate(async (action) => {
@@ -70,6 +73,12 @@ try {
   const dialog = main.getByRole('dialog', { name: '설정', exact: true });
   const panel = dialog.getByRole('region', { name: '빠른 파일명 색인', exact: true });
   await expect(panel).toContainText('격리된 테스트에서는 서비스 상태만');
+  if (['running', 'stopped'].includes(before.state)) {
+    await expect(
+      panel.getByRole('button', { name: '앱 내장 버전 적용', exact: true }),
+    ).toBeDisabled();
+    await expect(panel).toContainText('다른 Prism 사본의 파일 수집도 잠시 중단될 수 있습니다.');
+  }
   for (const button of await panel.locator('.index-service-actions > button').all()) {
     await expect(button).toBeDisabled();
   }
@@ -108,6 +117,11 @@ try {
   const english = main.getByRole('dialog', { name: 'Settings', exact: true });
   const translated = english.getByRole('region', { name: 'Fast filename indexing', exact: true });
   await expect(translated).toContainText('Isolated tests can only view service status.');
+  if (['running', 'stopped'].includes(before.state)) {
+    await expect(
+      translated.getByRole('button', { name: 'Use bundled version', exact: true }),
+    ).toBeDisabled();
+  }
   await main.setViewportSize({ width: 760, height: 700 });
   await translated.scrollIntoViewIfNeeded();
   await main.screenshot({ path: join(directory, 'service-en-dark-760.png') });

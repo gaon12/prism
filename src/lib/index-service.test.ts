@@ -7,9 +7,10 @@ describe('index-service client boundary', () => {
       state: 'unsupported',
       canInstall: false,
       canStart: false,
+      canUpgrade: false,
       canRemove: false,
     });
-    for (const action of ['install', 'start', 'uninstall'] as const) {
+    for (const action of ['install', 'start', 'upgrade', 'uninstall'] as const) {
       await expect(indexService.manage(action)).rejects.toEqual({ code: 'unsupported' });
     }
   });

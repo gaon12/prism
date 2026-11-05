@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { native } from './bridge';
 
-export type IndexServiceAction = 'install' | 'start' | 'uninstall';
+export type IndexServiceAction = 'install' | 'start' | 'upgrade' | 'uninstall';
 export type IndexServiceIssue =
   | 'unsupported'
   | 'isolated'
@@ -22,6 +22,7 @@ export interface IndexServiceStatus {
   busy: boolean;
   canInstall: boolean;
   canStart: boolean;
+  canUpgrade: boolean;
   canRemove: boolean;
 }
 export function indexServiceIssue(error: unknown): IndexServiceIssue {
@@ -58,6 +59,7 @@ export const indexService = {
         busy: false,
         canInstall: false,
         canStart: false,
+        canUpgrade: false,
         canRemove: false,
       };
     return invoke('index_service_status');

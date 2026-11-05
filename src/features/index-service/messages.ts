@@ -22,11 +22,11 @@ const messages = {
     'サービスを利用できない場合は、従来のフォルダー収集で検索を続けます。',
   ],
   consent: [
-    '설치·시작·제거 시 Windows 관리자 승인이 필요합니다. Prism 앱은 일반 권한으로 동작합니다.',
-    'Installing, starting or removing the service requires Windows administrator approval. The Prism app runs with ordinary permissions.',
-    '安装、启动或移除服务需要 Windows 管理员批准。Prism 应用以普通权限运行。',
-    '安裝、啟動或移除服務需要 Windows 系統管理員核准。Prism 應用程式以一般權限執行。',
-    'インストール・起動・削除にはWindowsの管理者承認が必要です。Prismアプリは通常の権限で動作します。',
+    '설치·시작·버전 교체·제거 시 Windows 관리자 승인이 필요합니다. Prism 앱은 일반 권한으로 동작합니다.',
+    'Installing, starting, replacing or removing the service requires Windows administrator approval. The Prism app runs with ordinary permissions.',
+    '安装、启动、更换版本或移除服务需要 Windows 管理员批准。Prism 应用以普通权限运行。',
+    '安裝、啟動、更換版本或移除服務需要 Windows 系統管理員核准。Prism 應用程式以一般權限執行。',
+    'インストール・起動・バージョンの置き換え・削除にはWindowsの管理者承認が必要です。Prismアプリは通常の権限で動作します。',
   ],
   immediate: [
     '서비스 버튼의 작업은 설정 저장과 별개로 즉시 적용됩니다.',
@@ -53,6 +53,20 @@ const messages = {
   running: ['서비스 실행 중', 'Service running', '服务正在运行', '服務執行中', 'サービス実行中'],
   install: ['서비스 설치', 'Install service', '安装服务', '安裝服務', 'サービスをインストール'],
   start: ['서비스 시작', 'Start service', '启动服务', '啟動服務', 'サービスを起動'],
+  upgrade: [
+    '앱 내장 버전 적용',
+    'Use bundled version',
+    '使用内置版本',
+    '使用內建版本',
+    '同梱バージョンを適用',
+  ],
+  upgradeBody: [
+    '서비스를 잠시 중지하고 현재 Prism에 포함된 버전으로 교체합니다. 다른 Prism 사본의 파일 수집도 잠시 중단될 수 있습니다.',
+    'Briefly stops the service and replaces it with the version bundled with this Prism app. File collection in other Prism copies may also be interrupted.',
+    '短暂停止服务，然后替换为当前 Prism 内置的版本。其他 Prism 副本的文件收集也可能短暂中断。',
+    '短暫停止服務，再替換為目前 Prism 內建的版本。其他 Prism 副本的檔案收集也可能短暫中斷。',
+    'サービスを一時停止し、このPrismに同梱されたバージョンに置き換えます。他のPrismのファイル収集も一時的に中断される場合があります。',
+  ],
   uninstall: ['서비스 제거', 'Remove service', '移除服务', '移除服務', 'サービスを削除'],
   refresh: [
     '서비스 상태 새로 확인',

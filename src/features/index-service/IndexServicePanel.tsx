@@ -152,6 +152,16 @@ function WindowsServicePanel({ language }: { language: Language }) {
           <button
             type="button"
             className="button compact"
+            disabled={blocked || !status.canUpgrade}
+            onClick={() => void act('upgrade')}
+          >
+            {t('upgrade')}
+          </button>
+        ) : null}
+        {status && ['running', 'stopped'].includes(status.state) ? (
+          <button
+            type="button"
+            className="button compact"
             disabled={blocked || !status.canRemove}
             onClick={() => setConfirmRemove(true)}
           >
@@ -159,6 +169,9 @@ function WindowsServicePanel({ language }: { language: Language }) {
           </button>
         ) : null}
       </div>
+      {status && ['running', 'stopped'].includes(status.state) ? (
+        <p className="index-service-note">{t('upgradeBody')}</p>
+      ) : null}
       {confirmRemove ? (
         <div className="index-service-confirm" role="group" aria-label={t('removeQuestion')}>
           <strong>{t('removeQuestion')}</strong>

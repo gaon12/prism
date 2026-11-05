@@ -55,6 +55,9 @@ impl FileIndex {
         fetch: impl FnOnce(Arc<AtomicBool>, &mut dyn FnMut(Event) -> io::Result<()>) -> io::Result<u64>,
     ) -> io::Result<()> {
         let root_key = path_key(root);
+        let drive = (root_key.len() == 2 && root_key.as_bytes()[1] == b':')
+            .then(|| prism_ntfs_protocol::DriveLetter::new(root_key.as_bytes()[0]).ok())
+            .flatten();
         let cancel = Arc::new(AtomicBool::new(false));
         let mut rows = Vec::new();
         let result = std::thread::scope(|scope| {
@@ -80,28 +83,22 @@ impl FileIndex {
                 }
                 match event {
                     Event::Records(records) => {
-                        for record in records {
-                            let path = PathBuf::from(record.path);
-                            let key = path_key(&path);
-                            if !under(&key, &root_key) {
+                        for record in &records {
+                            // Whole-drive validation needs no allocated path
+                            // key. Keep decoded batches private and defer path
+                            // conversion/normalization to publication workers.
+                            let inside = drive.map_or_else(
+                                || under(&path_key(Path::new(&record.path)), &root_key),
+                                |drive| drive.contains(&record.path),
+                            );
+                            if !inside {
                                 return Err(io::Error::new(
                                     io::ErrorKind::InvalidData,
                                     "Out-of-scope filename response.",
                                 ));
                             }
-                            rows.push(Raw {
-                                key,
-                                name: path
-                                    .file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .into_owned(),
-                                path,
-                                is_dir: record.is_dir,
-                                size: record.size,
-                                modified_ms: record.modified_ms,
-                            });
                         }
+                        rows.push(records);
                     }
                     Event::Progress { .. } => {}
                     Event::Finished { .. } | Event::Removed(_) => {
@@ -130,7 +127,7 @@ impl FileIndex {
         }
         // Derive Unicode projections and publish using the same bounded batches
         // as the walker. A truncated, rejected or cancelled stream inserts none.
-        let rows = Mutex::new(rows.into_iter());
+        let rows = Mutex::new(rows.into_iter().flatten());
         let threads = std::thread::available_parallelism()
             .map_or(2, usize::from)
             .clamp(1, 8);
@@ -141,15 +138,29 @@ impl FileIndex {
                     if !self.current(generation) {
                         break;
                     }
-                    let mut batch: Vec<_> = rows
+                    let records: Vec<_> = rows
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .by_ref()
                         .take(512)
                         .collect();
-                    if batch.is_empty() {
+                    if records.is_empty() {
                         break;
                     }
+                    let mut batch = records
+                        .into_iter()
+                        .map(|record| {
+                            let path = PathBuf::from(record.path);
+                            Raw {
+                                key: path_key(&path),
+                                has_name: path.file_name().is_some_and(|name| !name.is_empty()),
+                                path,
+                                is_dir: record.is_dir,
+                                size: record.size,
+                                modified_ms: record.modified_ms,
+                            }
+                        })
+                        .collect();
                     self.publish(generation, sweep, &mut batch, 0, false);
                 });
             }
@@ -249,6 +260,34 @@ mod tests {
                     .name(),
                 "existing.md"
             );
+        }
+    }
+    #[test]
+    fn whole_drive_fast_validation_rejects_escapes_before_any_parallel_publication() {
+        let (index, _owner) = isolated();
+        for invalid in [
+            r"D:\outside.md",
+            r"C:\..\escape.md",
+            r"C:\file:stream",
+            r"C:/wrong-separator.md",
+        ] {
+            let result = index.collect_service_snapshot(1, Path::new(r"C:\"), 1, |_, receive| {
+                receive(Event::Records(vec![FileRecord {
+                    path: r"C:\valid.md".into(),
+                    is_dir: false,
+                    size: 0,
+                    modified_ms: None,
+                }]))?;
+                receive(Event::Records(vec![FileRecord {
+                    path: invalid.into(),
+                    is_dir: false,
+                    size: 0,
+                    modified_ms: None,
+                }]))?;
+                Ok(1)
+            });
+            assert!(result.is_err());
+            assert_eq!(index.status().unwrap().count, 0);
         }
     }
 

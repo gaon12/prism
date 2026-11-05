@@ -5,6 +5,7 @@ use chrono::{Datelike, Local, NaiveDate, TimeZone};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     cmp::Ordering as CmpOrdering,
     collections::{BTreeMap, BinaryHeap, HashSet, VecDeque},
     fs,
@@ -31,12 +32,32 @@ fn path_key(path: &Path) -> String {
     let value = path.to_string_lossy();
     let value = value
         .strip_prefix(r"\\?\UNC\")
-        .map(|tail| format!(r"\\{tail}"))
-        .unwrap_or_else(|| value.strip_prefix(r"\\?\").unwrap_or(&value).to_string());
+        .map(|tail| Cow::Owned(format!(r"\\{tail}")))
+        .unwrap_or_else(|| Cow::Borrowed(value.strip_prefix(r"\\?\").unwrap_or(&value)));
+    #[cfg(windows)]
+    if value.is_ascii() {
+        // One allocation for the common whole-drive case, rather than copying
+        // the path for prefix removal, lowercase, separators and trimming.
+        let bytes = value
+            .bytes()
+            .map(|byte| {
+                if byte == b'\\' {
+                    b'/'
+                } else {
+                    byte.to_ascii_lowercase()
+                }
+            })
+            .collect();
+        let mut key = String::from_utf8(bytes).expect("ASCII path key");
+        key.truncate(key.trim_end_matches('/').len());
+        return key;
+    }
     #[cfg(windows)]
     let value = value.to_lowercase();
     // Keep filesystem identity distinct from the NFC-normalized search text.
-    value.replace('\\', "/").trim_end_matches('/').to_string()
+    let mut key = value.replace('\\', "/");
+    key.truncate(key.trim_end_matches('/').len());
+    key
 }
 fn under(path: &str, root: &str) -> bool {
     path == root
@@ -70,9 +91,10 @@ pub struct FileResult {
 /// One indexed path. Derived strings are stored once: the normalized name, extension and
 /// initials of the name are slices of the normalized path, so each entry keeps two strings
 /// (display path and identity key) plus optional projections only when they differ.
+/// The catalog's ordering key shares the identity allocation with this entry.
 struct Entry {
     path: Box<str>,
-    key: Box<str>,
+    key: Arc<str>,
     /// NFC/lowercase search text when it differs from `key` (usually identical on Windows).
     search: Option<Box<str>>,
     /// Byte offset of the file name inside the search text and its initials projection.
@@ -89,20 +111,17 @@ impl Entry {
         // Most system paths are ASCII. Avoid NFC iteration and allocating two
         // Hangul projections for every such path on a whole-drive scan.
         let ascii = raw.key.is_ascii();
-        let search = if ascii {
-            raw.key.to_ascii_lowercase()
+        let search = if ascii && !raw.key.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            Cow::Borrowed(raw.key.as_str())
+        } else if ascii {
+            Cow::Owned(raw.key.to_ascii_lowercase())
         } else {
-            normalized(&raw.key)
-        };
-        let name = if ascii {
-            raw.name.to_ascii_lowercase()
-        } else {
-            normalized(&raw.name)
+            Cow::Owned(normalized(&raw.key))
         };
         // Initial projection keeps UTF-8 byte lengths (3-byte syllable → 3-byte jamo), so the
         // name offset is valid for both strings.
-        let name_start = if search.ends_with(&name) {
-            search.len() - name.len()
+        let name_start = if !raw.has_name {
+            search.len()
         } else {
             search.rfind('/').map_or(0, |index| index + 1)
         } as u32;
@@ -116,7 +135,7 @@ impl Entry {
                 .then(|| keyboard_projection(&search))
                 .flatten()
                 .map(Into::into),
-            search: (search != raw.key).then(|| search.into()),
+            search: (search.as_ref() != raw.key).then(|| search.into_owned().into()),
             key: raw.key.into(),
             name_start,
             is_dir: raw.is_dir,
@@ -168,7 +187,7 @@ impl Entry {
 struct Raw {
     path: PathBuf,
     key: String,
-    name: String,
+    has_name: bool,
     is_dir: bool,
     size: u64,
     modified_ms: Option<i64>,
@@ -179,7 +198,7 @@ struct WalkJobs {
 }
 /// Entries at `root` and below it, using the sorted key order ('0' follows '/').
 fn subtree<'a>(
-    entries: &'a BTreeMap<Box<str>, Entry>,
+    entries: &'a BTreeMap<Arc<str>, Entry>,
     root: &str,
 ) -> impl Iterator<Item = &'a Entry> + 'a {
     let (low, high) = (format!("{root}/"), format!("{root}0"));
@@ -212,7 +231,7 @@ struct Root {
 }
 #[derive(Default)]
 struct Catalog {
-    entries: BTreeMap<Box<str>, Entry>,
+    entries: BTreeMap<Arc<str>, Entry>,
     roots: Vec<Root>,
     status: IndexStatus,
 }
@@ -493,7 +512,7 @@ impl FileIndex {
                     if !self.current(generation) {
                         continue;
                     }
-                    let stale: Vec<Box<str>> = unique
+                    let stale: Vec<Arc<str>> = unique
                         .iter()
                         .flat_map(|path| {
                             subtree(&catalog.entries, &path_key(path))
@@ -670,7 +689,7 @@ impl FileIndex {
                     }
                     batch.push(Raw {
                         key: path_key(entry.path()),
-                        name: entry.file_name().to_string_lossy().to_string(),
+                        has_name: !entry.file_name().is_empty(),
                         is_dir: metadata.is_dir(),
                         size: if metadata.is_dir() { 0 } else { metadata.len() },
                         modified_ms: metadata
@@ -1365,7 +1384,7 @@ mod performance_tests {
         let path = PathBuf::from(path);
         Raw {
             key: path_key(&path),
-            name: path.file_name().unwrap().to_string_lossy().into_owned(),
+            has_name: path.file_name().is_some_and(|name| !name.is_empty()),
             is_dir: false,
             size: 1,
             modified_ms: Some(modified),
@@ -1491,6 +1510,32 @@ mod performance_tests {
         );
         let ascii = Entry::new(raw("C:/a/plain.txt", 1), 1);
         assert!(ascii.initials_path.is_none() && ascii.keyboard_path.is_none());
+        let mut entries = BTreeMap::new();
+        entries.insert(ascii.key.clone(), ascii);
+        let (key, entry) = entries.first_key_value().unwrap();
+        assert!(
+            Arc::ptr_eq(key, &entry.key),
+            "catalog keys must not duplicate every full path"
+        );
+    }
+    #[test]
+    fn verbatim_path_keys_preserve_filesystem_identity_and_root_boundaries() {
+        let path = path_key(Path::new(r"\\?\C:\Mixed\file.txt\"));
+        let unc = path_key(Path::new(r"\\?\UNC\Server\Share\"));
+        #[cfg(windows)]
+        {
+            assert_eq!(path, "c:/mixed/file.txt");
+            assert_eq!(unc, "//server/share");
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(path, "C:/Mixed/file.txt");
+            assert_eq!(unc, "//Server/Share");
+        }
+        assert_ne!(
+            path_key(Path::new("C:/e\u{301}.md")),
+            path_key(Path::new("C:/é.md"))
+        );
     }
     #[test]
     fn subtree_ranges_exclude_sibling_prefixes() {

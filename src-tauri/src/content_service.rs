@@ -183,7 +183,8 @@ impl ContentService {
                 listener: Arc::new(listener),
                 last_emit: Mutex::new(Instant::now() - Duration::from_secs(1)),
                 excluded: Mutex::new(vec![path_key(
-                    &std::path::absolute(directory).unwrap_or_else(|_| directory.to_path_buf()),
+                    &crate::path_identity::comparison(directory)
+                        .unwrap_or_else(|_| directory.to_path_buf()),
                 )]),
                 dirty: AtomicBool::new(false),
                 watch_issues: Mutex::new(vec![]),
@@ -203,25 +204,27 @@ impl ContentService {
     /// Internal app caches must never become a source or trigger indexing feedback loops.
     pub fn exclude_paths(&self, paths: &[PathBuf]) {
         if let Ok(mut excluded) = self.inner.excluded.lock() {
-            excluded.extend(
-                paths
-                    .iter()
-                    .filter_map(|path| std::path::absolute(path).ok())
-                    .map(|path| path_key(&path)),
-            );
+            for path in paths {
+                if let Ok(absolute) = std::path::absolute(path) {
+                    excluded.push(path_key(&absolute));
+                }
+                if let Ok(canonical) = crate::path_identity::comparison(path) {
+                    excluded.push(path_key(&canonical));
+                }
+            }
             excluded.sort();
             excluded.dedup();
         }
     }
     fn is_excluded(&self, path: &str) -> bool {
+        let Ok(canonical) = crate::path_identity::comparison(Path::new(path)) else {
+            return true;
+        };
+        let key = path_key(&canonical);
         self.inner
             .excluded
             .lock()
-            .map(|roots| {
-                roots
-                    .iter()
-                    .any(|root| under(&path_key(Path::new(path)), root))
-            })
+            .map(|roots| roots.iter().any(|root| under(&key, root)))
             .unwrap_or(true)
     }
     fn update(&self, action: impl FnOnce(&mut ContentStatus)) {
@@ -433,7 +436,7 @@ impl ContentService {
         let mut roots: Vec<PathBuf> = scopes
             .iter()
             .filter(|scope| scope.content_enabled && scope_id.is_none_or(|id| scope.id == id))
-            .filter_map(|scope| fs::canonicalize(&scope.path).ok())
+            .filter_map(|scope| crate::path_identity::canonical(Path::new(&scope.path)).ok())
             .filter(|path| path.is_dir())
             .collect();
         roots.sort();
@@ -504,6 +507,12 @@ impl ContentService {
                     Path::new(&scope.path),
                     "io",
                     "Content folder is unavailable.",
+                );
+            } else if crate::path_identity::canonical(Path::new(&scope.path)).is_err() {
+                self.issue(
+                    Path::new(&scope.path),
+                    "unsafePath",
+                    "Content folder contains a link or an inaccessible ancestor.",
                 );
             }
         }
@@ -1291,6 +1300,42 @@ impl ContentService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn linked_scope_roots_are_reported_without_indexing_the_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("secret.md"), "privatecanary").unwrap();
+        let link = directory.path().join("link");
+        crate::path_identity::junction(&link, &target);
+        let service = ContentService::open(
+            &directory.path().join("index"),
+            Err("not installed".into()),
+            |_| {},
+        )
+        .unwrap();
+        service
+            .configure(vec![SearchScope {
+                id: "linked".into(),
+                name: "linked".into(),
+                path: link.to_string_lossy().into(),
+                filename_enabled: true,
+                content_enabled: true,
+                external_allowed: false,
+            }])
+            .unwrap();
+        wait_ready(&service);
+        let status = service.status().unwrap();
+        assert_eq!(status.indexed, 0);
+        assert!(status.issues.iter().any(|issue| issue.code == "unsafePath"));
+        assert!(service
+            .search("privatecanary", "", None, &AtomicBool::new(false))
+            .unwrap()
+            .hits
+            .is_empty());
+        service.shutdown();
+    }
     #[test]
     fn keyword_snapshot_checks_revision_scope_and_mid_stream_changes() {
         use crate::content_store::SnapshotError;

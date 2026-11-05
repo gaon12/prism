@@ -65,6 +65,15 @@ The test does not use a substitute model or fake recognition response.
 cargo test --manifest-path tools/platform-qa/Cargo.toml --locked real_paddle_install_recognition_and_cancellation -- --ignored --nocapture
 ```
 
+For the real Windows WebView regression, set `PRISM_TEST_PADDLE_RUNTIME` to the
+materialized QA directory and run `npm run test:paddle-ocr`. It clicks the actual
+download/cancel controls first, then copies that fully authenticated runtime into
+its isolated profile for restart and real content-index recognition. It checks
+manual selection, automatic fallback for an unavailable OS language, filename-only
+scope exclusion, retained text after disabling OCR and settings stability. The
+runtime data setup does not replace inference or native responses. The offline
+folder picker itself is not automated by this test.
+
 Official references:
 [PaddleOCR deployment and API guide](https://www.paddleocr.ai/main/en/version3.x/pipeline_usage/PaddleOCR-VL.html),
 [Python Windows releases](https://www.python.org/downloads/windows/),

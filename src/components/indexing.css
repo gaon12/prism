@@ -1,4 +1,5 @@
 .index-progress {
+  position: relative;
   height: 3px;
   min-width: 0;
   overflow: hidden;
@@ -20,11 +21,14 @@
 .index-progress progress::-webkit-progress-bar {
   background: var(--border);
 }
-.index-progress progress:indeterminate {
-  background:
-    linear-gradient(90deg, transparent, var(--accent) 45%, var(--accent) 55%, transparent) 0 0 / 40%
-      100% no-repeat,
-    var(--border);
+.index-progress[data-active='true']::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 35%;
+  border-radius: inherit;
+  background: var(--accent);
+  pointer-events: none;
   animation: index-sweep 1.6s ease-in-out infinite;
 }
 .index-progress progress:indeterminate::-webkit-progress-bar {
@@ -48,15 +52,15 @@
 }
 @keyframes index-sweep {
   from {
-    background-position: -65% 0;
+    transform: translateX(-100%);
   }
   to {
-    background-position: 165% 0;
+    transform: translateX(335%);
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .index-progress progress:indeterminate {
+  .index-progress[data-active='true']::after {
     animation: none;
-    background-position: 50% 0;
+    transform: translateX(95%);
   }
 }

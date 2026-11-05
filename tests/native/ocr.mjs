@@ -78,6 +78,7 @@ try {
   assert.equal((await search()).hits.length, 0, 'no reading raster text before opt-in');
   assert.equal((await search('original')).hits.length, 2, 'typed pages survive without OCR');
   console.log(JSON.stringify({ directory, phase: 'default-off-and-typed-pages' }));
+  await main.getByRole('button', { name: '색인 상태', exact: true }).click();
   let dialog = await openOcrSettings();
   const toggleName = '새 이미지·스캔 페이지의 글자 읽기';
   assert.equal(await dialog.getByRole('checkbox', { name: toggleName }).isChecked(), false);
@@ -100,6 +101,16 @@ try {
   await main.setViewportSize({ width: 1600, height: 1050 });
   await dialog.getByRole('button', { name: '저장', exact: true }).click();
   await dialog.waitFor({ state: 'hidden' });
+  const runningProgress = main
+    .locator('#indexing-tasks')
+    .getByRole('progressbar', { name: '문서 처리 중', exact: true });
+  await runningProgress.waitFor();
+  assert.equal(
+    await runningProgress.getAttribute('value'),
+    null,
+    'unknown final count is indeterminate, never an invented percentage',
+  );
+  await main.screenshot({ path: join(evidence, 'ocr-actual-indexing-progress.png') });
   await until(async () => {
     const status = await invoke('content_status');
     return status.phase === 'ready' && status.indexed === 4;

@@ -685,6 +685,16 @@ impl ContentStore {
                 .map(|n| format!("instr(c.normalized,?{n})>0"))
                 .collect::<Vec<_>>();
             let mut arguments = terms.clone();
+            // Restrict saved chat targets before applying the candidate budget.
+            // Files still pass the canonical-root/fingerprint checks in step 2.
+            if !documents.is_empty() {
+                let mut slots=Vec::new();
+                for path in &documents {
+                    arguments.push(path.clone());
+                    slots.push(format!("?{}",arguments.len()));
+                }
+                conditions.push(format!("d.path_key IN ({})",slots.join(",")));
+            }
             // Extension filter: keep files whose path ends with ".<ext>" (any of them).
             // `lower()` is enough because extensions are ASCII-only (checked above).
             if !extensions.is_empty() {
@@ -1638,6 +1648,25 @@ mod tests {
         assert_eq!(json["candidateCount"], 3);
         // The compatibility wrapper returns the same hits.
         assert!(search(&store, "공통단어", &roots).is_empty());
+        let selected = store
+            .search_detailed(
+                "공통단어",
+                &ContentSearchFilter {
+                    document_paths: vec![doc.file_path.clone()],
+                    ..Default::default()
+                },
+                &roots,
+                20,
+                &cancel(),
+            )
+            .unwrap();
+        assert_eq!(
+            selected.hits.len(),
+            1,
+            "Document filters run before unrelated rows exhaust the budget"
+        );
+        assert_eq!(selected.candidate_count, 1);
+        assert!(!selected.hard_limit_reached);
         store.candidate_limit = MAX_CANDIDATES;
         assert_eq!(search(&store, "공통단어", &roots).len(), 1);
         assert_eq!(detailed(&store, &roots).candidate_count, 4);

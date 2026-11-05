@@ -802,11 +802,15 @@ impl VectorStore {
         if total == 0 || allowed_roots.is_empty() {
             return Ok(response);
         }
+        if filter.documents.as_ref().is_some_and(HashSet::is_empty) {
+            response.exhausted = true;
+            return Ok(response);
+        }
         let cap = max_candidates.min(total);
         let mut requested = (top_k.saturating_mul(4)).max(32).min(cap);
         loop {
             check_cancel(cancel)?;
-            let query = self
+            let mut query = self
                 .table
                 .vector_search(query_vector.as_slice())
                 .map_err(storage)?
@@ -819,6 +823,18 @@ impl VectorStore {
                     "fingerprint",
                     "modelFingerprint",
                 ]));
+            // Saved chat sets are processed in bounded document batches. Push
+            // those identities into Lance's default prefilter, so unrelated
+            // nearest neighbors cannot consume the whole candidate budget.
+            // Current SQLite scope/fingerprint checks below remain mandatory.
+            if let Some(documents) = &filter.documents {
+                #[cfg(windows)]
+                let column = lancedb::expr::lower(col("filePath"));
+                #[cfg(not(windows))]
+                let column = col("filePath");
+                query =
+                    query.only_if_expr(is_in(column, documents.iter().cloned().map(lit).collect()));
+            }
             let mut options = QueryExecutionOptions::default();
             options.timeout = Some(Duration::from_secs(30));
             let stream = cancellable(query.execute_with_options(options), cancel)
@@ -1476,6 +1492,31 @@ mod tests {
             assert!(limited.hard_limit_reached);
             assert!(!limited.exhausted);
             assert_eq!(limited.filtered_out, 1);
+            let selected = store
+                .search(
+                    &[1.0, 0.0],
+                    &spec.model_fingerprint,
+                    &ContentSearchFilter {
+                        document_paths: vec![permitted.file_path.clone()],
+                        ..Default::default()
+                    },
+                    &content,
+                    &roots,
+                    1,
+                    1,
+                    &cancel(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                selected.hits.len(),
+                1,
+                "Selected files are prefiltered before the one-candidate limit"
+            );
+            assert_eq!(
+                key(&selected.hits[0].chunk.file_path),
+                key(&permitted.file_path)
+            );
             let expanded = store
                 .search(
                     &[1.0, 0.0],

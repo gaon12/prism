@@ -14,6 +14,12 @@ two literal lines `PRISM LOCAL SEARCH 74829` and `프리즘 문서 검색 74829`
 - `scan-locked.pdf`: image-only page encrypted by pypdf with AES-256. The public
   user password is `ocr-fixture-password`; the owner password is
   `ocr-fixture-owner`. Neither password is a real credential.
+- `exif-clockwise.jpg`: a 128×64 red/blue image with EXIF orientation 6. Displayed
+  pixels must be 64×128, red at the top and blue at the bottom.
+- `crop-clockwise.pdf`: a 400×200 media box with a 200×100 crop box and 90° page
+  rotation. The cropped view is 100×200, red at the top and blue at the bottom;
+  green pixels outside the crop must not appear. These two geometry fixtures are
+  generated separately by `generate_geometry.py` using Pillow and pypdf.
 
 The generator asserts that scanned/blank pages have no extractable text and that
 PNG payloads do not contain the literal strings. OCR tests check actual pixels,
@@ -27,4 +33,14 @@ required; no engine or language pack is downloaded by the test):
 cargo test --manifest-path tools/platform-qa/Cargo.toml windows_native_ocr_pixels_pdf_passwords_and_resource_errors -- --ignored --nocapture
 ```
 
-The default test suite does not require a machine-specific OCR installation.
+On an actual Mac, run the same pixel/password corpus through Vision and check the
+Quartz geometry separately:
+
+```sh
+cargo test --manifest-path tools/platform-qa/Cargo.toml --locked macos_native_ocr_pixels_pdf_passwords_and_resource_errors -- --ignored --nocapture --test-threads=1
+cargo test --manifest-path tools/platform-qa/Cargo.toml --locked macos_quartz_preserves_pdf_crop_rotation_and_preview_without_ocr -- --ignored --nocapture --test-threads=1
+```
+
+These native Mac checks remain unexecuted. SDK binding checks and independent
+PDFium fixture rendering do not establish Vision/Quartz behavior. The default
+test suite does not require a machine-specific OCR installation.

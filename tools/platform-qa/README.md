@@ -36,10 +36,27 @@ pixel scaling without requiring an OS engine in ordinary tests. On Windows,
 explicitly exercises the installed Korean OCR engine against the independent
 [pixel/PDF fixtures](../../tests/fixtures/ocr/README.md). It checks transparent
 images, original mixed-page order, AES-256 user/owner passwords, missing languages
-and resource errors. Native macOS/Linux OS OCR adapters return an explicit unavailable result. The
+and resource errors. The macOS adapter uses actual Vision/Quartz SDK bindings;
+Linux OS OCR returns an explicit unavailable result. The
 managed full PaddleOCR-VL-1.6 fallback is available for Linux x64; actual WSL
 image/PDF, automatic fallback, cancellation and forced-parent-exit tests are
 opt-in. These library checks do not establish macOS or Linux desktop UI behavior.
+
+On an actual Mac, run both native checks explicitly:
+
+```sh
+cargo test --manifest-path tools/platform-qa/Cargo.toml --locked macos_native_ocr_pixels_pdf_passwords_and_resource_errors -- --ignored --nocapture --test-threads=1
+cargo test --manifest-path tools/platform-qa/Cargo.toml --locked macos_quartz_preserves_pdf_crop_rotation_and_preview_without_ocr -- --ignored --nocapture --test-threads=1
+```
+
+The first requires native Korean recognition and forces the System engine so a
+Paddle fallback cannot conceal a native failure. The second checks actual Quartz
+pixels, crop/rotation geometry, invalid pages and cancellation without enabling
+OCR or requiring a Vision language. Neither test downloads models. Neither has
+been executed on macOS yet. Intel/Apple Silicon checks of the adapter's SDK
+bindings do not establish whole-app compilation or native behavior. Windows/Linux
+tests of the shared decoder and worker ownership establish only those components;
+independent PDFium rendering establishes fixture expectations, not Quartz output.
 
 The [native path policy workflow](../../.github/workflows/path-policy.yml) runs
 these library tests on macOS with `TMPDIR=/var/tmp`. It intentionally exercises

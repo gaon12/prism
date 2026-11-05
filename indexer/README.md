@@ -36,7 +36,14 @@ Implemented:
   The ordinary-user client verifies the pipe server against the running SCM
   process and binds replies to both the serial and kernel device of the open
   NTFS root handle. Protocol v2 rejects a different cloned volume even when its
-  serial matches. No install or elevation occurs when running the binary.
+  serial matches. Connecting or invoking `--service` never installs or elevates.
+- Explicit administrative `--install`/`--uninstall` helper entry points now
+  exist. They require an already elevated token, use a fixed Program Files
+  directory with administrator ownership and protected ACLs, and reject
+  writable ancestors or reparse points. Existing services/binaries are left
+  untouched. Removal checks the exact service executable before stopping it.
+  Elevated deployment and the app's UAC/packaging flow are not verified yet;
+  this is initial-install support, with update/recovery still pending.
 
 Run `cargo test --manifest-path indexer/Cargo.toml --locked` and
 `cargo clippy --manifest-path indexer/Cargo.toml --locked --all-targets -- -D warnings`.
@@ -52,7 +59,7 @@ cargo run --release --manifest-path indexer/Cargo.toml -p prism-ntfs-windows --e
 
 It prints aggregate counts and timing, never paths or file contents, and does
 not request elevation or install a service. In an ordinary-privilege session,
-`PermissionDenied` and exit code 2 are expected. Current verification is 41
+`PermissionDenied` and exit code 2 are expected. Current verification is 46
 tests on Windows and 29 portable tests under Linux; all-target Clippy passes
 on both. These checks do not prove live C-drive speed.
 
@@ -70,9 +77,10 @@ Remaining integration:
    already validates the complete snapshot before publication, cancels idle
    requests on scope revocation, filters to the active root, and retains the
    parallel walker for unavailable services, subfolders and other OSes.
-4. Add an optional, one-time UAC service installation into an administrator-owned
-   location, uninstall/update handling and installer/portable UI. Installation
-   must be explicit; ordinary app startup must never silently elevate itself.
+4. Connect and verify the optional one-time UAC action, helper packaging,
+   deployment rollback/recovery, update handling and installer/portable UI.
+   Installation must be explicit; ordinary app startup must never silently
+   elevate itself. Permission refusals must not modify system directory ACLs.
 5. Verify the live service and compare the same drive against the current
    walker. Fixture success is not a claim of Everything-level speed.
 
@@ -82,3 +90,5 @@ Implementation references: Microsoft's [file record segment header](https://lear
 and [change journals](https://learn.microsoft.com/en-us/windows/win32/fileio/change-journals).
 Everything's [service documentation](https://www.voidtools.com/support/everything/everything_service/)
 describes how its NTFS service keeps the UI running without administrative rights.
+Service management follows the Windows [service access model](https://learn.microsoft.com/en-us/windows/win32/services/service-security-and-access-rights)
+and [CreateService](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-createservicew).

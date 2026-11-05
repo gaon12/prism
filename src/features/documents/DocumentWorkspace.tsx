@@ -360,6 +360,7 @@ function DocumentEditor({
   const syncPending = useRef(false);
   const aiPending = useRef(false);
   const activeRequest = useRef<string | null>(null);
+  const jobEpoch = useRef(0);
   const current = useRef<DocumentPage | null>(null);
   const dirtyRef = useRef(false);
   const [page, setPage] = useState<DocumentPage | null>(null);
@@ -528,18 +529,24 @@ function DocumentEditor({
     let timer: ReturnType<typeof setTimeout>;
     let previous: string | null = null;
     const poll = async () => {
+      const requestedAt = jobEpoch.current;
       try {
         const next = await documents.job(id);
         if (disposed || !alive.current) return;
-        setJob(next);
-        const signature = next ? `${next.requestId}:${next.phase}` : 'none';
-        if (previous !== null && signature !== previous && !aiActive(next)) {
-          void fetchCurrent();
-          onChanged();
+        // A status read begun before a local operation started/completed is
+        // older than that operation's response, even if it arrives later.
+        if (requestedAt === jobEpoch.current) {
+          setJob(next);
+          const signature = next ? `${next.requestId}:${next.phase}` : 'none';
+          if (previous !== null && signature !== previous && !aiActive(next)) {
+            void fetchCurrent();
+            onChanged();
+          }
+          previous = signature;
         }
-        previous = signature;
       } catch (cause) {
-        if (!disposed && alive.current) setError(failure(cause));
+        if (!disposed && alive.current && requestedAt === jobEpoch.current)
+          setError(failure(cause));
       }
       if (!disposed) timer = setTimeout(() => void poll(), 1000);
     };
@@ -617,6 +624,7 @@ function DocumentEditor({
     )
       return;
     aiPending.current = true;
+    jobEpoch.current++;
     const requestId = crypto.randomUUID();
     activeRequest.current = requestId;
     setGenerating(true);
@@ -640,6 +648,12 @@ function DocumentEditor({
             ? await documents.generateBody(request)
             : await documents.rewrite({ ...request, targetBlockIds: targets, selection: range });
       if (alive.current) {
+        jobEpoch.current++;
+        setJob((previous) =>
+          previous?.requestId === requestId
+            ? { ...previous, phase: 'complete', rag: null, error: null }
+            : previous,
+        );
         receive(summaryWithRevision(revision), version, expected);
         setNotice('saved');
         onChanged();

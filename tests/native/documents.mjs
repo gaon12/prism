@@ -35,6 +35,7 @@ await writeFile(
 const calls = [],
   sockets = new Set();
 let behavior = 'normal';
+let releaseUiBody;
 const server = createServer((request, response) => {
   const buffers = [];
   request.on('data', (chunk) => buffers.push(chunk));
@@ -107,7 +108,9 @@ const server = createServer((request, response) => {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(body),
     });
-    response.end(body);
+    if (behavior === 'uiBodyGate' && input.operation === 'body')
+      releaseUiBody = () => response.end(body);
+    else response.end(body);
   });
 });
 server.on('connection', (socket) => {
@@ -300,7 +303,39 @@ try {
     async () => (await bodyButton.isVisible()) && !(await bodyButton.isDisabled()),
     'reviewed body action',
   );
+  await main.evaluate(() => {
+    const original = window.fetch.bind(window);
+    window.__heldActiveDocJob = null;
+    window.__pauseFutureDocJobs = false;
+    window.__futureDocJobReleases = [];
+    window.fetch = async (input, options) => {
+      const url = new URL(typeof input === 'string' ? input : (input.url ?? input.href));
+      const isJob = url.hostname === 'ipc.localhost' && url.pathname.endsWith('/doc_job');
+      if (isJob && window.__pauseFutureDocJobs)
+        await new Promise((resolve) => window.__futureDocJobReleases.push(resolve));
+      const response = await original(input, options);
+      if (isJob && !window.__heldActiveDocJob) {
+        const status = await response.clone().json();
+        if (status && ['preparing', 'body'].includes(status.phase)) {
+          window.__heldActiveDocJob = status;
+          window.__pauseFutureDocJobs = true;
+          await new Promise((resolve) => {
+            window.__releaseStaleDocJob = resolve;
+          });
+        }
+      }
+      return response;
+    };
+  });
+  behavior = 'uiBodyGate';
   await bodyButton.click();
+  await until(() => Boolean(releaseUiBody), 'actual loopback body response pending');
+  await until(
+    () => main.evaluate(() => Boolean(window.__heldActiveDocJob)),
+    'actual active document status held',
+  );
+  behavior = 'normal';
+  releaseUiBody();
   await until(
     async () => (await main.locator('.doc-block').count()) === 4,
     'four generated body blocks',
@@ -312,11 +347,24 @@ try {
   await proposal.press('ArrowRight');
   await proposal.press('Shift+ArrowRight');
   await proposal.press('Shift+ArrowRight'); // Select the emoji and Korean character as real input.
+  await main.evaluate(async () => {
+    window.__releaseStaleDocJob();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  assert(
+    await main.getByRole('button', { name: '텍스트 선택 영역 다시 쓰기', exact: true }).isEnabled(),
+    'An older active-status read cannot disable a completed document',
+  );
   await main.getByRole('button', { name: '텍스트 선택 영역 다시 쓰기', exact: true }).click();
   await until(
     async () => (await proposal.inputValue()) === 'A수정글Z',
     'Unicode selection rewrite',
   );
+  await main.evaluate(() => {
+    window.__pauseFutureDocJobs = false;
+    for (const release of window.__futureDocJobReleases) release();
+    window.__futureDocJobReleases = [];
+  });
   const blank = main.locator('.doc-block').nth(2);
   await blank.getByLabel('블록 분류', { exact: true }).selectOption('userInput');
   await blank.getByLabel('블록 Markdown', { exact: true }).fill('화면에서 채운 값');
@@ -329,12 +377,61 @@ try {
     await blank.getByLabel('블록 Markdown', { exact: true }).inputValue(),
     '화면에서 채운 값',
   );
+  await main.evaluate(() => {
+    const original = window.fetch.bind(window);
+    window.__manualSaveHeld = false;
+    window.fetch = async (input, options) => {
+      const url = new URL(typeof input === 'string' ? input : (input.url ?? input.href));
+      if (
+        url.hostname === 'ipc.localhost' &&
+        url.pathname.endsWith('/doc_save_manual') &&
+        !window.__manualSaveHeld
+      ) {
+        window.__manualSaveHeld = true;
+        await new Promise((resolve) => {
+          window.__releaseManualSave = resolve;
+        });
+      }
+      return original(input, options);
+    };
+  });
   await main.getByRole('button', { name: '본문 편집 저장', exact: true }).click();
+  try {
+    await until(
+      () => main.evaluate(() => window.__manualSaveHeld),
+      'actual manual-save request held',
+    );
+    assert.equal(
+      await main.locator('.doc-user-edited').count(),
+      1,
+      'local marker is not a commit acknowledgment',
+    );
+    assert.equal(
+      await blank.getByLabel('블록 Markdown', { exact: true }).inputValue(),
+      '화면에서 채운 값',
+    );
+    const beforeCommit = (await invoke('doc_get', { id: uiDoc.id, revisionId: null })).revision;
+    assert.notEqual(
+      beforeCommit.blocks.find((block) => block.id === 'blank').markdown,
+      '화면에서 채운 값',
+    );
+  } finally {
+    await main.evaluate(() => window.__releaseManualSave?.());
+  }
+  let uiSaved;
+  // The edited marker already exists in the local draft before Save. Wait for
+  // the actual persisted revision, rather than using that marker as a commit ACK.
+  await until(async () => {
+    uiSaved = (await invoke('doc_get', { id: uiDoc.id, revisionId: null })).revision;
+    return (
+      uiSaved.operation === 'manual' &&
+      uiSaved.blocks.find((block) => block.id === 'blank')?.markdown === '화면에서 채운 값'
+    );
+  }, 'manual edit is persisted before verification');
   await until(
     async () => (await main.locator('.doc-user-edited').count()) === 1,
     'only edited block marked',
   );
-  const uiSaved = (await invoke('doc_get', { id: uiDoc.id, revisionId: null })).revision;
   assert.equal(uiSaved.blocks.find((block) => block.id === 'facts').userEdited, false);
   assert.equal(uiSaved.blocks.find((block) => block.id === 'blank').markdown, '화면에서 채운 값');
   await main.locator('.doc-edit-scroll').evaluate((element) => (element.scrollTop = 0));
@@ -392,6 +489,12 @@ try {
       externalCalls: 0,
     }),
   );
+} catch (error) {
+  console.error(JSON.stringify({ directory }));
+  if (instance) {
+    console.error((await instance.main.locator('.doc-editor').innerText()).slice(0, 1600));
+  }
+  throw error;
 } finally {
   if (instance) await shutdown(instance);
   for (const socket of sockets) socket.destroy();

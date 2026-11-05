@@ -1,10 +1,27 @@
 import { ComputeEngine, isNumber } from '@cortex-js/compute-engine/core';
 import type { MathJsonExpression as Expression } from '@cortex-js/compute-engine/math-json';
-import { parse, unit, format, bignumber, OperatorNode } from 'mathjs';
+import {
+  create,
+  parseDependencies,
+  unitDependencies,
+  formatDependencies,
+  bignumberDependencies,
+  OperatorNodeDependencies,
+} from 'mathjs';
 import type { MathNode } from 'mathjs';
 import type { UtilityAnswer } from './utilities';
 
 const engine = new ComputeEngine({ precision: 32 });
+// Importing mathjs' singleton parser initializes its entire function namespace.
+// We only parse an AST here; Cortex evaluates the allowed numeric expressions.
+// Keep the same units/BigNumber support without loading unrelated operations.
+const { parse, unit, format, bignumber, OperatorNode } = create({
+  parseDependencies,
+  unitDependencies,
+  formatDependencies,
+  bignumberDependencies,
+  OperatorNodeDependencies,
+});
 const operators: Record<string, string> = {
   add: 'Add',
   subtract: 'Subtract',

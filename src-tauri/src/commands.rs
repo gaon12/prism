@@ -49,7 +49,7 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> Result<Client
             .lock()
             .map_err(|_| "Settings are unavailable.")? = restored.clone();
         if let Ok(content) = &state.content {
-            let _ = content.configure(restored.scopes.clone());
+            let _ = content.configure_with_ocr(restored.scopes.clone(), restored.ocr.clone());
         }
         state.index.configure(restored.scopes);
         state.clipboard.apply_settings(restored.clipboard)?;
@@ -166,16 +166,17 @@ pub fn save_settings(
             .iter()
             .map(|scope| (&scope.id, &scope.path, scope.filename_enabled))
             .collect::<Vec<_>>();
-    let changed_content = current
-        .scopes
-        .iter()
-        .map(|scope| (&scope.id, &scope.path, scope.content_enabled))
-        .collect::<Vec<_>>()
-        != settings
+    let changed_content = current.ocr != settings.ocr
+        || current
             .scopes
             .iter()
             .map(|scope| (&scope.id, &scope.path, scope.content_enabled))
-            .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+            != settings
+                .scopes
+                .iter()
+                .map(|scope| (&scope.id, &scope.path, scope.content_enabled))
+                .collect::<Vec<_>>();
     *current = settings.clone();
     if let Ok(updates) = &state.updates {
         updates.set_auto_check(settings.updates.auto_check);
@@ -190,7 +191,7 @@ pub fn save_settings(
     }
     if changed_content {
         if let Ok(content) = &state.content {
-            let _ = content.configure(settings.scopes.clone());
+            let _ = content.configure_with_ocr(settings.scopes.clone(), settings.ocr.clone());
         }
     }
     // The persisted settings are authoritative. Runtime storage errors are reported by

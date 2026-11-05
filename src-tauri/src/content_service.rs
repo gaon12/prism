@@ -43,6 +43,28 @@ pub struct KeywordSearch {
     pub settings_revision: u64,
 }
 const EXTRACTOR_VERSION: &str = "office-tables-v2";
+const OCR_VERSION: &str = "native-ocr-v1";
+fn extraction_version(path: &Path, preferences: &crate::ocr::Preferences) -> String {
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if preferences.enabled
+        && (extension.eq_ignore_ascii_case("pdf")
+            || document_extract::is_image_extension(extension))
+    {
+        format!("{EXTRACTOR_VERSION}-{OCR_VERSION}-{}", preferences.language)
+    } else {
+        EXTRACTOR_VERSION.into()
+    }
+}
+fn reusable_extraction(
+    stored: Option<&str>,
+    wanted: &str,
+    preferences: &crate::ocr::Preferences,
+) -> bool {
+    stored == Some(wanted)
+        || (!preferences.enabled
+            && stored
+                .is_some_and(|v| v.starts_with(&format!("{EXTRACTOR_VERSION}-{OCR_VERSION}-"))))
+}
 fn path_key(path: &Path) -> String {
     let value = path.to_string_lossy().replace('\\', "/");
     let value = if let Some(tail) = value.strip_prefix("//?/UNC/") {
@@ -127,6 +149,7 @@ struct Request {
     generation: u64,
     scopes: Vec<SearchScope>,
     cancel: Arc<AtomicBool>,
+    ocr: crate::ocr::Preferences,
 }
 struct SearchTask {
     id: String,
@@ -139,6 +162,7 @@ struct Inner {
     vector: Mutex<Option<(String, Arc<VectorStore>)>>,
     runtime: tokio::runtime::Runtime,
     scopes: Mutex<Vec<SearchScope>>,
+    ocr: Mutex<crate::ocr::Preferences>,
     status: Mutex<ContentStatus>,
     pending: Mutex<Option<Request>>,
     scan_cancel: Mutex<Arc<AtomicBool>>,
@@ -176,6 +200,7 @@ impl ContentService {
                     .build()
                     .map_err(|_| error("worker", "Could not create the local search worker."))?,
                 scopes: Mutex::new(vec![]),
+                ocr: Mutex::new(crate::ocr::Preferences::default()),
                 status: Mutex::new(ContentStatus::default()),
                 pending: Mutex::new(None),
                 scan_cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
@@ -249,20 +274,60 @@ impl ContentService {
         }
     }
     pub fn configure(&self, scopes: Vec<SearchScope>) -> Result<()> {
+        self.configure_inner(scopes, None)
+    }
+    pub fn configure_with_ocr(
+        &self,
+        scopes: Vec<SearchScope>,
+        ocr: crate::ocr::Preferences,
+    ) -> Result<()> {
+        ocr.validate()
+            .map_err(|_| error("input", "Invalid OCR settings."))?;
+        self.configure_inner(scopes, Some(ocr))
+    }
+    fn configure_inner(
+        &self,
+        scopes: Vec<SearchScope>,
+        requested_ocr: Option<crate::ocr::Preferences>,
+    ) -> Result<()> {
         self.inner.paused.store(false, Ordering::Release);
         let mut current_scopes = self
             .inner
             .scopes
             .lock()
             .map_err(|_| error("worker", "Content scopes unavailable."))?;
-        let changed = current_scopes.len() != scopes.len()
+        let mut current_ocr = self
+            .inner
+            .ocr
+            .lock()
+            .map_err(|_| error("worker", "OCR settings unavailable."))?;
+        let ocr = requested_ocr.unwrap_or_else(|| current_ocr.clone());
+        let changed = *current_ocr != ocr
+            || current_scopes.len() != scopes.len()
             || current_scopes.iter().zip(&scopes).any(|(left, right)| {
                 left.id != right.id
                     || left.path != right.path
                     || left.content_enabled != right.content_enabled
             });
         *current_scopes = scopes.clone();
+        *current_ocr = ocr.clone();
+        self.queue(scopes, ocr, changed)?;
+        drop(current_ocr);
         drop(current_scopes);
+        self.update(|status| {
+            status.phase = "indexing".into();
+            status.current_path = None;
+        });
+        Ok(())
+    }
+    // Called while the configuration locks are held, so concurrent refresh and
+    // settings changes cannot enqueue an older policy after a newer one.
+    fn queue(
+        &self,
+        scopes: Vec<SearchScope>,
+        ocr: crate::ocr::Preferences,
+        changed: bool,
+    ) -> Result<()> {
         let generation = self.inner.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let cancel = Arc::new(AtomicBool::new(false));
         if let Ok(mut previous) = self.inner.scan_cancel.lock() {
@@ -277,6 +342,7 @@ impl ContentService {
             generation,
             scopes,
             cancel,
+            ocr,
         });
         if changed {
             self.inner.unlocks.cancel_all(false);
@@ -288,20 +354,28 @@ impl ContentService {
                 }
             }
         }
+        Ok(())
+    }
+    pub fn refresh(&self) -> Result<()> {
+        self.inner.paused.store(false, Ordering::Release);
+        let scopes = self
+            .inner
+            .scopes
+            .lock()
+            .map_err(|_| error("worker", "Content scopes unavailable."))?;
+        let ocr = self
+            .inner
+            .ocr
+            .lock()
+            .map_err(|_| error("worker", "OCR settings unavailable."))?;
+        self.queue(scopes.clone(), ocr.clone(), false)?;
+        drop(ocr);
+        drop(scopes);
         self.update(|status| {
             status.phase = "indexing".into();
             status.current_path = None;
         });
         Ok(())
-    }
-    pub fn refresh(&self) -> Result<()> {
-        let scopes = self
-            .inner
-            .scopes
-            .lock()
-            .map_err(|_| error("worker", "Content scopes unavailable."))?
-            .clone();
-        self.configure(scopes)
     }
     pub fn cancel_index(&self) {
         self.inner.paused.store(true, Ordering::Release);
@@ -658,14 +732,32 @@ impl ContentService {
                     .ok()
                     .flatten()
                     .filter(|document| {
-                        document.extractor_version.as_deref() == Some(EXTRACTOR_VERSION)
+                        reusable_extraction(
+                            document.extractor_version.as_deref(),
+                            &extraction_version(path, &request.ocr),
+                            &request.ocr,
+                        )
                     });
+                // Existing OCR text remains available when OCR is switched off.
+                // New image payloads are neither read nor added to the issue log.
+                if previous.is_none()
+                    && !request.ocr.enabled
+                    && document_extract::is_image_extension(
+                        path.extension().and_then(|e| e.to_str()).unwrap_or(""),
+                    )
+                {
+                    continue;
+                }
+                let version = extraction_version(path, &request.ocr);
                 let document = if let Some(previous) = previous {
                     previous
                 } else {
                     let extracted = match document_extract::extract_document(
                         path,
-                        &ExtractOptions::default(),
+                        &ExtractOptions {
+                            ocr: request.ocr.clone(),
+                            ..Default::default()
+                        },
                         &request.cancel,
                     ) {
                         Ok(extracted) => extracted,
@@ -684,11 +776,12 @@ impl ContentService {
                     if !self.current(&request) {
                         return;
                     }
-                    match self
-                        .inner
-                        .store
-                        .replace_document(&extracted, &roots, &request.cancel)
-                    {
+                    match self.inner.store.replace_document_versioned(
+                        &extracted,
+                        &roots,
+                        Some(&version),
+                        &request.cancel,
+                    ) {
                         Ok(document) => document,
                         Err(error) => {
                             if !self.current(&request) {
@@ -703,20 +796,6 @@ impl ContentService {
                         }
                     }
                 };
-                if document.extractor_version.as_deref() != Some(EXTRACTOR_VERSION) {
-                    if let Err(error) = self.inner.store.mark_extraction_version(
-                        &document,
-                        EXTRACTOR_VERSION,
-                        &roots,
-                        &request.cancel,
-                    ) {
-                        if !self.current(&request) {
-                            return;
-                        }
-                        self.issue(path, "storage", &error.message);
-                        continue;
-                    }
-                }
                 if let Some(vector) = &vector {
                     if let Err(error) =
                         self.embed_document(&document, vector, &roots, &request.cancel)
@@ -1373,9 +1452,18 @@ impl ContentService {
                 .map_err(|_| error("worker", "Content scopes unavailable."))?;
             self.unlock_path(path, &scopes)?.0
         };
+        let ocr = self
+            .inner
+            .ocr
+            .lock()
+            .map_err(|_| error("worker", "OCR settings unavailable."))?
+            .clone();
         let extracted = document_extract::extract_document_with_password(
             &canonical,
-            &ExtractOptions::default(),
+            &ExtractOptions {
+                ocr: ocr.clone(),
+                ..Default::default()
+            },
             cancel,
             password,
         )
@@ -1389,12 +1477,13 @@ impl ContentService {
                 &value.message,
             )
         })?;
-        self.publish_unlocked(path, &extracted, cancel)
+        self.publish_unlocked(path, &extracted, &ocr, cancel)
     }
     fn publish_unlocked(
         &self,
         path: &Path,
         extracted: &document_extract::ExtractedDocument,
+        ocr: &crate::ocr::Preferences,
         cancel: &AtomicBool,
     ) -> Result<ContentDocumentSummary> {
         use sha2::{Digest, Sha256};
@@ -1407,6 +1496,17 @@ impl ContentService {
             .lock()
             .map_err(|_| error("worker", "Content scopes unavailable."))?;
         let (canonical, roots) = self.unlock_path(path, &scopes)?;
+        let current_ocr = self
+            .inner
+            .ocr
+            .lock()
+            .map_err(|_| error("worker", "OCR settings unavailable."))?;
+        if *current_ocr != *ocr {
+            return Err(error(
+                "cancelled",
+                "OCR settings changed during the PDF retry.",
+            ));
+        }
         if path_key(&canonical) != path_key(Path::new(&extracted.file_path)) {
             return Err(error("sourceChanged", "The PDF changed during the retry."));
         }
@@ -1445,7 +1545,12 @@ impl ContentService {
         let document = self
             .inner
             .store
-            .replace_document_versioned(extracted, &roots, Some(EXTRACTOR_VERSION), cancel)
+            .replace_document_versioned(
+                extracted,
+                &roots,
+                Some(&extraction_version(&canonical, ocr)),
+                cancel,
+            )
             .map_err(|value| {
                 error(
                     if cancel.load(Ordering::Acquire) {
@@ -1465,6 +1570,7 @@ impl ContentService {
                     &value.message,
                 )
             })?;
+        drop(current_ocr);
         drop(scopes);
         self.update(|status| {
             let before = status.issues.len();
@@ -1597,7 +1703,12 @@ mod tests {
         service.configure(vec![disabled]).unwrap();
         assert_eq!(
             service
-                .publish_unlocked(&path, &extracted, &cancel)
+                .publish_unlocked(
+                    &path,
+                    &extracted,
+                    &crate::ocr::Preferences::default(),
+                    &cancel
+                )
                 .unwrap_err()
                 .code,
             "outsideScope"
@@ -1617,7 +1728,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             service
-                .publish_unlocked(&path, &extracted, &cancel)
+                .publish_unlocked(
+                    &path,
+                    &extracted,
+                    &crate::ocr::Preferences::default(),
+                    &cancel
+                )
                 .unwrap_err()
                 .code,
             "sourceChanged"

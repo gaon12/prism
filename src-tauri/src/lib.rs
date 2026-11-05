@@ -297,7 +297,7 @@ pub fn run() {
             }
             if config_error.is_none() {
                 if let Ok(content) = &content {
-                    let _ = content.configure(settings.scopes.clone());
+                    let _ = content.configure_with_ocr(settings.scopes.clone(), settings.ocr.clone());
                 }
             }
             let dictionary =

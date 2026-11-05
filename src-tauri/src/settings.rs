@@ -36,6 +36,7 @@ pub struct ClientSettings {
     pub clipboard: crate::clipboard_history::ClipboardSettings,
     pub generation: crate::rag_service::GenerationPreferences,
     pub updates: UpdatePreferences,
+    pub ocr: crate::ocr::Preferences,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -90,6 +91,7 @@ impl Default for ClientSettings {
             clipboard: crate::clipboard_history::ClipboardSettings::default(),
             generation: crate::rag_service::GenerationPreferences::default(),
             updates: UpdatePreferences::default(),
+            ocr: crate::ocr::Preferences::default(),
         }
     }
 }
@@ -110,6 +112,7 @@ impl ClientSettings {
         }
     }
     pub fn validate(&self) -> Result<(), String> {
+        self.ocr.validate().map_err(|value| value.message)?;
         self.clipboard.validate()?;
         self.generation.validate().map_err(|error| error.message)?;
         if !(6..=15).contains(&self.calculator.precision)

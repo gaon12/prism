@@ -15,6 +15,7 @@ mod native;
 pub enum Action {
     Install,
     Start,
+    Upgrade,
     Uninstall,
 }
 impl Action {
@@ -23,6 +24,7 @@ impl Action {
         match self {
             Self::Install => "--install",
             Self::Start => "--start",
+            Self::Upgrade => "--upgrade",
             Self::Uninstall => "--uninstall",
         }
     }
@@ -75,6 +77,7 @@ pub struct Status {
     pub busy: bool,
     pub can_install: bool,
     pub can_start: bool,
+    pub can_upgrade: bool,
     pub can_remove: bool,
 }
 impl Status {
@@ -82,6 +85,7 @@ impl Status {
         match action {
             Action::Install => self.can_install,
             Action::Start => self.can_start,
+            Action::Upgrade => self.can_upgrade,
             Action::Uninstall => self.can_remove,
         }
     }
@@ -135,6 +139,7 @@ fn status(allowed: bool, busy: bool) -> Status {
         busy,
         can_install: false,
         can_start: false,
+        can_upgrade: false,
         can_remove: false,
     };
     #[cfg(windows)]
@@ -166,6 +171,7 @@ fn status(allowed: bool, busy: bool) -> Status {
             result.can_start = result.state == ServiceState::Stopped;
             result.can_remove =
                 matches!(result.state, ServiceState::Stopped | ServiceState::Running);
+            result.can_upgrade = result.can_remove;
         }
     }
     // Mode is reported independently from an actual OS/preflight failure.
@@ -186,6 +192,7 @@ mod tests {
             !status.management_allowed
                 && !status.can_install
                 && !status.can_start
+                && !status.can_upgrade
                 && !status.can_remove
         );
         assert_eq!(
@@ -196,7 +203,12 @@ mod tests {
     #[test]
     fn isolated_mode_rejects_every_action_before_os_work() {
         let controller = Controller::default();
-        for action in [Action::Install, Action::Start, Action::Uninstall] {
+        for action in [
+            Action::Install,
+            Action::Start,
+            Action::Upgrade,
+            Action::Uninstall,
+        ] {
             assert_eq!(
                 controller.perform(action, false).unwrap_err().code,
                 Issue::Isolated

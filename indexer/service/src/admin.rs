@@ -6,6 +6,7 @@
 enum Action {
     Install,
     Start,
+    Upgrade,
     Uninstall,
 }
 fn action(arguments: &[String]) -> Option<Action> {
@@ -15,6 +16,7 @@ fn action(arguments: &[String]) -> Option<Action> {
     match arguments[0].as_str() {
         "--install" => Some(Action::Install),
         "--start" => Some(Action::Start),
+        "--upgrade" => Some(Action::Upgrade),
         "--uninstall" => Some(Action::Uninstall),
         _ => None,
     }
@@ -32,6 +34,7 @@ fn main() {
         let result = match action {
             Action::Install => administration::install(SERVICE),
             Action::Start => administration::start(),
+            Action::Upgrade => administration::upgrade(SERVICE),
             Action::Uninstall => administration::uninstall(),
         };
         if let Err(error) = result {
@@ -58,6 +61,7 @@ mod tests {
         for (argument, expected) in [
             ("--install", Action::Install),
             ("--start", Action::Start),
+            ("--upgrade", Action::Upgrade),
             ("--uninstall", Action::Uninstall),
         ] {
             assert_eq!(action(&[argument.into()]), Some(expected));

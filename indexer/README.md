@@ -43,18 +43,27 @@ Implemented:
   NTFS root handle. Protocol v2 rejects a different cloned volume even when its
   serial matches. Connecting or invoking `--service` never installs or elevates.
 - A separate `prism-file-index-admin` helper embeds the compiled host payload.
-  Its explicit `--install`/`--start`/`--uninstall` entry points require an
+  Its explicit `--install`/`--start`/`--upgrade`/`--uninstall` entry points require an
   already elevated token, use a fixed Program Files
   directory with administrator ownership and protected ACLs, and reject
-  writable ancestors or reparse points. Existing services/binaries are left
-  untouched. Removal checks the exact service executable before stopping it.
+  writable ancestors or reparse points. Initial installation never replaces
+  existing services/binaries. Explicit upgrade verifies the exact existing
+  service, stages only the helper's embedded image and retains a hard link to
+  the original until the new service starts. A failed start restores the old
+  image; interrupted artifacts block another upgrade and remain for recovery.
+  Removal checks the exact service executable before stopping it.
   On standalone machines, an unresolved grant is ignored only after local LSA
   namespace validation and an exact missing-account result. Owners remain
   restricted to trusted system principals. Joined/unknown machine roles keep
   the stricter policy because name lookup can fail during network outages.
   Starting/removing verifies the exact own-process LocalSystem service before
   acting. The host itself accepts only `--service`; it cannot install itself.
-  Initial elevated deployment is verified; update/recovery remains pending.
+  Initial elevated deployment and guarded replacement are verified. Full
+  crash-recovery and installer lifecycle integration remain pending.
+  An explicit live fault-injection check used a valid PE image with the wrong
+  service role: SCM reported 1053, the helper restored the original hash and
+  running state, and no staging/backup files remained. This failure test is
+  separate from the real host used for successful snapshot measurements.
 
 Run `cargo test --manifest-path indexer/Cargo.toml --locked` and
 `cargo clippy --manifest-path indexer/Cargo.toml --locked --all-targets -- -D warnings`.
@@ -71,7 +80,7 @@ cargo run --release --manifest-path indexer/Cargo.toml -p prism-ntfs-windows --e
 It prints aggregate counts and timing, never paths or file contents, and does
 not request elevation or install a service. In an ordinary-privilege session,
 `PermissionDenied` and exit code 2 are expected. With the administrative helper
-enabled, verification is 55 tests on Windows and 31 portable tests under Linux;
+enabled, verification is 58 tests on Windows and 31 portable tests under Linux;
 all-target Clippy passes. These checks do not prove live C-drive speed.
 
 The app's Windows build compiles and embeds both images automatically. For
@@ -94,10 +103,11 @@ Remaining integration:
    does not measure IPC or app search readiness. MFT records
    can contain resident payload bytes; those are ignored and never returned by
    the metadata protocol, used as AI input, or retained in the catalog.
-2. Verify complete snapshots through the installed service after deploying
-   the cached-record fix. Initial authenticated ordinary-client snapshots
-   exposed the decoding error; private pipe fixtures are not a substitute for
-   this live check. Delta requests currently return `JournalGap`, requiring
+2. Expand live installed-service coverage. After deploying the cached-record
+   fix, two authenticated ordinary-client snapshots returned about 2.19 million
+   paths in 16.0–16.4 seconds. The production filename-index harness reached
+   collection completion in 14.9 seconds; this is not a 5–7 second claim.
+   Delta requests currently return `JournalGap`, requiring
    a new snapshot rather than claiming an unchanged catalog.
 3. Finish service progress details and USN-based incremental updates. The app
    already validates the complete snapshot before publication, cancels idle

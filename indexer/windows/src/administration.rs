@@ -26,6 +26,8 @@ use windows_sys::Win32::{
     },
     UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath},
 };
+mod upgrade;
+pub use upgrade::upgrade;
 
 const DIRECTORY_ACL: &str = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FRFX;;;BU)";
 const FILE_ACL: &str = "O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FRFX;;;BU)";

@@ -41,6 +41,7 @@
     "test:rag": "node tests/native/rag.mjs",
     "test:search-chat": "node tests/native/search-chat.mjs",
     "test:chat-entry": "node tests/native/search-chat-entry.mjs",
+    "test:short-paths": "node tests/native/short-paths.mjs",
     "test:documents": "node tests/native/documents.mjs",
     "test:onboarding": "node tests/native/onboarding.mjs",
     "test:portable": "node tests/native/portable.mjs",

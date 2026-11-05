@@ -1,14 +1,14 @@
 //! Compile the exact production platform modules without Tauri, WebView or Lance.
-// This helper's production callers live in the full app; this crate runs its tests.
-#[allow(dead_code)]
-#[path = "../../../src-tauri/src/path_identity.rs"]
-pub mod path_identity;
 #[path = "../../../src-tauri/src/embedding_assets.rs"]
 pub mod embedding_assets;
 #[path = "../../../src-tauri/src/embedding_package.rs"]
 pub mod embedding_package;
 #[path = "../../../src-tauri/src/embedding_runtime.rs"]
 pub mod embedding_runtime;
+// This helper's production callers live in the full app; this crate runs its tests.
+#[allow(dead_code)]
+#[path = "../../../src-tauri/src/path_identity.rs"]
+pub mod path_identity;
 #[path = "../../../src-tauri/src/process_job.rs"]
 pub mod process_job;
 #[path = "../../../src-tauri/src/runtime_process.rs"]

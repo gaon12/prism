@@ -12,15 +12,22 @@ import {
 
 describe('persisted client data', () => {
   it('migrates OCR as opt-in and rejects malformed language settings', () => {
-    expect(normalizeSettings({}).ocr).toEqual({ enabled: false, language: 'auto' });
+    expect(normalizeSettings({}).ocr).toEqual({ enabled: false, language: 'auto', engine: 'auto' });
     expect(normalizeSettings({ ocr: { enabled: 'yes', language: '../../private' } }).ocr).toEqual({
       enabled: false,
       language: 'auto',
+      engine: 'auto',
     });
     expect(normalizeSettings({ ocr: { enabled: true, language: 'ko' } }).ocr).toEqual({
       enabled: true,
       language: 'ko',
+      engine: 'auto',
     });
+    expect(normalizeSettings({ ocr: { enabled: true, engine: 'paddleVl16' } }).ocr.engine).toBe(
+      'paddleVl16',
+    );
+    expect(normalizeSettings({ ocr: { engine: 'system' } }).ocr.engine).toBe('system');
+    expect(normalizeSettings({ ocr: { engine: 'external' } }).ocr.engine).toBe('auto');
   });
   it('defaults to combined content retrieval and preserves an explicit opt-out', () => {
     expect(normalizeSettings({}).hybridSearch).toBe(true);

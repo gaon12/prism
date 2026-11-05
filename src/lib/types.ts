@@ -28,7 +28,7 @@ export interface ClientSettings {
   scopes: SearchScope[];
   generation: GenerationPreferences;
   updates: { autoCheck: boolean };
-  ocr: { enabled: boolean; language: string };
+  ocr: { enabled: boolean; language: string; engine: 'auto' | 'system' | 'paddleVl16' };
   /** Wait for AC power before starting new content indexing. Off by default. */
   power: { pauseOnBattery: boolean };
   calculator: { precision: number; angle: 'rad' | 'deg' };
@@ -99,7 +99,7 @@ export const defaultSettings: ClientSettings = {
   scopes: [],
   generation: structuredClone(defaultGeneration),
   updates: { autoCheck: true },
-  ocr: { enabled: false, language: 'auto' },
+  ocr: { enabled: false, language: 'auto', engine: 'auto' },
   power: { pauseOnBattery: false },
   calculator: { precision: 12, angle: 'rad' },
   clipboard: {
@@ -156,6 +156,10 @@ export function normalizeSettings(input: unknown): ClientSettings {
     power: { pauseOnBattery: value.power?.pauseOnBattery === true },
     ocr: {
       enabled: value.ocr?.enabled === true,
+      engine:
+        value.ocr?.engine === 'system' || value.ocr?.engine === 'paddleVl16'
+          ? value.ocr.engine
+          : 'auto',
       language:
         typeof value.ocr?.language === 'string' && /^[a-zA-Z0-9_-]{1,48}$/.test(value.ocr.language)
           ? value.ocr.language

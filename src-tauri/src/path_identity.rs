@@ -189,6 +189,16 @@ pub(crate) fn junction(link: &Path, target: &Path) {
     );
 }
 
+/// Test helper for macOS/Linux: the closest thing to a Windows junction is a directory
+/// symlink. Shared tests (for example linked scope roots in content_service) call `junction`
+/// on every platform, so this keeps them compiling and checking the same "linked folder" case.
+#[cfg(all(test, unix))]
+pub(crate) fn junction(link: &Path, target: &Path) {
+    // Both paths are test-owned children of the same freshly-created fixture.
+    assert_eq!(link.parent(), target.parent());
+    std::os::unix::fs::symlink(target, link).expect("Fixture directory symlink creation failed");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -903,7 +903,12 @@ impl VectorStore {
         cancel: &AtomicBool,
     ) -> Result<VectorCommitReceipt> {
         check_cancel(cancel)?;
-        let path = normal_path(&std::path::absolute(normal_path(file_path)).map_err(storage)?);
+        let path = crate::path_identity::comparison(file_path).map_err(|_| {
+            error(
+                VectorStoreErrorCode::OutsideScope,
+                "Cannot safely resolve the source path",
+            )
+        })?;
         let path = path.to_str().ok_or_else(|| {
             error(
                 VectorStoreErrorCode::InvalidInput,
@@ -1131,6 +1136,60 @@ mod tests {
             );
         }
         assert_eq!(normalized_vector(&[3.0, 4.0], 2).unwrap(), vec![0.6, 0.8]);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn real_short_alias_deletes_only_the_requested_vector_document() {
+        runtime(async {
+            let directory = tempfile::tempdir().unwrap();
+            let folder = directory.path().join("A long vector source folder");
+            fs::create_dir(&folder).unwrap();
+            let Some(short) = crate::path_identity::short_alias(&folder).unwrap() else {
+                eprintln!("No short aliases on fixture volume; actual alias case not exercised");
+                return;
+            };
+            let roots = vec![folder.clone()];
+            let content = ContentStore::open(&directory.path().join("content.sqlite")).unwrap();
+            let (a, ac) = source(&folder, "a.md", "first source", &content, &roots);
+            let (b, bc) = source(&folder, "b.md", "other source", &content, &roots);
+            let spec = model(2);
+            let vector = VectorStore::open(&directory.path().join("vectors"), spec.clone())
+                .await
+                .unwrap();
+            for (doc, chunks) in [(&a, &ac), (&b, &bc)] {
+                vector
+                    .replace_document(
+                        batch(doc, chunks, &spec.model_fingerprint, vec![1.0, 0.0]),
+                        &content,
+                        &roots,
+                        &cancel(),
+                    )
+                    .await
+                    .unwrap();
+            }
+            fs::remove_file(folder.join("a.md")).unwrap();
+            let receipt = vector
+                .purge_document(&short.join("a.md"), &cancel())
+                .await
+                .unwrap();
+            assert_eq!(receipt.deleted, 1);
+            assert_eq!(vector.table.count_rows(None).await.unwrap(), 1);
+            let result = vector
+                .search(
+                    &[1.0, 0.0],
+                    &spec.model_fingerprint,
+                    &ContentSearchFilter::default(),
+                    &content,
+                    &roots,
+                    8,
+                    32,
+                    &cancel(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.hits.len(), 1);
+            assert_eq!(result.hits[0].chunk.id, bc[0].id);
+        });
     }
 
     #[test]

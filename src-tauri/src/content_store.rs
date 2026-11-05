@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Mutex,
@@ -333,18 +333,16 @@ fn visible(path: &str, fingerprint: &SourceFingerprint, roots: &[PathBuf]) -> Op
 }
 
 fn purge_path(path: &Path) -> Result<PathBuf> {
-    let absolute = std::path::absolute(normal_path(path)).map_err(storage)?;
-    let mut clean = PathBuf::new();
-    for part in absolute.components() {
-        match part {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                clean.pop();
-            }
-            _ => clean.push(part.as_os_str()),
+    crate::path_identity::comparison(path).map_err(|failure| {
+        if failure.kind() == std::io::ErrorKind::InvalidInput {
+            error(
+                ContentStoreErrorCode::UnsafePath,
+                "Unsafe cache comparison path",
+            )
+        } else {
+            storage(failure)
         }
-    }
-    Ok(clean)
+    })
 }
 
 impl ContentStore {
@@ -1138,7 +1136,13 @@ impl ContentStore {
         let allowed = roots(allowed_content_roots);
         let unavailable: Vec<PathBuf> = unavailable_roots
             .iter()
-            .map(|root| purge_path(root))
+            // An offline volume may report device-not-ready before we can
+            // expand aliases. Preserve its configured cache lexically; this
+            // branch never authorizes source reads.
+            .map(|root| {
+                purge_path(root)
+                    .or_else(|_| std::path::absolute(normal_path(root)).map_err(storage))
+            })
             .collect::<Result<_>>()?;
         self.purge_where(cancel, |path, fingerprint| {
             !unavailable
@@ -1472,6 +1476,45 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 0);
         }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn real_short_paths_purge_files_and_scopes_without_touching_neighbors() {
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path().join("A long indexed document folder");
+        fs::create_dir(&folder).unwrap();
+        let Some(short) = crate::path_identity::short_alias(&folder).unwrap() else {
+            eprintln!("No short aliases on fixture volume; actual alias case not exercised");
+            return;
+        };
+        let roots = vec![directory.path().to_owned()];
+        let store = ContentStore::open(&directory.path().join("index.sqlite")).unwrap();
+        for (parent, name) in [
+            (&folder, "a.md"),
+            (&folder, "sub/b.md"),
+            (
+                &directory
+                    .path()
+                    .join("A long indexed document folder-other"),
+                "other.md",
+            ),
+        ] {
+            let doc = document(parent, name, "shared");
+            store.replace_document(&doc, &roots, &cancel()).unwrap();
+        }
+        fs::remove_file(folder.join("a.md")).unwrap();
+        assert_eq!(
+            store
+                .purge_document(&short.join("a.md"), &cancel())
+                .unwrap(),
+            1
+        );
+        assert_eq!(store.purge_scope(&short, &cancel()).unwrap(), 1);
+        assert_eq!(search(&store, "shared", &roots).len(), 1);
+        assert!(search(&store, "shared", &roots)[0]
+            .chunk
+            .file_path
+            .ends_with("other.md"));
     }
 
     #[test]

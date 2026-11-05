@@ -10,6 +10,7 @@ import { bridge } from '../lib/bridge';
 import { useClient, saveSettings, scopesFromPaths, showToast, errorMessage } from '../lib/store';
 import { languageNames, translate } from '../lib/i18n';
 import type { Language, Theme } from '../lib/types';
+import './settings-dialog.css';
 export type SettingsTab = 'general' | 'scopes' | 'shortcuts' | 'ai';
 
 export function SettingsDialog({

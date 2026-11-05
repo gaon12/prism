@@ -115,11 +115,15 @@
   accent-color: var(--accent);
   margin: 9px 0;
 }
-.embedding-progress small {
+.embedding-progress-bytes {
+  display: block;
+  min-height: 1.65em;
   font-size: 0.75rem;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
-.embedding-progress > .text-button {
+.embedding-progress-actions {
+  display: flex;
   margin-top: 8px;
 }
 .embedding-panel .text-button {

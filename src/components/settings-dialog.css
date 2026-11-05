@@ -1,0 +1,9 @@
+/* Index results can repaint continuously behind a model download. Keep the
+   dimming layer, without sampling and blurring that changing WebView surface. */
+.modal.settings-modal::backdrop {
+  backdrop-filter: none;
+}
+
+.settings-modal .settings-body {
+  scrollbar-gutter: stable;
+}

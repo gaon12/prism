@@ -197,7 +197,7 @@ export function EmbeddingPanel() {
                         : undefined
                     }
                   />
-                  <small>
+                  <small className="embedding-progress-bytes">
                     {formatBytes(
                       status?.phase === 'downloading' ? status.downloadedBytes : 0,
                       locale,
@@ -210,15 +210,17 @@ export function EmbeddingPanel() {
                 </>
               ) : null}
               {operation !== 'stop' ? (
-                <button
-                  type="button"
-                  className="text-button"
-                  disabled={cancelRequested}
-                  onClick={() => void cancel()}
-                >
-                  <X size={14} />
-                  {modelText(locale, cancelRequested ? 'cancelRequested' : 'cancel')}
-                </button>
+                <div className="embedding-progress-actions">
+                  <button
+                    type="button"
+                    className="text-button"
+                    disabled={cancelRequested}
+                    onClick={() => void cancel()}
+                  >
+                    <X size={14} />
+                    {modelText(locale, cancelRequested ? 'cancelRequested' : 'cancel')}
+                  </button>
+                </div>
               ) : null}
             </div>
           ) : null}

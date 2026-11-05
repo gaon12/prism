@@ -50,9 +50,16 @@ export interface ConversationTurn {
   error: RagFailure | null;
 }
 export interface ConversationPage {
+  selection: ChatSelection | null;
   conversation: ConversationSummary;
   turns: ConversationTurn[];
   hasMore: boolean;
+}
+export interface ChatSelection {
+  query: string;
+  documents: string[];
+  selectedDocuments: string[];
+  partial: boolean;
 }
 export interface RagRequest {
   requestId: string;
@@ -101,6 +108,10 @@ export const generationCredentials = {
     invoke<void>('generation_clear_key', { slot, endpoint }),
 };
 export const rag = {
+  createFromSearch: (selection: ChatSelection) =>
+    invoke<ConversationSummary>('rag_create_from_search', { selection }),
+  setSelection: (id: string, selection: ChatSelection | null) =>
+    invoke<void>('rag_set_selection', { id, selection }),
   create: (title: string | null = null) => invoke<ConversationSummary>('rag_create', { title }),
   list: (query = '', limit = 100) => invoke<ConversationSummary[]>('rag_list', { query, limit }),
   rename: (id: string, title: string) => invoke<void>('rag_rename', { id, title }),

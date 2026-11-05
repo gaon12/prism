@@ -2,6 +2,20 @@ import type { Language } from './types';
 
 // Each entry is Korean, English, Simplified Chinese, Traditional Chinese, Japanese.
 const messages = {
+  chatWithResults: [
+    '검색 결과로 대화',
+    'Chat with results',
+    '与搜索结果对话',
+    '與搜尋結果對話',
+    '検索結果と対話',
+  ],
+  searchChatHint: [
+    '표시된 파일 {count}개를 전달합니다. 채팅에서 선택을 바꿀 수 있습니다.',
+    'Pass {count} displayed files. Change the selection in chat.',
+    '传入显示的{count}个文件，可在对话中更改选择。',
+    '傳入顯示的{count}個檔案，可在對話中更改選擇。',
+    '表示中の{count}ファイルを渡します。対話で選択を変更できます。',
+  ],
   packagedStartup: [
     'MSIX 버전은 Windows의 시작 앱 설정을 따릅니다. Windows에서 끈 경우 해당 설정에서 다시 켜세요.',
     'The MSIX version follows Windows Startup apps settings. If disabled there, enable it there again.',

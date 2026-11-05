@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   Search,
@@ -37,6 +37,8 @@ import {
 import { languageNames, startupFailure, translate } from './lib/i18n';
 import { isComposing } from './lib/types';
 import type { RecommendedFolder, Tab } from './lib/types';
+import { rag } from './lib/rag';
+import type { ChatSelection } from './lib/rag';
 
 function useQuickMode() {
   const nativeQuick = native && getCurrentWindow().label === 'quick';
@@ -58,6 +60,13 @@ export default function App() {
   const state = useClient();
   const { settings, runtime } = state;
   const [tab, setTab] = useState<Tab>('search');
+  const searchContext = useRef<ChatSelection | null>(null);
+  const [initialChat, setInitialChat] = useState<string | null>(null);
+  const chatPending = useRef(false);
+  const tabIntent = useRef(0);
+  const contextChanged = useCallback((selection: ChatSelection | null) => {
+    searchContext.current = selection;
+  }, []);
   const [documentDirty, setDocumentDirty] = useState(false);
   const [recent, setRecent] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
@@ -66,12 +75,33 @@ export default function App() {
   const needsOnboarding = settings.onboardingVersion < 1;
   const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
   const changeTab = (next: Tab) => {
+    if (next === 'chat' && chatPending.current) return false;
+    tabIntent.current++;
     if (tab === 'documents' && next !== tab && documentDirty) {
       showToast(t('documentUnsaved'));
       return false;
     }
-    setTab(next);
+    if (next === 'chat' && tab === 'search' && native && searchContext.current) {
+      void openSearchChat();
+    } else setTab(next);
     return true;
+  };
+  const openSearchChat = async () => {
+    const selection = searchContext.current;
+    if (!native || !selection || chatPending.current) return;
+    chatPending.current = true;
+    const intent = ++tabIntent.current;
+    try {
+      const conversation = await rag.createFromSearch(selection);
+      if (intent === tabIntent.current) {
+        setInitialChat(conversation.id);
+        setTab('chat');
+      }
+    } catch (cause) {
+      showToast(errorMessage(cause));
+    } finally {
+      chatPending.current = false;
+    }
   };
   useEffect(() => {
     void initialize();
@@ -259,9 +289,14 @@ export default function App() {
                   onAddFolder={add}
                   onRecommended={chooseRecommended}
                   onSettings={() => setSettingsTab('scopes')}
+                  onContextChange={contextChanged}
+                  onChat={() => void openSearchChat()}
                 />
               ) : tab === 'chat' ? (
-                <ChatView onSettings={() => setSettingsTab('scopes')} />
+                <ChatView
+                  initialConversationId={initialChat}
+                  onSettings={() => setSettingsTab('scopes')}
+                />
               ) : (
                 <DocumentsView onDirtyChange={setDocumentDirty} />
               )}

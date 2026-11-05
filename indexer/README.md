@@ -36,6 +36,15 @@ Implemented:
   filesystem-driver record buffers are already restored; cached metadata edits
   can leave their old update-sequence arrays stale, so these buffers are
   structurally validated without applying that array a second time.
+- Core incremental replay consumes an existing snapshot and refreshes only
+  changed metadata families. Old extension ownership survives merging, so
+  deleted/reused extensions also refresh their surviving old bases. Inconsistent
+  family reads abort instead of inventing deletion of a still-present base.
+  The optional `cache` codec persists names/metadata/checkpoints with a bounded,
+  versioned SHA-256 payload and physical-device/geometry checks. Digest
+  verification precedes catalog allocation. Native protected-file persistence
+  and reuse by the service are still being connected; these core APIs alone
+  do not accelerate the currently installed host.
 - An SCM-hosted Windows service and local-only named pipe support bounded
   snapshot requests, cancellation, deadlines and completion acknowledgements.
   The ordinary-user client verifies the pipe server against the running SCM
@@ -67,8 +76,10 @@ Implemented:
 
 Run `cargo test --manifest-path indexer/Cargo.toml --locked` and
 `cargo clippy --manifest-path indexer/Cargo.toml --locked --all-targets -- -D warnings`.
-The core/protocol crates have no external runtime dependencies. The Windows
-adapter uses `windows-sys`; `flate2` and `tempfile` are test-only dependencies.
+Core/protocol metadata parsing has no external runtime dependencies. The optional
+cache codec uses `sha2`; enable it with `--features prism-ntfs-core/cache` in
+workspace checks. The Windows adapter uses `windows-sys`; `flate2` and
+`tempfile` are test-only dependencies.
 
 An explicit read-only probe is available for an already authorized Windows
 administrator shell:
@@ -80,7 +91,8 @@ cargo run --release --manifest-path indexer/Cargo.toml -p prism-ntfs-windows --e
 It prints aggregate counts and timing, never paths or file contents, and does
 not request elevation or install a service. In an ordinary-privilege session,
 `PermissionDenied` and exit code 2 are expected. With the administrative helper
-enabled, verification is 58 tests on Windows and 31 portable tests under Linux;
+and optional cache codec enabled (`--features admin,prism-ntfs-core/cache`),
+verification is 65 tests on Windows and 38 portable tests under Linux;
 all-target Clippy passes. These checks do not prove live C-drive speed.
 
 The app's Windows build compiles and embeds both images automatically. For
@@ -109,7 +121,8 @@ Remaining integration:
    collection completion in 14.9 seconds; this is not a 5–7 second claim.
    Delta requests currently return `JournalGap`, requiring
    a new snapshot rather than claiming an unchanged catalog.
-3. Finish service progress details and USN-based incremental updates. The app
+3. Connect persistent protected storage and the core USN refresh/cache codec
+   to the service, and finish service progress details. The app
    already validates the complete snapshot before publication, cancels idle
    requests on scope revocation, filters to the active root, and retains the
    parallel walker for unavailable services, subfolders and other OSes.

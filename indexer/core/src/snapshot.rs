@@ -6,6 +6,8 @@ use crate::{
     parse_record, Catalog, CatalogBuilder, FileReference,
 };
 use std::collections::BTreeSet;
+#[cfg(feature = "cache")]
+pub mod codec;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Progress {

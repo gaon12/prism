@@ -477,7 +477,13 @@ impl Catalog {
             .filter(|record| record.base.is_none())
             .ok_or(ParseError::Attribute)?
             .reference;
-        if self.records.len() >= 10_000_000 && !self.records.contains_key(&reference.number()) {
+        if self
+            .records
+            .len()
+            .saturating_add(self.owners.len())
+            .saturating_add(family.len())
+            > 10_000_000
+        {
             return Err(ParseError::Limit);
         }
         let mut seen = HashSet::new();

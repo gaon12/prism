@@ -358,6 +358,13 @@ fn a_deleted_or_reused_extension_refreshes_its_old_surviving_base() {
     for reuse in [false, true] {
         let mut source = ChangingImage::new();
         let mut old = extended_snapshot(&source);
+        #[cfg(feature = "cache")]
+        {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            snapshot::codec::write(&old, r"\Device\Fixture", &mut bytes, || Ok(())).unwrap();
+            old = snapshot::codec::read(&mut bytes, geometry(), r"\Device\Fixture", || Ok(()))
+                .unwrap();
+        }
         assert!(paths(&mut old).iter().any(|path| path == "C:\\extra.md"));
         source.points = 1;
         source.forbid_raw = true;

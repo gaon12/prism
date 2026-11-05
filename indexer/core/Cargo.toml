@@ -7,6 +7,10 @@ publish = false
 
 [dependencies]
 prism-ntfs-protocol = { path = "../protocol" }
+sha2 = { version = "0.10", optional = true }
+
+[features]
+cache = ["dep:sha2"]
 
 [dev-dependencies]
 flate2 = "1"

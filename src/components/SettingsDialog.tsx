@@ -5,6 +5,7 @@ import { GenerationPanel } from '../features/generation/GenerationPanel';
 import { UpdatePanel } from '../features/updates/UpdatePanel';
 import { DiagnosticPanel } from '../features/diagnostics/DiagnosticPanel';
 import { OcrSettings } from '../features/content/OcrSettings';
+import { IndexServicePanel } from '../features/index-service/IndexServicePanel';
 import { generationCredentials } from '../lib/rag';
 import { bridge } from '../lib/bridge';
 import { useClient, saveSettings, scopesFromPaths, showToast, errorMessage } from '../lib/store';
@@ -382,6 +383,7 @@ export function SettingsDialog({
                   <p className="scope-empty">{t('noScopes')}</p>
                 )}
                 <p className="setting-footnote">{t('engineNext')}</p>
+                <IndexServicePanel language={settings.language} runtime={runtime} />
                 <div className="settings-divider" />
                 <OcrSettings
                   value={draft.ocr}

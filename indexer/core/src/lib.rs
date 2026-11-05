@@ -5,6 +5,7 @@
 
 use prism_ntfs_protocol::{DriveLetter, FileRecord};
 use std::collections::{HashMap, HashSet};
+pub mod journal;
 pub mod layout;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

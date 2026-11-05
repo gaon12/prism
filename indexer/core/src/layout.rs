@@ -20,6 +20,7 @@ pub enum Error {
     Limit,
     Cancelled,
     TimedOut,
+    JournalGap,
     Io(std::io::ErrorKind),
 }
 pub type Result<T> = std::result::Result<T, Error>;

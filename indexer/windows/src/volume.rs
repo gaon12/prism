@@ -1,3 +1,4 @@
+use prism_ntfs_core::journal;
 use prism_ntfs_core::{
     layout::{Error, Geometry, RecordBuffer, Source},
     FileReference,
@@ -317,6 +318,50 @@ impl Source for Volume {
             bytes: record.to_vec(),
             kernel_fixups: true,
         })
+    }
+}
+
+impl journal::Source for Volume {
+    fn checkpoint(&mut self) -> Result<journal::Checkpoint, Error> {
+        let data = self
+            .control(FSCTL_QUERY_USN_JOURNAL, &[], 128)
+            .map_err(journal_error)?;
+        if data.len() < size_of::<USN_JOURNAL_DATA_V0>() {
+            return Err(Error::Corrupt);
+        }
+        let read = |offset: usize| u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+        journal::Checkpoint {
+            id: read(0),
+            first: read(8) as i64,
+            next: read(16) as i64,
+            lowest: read(24) as i64,
+        }
+        .validate()
+    }
+    fn read_changes(&mut self, id: u64, from: i64) -> Result<Vec<u8>, Error> {
+        if from < 0 {
+            return Err(Error::Corrupt);
+        }
+        // Explicit byte encoding leaves all structure padding zero. Immediate
+        // reads cannot wait indefinitely for another file close or USN event.
+        let mut input = vec![0; size_of::<READ_USN_JOURNAL_DATA_V1>()];
+        input[..8].copy_from_slice(&from.to_le_bytes());
+        input[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+        input[32..40].copy_from_slice(&id.to_le_bytes());
+        input[40..42].copy_from_slice(&2u16.to_le_bytes());
+        input[42..44].copy_from_slice(&2u16.to_le_bytes());
+        self.control(FSCTL_READ_USN_JOURNAL, &input, journal::MAX_JOURNAL_BATCH)
+            .map_err(journal_error)
+    }
+}
+fn journal_error(error: io::Error) -> Error {
+    match error.raw_os_error().map(|code| code as u32) {
+        Some(
+            ERROR_JOURNAL_ENTRY_DELETED
+            | ERROR_JOURNAL_DELETE_IN_PROGRESS
+            | ERROR_JOURNAL_NOT_ACTIVE,
+        ) => Error::JournalGap,
+        _ => error.into(),
     }
 }
 

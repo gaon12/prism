@@ -55,6 +55,12 @@ impl std::fmt::Display for ContentStoreError {
 }
 impl std::error::Error for ContentStoreError {}
 type Result<T> = std::result::Result<T, ContentStoreError>;
+/// Keeps a caller's write failure intact while a read transaction is unwound.
+#[derive(Debug)]
+pub(crate) enum SnapshotError<E, S = ContentStoreError> {
+    Source(S),
+    Visitor(E),
+}
 fn error(code: ContentStoreErrorCode, message: &str) -> ContentStoreError {
     ContentStoreError {
         code,
@@ -845,6 +851,86 @@ impl ContentStore {
                 hard_limit_reached,
             })
         })
+    }
+
+    /// Stream every matching file from one locked repository view. Unlike the
+    /// ranked preview, this query has no chunk/result/candidate limit. EXISTS
+    /// keeps section-level AND semantics and emits multi-chunk files only once.
+    pub(crate) fn snapshot_keyword_files<E>(
+        &self,
+        query: &str,
+        extensions: &[String],
+        allowed_content_roots: &[PathBuf],
+        cancel: &AtomicBool,
+        visit: &mut dyn FnMut(&str) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), SnapshotError<E>> {
+        use SnapshotError::Source;
+        if query.len() > MAX_QUERY_BYTES {
+            return Err(Source(error(
+                ContentStoreErrorCode::InvalidInput,
+                "Search query is too long",
+            )));
+        }
+        let extensions = normalized_extensions(extensions).map_err(Source)?;
+        let mut seen = HashSet::new();
+        let terms: Vec<_> = query
+            .split_whitespace()
+            .map(normalized)
+            .filter(|term| !term.is_empty() && seen.insert(term.clone()))
+            .collect();
+        if terms.len() > MAX_TERMS {
+            return Err(Source(error(
+                ContentStoreErrorCode::InvalidInput,
+                "Content search has too many terms",
+            )));
+        }
+        let allowed = roots(allowed_content_roots);
+        if terms.is_empty() || allowed.is_empty() {
+            return check_cancel(cancel).map_err(Source);
+        }
+        let mut visitor_error = None;
+        let result = self.run(cancel, |db| {
+            let mut arguments = terms.clone();
+            let mut chunk_conditions: Vec<_> = (1..=terms.len())
+                .map(|n| format!("instr(c.normalized,?{n})>0")).collect();
+            let indexed: Vec<_> = terms.iter().filter(|term| term.chars().count() >= 3)
+                .map(|term| format!("\"{}\"", term.replace('"', "\"\""))).collect();
+            if !indexed.is_empty() {
+                arguments.push(indexed.join(" AND "));
+                chunk_conditions.push(format!("c.rowid IN (SELECT rowid FROM content_chunks_fts WHERE content_chunks_fts MATCH ?{})", arguments.len()));
+            }
+            let mut conditions = vec![format!("EXISTS(SELECT 1 FROM content_chunks c WHERE c.document_id=d.id AND {})", chunk_conditions.join(" AND "))];
+            if !extensions.is_empty() {
+                let mut choices = Vec::new();
+                for extension in &extensions {
+                    arguments.push(format!("%.{extension}"));
+                    choices.push(format!("lower(d.file_path) LIKE ?{}", arguments.len()));
+                }
+                conditions.push(format!("({})", choices.join(" OR ")));
+            }
+            let mut statement = db.prepare(&format!("SELECT d.file_path,d.sha256,d.size_bytes,d.modified_unix_ms FROM content_documents d WHERE {} ORDER BY d.path_key",conditions.join(" AND "))).map_err(storage)?;
+            let mut rows = statement.query(params_from_iter(arguments.iter())).map_err(storage)?;
+            while let Some(row) = rows.next().map_err(storage)? {
+                check_cancel(cancel)?;
+                let path: String = row.get(0).map_err(storage)?;
+                let fingerprint = SourceFingerprint {
+                    sha256: row.get(1).map_err(storage)?,
+                    size_bytes: row.get(2).map_err(storage)?,
+                    modified_unix_ms: row.get(3).map_err(storage)?,
+                };
+                if visible(&path, &fingerprint, &allowed).is_some() {
+                    if let Err(error) = visit(&path) {
+                        visitor_error = Some(error);
+                        return Err(storage("Snapshot destination rejected a file"));
+                    }
+                }
+            }
+            check_cancel(cancel)
+        });
+        match visitor_error {
+            Some(error) => Err(SnapshotError::Visitor(error)),
+            None => result.map_err(Source),
+        }
     }
 
     pub fn chunks_by_ids(
@@ -1773,6 +1859,103 @@ mod tests {
         assert!(search(&store, "검사대상", &roots).is_empty());
     }
 
+    #[test]
+    fn keyword_snapshot_streams_past_preview_budgets_with_current_visibility() {
+        let directory = tempfile::tempdir().unwrap();
+        let permitted = directory.path().join("allowed");
+        fs::create_dir(&permitted).unwrap();
+        let roots = vec![permitted.clone()];
+        let mut store = ContentStore::open(&directory.path().join("index.sqlite")).unwrap();
+        store.candidate_limit = 3;
+        for index in 0..107 {
+            let doc = document(
+                &permitted,
+                &format!("{index:03}.MD"),
+                &"한국어 snapshotneedle 공용 ".repeat(150),
+            );
+            store.replace_document(&doc, &roots, &cancel()).unwrap();
+        }
+        let other = document(directory.path(), "outside.md", "한국어 snapshotneedle 공용");
+        store
+            .replace_document(&other, &[directory.path().to_owned()], &cancel())
+            .unwrap();
+        let split = document(&permitted, "split.md", "snapshotneedle\n공용");
+        store.replace_document(&split, &roots, &cancel()).unwrap();
+        let changed = document(&permitted, "changed.md", "snapshotneedle 공용");
+        store.replace_document(&changed, &roots, &cancel()).unwrap();
+        fs::write(permitted.join("changed.md"), "changed content").unwrap();
+        let preview = store
+            .search_detailed(
+                "snapshotneedle 공용",
+                &ContentSearchFilter::default(),
+                &roots,
+                100,
+                &cancel(),
+            )
+            .unwrap();
+        assert!(preview.hard_limit_reached);
+        let mut paths = Vec::new();
+        store
+            .snapshot_keyword_files(
+                "snapshotneedle 공용",
+                &[".md".into()],
+                &roots,
+                &cancel(),
+                &mut |path| {
+                    paths.push(path.to_owned());
+                    Ok::<_, ()>(())
+                },
+            )
+            .unwrap();
+        assert_eq!(paths.len(), 107);
+        assert!(paths.iter().any(|path| path.ends_with("106.MD")));
+        assert!(!paths.iter().any(|path| path.ends_with("split.md")
+            || path.ends_with("outside.md")
+            || path.ends_with("changed.md")));
+        let mut short = Vec::new();
+        store
+            .snapshot_keyword_files("공용", &[], &roots, &cancel(), &mut |path| {
+                short.push(path.to_owned());
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        assert_eq!(short.len(), 108); // short-term fallback includes split.md
+    }
+    #[test]
+    fn keyword_snapshot_preserves_destination_errors_and_cancels_without_poisoning_reads() {
+        let directory = tempfile::tempdir().unwrap();
+        let roots = vec![directory.path().to_owned()];
+        let store = ContentStore::open(&directory.path().join("index.sqlite")).unwrap();
+        for name in ["a.md", "b.md"] {
+            let doc = document(directory.path(), name, "snapshotneedle");
+            store.replace_document(&doc, &roots, &cancel()).unwrap();
+        }
+        let failed =
+            store.snapshot_keyword_files("snapshotneedle", &[], &roots, &cancel(), &mut |_| {
+                Err("destination-full")
+            });
+        assert!(matches!(
+            failed,
+            Err(SnapshotError::Visitor("destination-full"))
+        ));
+        let stop = cancel();
+        let mut visited = 0;
+        let cancelled =
+            store.snapshot_keyword_files("snapshotneedle", &[], &roots, &stop, &mut |_| {
+                visited += 1;
+                stop.store(true, Ordering::Release);
+                Ok::<_, ()>(())
+            });
+        assert!(matches!(
+            cancelled,
+            Err(SnapshotError::Source(ContentStoreError {
+                code: ContentStoreErrorCode::Cancelled,
+                ..
+            }))
+        ));
+        assert_eq!(visited, 1);
+        assert_eq!(search(&store, "snapshotneedle", &roots).len(), 2);
+    }
     #[test]
     fn invalid_requests_are_bounded_and_snippets_are_plain_text() {
         let dir = tempfile::tempdir().unwrap();

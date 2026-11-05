@@ -60,6 +60,13 @@ keyring-core = "=1.0.1"
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.5"
+block2 = "0.6"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSString", "NSObject", "NSLocale", "NSEnumerator"] }
+objc2-vision = { version = "=0.3.2", default-features = false, features = ["std", "VNRequest", "VNRequestHandler", "VNRecognizeTextRequest", "VNObservation", "VNTypes", "block2", "objc2-core-graphics"] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFData", "CFDictionary", "CFString", "CFCGTypes"] }
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["std", "CGAffineTransform", "CGBitmapContext", "CGColorSpace", "CGContext", "CGDataProvider", "CGGeometry", "CGImage", "CGPDFDocument", "CGPDFPage"] }
+objc2-image-io = { version = "=0.3.2", default-features = false, features = ["std", "CGImageDestination", "objc2-core-graphics"] }
 apple-native-keyring-store = { version = "=1.0.2", default-features = false, features = ["keychain"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

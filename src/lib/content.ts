@@ -116,6 +116,7 @@ export function useContentSearch(active: boolean) {
   const [statusError, setStatusError] = useState<ContentFailure | null>(null);
   const [response, setResponse] = useState<{
     key: string;
+    contentRevision: number;
     hits: ContentHit[];
     diagnostics: SearchDiagnostics;
     hybrid: boolean;
@@ -235,7 +236,7 @@ export function useContentSearch(active: boolean) {
         void request
           .then((data) => {
             if (!disposed) {
-              setResponse({ key, ...data });
+              setResponse({ key, contentRevision: status.revision, ...data });
               setError(null);
             }
           })

@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { credentialBackend, type CredentialBackend, type GenerationSlot } from './generation';
 export interface RagFailure {
   code: string;
@@ -58,6 +59,7 @@ export interface ConversationPage {
 }
 export interface ChatSelection {
   filenameSearch?: FilenameSearch;
+  keywordSearch?: KeywordSearch;
   query: string;
   documents: string[];
   selectedDocuments: string[];
@@ -68,6 +70,13 @@ export interface FilenameSearch {
   extension: string;
   scopeId: string | null;
   indexRevision: number;
+  settingsRevision: number;
+}
+export interface KeywordSearch {
+  query: string;
+  extension: string;
+  scopeId: string | null;
+  contentRevision: number;
   settingsRevision: number;
 }
 export interface SelectionPage {
@@ -131,6 +140,18 @@ export const generationCredentials = {
     invoke<void>('generation_clear_key', { slot, endpoint }),
 };
 export const rag = {
+  createSearch: (selection: ChatSelection, requestId: string) =>
+    selection.filenameSearch
+      ? rag.createFilenameSearch(selection.filenameSearch, requestId)
+      : selection.keywordSearch
+        ? invoke<ConversationSummary>('rag_create_keyword_search', {
+            search: selection.keywordSearch,
+            requestId,
+          })
+        : rag.createFromSearch(selection),
+  openMainChat: (id: string) => invoke<void>('rag_open_main_chat', { id }),
+  takeChatHandoff: () => invoke<string | null>('rag_take_chat_handoff'),
+  subscribeChatHandoff: (wake: () => void) => listen('prism:chat-handoff', wake),
   createFilenameSearch: (search: FilenameSearch, requestId: string) =>
     invoke<ConversationSummary>('rag_create_filename_search', { search, requestId }),
   fileSetPage: (id: string, offset: number) =>

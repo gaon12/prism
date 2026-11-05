@@ -21,7 +21,7 @@ import { ContentResults } from './content/ContentResults';
 import { errorMessage, showToast } from '../lib/store';
 import { ClipboardPanel } from './clipboard/ClipboardPanel';
 import { DictionaryPanel } from './dictionary/DictionaryPanel';
-import { searchSelection } from '../lib/search-selection';
+import { selectionForSearch } from '../lib/search-selection';
 import type { ChatSelection } from '../lib/rag';
 
 export function SearchView({
@@ -41,7 +41,7 @@ export function SearchView({
   onRecommended: () => void;
   onSettings: () => void;
   onContextChange: (selection: ChatSelection | null) => void;
-  onChat: () => void;
+  onChat: (selection: ChatSelection) => void;
   creatingChat: boolean;
   onCancelChat: () => void;
 }) {
@@ -50,32 +50,7 @@ export function SearchView({
   const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
   const input = useRef<HTMLInputElement>(null);
   const [filterOpen, setFilterOpen] = useState(false);
-  const selection =
-    search.request.kind !== 'files'
-      ? null
-      : search.bodyActive
-        ? !search.body.loading && !search.body.error && search.body.data
-          ? searchSelection(
-              session.query,
-              search.body.data.hits.map((hit) => hit.chunk.filePath),
-              search.body.data.diagnostics.hardLimitReached || search.body.data.hits.length >= 100,
-            )
-          : null
-        : !search.loading && !search.error && search.data && search.data.total > 0
-          ? {
-              ...(searchSelection(
-                session.query,
-                search.data.results.filter((file) => !file.isDir).map((file) => file.path),
-              ) ?? { query: session.query, documents: [], selectedDocuments: [], partial: false }),
-              filenameSearch: {
-                query: search.request.input,
-                extension: session.extension,
-                scopeId: session.scopeId,
-                indexRevision: search.data.status.revision,
-                settingsRevision: settings.revision,
-              },
-            }
-          : null;
+  const selection = selectionForSearch(search, session, settings);
   const selectionKey = JSON.stringify(selection);
   useEffect(() => {
     onContextChange(JSON.parse(selectionKey) as ChatSelection | null);
@@ -197,7 +172,7 @@ export function SearchView({
             type="button"
             className="button"
             disabled={!native || creatingChat}
-            onClick={onChat}
+            onClick={() => onChat(selection)}
           >
             <MessageSquare size={16} />
             {t(creatingChat ? 'creatingSearchChat' : 'chatWithResults')}
@@ -208,7 +183,7 @@ export function SearchView({
             </button>
           ) : null}
           <small className="muted">
-            {selection.filenameSearch
+            {selection.filenameSearch || selection.keywordSearch
               ? t('allFilenameChatHint')
               : t('searchChatHint').replace('{count}', String(selection.documents.length))}
           </small>

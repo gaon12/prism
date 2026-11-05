@@ -769,6 +769,29 @@ impl RagService {
                 })
         })
     }
+    pub(crate) fn create_keyword_search(
+        &self,
+        content: &crate::content_service::ContentService,
+        search: &crate::content_service::KeywordSearch,
+        cancel: &AtomicBool,
+    ) -> RagResult<ConversationSummary> {
+        self.inner.store.create_file_set(&search.query, |visit| {
+            content
+                .snapshot_keyword_files(search, cancel, visit)
+                .map_err(|failure| match failure {
+                    crate::content_store::SnapshotError::Visitor(value) => value,
+                    crate::content_store::SnapshotError::Source(value) => {
+                        RagError::new(if value.code == "cancelled" {
+                            RagErrorCode::Cancelled
+                        } else if value.code == "input" {
+                            RagErrorCode::Input
+                        } else {
+                            RagErrorCode::SourceChanged
+                        })
+                    }
+                })
+        })
+    }
     pub(crate) fn file_set_page(
         &self,
         id: &str,

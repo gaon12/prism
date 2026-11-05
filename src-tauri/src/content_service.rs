@@ -12,7 +12,7 @@ use crate::{
     },
 };
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -30,6 +30,15 @@ const DIMENSIONS: usize = 768;
 pub(crate) struct SemanticQuery {
     vector: Vec<f32>,
     fingerprint: String,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeywordSearch {
+    pub query: String,
+    pub extension: String,
+    pub scope_id: Option<String>,
+    pub content_revision: u64,
+    pub settings_revision: u64,
 }
 const EXTRACTOR_VERSION: &str = "office-tables-v2";
 fn path_key(path: &Path) -> String {
@@ -902,6 +911,64 @@ impl ContentService {
             cancel,
         )
     }
+    pub(crate) fn snapshot_keyword_files<E>(
+        &self,
+        search: &KeywordSearch,
+        cancel: &AtomicBool,
+        visit: &mut dyn FnMut(&str) -> std::result::Result<(), E>,
+    ) -> std::result::Result<bool, crate::content_store::SnapshotError<E, ContentError>> {
+        use crate::content_store::SnapshotError::{Source, Visitor};
+        let before = self.status().map_err(Source)?;
+        let generation = self.inner.generation.load(Ordering::Acquire);
+        if before.revision != search.content_revision {
+            return Err(Source(error(
+                "sourceChanged",
+                "The content index changed. Search again.",
+            )));
+        }
+        let filter = self.search_filter(&search.extension).map_err(Source)?;
+        let scopes: Vec<_> = search.scope_id.iter().cloned().collect();
+        let roots = self.selected_roots(&scopes).map_err(Source)?;
+        self.inner
+            .store
+            .snapshot_keyword_files(
+                &search.query,
+                &filter.extensions,
+                &roots,
+                cancel,
+                &mut |path| {
+                    if self.is_excluded(path) {
+                        Ok(())
+                    } else {
+                        visit(path)
+                    }
+                },
+            )
+            .map_err(|failure| match failure {
+                Visitor(value) => Visitor(value),
+                Source(value) => Source(error(
+                    if cancel.load(Ordering::Acquire) {
+                        "cancelled"
+                    } else {
+                        "source"
+                    },
+                    &value.message,
+                )),
+            })?;
+        let after = self.status().map_err(Source)?;
+        if cancel.load(Ordering::Acquire) {
+            return Err(Source(error("cancelled", "Search cancelled.")));
+        }
+        if before.revision != after.revision
+            || generation != self.inner.generation.load(Ordering::Acquire)
+        {
+            return Err(Source(error(
+                "sourceChanged",
+                "The content index changed. Search again.",
+            )));
+        }
+        Ok(before.phase != "ready" || before.skipped > 0 || !before.issues.is_empty())
+    }
     pub(crate) fn search_in_scopes(
         &self,
         query: &str,
@@ -1224,6 +1291,64 @@ impl ContentService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn keyword_snapshot_checks_revision_scope_and_mid_stream_changes() {
+        use crate::content_store::SnapshotError;
+        let directory = tempfile::tempdir().unwrap();
+        let docs = directory.path().join("docs");
+        fs::create_dir(&docs).unwrap();
+        fs::write(docs.join("a.md"), "snapshotneedle").unwrap();
+        let service = ContentService::open(
+            &directory.path().join("data"),
+            Err("not configured".into()),
+            |_| {},
+        )
+        .unwrap();
+        service
+            .configure(vec![SearchScope {
+                id: "allowed".into(),
+                name: "Allowed".into(),
+                path: docs.to_string_lossy().into(),
+                filename_enabled: true,
+                content_enabled: true,
+                external_allowed: false,
+            }])
+            .unwrap();
+        wait_ready(&service);
+        let mut search = KeywordSearch {
+            query: "snapshotneedle".into(),
+            extension: "md".into(),
+            scope_id: Some("allowed".into()),
+            content_revision: service.status().unwrap().revision,
+            settings_revision: 0,
+        };
+        let mut count = 0;
+        assert!(!service
+            .snapshot_keyword_files(&search, &AtomicBool::new(false), &mut |_| {
+                count += 1;
+                Ok::<_, ()>(())
+            })
+            .unwrap());
+        assert_eq!(count, 1);
+        search.content_revision += 1;
+        assert!(
+            matches!(service.snapshot_keyword_files(&search, &AtomicBool::new(false), &mut |_| Ok::<_, ()>(())), Err(SnapshotError::Source(ContentError {code, ..})) if code=="sourceChanged")
+        );
+        search.content_revision -= 1;
+        assert!(
+            matches!(service.snapshot_keyword_files(&search, &AtomicBool::new(false), &mut |_| { service.update(|_| {}); Ok::<_, ()>(()) }), Err(SnapshotError::Source(ContentError {code, ..})) if code=="sourceChanged")
+        );
+        search.content_revision = service.status().unwrap().revision;
+        search.scope_id = Some("removed".into());
+        let mut leaked = false;
+        let result = service.snapshot_keyword_files(&search, &AtomicBool::new(false), &mut |_| {
+            leaked = true;
+            Ok::<_, ()>(())
+        });
+        assert!(!leaked);
+        assert!(result.is_ok()); // A removed scope is an empty set, never all roots.
+        service.shutdown();
+    }
     #[test]
     fn automatic_without_a_running_model_keeps_authorized_keywords_and_explicit_limits() {
         use crate::automatic_search::{AutomaticRanking, SemanticState};

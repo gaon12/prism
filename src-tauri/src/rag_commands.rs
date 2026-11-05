@@ -54,6 +54,38 @@ pub async fn rag_create_filename_search(
     .await
 }
 #[tauri::command]
+pub async fn rag_create_keyword_search(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    search: crate::content_service::KeywordSearch,
+    request_id: String,
+) -> RagResult<ConversationSummary> {
+    let service = service(&state)?;
+    if state
+        .settings
+        .lock()
+        .map_err(|_| RagError::new(RagErrorCode::Worker))?
+        .revision
+        != search.settings_revision
+    {
+        return Err(RagError::new(RagErrorCode::PolicyChanged));
+    }
+    let content = state
+        .content
+        .clone()
+        .map_err(|_| RagError::new(RagErrorCode::Worker))?;
+    let label = window.label().to_owned();
+    let cancel = content
+        .begin_search(&label, &request_id)
+        .map_err(|_| RagError::new(RagErrorCode::Input))?;
+    blocking(move || {
+        let result = service.create_keyword_search(&content, &search, &cancel);
+        content.cancel_search(&label, &request_id);
+        result
+    })
+    .await
+}
+#[tauri::command]
 pub async fn rag_file_set_page(
     state: State<'_, AppState>,
     id: String,

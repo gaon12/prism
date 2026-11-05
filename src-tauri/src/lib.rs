@@ -532,6 +532,7 @@ pub fn run() {
             rag_commands::rag_create,
             rag_commands::rag_create_from_search,
             rag_commands::rag_create_filename_search,
+            rag_commands::rag_create_keyword_search,
             rag_commands::rag_file_set_page,
             rag_commands::rag_edit_file_set,
             rag_commands::rag_set_selection,

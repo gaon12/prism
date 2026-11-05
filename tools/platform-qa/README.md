@@ -36,9 +36,10 @@ pixel scaling without requiring an OS engine in ordinary tests. On Windows,
 explicitly exercises the installed Korean OCR engine against the independent
 [pixel/PDF fixtures](../../tests/fixtures/ocr/README.md). It checks transparent
 images, original mixed-page order, AES-256 user/owner passwords, missing languages
-and resource errors. Non-Windows OCR adapters remain unimplemented and return
-an explicit unavailable result; these platform checks do not establish native
-Mac/Linux recognition.
+and resource errors. Native macOS/Linux OS OCR adapters return an explicit unavailable result. The
+managed full PaddleOCR-VL-1.6 fallback is available for Linux x64; actual WSL
+image/PDF, automatic fallback, cancellation and forced-parent-exit tests are
+opt-in. These library checks do not establish macOS or Linux desktop UI behavior.
 
 The [native path policy workflow](../../.github/workflows/path-policy.yml) runs
 these library tests on macOS with `TMPDIR=/var/tmp`. It intentionally exercises
@@ -52,7 +53,7 @@ Cross-target compilation alone does not establish these runtime results.
 The harness locally allows the imported modules' existing style lint baseline
 and application-only dead code; the full application still reports those lints.
 
-Four expensive or OS-dependent checks are opt-in:
+Expensive or OS-dependent checks are opt-in:
 
 - `actual_upstream_packages_extract_verify_and_materialize_all_aliases`: set
   `PRISM_TEST_PACKAGES_DIR` to a directory containing all five archives named in
@@ -74,6 +75,17 @@ Four expensive or OS-dependent checks are opt-in:
   actual server is gone. This uses the normal production supervisor, not a model
   substitute. It does not require `PRISM_TEST_SUPERVISOR` because the parent is
   already the QA binary with the proper dispatcher.
+- `real_paddle_install_recognition_and_cancellation`: Windows x64 or Linux x64;
+  set `PRISM_TEST_PADDLE_OFFLINE` to the exact artifact directory in the
+  [runtime guide](../ocr-runtime/README.md), or explicitly set
+  `PRISM_TEST_PADDLE_NETWORK=1` to download the full package. Runs installation,
+  complete inventory verification, real Korean image/PDF recognition, process
+  reuse and cancellation. Linux needs `PRISM_TEST_LAUNCHER` pointing to the built
+  QA binary. It retains a Windows process handle/Linux pidfd to prove exit.
+- `real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill`: Linux x64;
+  set `PRISM_TEST_PADDLE_INSTALLED` to the authenticated prepared runtime. The
+  test copies it to a temporary profile, recognizes real text through Automatic
+  dispatch, and proves the exact worker exits after SIGKILL of its own parent.
 - `native_store_roundtrip_replacement_isolation_and_delete`: on macOS or Linux,
   set `PRISM_TEST_OS_CREDENTIALS=1` and provide an accessible **disposable** user
   keychain or Secret Service session. Creates a random QA service namespace,

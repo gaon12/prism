@@ -219,12 +219,24 @@ fn an_unresponsive_launcher_cannot_make_startup_cleanup_wait_forever() {
     )
     .unwrap();
     fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
-    let before = Instant::now();
-    let mut command = Command::new("/bin/true");
-    command.env("PRISM_UNRESPONSIVE_PID_FILE", &pid_path);
-    let error = OwnedRuntimeProcess::spawn(command, &launcher)
-        .err()
-        .unwrap();
+    // Linux refuses to run a file that some process still has open for writing
+    // (ETXTBSY). Tests run in parallel threads, so another test may fork right
+    // while this script is being written; that child holds the write handle for
+    // a moment, until its own exec closes it. Retry briefly in that case only.
+    let mut attempts = 0;
+    let (before, error) = loop {
+        let before = Instant::now();
+        let mut command = Command::new("/bin/true");
+        command.env("PRISM_UNRESPONSIVE_PID_FILE", &pid_path);
+        let error = OwnedRuntimeProcess::spawn(command, &launcher)
+            .err()
+            .unwrap();
+        attempts += 1;
+        if error.kind() != io::ErrorKind::ExecutableFileBusy || attempts == 20 {
+            break (before, error);
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     assert!(before.elapsed() < Duration::from_secs(18));
     let pid = fs::read_to_string(pid_path).unwrap().parse().unwrap();

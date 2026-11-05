@@ -30,7 +30,11 @@ impl From<ParseError> for Error {
 }
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
-        Self::Io(error.kind())
+        match error.kind() {
+            std::io::ErrorKind::Interrupted => Self::Cancelled,
+            std::io::ErrorKind::TimedOut => Self::TimedOut,
+            kind => Self::Io(kind),
+        }
     }
 }
 impl std::fmt::Display for Error {

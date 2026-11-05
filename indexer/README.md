@@ -30,6 +30,12 @@ Implemented:
   re-reads complete metadata families. Deleted or reused references, directory
   renames and torn records are handled before publication. Deterministic
   driver/journal fixtures test this ordering on the independent NTFS image.
+- An SCM-hosted Windows service and local-only named pipe support bounded
+  snapshot requests, cancellation, deadlines and completion acknowledgements.
+  The ordinary-user client verifies the pipe server against the running SCM
+  process and binds replies to both the serial and kernel device of the open
+  NTFS root handle. Protocol v2 rejects a different cloned volume even when its
+  serial matches. No install or elevation occurs when running the binary.
 
 Run `cargo test --manifest-path indexer/Cargo.toml --locked` and
 `cargo clippy --manifest-path indexer/Cargo.toml --locked --all-targets -- -D warnings`.
@@ -45,8 +51,8 @@ cargo run --release --manifest-path indexer/Cargo.toml -p prism-ntfs-windows --e
 
 It prints aggregate counts and timing, never paths or file contents, and does
 not request elevation or install a service. In an ordinary-privilege session,
-`PermissionDenied` and exit code 2 are expected. Current verification is 25
-tests on Windows and 22 portable tests under Linux; all-target Clippy passes
+`PermissionDenied` and exit code 2 are expected. Current verification is 41
+tests on Windows and 29 portable tests under Linux; all-target Clippy passes
 on both. These checks do not prove live C-drive speed.
 
 Remaining integration:
@@ -55,11 +61,10 @@ Remaining integration:
    volume, including journal replay and recovery under real churn. MFT records
    can contain resident payload bytes; those are ignored and never returned by
    the metadata protocol, used as AI input, or retained in the catalog.
-2. Implement the Windows service and local-only named pipe. Restrict its ACL,
-   reject remote clients, verify the server against SCM, bound concurrent
-   requests, apply I/O deadlines and propagate disconnect/cancellation. Bind a
-   response to the volume serial number of the client's authorized root before
-   accepting paths, so per-user drive mappings cannot confuse volume identity.
+2. Verify the service through an actual SCM installation. Current native pipe
+   tests use a private test endpoint; they do not impersonate an installed
+   service. Delta requests currently return `JournalGap`, explicitly requiring
+   a new snapshot rather than claiming an unchanged catalog.
 3. Connect the ordinary-privilege app, active-scope filtering, status/progress,
    incremental updates and immediate scope revocation. Keep the parallel walker
    for unavailable services, non-NTFS disks, network folders and other OSes.

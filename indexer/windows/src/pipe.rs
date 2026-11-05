@@ -20,7 +20,7 @@ use windows_sys::Win32::{
     System::{Pipes::*, Threading::*, IO::*},
 };
 
-pub const PIPE_NAME: &str = r"\\.\pipe\Prism.FileIndex.v1";
+pub const PIPE_NAME: &str = r"\\.\pipe\Prism.FileIndex.v2";
 const MAX_OPERATION: Duration = Duration::from_secs(120);
 const CLIENT_RIGHTS: u32 = 0x0012_0083;
 const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)(A;;0x120083;;;IU)";
@@ -181,6 +181,7 @@ impl Connection {
         &mut self,
         request: prism_ntfs_protocol::Request,
         expected_serial: u64,
+        expected_device: &str,
         mut receive: impl FnMut(prism_ntfs_protocol::stream::Event) -> io::Result<()>,
     ) -> io::Result<u64> {
         use prism_ntfs_protocol::{
@@ -193,7 +194,7 @@ impl Connection {
         };
         self.set_frame_timeout(Duration::from_secs(2));
         request.write(self)?;
-        let mut receiver = Receiver::new(request, expected_serial);
+        let mut receiver = Receiver::new(request, expected_serial, expected_device);
         loop {
             self.set_frame_timeout(Duration::from_secs(20));
             let response = Response::read(self, drive)?;

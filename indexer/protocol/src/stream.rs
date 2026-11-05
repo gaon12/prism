@@ -1,6 +1,6 @@
 //! Validate an entire reply, not just individual frames. A local drive letter
 //! can refer to a per-user mapping: paths are accepted only after the service's
-//! physical volume serial matches the caller's already-authorized root.
+//! physical volume serial and kernel device match the caller's already-authorized root.
 use crate::{DriveLetter, FailureCode, FileRecord, Request, Response};
 
 const MAX_RECORDS: u64 = 10_000_000;
@@ -31,6 +31,7 @@ pub enum Event {
 pub struct Receiver {
     drive: DriveLetter,
     expected_serial: u64,
+    expected_device: String,
     changes: bool,
     announced: bool,
     terminal: bool,
@@ -39,7 +40,7 @@ pub struct Receiver {
     path_bytes: u64,
 }
 impl Receiver {
-    pub fn new(request: Request, expected_serial: u64) -> Self {
+    pub fn new(request: Request, expected_serial: u64, expected_device: &str) -> Self {
         let (drive, changes) = match request {
             Request::Snapshot { drive } => (drive, false),
             Request::Changes { drive, .. } => (drive, true),
@@ -47,6 +48,7 @@ impl Receiver {
         Self {
             drive,
             expected_serial,
+            expected_device: expected_device.into(),
             changes,
             announced: false,
             terminal: false,
@@ -77,10 +79,12 @@ impl Receiver {
             return Err(Error::Order);
         }
         let result = (|| match response {
-            Response::Volume { serial } => {
+            Response::Volume { serial, device } => {
                 if self.announced {
                     Err(Error::Order)
-                } else if serial != self.expected_serial {
+                } else if serial != self.expected_serial
+                    || !device.eq_ignore_ascii_case(&self.expected_device)
+                {
                     Err(Error::VolumeMismatch)
                 } else {
                     self.announced = true;
@@ -128,6 +132,13 @@ impl Receiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const DEVICE: &str = r"\Device\TestVolume";
+    fn volume(serial: u64) -> Response {
+        Response::Volume {
+            serial,
+            device: DEVICE.into(),
+        }
+    }
     fn request() -> Request {
         Request::Snapshot {
             drive: DriveLetter::new(b'C').unwrap(),
@@ -143,7 +154,7 @@ mod tests {
     }
     #[test]
     fn identity_precedes_paths_and_only_a_finished_stream_is_complete() {
-        let mut receiver = Receiver::new(request(), 7);
+        let mut receiver = Receiver::new(request(), 7, DEVICE);
         assert!(!receiver.finished());
         assert_eq!(
             receiver
@@ -151,7 +162,7 @@ mod tests {
                 .unwrap(),
             Some(Event::Progress { completed: 128 })
         );
-        receiver.accept(Response::Volume { serial: 7 }).unwrap();
+        receiver.accept(volume(7)).unwrap();
         assert_eq!(
             receiver.accept(Response::Records(vec![record()])).unwrap(),
             Some(Event::Records(vec![record()]))
@@ -171,40 +182,56 @@ mod tests {
     }
     #[test]
     fn reject_forged_mapping_early_paths_duplicate_headers_and_partial_completion() {
-        let mut receiver = Receiver::new(request(), 7);
+        let mut receiver = Receiver::new(request(), 7, DEVICE);
         assert_eq!(
-            receiver.accept(Response::Volume { serial: 8 }).unwrap_err(),
+            receiver.accept(volume(8)).unwrap_err(),
             Error::VolumeMismatch
         );
-        assert_eq!(
-            receiver.accept(Response::Volume { serial: 7 }).unwrap_err(),
-            Error::Order
-        );
-        let mut receiver = Receiver::new(request(), 7);
+        assert_eq!(receiver.accept(volume(7)).unwrap_err(), Error::Order);
+        let mut receiver = Receiver::new(request(), 7, DEVICE);
         assert_eq!(
             receiver
                 .accept(Response::Records(vec![record()]))
                 .unwrap_err(),
             Error::Order
         );
-        let mut receiver = Receiver::new(request(), 7);
+        let mut receiver = Receiver::new(request(), 7, DEVICE);
         assert_eq!(
             receiver
                 .accept(Response::Finished { revision: 1 })
                 .unwrap_err(),
             Error::Order
         );
-        let mut receiver = Receiver::new(request(), 7);
-        receiver.accept(Response::Volume { serial: 7 }).unwrap();
+        let mut receiver = Receiver::new(request(), 7, DEVICE);
+        receiver.accept(volume(7)).unwrap();
+        assert_eq!(receiver.accept(volume(7)).unwrap_err(), Error::Order);
+    }
+    #[test]
+    fn cloned_serial_on_a_different_kernel_device_is_rejected() {
+        let mut receiver = Receiver::new(request(), 7, DEVICE);
         assert_eq!(
-            receiver.accept(Response::Volume { serial: 7 }).unwrap_err(),
-            Error::Order
+            receiver
+                .accept(Response::Volume {
+                    serial: 7,
+                    device: r"\Device\DifferentVolume".into()
+                })
+                .unwrap_err(),
+            Error::VolumeMismatch
         );
+        assert!(!receiver.finished());
+        let mut receiver = Receiver::new(request(), 7, DEVICE);
+        receiver
+            .accept(Response::Volume {
+                serial: 7,
+                device: DEVICE.to_ascii_lowercase(),
+            })
+            .unwrap();
+        assert!(receiver.accept(Response::Finished { revision: 1 }).is_ok());
     }
     #[test]
     fn snapshots_reject_deletions_and_changes_retain_explicit_failure() {
-        let mut receiver = Receiver::new(request(), 7);
-        receiver.accept(Response::Volume { serial: 7 }).unwrap();
+        let mut receiver = Receiver::new(request(), 7, DEVICE);
+        receiver.accept(volume(7)).unwrap();
         assert_eq!(
             receiver
                 .accept(Response::Removed(vec!["C:\\old.md".into()]))
@@ -217,8 +244,9 @@ mod tests {
                 after: 1,
             },
             7,
+            DEVICE,
         );
-        receiver.accept(Response::Volume { serial: 7 }).unwrap();
+        receiver.accept(volume(7)).unwrap();
         assert_eq!(
             receiver
                 .accept(Response::Removed(vec!["C:\\old.md".into()]))
@@ -241,8 +269,8 @@ mod tests {
     }
     #[test]
     fn apply_total_stream_budgets_as_well_as_per_frame_budgets() {
-        let mut receiver = Receiver::new(request(), 7);
-        receiver.accept(Response::Volume { serial: 7 }).unwrap();
+        let mut receiver = Receiver::new(request(), 7, DEVICE);
+        receiver.accept(volume(7)).unwrap();
         receiver.records = MAX_RECORDS;
         assert_eq!(
             receiver
@@ -257,8 +285,8 @@ mod tests {
                 .unwrap_err(),
             Error::Order
         );
-        let mut receiver = Receiver::new(request(), 7);
-        receiver.accept(Response::Volume { serial: 7 }).unwrap();
+        let mut receiver = Receiver::new(request(), 7, DEVICE);
+        receiver.accept(volume(7)).unwrap();
         receiver.path_bytes = MAX_PATH_BYTES;
         assert_eq!(
             receiver

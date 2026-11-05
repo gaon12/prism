@@ -23,6 +23,8 @@ use windows_sys::Win32::{
 
 const BLOCK_BYTES: usize = 4 * 1024 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_secs(15);
+// mountmgr.h: CTL_CODE('M', 2, METHOD_BUFFERED, FILE_ANY_ACCESS).
+const IOCTL_MOUNTDEV_QUERY_DEVICE_NAME: u32 = ((b'M' as u32) << 16) | (2 << 2);
 
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "Invalid NTFS volume metadata.")
@@ -245,12 +247,38 @@ impl Volume {
     pub fn geometry(&self) -> Geometry {
         self.geometry
     }
+    pub fn device_name(&self) -> io::Result<String> {
+        device_name(&self.device)
+    }
     pub fn cancel_flag(&self) -> Arc<AtomicBool> {
         self.device.cancel.clone()
     }
     pub(crate) fn control(&self, code: u32, input: &[u8], capacity: usize) -> io::Result<Vec<u8>> {
         self.device.control(code, input, capacity)
     }
+}
+
+fn device_name(device: &Device) -> io::Result<String> {
+    let bytes = device.control(IOCTL_MOUNTDEV_QUERY_DEVICE_NAME, &[], 4096)?;
+    if bytes.len() < 2 {
+        return Err(invalid());
+    }
+    let length = u16::from_le_bytes(bytes[..2].try_into().unwrap()) as usize;
+    if !length.is_multiple_of(2) || length > bytes.len() - 2 {
+        return Err(invalid());
+    }
+    let units: Vec<_> = bytes[2..2 + length]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|unit| u16::from_le_bytes(*unit))
+        .collect();
+    let name = String::from_utf16(&units).map_err(|_| invalid())?;
+    let name = name.trim_end_matches('\0');
+    if !prism_ntfs_protocol::valid_device_name(name) {
+        return Err(invalid());
+    }
+    Ok(name.to_owned())
 }
 impl Source for Volume {
     fn read_exact_at(&mut self, mut offset: u64, mut output: &mut [u8]) -> Result<(), Error> {
@@ -369,6 +397,34 @@ fn journal_error(error: io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unprivileged_device_metadata_matches_the_open_root_handle() {
+        let root = std::env::var("SystemDrive").expect("Windows system drive") + r"\";
+        let identity = crate::client::root_identity(std::path::Path::new(&root)).unwrap();
+        let path: Vec<_> = format!(r"\\.\{}:", identity.drive.byte() as char)
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        // Zero desired access queries only the mount manager identity; it does
+        // not grant raw volume reads or require an elevated test process.
+        let raw = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED,
+                null_mut(),
+            )
+        };
+        assert_ne!(raw, INVALID_HANDLE_VALUE);
+        let device = Device {
+            handle: unsafe { OwnedHandle::from_raw_handle(raw) },
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        assert_eq!(device_name(&device).unwrap(), identity.device);
+    }
     #[test]
     fn aligned_buffers_are_bounded_and_page_aligned() {
         let buffer = NativeBuffer::new(4096).unwrap();

@@ -15,11 +15,12 @@ use std::{
 };
 use windows_sys::Win32::{Foundation::*, Storage::FileSystem::*};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootIdentity {
     pub drive: DriveLetter,
     pub serial: u64,
     pub reference: u64,
+    pub device: String,
 }
 fn unsupported() -> io::Error {
     io::Error::new(
@@ -82,10 +83,33 @@ pub fn root_identity(path: &Path) -> io::Result<RootIdentity> {
     {
         return Err(unsupported());
     }
+    let mut final_path = vec![0u16; 1024];
+    let length = unsafe {
+        GetFinalPathNameByHandleW(
+            handle.as_raw_handle(),
+            final_path.as_mut_ptr(),
+            final_path.len() as u32,
+            VOLUME_NAME_NT,
+        )
+    } as usize;
+    if length == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if length >= final_path.len() {
+        return Err(unsupported());
+    }
+    let device = String::from_utf16(&final_path[..length])
+        .map_err(|_| unsupported())?
+        .trim_end_matches('\\')
+        .to_owned();
+    if !prism_ntfs_protocol::valid_device_name(&device) {
+        return Err(unsupported());
+    }
     Ok(RootIdentity {
         drive,
         serial: identity.VolumeSerialNumber,
         reference,
+        device,
     })
 }
 pub fn snapshot(
@@ -100,6 +124,7 @@ pub fn snapshot(
             drive: identity.drive,
         },
         identity.serial,
+        &identity.device,
         receive,
     )?;
     if root_identity(root)? != identity {

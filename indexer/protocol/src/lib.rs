@@ -5,11 +5,11 @@
 use std::io::{self, Cursor, Read, Write};
 pub mod stream;
 
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_BATCH_RECORDS: usize = 2048;
 const MAX_PATH_BYTES: usize = 4 * 32767;
-const MAGIC: [u8; 4] = *b"PNI1";
+const MAGIC: [u8; 4] = *b"PNI2";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DriveLetter(u8);
@@ -78,7 +78,7 @@ pub enum FailureCode {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Response {
-    Volume { serial: u64 },
+    Volume { serial: u64, device: String },
     Progress { completed: u64 },
     Records(Vec<FileRecord>),
     Removed(Vec<String>),
@@ -150,6 +150,17 @@ fn invalid() -> io::Error {
         io::ErrorKind::InvalidData,
         "Invalid filename index protocol message.",
     )
+}
+
+pub fn valid_device_name(value: &str) -> bool {
+    value.len() <= 1024
+        && !value.contains(['\0', '/'])
+        && value.strip_prefix(r"\Device\").is_some_and(|tail| {
+            !tail.is_empty()
+                && tail
+                    .split('\\')
+                    .all(|part| !part.is_empty() && part != "." && part != "..")
+        })
 }
 
 fn write_frame(writer: &mut impl Write, payload: &[u8]) -> io::Result<()> {
@@ -263,9 +274,14 @@ impl Response {
     pub fn write(&self, writer: &mut impl Write, drive: DriveLetter) -> io::Result<()> {
         let mut payload = vec![];
         match self {
-            Self::Volume { serial } => {
+            Self::Volume { serial, device } => {
+                if !valid_device_name(device) {
+                    return Err(invalid());
+                }
                 payload.push(6);
                 payload.extend_from_slice(&serial.to_le_bytes());
+                payload.extend_from_slice(&(device.len() as u16).to_le_bytes());
+                payload.extend_from_slice(device.as_bytes());
             }
             Self::Progress { completed } => {
                 payload.push(1);
@@ -314,9 +330,22 @@ impl Response {
     pub fn read(reader: &mut impl Read, drive: DriveLetter) -> io::Result<Self> {
         let mut payload = read_frame(reader)?;
         let response = match byte(&mut payload)? {
-            6 => Self::Volume {
-                serial: u64_value(&mut payload)?,
-            },
+            6 => {
+                let serial = u64_value(&mut payload)?;
+                let mut length = [0; 2];
+                payload.read_exact(&mut length)?;
+                let length = u16::from_le_bytes(length) as usize;
+                if length > 1024 {
+                    return Err(invalid());
+                }
+                let mut bytes = vec![0; length];
+                payload.read_exact(&mut bytes)?;
+                let device = String::from_utf8(bytes).map_err(|_| invalid())?;
+                if !valid_device_name(&device) {
+                    return Err(invalid());
+                }
+                Self::Volume { serial, device }
+            }
             1 => Self::Progress {
                 completed: u64_value(&mut payload)?,
             },
@@ -436,6 +465,7 @@ mod tests {
         for message in [
             Response::Volume {
                 serial: 0xfedc_ba98_7654_3210,
+                device: r"\Device\TestVolume".into(),
             },
             Response::Records(records),
             Response::Removed(vec!["C:\\gone.txt".into()]),
@@ -474,6 +504,37 @@ mod tests {
         }
     }
     #[test]
+    fn volume_headers_require_a_bounded_kernel_device_name() {
+        for device in [
+            "",
+            "C:\\",
+            r"\\Device\Volume",
+            r"\Device\",
+            r"\Device\..",
+            "\\Device\\bad\0name",
+        ] {
+            assert!(!valid_device_name(device));
+            assert!(Response::Volume {
+                serial: 7,
+                device: device.into()
+            }
+            .write(&mut vec![], drive())
+            .is_err());
+        }
+        let device = format!("\\Device\\{}", "a".repeat(1024));
+        assert!(!valid_device_name(&device));
+        let mut bytes = vec![];
+        Response::Volume {
+            serial: 7,
+            device: r"\Device\Volume".into(),
+        }
+        .write(&mut bytes, drive())
+        .unwrap();
+        // Both decoding and encoding validate the name, including hostile peers.
+        *bytes.last_mut().unwrap() = 0;
+        assert!(Response::read(&mut Cursor::new(bytes), drive()).is_err());
+    }
+    #[test]
     fn reject_oversized_unknown_trailing_and_truncated_messages() {
         let mut bytes = vec![];
         Request::Snapshot { drive: drive() }
@@ -486,7 +547,7 @@ mod tests {
         bad[6..10].copy_from_slice(&((MAX_FRAME_BYTES + 1) as u32).to_le_bytes());
         assert!(Request::read(&mut Cursor::new(bad)).is_err());
         let mut bad = bytes.clone();
-        bad[4] = 2;
+        bad[4] = VERSION as u8 + 1;
         assert!(Request::read(&mut Cursor::new(bad)).is_err());
         let mut bad = bytes;
         bad.push(0);

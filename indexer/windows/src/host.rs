@@ -65,6 +65,9 @@ impl Backend for SnapshotBackend {
         let geometry = volume.geometry();
         emit(Response::Volume {
             serial: geometry.serial,
+            device: volume
+                .device_name()
+                .map_err(|error| failure(error.into()))?,
         })
         .map_err(|_| FailureCode::Cancelled)?;
         let mut last = Instant::now();
@@ -278,7 +281,11 @@ mod tests {
             if matches!(request, Request::Changes { .. }) {
                 return Err(FailureCode::JournalGap);
             }
-            emit(Response::Volume { serial: 7 }).unwrap();
+            emit(Response::Volume {
+                serial: 7,
+                device: r"\Device\TestVolume".into(),
+            })
+            .unwrap();
             emit(Response::Progress { completed: 581 }).unwrap();
             emit(Response::Records(vec![FileRecord {
                 path: "C:\\fixture.md".into(),
@@ -324,6 +331,7 @@ mod tests {
                     drive: DriveLetter::new(b'C').unwrap(),
                 },
                 7,
+                r"\Device\TestVolume",
                 |event| {
                     events.push(event);
                     Ok(())
@@ -348,6 +356,7 @@ mod tests {
                 after: 11,
             },
             7,
+            r"\Device\TestVolume",
             |_| {
                 count += 1;
                 Ok(())

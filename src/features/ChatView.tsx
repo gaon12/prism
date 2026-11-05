@@ -8,6 +8,7 @@ import {
   Send,
   Square,
   X,
+  Settings2,
 } from 'lucide-react';
 import { bridge, native } from '../lib/bridge';
 import { content } from '../lib/content';
@@ -140,10 +141,19 @@ function Turn({
       <article aria-labelledby={`turn-${turn.id}`}>
         <header>
           <strong id={`turn-${turn.id}`}>{t(turn.role === 'user' ? 'user' : 'assistant')}</strong>
-          <time dateTime={new Date(turn.createdMs).toISOString()}>
-            {new Date(turn.createdMs).toLocaleString(language)}
+          <time
+            dateTime={new Date(turn.createdMs).toISOString()}
+            title={new Date(turn.createdMs).toLocaleString(language)}
+          >
+            {new Date(turn.createdMs).toLocaleTimeString(language, {
+              hour: 'numeric',
+              minute: '2-digit',
+            })}
           </time>
-          <span className="chat-turn-status">{t(turn.status)}</span>
+          {/* "Complete" is the normal case, so only unusual states get a label. */}
+          {turn.status !== 'complete' ? (
+            <span className="chat-turn-status">{t(turn.status)}</span>
+          ) : null}
         </header>
         {turn.text ? <p className="chat-plain">{turn.text}</p> : null}
         {turn.role === 'assistant' ? (
@@ -725,16 +735,17 @@ function ConversationWorkspace({
             <Download size={14} />
             {t('export')}
           </button>
+          {/* Sits next to the export button it changes. */}
+          <label className="chat-check chat-export-sources">
+            <input
+              type="checkbox"
+              checked={includeSources}
+              onChange={(event) => setIncludeSources(event.target.checked)}
+            />
+            <span>{t('exportSources')}</span>
+          </label>
         </div>
       </header>
-      <label className="chat-check">
-        <input
-          type="checkbox"
-          checked={includeSources}
-          onChange={(event) => setIncludeSources(event.target.checked)}
-        />
-        <span>{t('exportSources')}</span>
-      </label>
       {renaming ? (
         <div className="chat-inline-action">
           <label htmlFor={`${fieldId}-title`}>{t('titleInput')}</label>
@@ -932,6 +943,78 @@ function ConversationWorkspace({
         />
       ) : null}
       <div className="chat-composer">
+        {/* The label stays for screen readers; the placeholder says the same on screen. */}
+        <label className="chat-sr-only" htmlFor={`${fieldId}-question`}>
+          {t('question')}
+        </label>
+        <div className="chat-input">
+          <textarea
+            id={`${fieldId}-question`}
+            rows={3}
+            value={question}
+            maxLength={4096}
+            placeholder={t('questionHint')}
+            aria-describedby={`${fieldId}-question-limit`}
+            aria-invalid={questionBytes > 4096}
+            onChange={(event) => {
+              questionVersion.current++;
+              setQuestion(event.target.value);
+            }}
+            onKeyDown={(event) => {
+              if (
+                event.key === 'Enter' &&
+                (event.ctrlKey || event.metaKey) &&
+                !event.nativeEvent.isComposing &&
+                event.keyCode !== 229
+              ) {
+                event.preventDefault();
+                void submit();
+              }
+            }}
+          />
+          <div className="chat-send-row">
+            <button
+              type="button"
+              className="button primary"
+              disabled={!canSend}
+              onClick={() => void submit()}
+            >
+              <Send size={15} />
+              {t('send')}
+            </button>
+            {busy ? (
+              <button
+                type="button"
+                className="button"
+                disabled={cancelRequested}
+                onClick={() => void cancel()}
+              >
+                <Square size={14} />
+                {t('cancelGeneration')}
+              </button>
+            ) : null}
+            <span role="status" className="chat-note">
+              {cancelRequested && busy
+                ? t('cancelRequested')
+                : activeJob(job)
+                  ? t(job?.phase === 'generating' ? 'generating' : 'retrieving')
+                  : submitting
+                    ? t('pending')
+                    : null}
+            </span>
+          </div>
+        </div>
+        {/* Shortcut help; the byte count only matters close to the 4096-byte limit. */}
+        <p id={`${fieldId}-question-limit`} className="chat-note chat-input-help">
+          {questionBytes > 3072
+            ? chatText(language, 'questionLimit', { bytes: questionBytes })
+            : t('sendShortcut')}
+        </p>
+        {usableScopeIds.length > 128 ? (
+          <p className="chat-scope-warning" role="status">
+            {t('scopeLimit')}
+          </p>
+        ) : null}
         <details className="chat-retrieval-options">
           <summary>
             {t('retrievalOptions')} · {t(mode)} ·{' '}
@@ -996,70 +1079,7 @@ function ConversationWorkspace({
           </label>
           <p className="chat-note">{t('hiddenHelp')}</p>
         </details>
-        <label htmlFor={`${fieldId}-question`}>{t('question')}</label>
-        <textarea
-          id={`${fieldId}-question`}
-          rows={3}
-          value={question}
-          maxLength={4096}
-          placeholder={t('questionHint')}
-          aria-describedby={`${fieldId}-question-limit`}
-          aria-invalid={questionBytes > 4096}
-          onChange={(event) => {
-            questionVersion.current++;
-            setQuestion(event.target.value);
-          }}
-          onKeyDown={(event) => {
-            if (
-              event.key === 'Enter' &&
-              (event.ctrlKey || event.metaKey) &&
-              !event.nativeEvent.isComposing &&
-              event.keyCode !== 229
-            ) {
-              event.preventDefault();
-              void submit();
-            }
-          }}
-        />
-        <p id={`${fieldId}-question-limit`} className="chat-note">
-          {chatText(language, 'questionLimit', { bytes: questionBytes })}
-        </p>
-        {usableScopeIds.length > 128 ? (
-          <p className="chat-scope-warning" role="status">
-            {t('scopeLimit')}
-          </p>
-        ) : null}
-        <div className="chat-send-row">
-          <button
-            type="button"
-            className="button primary"
-            disabled={!canSend}
-            onClick={() => void submit()}
-          >
-            <Send size={15} />
-            {t('send')}
-          </button>
-          {busy ? (
-            <button
-              type="button"
-              className="button"
-              disabled={cancelRequested}
-              onClick={() => void cancel()}
-            >
-              <Square size={14} />
-              {t('cancelGeneration')}
-            </button>
-          ) : null}
-          <span role="status" className="chat-note">
-            {cancelRequested && busy
-              ? t('cancelRequested')
-              : activeJob(job)
-                ? t(job?.phase === 'generating' ? 'generating' : 'retrieving')
-                : submitting
-                  ? t('pending')
-                  : null}
-          </span>
-        </div>
+
         {askError ? <Failure code={askError} language={language} onModels={onModels} /> : null}
       </div>
     </section>
@@ -1182,19 +1202,23 @@ export function ChatView({
     list?.query === query ? list.items.filter((item) => !deleted.current.has(item.id)) : [];
   return (
     <section className="feature-view chat-view">
-      <div className="page-heading">
-        <h1>{t('title')}</h1>
-        <p>{t('description')}</p>
-      </div>
-      <div className="chat-top-actions">
-        <button type="button" className="button" onClick={onSettings}>
-          <FolderSearch size={16} />
-          {t('scopes')}
-        </button>
-        <button type="button" className="button" onClick={models}>
-          {t('models')}
-        </button>
-      </div>
+      {/* One compact row: what this tab is, plus the two settings it depends on. */}
+      <header className="chat-head">
+        <div className="page-heading">
+          <h1>{t('title')}</h1>
+          <p>{t('description')}</p>
+        </div>
+        <div className="chat-top-actions">
+          <button type="button" className="text-button" onClick={onSettings}>
+            <FolderSearch size={14} />
+            {t('scopes')}
+          </button>
+          <button type="button" className="text-button" onClick={models}>
+            <Settings2 size={14} />
+            {t('models')}
+          </button>
+        </div>
+      </header>
       {!native ? (
         <div className="chat-native-only" role="status">
           <MessageSquareText size={48} strokeWidth={1.25} />

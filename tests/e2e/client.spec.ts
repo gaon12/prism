@@ -259,7 +259,7 @@ test('edits, persists and exports a real Markdown draft', async ({ page }) => {
     .getByRole('textbox', { name: 'Markdown', exact: true })
     .fill('# 첫 단계\n\n- 두 창\n- 설정 저장');
   await page.getByRole('button', { name: '채팅', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'RAG 대화', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '문서와 대화', exact: true })).toBeVisible();
   await expect(page.locator('.chat-native-only')).toContainText('데스크톱 앱');
   await expect(page.getByRole('textbox', { name: '질문', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '문서', exact: true }).click();

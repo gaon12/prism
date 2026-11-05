@@ -258,7 +258,7 @@ try {
     .fill('unmatchable-filename-fixture');
   await main.getByRole('heading', { name: '검색 결과가 없어요', exact: true }).waitFor();
   await main.getByRole('button', { name: '채팅', exact: true }).click();
-  await main.getByRole('heading', { name: 'RAG 대화', exact: true }).waitFor();
+  await main.getByRole('heading', { name: '문서와 대화', exact: true }).waitFor();
   await main.getByRole('button', { name: '새 대화', exact: true }).click();
   const question = main.getByRole('textbox', { name: '질문', exact: true });
   await question.fill('shared');

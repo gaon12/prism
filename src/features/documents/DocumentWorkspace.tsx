@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Download, FileText, FolderSearch, Plus, RefreshCw, Square } from 'lucide-react';
+import { Download, FileText, FolderSearch, Plus, RefreshCw, Square, Settings2 } from 'lucide-react';
 import { bridge, native } from '../../lib/bridge';
 import { documents, scalarSelection } from '../../lib/documents';
 import type {
@@ -1184,8 +1184,31 @@ function DocumentEditor({
                       )
                     }
                   />
-                  <span className="doc-kind">{t(block.kind)}</span>
+                  {/* The kind is shown by the picker next to it; this text names the checkbox. */}
+                  <span className="doc-sr-only">{t(block.kind)}</span>
                 </label>
+                <label className="doc-sr-only" htmlFor={`${fieldId}-${block.id}-kind`}>
+                  {t('kind')}
+                </label>
+                <select
+                  id={`${fieldId}-${block.id}-kind`}
+                  value={block.kind}
+                  disabled={!editable}
+                  onChange={(event) =>
+                    updateBlock(block.id, { kind: event.target.value as DocumentBlockKind })
+                  }
+                >
+                  {(['fact', 'userInput', 'aiProposal', 'blank'] as const).map((kind) => (
+                    <option
+                      key={kind}
+                      value={kind}
+                      disabled={kind === 'blank' && Boolean(block.markdown)}
+                    >
+                      {t(kind)}
+                    </option>
+                  ))}
+                </select>
+
                 {block.userEdited ? (
                   <span className="doc-user-edited">{t('userEdited')}</span>
                 ) : null}
@@ -1195,35 +1218,14 @@ function DocumentEditor({
                     : null}
                 </small>
               </header>
-              <label className="doc-label" htmlFor={`${fieldId}-${block.id}-kind`}>
-                {t('kind')}
-              </label>
-              <select
-                id={`${fieldId}-${block.id}-kind`}
-                value={block.kind}
-                disabled={!editable}
-                onChange={(event) =>
-                  updateBlock(block.id, { kind: event.target.value as DocumentBlockKind })
-                }
-              >
-                {(['fact', 'userInput', 'aiProposal', 'blank'] as const).map((kind) => (
-                  <option
-                    key={kind}
-                    value={kind}
-                    disabled={kind === 'blank' && Boolean(block.markdown)}
-                  >
-                    {t(kind)}
-                  </option>
-                ))}
-              </select>
               {block.kind === 'blank' ? <p className="doc-note">{t('blankHelp')}</p> : null}
-              <label className="doc-label" htmlFor={`${fieldId}-${block.id}-body`}>
+              <label className="doc-sr-only" htmlFor={`${fieldId}-${block.id}-body`}>
                 {t('blockText')}
               </label>
+              {/* Prose wraps like a document; the outline and export keep exact Markdown. */}
               <textarea
                 id={`${fieldId}-${block.id}-body`}
-                className="doc-markdown-input"
-                wrap="off"
+                className="doc-markdown-input doc-block-text"
                 value={block.markdown}
                 readOnly={!editable || block.kind === 'blank'}
                 maxLength={131072}
@@ -1567,11 +1569,13 @@ export function DocumentWorkspace({
           <p>{t('subtitle')}</p>
         </div>
         <div className="doc-actions">
-          <button type="button" className="button" onClick={onScopes}>
-            <FolderSearch size={15} />
+          {/* Settings links stay light so the document itself is the focus. */}
+          <button type="button" className="text-button" onClick={onScopes}>
+            <FolderSearch size={14} />
             {t('scopes')}
           </button>
-          <button type="button" className="button" onClick={onModels}>
+          <button type="button" className="text-button" onClick={onModels}>
+            <Settings2 size={14} />
             {t('models')}
           </button>
           {onLocalDraft ? (
@@ -1614,7 +1618,8 @@ export function DocumentWorkspace({
                   <RefreshCw size={15} />
                 </button>
               </header>
-              <label className="doc-label" htmlFor={`${id}-search`}>
+              {/* Screen readers keep the label; on screen the placeholder says it. */}
+              <label className="doc-sr-only" htmlFor={`${id}-search`}>
                 {t('search')}
               </label>
               <input
@@ -1622,6 +1627,7 @@ export function DocumentWorkspace({
                 type="search"
                 value={query}
                 maxLength={256}
+                placeholder={t('search')}
                 onChange={(event) => setQuery(event.target.value)}
               />
               <button
@@ -1660,8 +1666,12 @@ export function DocumentWorkspace({
                       }}
                     >
                       <strong>{item.title}</strong>
+                      {/* Version count and last change, as one quiet line. */}
                       <small>
                         {documentText(language, 'version', { value: item.revisionCount })}
+                        <time dateTime={new Date(item.updatedMs).toISOString()}>
+                          {new Date(item.updatedMs).toLocaleDateString(language)}
+                        </time>
                       </small>
                     </button>
                   </li>

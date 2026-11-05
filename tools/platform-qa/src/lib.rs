@@ -1,4 +1,18 @@
 //! Compile the exact production platform modules without Tauri, WebView or Lance.
+// Full-app callers are absent here. Keep the existing source modules' style
+// lint baseline local to this harness; the application still reports its lints.
+#[allow(dead_code, clippy::cloned_ref_to_slice_refs)]
+#[path = "../../../src-tauri/src/content_store.rs"]
+pub mod content_store;
+#[allow(
+    clippy::inconsistent_digit_grouping,
+    clippy::manual_is_multiple_of,
+    clippy::chunks_exact_to_as_chunks,
+    clippy::needless_range_loop,
+    clippy::too_many_arguments
+)]
+#[path = "../../../src-tauri/src/document_extract.rs"]
+pub mod document_extract;
 #[path = "../../../src-tauri/src/embedding_assets.rs"]
 pub mod embedding_assets;
 #[path = "../../../src-tauri/src/embedding_package.rs"]

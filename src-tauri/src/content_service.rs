@@ -44,13 +44,24 @@ pub struct KeywordSearch {
 }
 const EXTRACTOR_VERSION: &str = "office-tables-v2";
 const OCR_VERSION: &str = "native-ocr-v1";
+const OCR_ENGINES_VERSION: &str = "ocr-engines-v2";
 fn extraction_version(path: &Path, preferences: &crate::ocr::Preferences) -> String {
     let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     if preferences.enabled
         && (extension.eq_ignore_ascii_case("pdf")
             || document_extract::is_image_extension(extension))
     {
-        format!("{EXTRACTOR_VERSION}-{OCR_VERSION}-{}", preferences.language)
+        let engine = match preferences.engine {
+            crate::ocr::Engine::Auto => "auto",
+            crate::ocr::Engine::System => "system",
+            crate::ocr::Engine::PaddleVl16 => "paddle-vl16",
+        };
+        let model = if preferences.engine == crate::ocr::Engine::System {
+            "system".into()
+        } else {
+            crate::ocr_runtime::global().map(|runtime|runtime.cache_tag()).unwrap_or_else(||"not-loaded".into())
+        };
+        format!("{EXTRACTOR_VERSION}-{OCR_ENGINES_VERSION}-{engine}-{}-{model}", preferences.language)
     } else {
         EXTRACTOR_VERSION.into()
     }
@@ -63,7 +74,10 @@ fn reusable_extraction(
     stored == Some(wanted)
         || (!preferences.enabled
             && stored
-                .is_some_and(|v| v.starts_with(&format!("{EXTRACTOR_VERSION}-{OCR_VERSION}-"))))
+                .is_some_and(|v| {
+                    v.starts_with(&format!("{EXTRACTOR_VERSION}-{OCR_VERSION}-"))
+                        || v.starts_with(&format!("{EXTRACTOR_VERSION}-{OCR_ENGINES_VERSION}-"))
+                }))
 }
 fn path_key(path: &Path) -> String {
     let value = path.to_string_lossy().replace('\\', "/");

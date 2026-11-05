@@ -19,12 +19,22 @@ mod platform;
 pub struct Preferences {
     pub enabled: bool,
     pub language: String,
+    pub engine: Engine,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Engine {
+    #[default]
+    Auto,
+    System,
+    PaddleVl16,
 }
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             enabled: false,
             language: "auto".into(),
+            engine: Engine::Auto,
         }
     }
 }
@@ -146,7 +156,7 @@ pub struct Page {
 static ACTIVE: Mutex<usize> = Mutex::new(0);
 pub(crate) struct Lease;
 impl Lease {
-    fn acquire() -> Result<Arc<Self>> {
+    pub(crate) fn acquire() -> Result<Arc<Self>> {
         let mut active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
         if *active >= 2 {
             return Err(error(Code::Busy));
@@ -163,7 +173,8 @@ impl Drop for Lease {
 pub(crate) struct Control<'a> {
     pub cancel: &'a AtomicBool,
     pub deadline: Instant,
-    pub lease: Arc<Lease>,
+    // Ownership-only on the process adapter; native async completions clone it.
+    pub _lease: Arc<Lease>,
 }
 impl Control<'_> {
     pub(crate) fn check(&self) -> Result<()> {
@@ -239,19 +250,42 @@ pub fn recognize(
         deadline: Instant::now()
             .checked_add(limits.max_duration)
             .ok_or_else(|| error(Code::InvalidInput))?,
-        lease: Lease::acquire()?,
+        _lease: Lease::acquire()?,
     };
     control.check()?;
-    #[cfg(windows)]
-    {
-        platform::recognize(input, preferences, limits, &control)
+    let native = preferences.engine != Engine::PaddleVl16;
+    if native {
+        #[cfg(windows)]
+        {
+            // A retry needs the same authorized immutable bytes. Only absence
+            // of an engine/language permits Auto to try the local fallback;
+            // cancellation, resource and document errors are never swallowed.
+            let attempt = match &input {
+                Input::Image(bytes) => Input::Image(bytes),
+                Input::Pdf { bytes, pages } => Input::Pdf { bytes, pages },
+            };
+            match platform::recognize(attempt, preferences, limits, &control) {
+                Ok(pages) => return Ok(pages),
+                Err(cause)
+                    if preferences.engine == Engine::Auto
+                        && matches!(cause.code, Code::Unavailable | Code::LanguageUnavailable) =>
+                {
+                    if !crate::ocr_runtime::global()
+                        .is_some_and(|runtime| runtime.status().available)
+                    {
+                        return Err(cause);
+                    }
+                }
+                Err(cause) => return Err(cause),
+            }
+        }
+        if preferences.engine == Engine::System {
+            return Err(error(Code::Unavailable));
+        }
     }
-    #[cfg(not(windows))]
-    {
-        let _ = input;
-        drop(control.lease);
-        Err(error(Code::Unavailable))
-    }
+    crate::ocr_runtime::global()
+        .ok_or_else(|| error(Code::Unavailable))?
+        .recognize(input, limits, &control)
 }
 /// Render an already-authorized PDF page without recognizing text or changing
 /// OCR preferences. Gallery callers provide bounded immutable bytes, never a
@@ -269,7 +303,7 @@ pub(crate) fn render_pdf_page(
     let control = Control {
         cancel,
         deadline: Instant::now() + Duration::from_secs(20),
-        lease: Lease::acquire()?,
+        _lease: Lease::acquire()?,
     };
     control.check()?;
     #[cfg(windows)]
@@ -415,7 +449,7 @@ mod tests {
         let control = Control {
             cancel: &c,
             deadline: Instant::now(),
-            lease: available,
+            _lease: available,
         };
         assert_eq!(control.check().unwrap_err().code, Code::TimedOut);
         c.store(true, Ordering::Release);

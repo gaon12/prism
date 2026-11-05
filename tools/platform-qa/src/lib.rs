@@ -13,6 +13,8 @@ pub mod ocr;
 pub mod ocr_assets;
 #[path = "../../../src-tauri/src/ocr_package.rs"]
 pub mod ocr_package;
+#[path = "../../../src-tauri/src/ocr_runtime.rs"]
+pub mod ocr_runtime;
 // Full-app callers are absent here. Keep the existing source modules' style
 // lint baseline local to this harness; the application still reports its lints.
 #[allow(dead_code, clippy::cloned_ref_to_slice_refs)]

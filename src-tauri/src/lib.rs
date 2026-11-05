@@ -34,6 +34,10 @@ mod index_service_commands;
 mod keyboard_pattern;
 mod model_commands;
 mod ocr;
+mod ocr_commands;
+mod ocr_assets;
+mod ocr_package;
+mod ocr_runtime;
 mod open_location;
 mod package_context;
 mod packaged_startup;
@@ -102,6 +106,7 @@ pub struct AppState {
     rag: Result<rag_service::RagService, rag_service::RagError>,
     documents: Result<document_service::DocumentService, document_service::DocumentError>,
     collections: collection_store::Result<collection_service::CollectionService>,
+    ocr_runtime: ocr::Result<ocr_runtime::Runtime>,
     updates: Result<update_runtime::UpdateRuntime, String>,
 }
 
@@ -273,6 +278,9 @@ pub fn run() {
                 app.path().app_local_data_dir()?
             };
             let embedding = embedding_runtime::EmbeddingRuntime::new(asset_dir.clone());
+            let ocr_runtime=ocr_runtime::initialize(&asset_dir,&std::env::current_exe()?,{
+                let app=app.handle().clone();move|status|{let _=app.emit("prism:ocr",status);}
+            });
             let content = content_service::ContentService::open(
                 &asset_dir.join("content"),
                 embedding.clone(),
@@ -301,6 +309,7 @@ pub fn run() {
                     asset_dir.join("generation-secrets"),
                     asset_dir.join("documents"),
                     asset_dir.join("collections"),
+                    asset_dir.join("ocr"),
                     asset_dir.join("updates"),
                     asset_dir.join("EBWebView"),
                     asset_dir.join("WebView2"),
@@ -411,6 +420,7 @@ pub fn run() {
                 rag,
                 documents,
                 collections,
+                ocr_runtime,
                 updates,
             });
             if !isolated_test && !test_mode {
@@ -490,6 +500,9 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            ocr_commands::ocr_status,
+            ocr_commands::ocr_install,
+            ocr_commands::ocr_cancel_install,
             collection_commands::collection_list,
             collection_commands::collection_get,
             collection_commands::collection_work_get,
@@ -636,6 +649,7 @@ pub fn run() {
                 if let Some(state) = app.try_state::<AppState>() {
                     if let Ok(updates)=&state.updates {updates.shutdown();}
                     if let Ok(collections)=&state.collections {collections.cancel_all();}
+                    if let Ok(ocr)=&state.ocr_runtime {ocr.shutdown();}
                     if let Ok(documents) = &state.documents {
                         documents.cancel_all();
                     }

@@ -109,7 +109,7 @@ fn corrupt(_: windows::core::Error) -> Error {
 /// Its completion delegate retains a lease so repeated retries still cannot
 /// start unbounded native work. No password, image or text enters this delegate.
 fn wait<A: NativeOperation>(operation: A, control: &Control<'_>) -> Result<A::Output> {
-    let keep = Arc::new(Mutex::new(Some(Arc::clone(&control.lease))));
+    let keep = Arc::new(Mutex::new(Some(Arc::clone(&control._lease))));
     let on_done = Arc::clone(&keep);
     operation
         .completed(move || {

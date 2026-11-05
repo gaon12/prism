@@ -17,6 +17,9 @@ pub enum Error {
     Corrupt,
     Unsupported,
     Changed,
+    /// A surviving base and its attribute-list members changed between reads.
+    /// This is not proof that the requested base file was deleted.
+    Inconsistent,
     Limit,
     Cancelled,
     TimedOut,
@@ -342,11 +345,20 @@ pub fn metadata_family(
             if let std::collections::btree_map::Entry::Vacant(slot) =
                 loaded.entry(entry.reference.0)
             {
-                let record = source.file_record(entry.reference)?.decode(geometry)?;
+                let record = source
+                    .file_record(entry.reference)
+                    .and_then(|record| record.decode(geometry))
+                    .map_err(|error| {
+                        if error == Error::Changed {
+                            Error::Inconsistent
+                        } else {
+                            error
+                        }
+                    })?;
                 if u16_at(&record, 16)? != entry.reference.sequence()
                     || u64_at(&record, 32)? != base_reference.0
                 {
-                    return Err(Error::Changed);
+                    return Err(Error::Inconsistent);
                 }
                 slot.insert(record);
             }
@@ -358,7 +370,7 @@ pub fn metadata_family(
                 && u16_at(attribute, 14) == Ok(entry.instance)
                 && (attribute[8] == 0 || u64_at(attribute, 16) == Ok(entry.lowest))
         }) {
-            return Err(Error::Changed);
+            return Err(Error::Inconsistent);
         }
     }
     let mut family = vec![crate::parse_decoded(number, &base)?];
@@ -890,5 +902,18 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(files[1].path, "C:\\new.md");
         assert_eq!(files[1].size, 65536);
+        // An extension can disappear between the base and member reads. The
+        // requested BASE is still present: callers must abort/rebuild instead
+        // of interpreting this family race as deletion of the base file.
+        source.records.remove(&42);
+        assert!(matches!(
+            metadata_family(&mut source, geometry(), FileReference(base), || Ok(())),
+            Err(Error::Inconsistent)
+        ));
+        // A request for the now-deleted extension itself is a stale reference.
+        assert!(matches!(
+            metadata_family(&mut source, geometry(), FileReference(extension), || Ok(())),
+            Err(Error::Changed)
+        ));
     }
 }

@@ -119,7 +119,7 @@ impl Backend for SnapshotBackend {
 fn failure(error: layout::Error) -> FailureCode {
     match error {
         Error::Cancelled => FailureCode::Cancelled,
-        Error::JournalGap | Error::Changed => FailureCode::JournalGap,
+        Error::JournalGap | Error::Changed | Error::Inconsistent => FailureCode::JournalGap,
         Error::Unsupported => FailureCode::UnsupportedVolume,
         Error::Io(io::ErrorKind::PermissionDenied) => FailureCode::AccessDenied,
         Error::Corrupt | Error::Geometry => FailureCode::CorruptVolume,

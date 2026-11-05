@@ -370,6 +370,8 @@ impl CatalogBuilder {
         Ok(())
     }
     pub fn finish(mut self) -> Result<Catalog> {
+        let mut owners = HashMap::new();
+        let mut families: HashMap<FileReference, Vec<u64>> = HashMap::new();
         let extension_numbers: Vec<_> = self
             .records
             .iter()
@@ -386,46 +388,126 @@ impl CatalogBuilder {
                 .get_mut(&base.number())
                 .filter(|record| record.reference == base)
             {
-                if record.names.len() + extension.names.len() > 4096 {
-                    return Err(ParseError::Limit);
-                }
-                record.names.extend(extension.names);
-                if record.size.is_none() {
-                    record.size = extension.size;
-                }
-                if record.modified_ms.is_none() {
-                    record.modified_ms = extension.modified_ms;
-                }
-                record.attributes |= extension.attributes;
-                if record.reparse_tag.is_none() {
-                    record.reparse_tag = extension.reparse_tag;
-                }
+                let number = extension.reference.number();
+                merge_extension(record, extension)?;
+                owners.insert(number, base);
+                families.entry(base).or_default().push(number);
             }
         }
         for record in self.records.values_mut() {
-            if record.names.len() <= 1 {
-                continue;
-            }
-            if record.names.iter().any(|name| name.namespace != 2) {
-                record.names.retain(|name| name.namespace != 2);
-            }
-            let mut seen = HashSet::new();
-            record
-                .names
-                .retain(|name| seen.insert((name.parent, name.name.clone())));
+            deduplicate_names(record);
         }
         Ok(Catalog {
             records: self.records,
             directories: HashMap::new(),
+            owners,
+            families,
         })
+    }
+}
+
+fn merge_extension(base: &mut MetadataRecord, extension: MetadataRecord) -> Result<()> {
+    if base.names.len().saturating_add(extension.names.len()) > 4096 {
+        return Err(ParseError::Limit);
+    }
+    base.names.extend(extension.names);
+    if base.size.is_none() {
+        base.size = extension.size;
+    }
+    if base.modified_ms.is_none() {
+        base.modified_ms = extension.modified_ms;
+    }
+    base.attributes |= extension.attributes;
+    if base.reparse_tag.is_none() {
+        base.reparse_tag = extension.reparse_tag;
+    }
+    Ok(())
+}
+fn deduplicate_names(record: &mut MetadataRecord) {
+    if record.names.iter().any(|name| name.namespace != 2) {
+        record.names.retain(|name| name.namespace != 2);
+    }
+    // A Win32 name + DOS alias usually becomes one name after filtering.
+    // Do not allocate a hash set (or clone that name) for every such file.
+    if record.names.len() > 1 {
+        let mut seen = HashSet::new();
+        record
+            .names
+            .retain(|name| seen.insert((name.parent, name.name.clone())));
     }
 }
 
 pub struct Catalog {
     records: HashMap<u64, MetadataRecord>,
     directories: HashMap<FileReference, Option<String>>,
+    // An extension's deletion can remove a name/size from its surviving base.
+    // Keep this relationship after merging; journal deletion records cannot
+    // tell us which base needs to be re-read once the extension is gone.
+    owners: HashMap<u64, FileReference>,
+    families: HashMap<FileReference, Vec<u64>>,
 }
 impl Catalog {
+    pub(crate) fn owner(&self, reference: FileReference) -> Option<FileReference> {
+        self.owners.get(&reference.number()).copied()
+    }
+    fn remove_number(&mut self, number: u64) {
+        if let Some(record) = self.records.remove(&number) {
+            if let Some(members) = self.families.remove(&record.reference) {
+                for member in members {
+                    // Another current family may already own a reused number.
+                    if self.owners.get(&member) == Some(&record.reference) {
+                        self.owners.remove(&member);
+                    }
+                }
+            }
+        }
+    }
+    pub(crate) fn remove(&mut self, reference: FileReference) {
+        if self
+            .records
+            .get(&reference.number())
+            .is_some_and(|record| record.reference == reference)
+        {
+            self.remove_number(reference.number());
+        }
+    }
+    pub(crate) fn replace_family(&mut self, mut family: Vec<MetadataRecord>) -> Result<()> {
+        let reference = family
+            .first()
+            .filter(|record| record.base.is_none())
+            .ok_or(ParseError::Attribute)?
+            .reference;
+        if self.records.len() >= 10_000_000 && !self.records.contains_key(&reference.number()) {
+            return Err(ParseError::Limit);
+        }
+        let mut seen = HashSet::new();
+        for (index, record) in family.iter().enumerate() {
+            if !seen.insert(record.reference.number())
+                || (index > 0 && record.base != Some(reference))
+            {
+                return Err(ParseError::Attribute);
+            }
+        }
+        let mut members = Vec::with_capacity(family.len().saturating_sub(1));
+        let mut merged = family.remove(0);
+        for extension in family {
+            members.push(extension.reference.number());
+            merge_extension(&mut merged, extension)?;
+        }
+        deduplicate_names(&mut merged);
+        self.remove_number(reference.number());
+        for &member in &members {
+            self.owners.insert(member, reference);
+        }
+        if !members.is_empty() {
+            self.families.insert(reference, members);
+        }
+        self.records.insert(reference.number(), merged);
+        // A directory move affects every descendant, including files without
+        // their own USN event. Rebuild only derived paths, never the MFT data.
+        self.directories.clear();
+        Ok(())
+    }
     fn parent_path<'a>(
         records: &HashMap<u64, MetadataRecord>,
         directories: &'a mut HashMap<FileReference, Option<String>>,

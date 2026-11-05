@@ -16,6 +16,7 @@ import {
   Settings2,
   BrainCircuit,
   ListChecks,
+  LibraryBig,
 } from 'lucide-react';
 import { Brand } from './components/Brand';
 import { Sidebar } from './components/Sidebar';
@@ -25,6 +26,7 @@ import { RecommendedDialog } from './components/RecommendedDialog';
 import { SearchView } from './features/SearchView';
 import { ChatView } from './features/ChatView';
 import { DocumentsView } from './features/DocumentsView';
+import { CollectionsView } from './features/collections/CollectionsView';
 import { Onboarding } from './features/onboarding/Onboarding';
 import { QuickWindow } from './features/QuickWindow';
 import { ClipboardNotice } from './features/clipboard/ClipboardPanel';
@@ -453,6 +455,7 @@ export default function App() {
                     { id: 'search', icon: Search },
                     { id: 'chat', icon: MessageSquare },
                     { id: 'documents', icon: FileText },
+                    { id: 'collections', icon: LibraryBig },
                   ] as const
                 ).map((item) => (
                   <button
@@ -495,6 +498,8 @@ export default function App() {
                     initialConversationId={initialChat}
                     onSettings={() => setSettingsTab('scopes')}
                   />
+                ) : tab === 'collections' ? (
+                  <CollectionsView />
                 ) : (
                   <DocumentsView onDirtyChange={setDocumentDirty} />
                 )}

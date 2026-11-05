@@ -380,6 +380,7 @@ const messages = {
   search: ['검색', 'Search', '搜索', '搜尋', '検索'],
   chat: ['채팅', 'Chat', '聊天', '聊天', 'チャット'],
   documents: ['문서', 'Documents', '文档', '文件', 'ドキュメント'],
+  collections: ['컬렉션', 'Collections', '收藏集', '收藏集', 'コレクション'],
   quickSearch: ['빠른 검색', 'Quick search', '快速搜索', '快速搜尋', 'クイック検索'],
   library: ['라이브러리', 'Library', '资料库', '資料庫', 'ライブラリ'],
   allFiles: ['모든 파일', 'All files', '所有文件', '所有檔案', 'すべてのファイル'],

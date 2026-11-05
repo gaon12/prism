@@ -2,7 +2,7 @@ import { defaultGeneration, normalizeGeneration } from './generation';
 import type { GenerationPreferences } from './generation';
 export type Language = 'ko' | 'en' | 'zh-CN' | 'zh-TW' | 'ja';
 export type Theme = 'system' | 'light' | 'dark';
-export type Tab = 'search' | 'chat' | 'documents';
+export type Tab = 'search' | 'chat' | 'documents' | 'collections';
 export interface SearchScope {
   id: string;
   name: string;

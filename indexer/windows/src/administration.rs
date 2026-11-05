@@ -1,6 +1,6 @@
 //! Explicit administrative entry points. Neither the ordinary client nor the
 //! SCM host calls these functions. They never request elevation themselves.
-use crate::{scm, security::Descriptor};
+use crate::{local_accounts::LocalAccounts, scm, security::Descriptor};
 use std::{
     ffi::OsString,
     fs::{self, File},
@@ -260,7 +260,11 @@ fn trusted_sid(sid: PSID, installer: &[usize]) -> bool {
             || EqualSid(sid, installer.as_ptr().cast_mut().cast()) != 0
     }
 }
-fn trusted_ancestor(handle: &OwnedHandle, installer: &[usize]) -> io::Result<()> {
+fn trusted_ancestor(
+    handle: &OwnedHandle,
+    installer: &[usize],
+    accounts: &LocalAccounts,
+) -> io::Result<()> {
     let mut descriptor = null_mut();
     let result = unsafe {
         GetSecurityInfo(
@@ -278,11 +282,12 @@ fn trusted_ancestor(handle: &OwnedHandle, installer: &[usize]) -> io::Result<()>
         return Err(io::Error::from_raw_os_error(result as i32));
     }
     let descriptor = SecurityAllocation(descriptor);
-    trusted_ancestor_descriptor(descriptor.0, installer)
+    trusted_ancestor_descriptor(descriptor.0, installer, accounts)
 }
 fn trusted_ancestor_descriptor(
     descriptor: PSECURITY_DESCRIPTOR,
     installer: &[usize],
+    accounts: &LocalAccounts,
 ) -> io::Result<()> {
     let (owner, dacl) = descriptor_parts(descriptor)?;
     if !trusted_sid(owner, installer) {
@@ -313,7 +318,10 @@ fn trusted_ancestor_descriptor(
             ACCESS_ALLOWED_ACE_TYPE => {
                 let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
                 let sid = (&ace.SidStart as *const u32).cast_mut().cast();
-                if ace.Mask & UNSAFE != 0 && !trusted_sid(sid, installer) {
+                if ace.Mask & UNSAFE != 0
+                    && !trusted_sid(sid, installer)
+                    && !accounts.absent_grantee(sid)
+                {
                     return Err(denied());
                 }
             }
@@ -327,6 +335,7 @@ fn trusted_ancestor_descriptor(
 fn lock_ancestors(parent: &Path) -> io::Result<Vec<OwnedHandle>> {
     use std::path::{Component, Prefix};
     let installer = installer_sid()?;
+    let accounts = LocalAccounts::read();
     let mut path = PathBuf::new();
     let mut handles = Vec::new();
     for component in parent.components() {
@@ -339,7 +348,7 @@ fn lock_ancestors(parent: &Path) -> io::Result<Vec<OwnedHandle>> {
             _ => return Err(denied()),
         }
         let handle = open_metadata(&path, true)?;
-        trusted_ancestor(&handle, &installer)?;
+        trusted_ancestor(&handle, &installer, &accounts)?;
         handles.push(handle);
     }
     if handles.is_empty() {
@@ -860,7 +869,12 @@ mod tests {
         ] {
             let descriptor = Descriptor::parse(sddl).unwrap();
             assert_eq!(
-                trusted_ancestor_descriptor(descriptor.raw(), &installer).is_ok(),
+                trusted_ancestor_descriptor(
+                    descriptor.raw(),
+                    &installer,
+                    &LocalAccounts::unavailable()
+                )
+                .is_ok(),
                 allowed,
                 "{sddl}"
             );

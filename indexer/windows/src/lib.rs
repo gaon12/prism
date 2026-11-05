@@ -7,6 +7,8 @@ pub mod client;
 #[cfg(windows)]
 pub mod host;
 #[cfg(windows)]
+mod local_accounts;
+#[cfg(windows)]
 pub mod pipe;
 #[cfg(windows)]
 pub mod scm;

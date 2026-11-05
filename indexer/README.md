@@ -43,6 +43,10 @@ Implemented:
   directory with administrator ownership and protected ACLs, and reject
   writable ancestors or reparse points. Existing services/binaries are left
   untouched. Removal checks the exact service executable before stopping it.
+  On standalone machines, an unresolved grant is ignored only after local LSA
+  namespace validation and an exact missing-account result. Owners remain
+  restricted to trusted system principals. Joined/unknown machine roles keep
+  the stricter policy because name lookup can fail during network outages.
   Starting/removing verifies the exact own-process LocalSystem service before
   acting. The host itself accepts only `--service`; it cannot install itself.
   Elevated deployment is not verified yet;
@@ -63,7 +67,7 @@ cargo run --release --manifest-path indexer/Cargo.toml -p prism-ntfs-windows --e
 It prints aggregate counts and timing, never paths or file contents, and does
 not request elevation or install a service. In an ordinary-privilege session,
 `PermissionDenied` and exit code 2 are expected. With the administrative helper
-enabled, verification is 51 tests on Windows and 30 portable tests under Linux;
+enabled, verification is 54 tests on Windows and 30 portable tests under Linux;
 all-target Clippy passes. These checks do not prove live C-drive speed.
 
 The app's Windows build compiles and embeds both images automatically. For
@@ -110,3 +114,6 @@ Everything's [service documentation](https://www.voidtools.com/support/everythin
 describes how its NTFS service keeps the UI running without administrative rights.
 Service management follows the Windows [service access model](https://learn.microsoft.com/en-us/windows/win32/services/service-security-and-access-rights)
 and [CreateService](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-createservicew).
+Account classification uses [local LSA policy](https://learn.microsoft.com/en-us/windows/win32/api/ntsecapi/nf-ntsecapi-lsaqueryinformationpolicy),
+[machine roles](https://learn.microsoft.com/en-us/windows/win32/api/dsrole/nf-dsrole-dsrolegetprimarydomaininformation)
+and the documented [SID lookup failure limits](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-lookupaccountsidw).

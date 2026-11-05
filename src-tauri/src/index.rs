@@ -1066,8 +1066,15 @@ mod tests {
     #[test]
     fn decomposed_unicode_ranking_and_bounded_results() {
         let dir = tempfile::tempdir().unwrap();
-        for name in ["가.txt", "가나.txt", "x가.txt", "가나다.txt", "가나다.txt"]
-        {
+        // APFS treats canonically equivalent filenames as the same entry.
+        // Keep this a distinct file while still exercising a decomposed name.
+        for name in [
+            "가.txt",
+            "가나.txt",
+            "x가.txt",
+            "가나다.txt",
+            "가나다-decomposed.txt",
+        ] {
             fs::write(dir.path().join(name), "").unwrap();
         }
         let index = FileIndex::new();

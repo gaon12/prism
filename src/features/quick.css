@@ -6,24 +6,31 @@
   padding: 13.2dvh 28px;
   background: var(--quick-background);
 }
+/* The quick search panel is a floating window: a hairline ring and a soft, deep shadow. */
 .quick-panel {
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 0;
   box-shadow: var(--quick-shadow);
   border-radius: 14px;
   width: 720px;
   max-width: 100%;
   overflow: hidden;
 }
+/* Its field is the only focal point, like the main search field. */
 .quick-search-box {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin: 20px 20px 16px;
-  height: 56px;
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  padding: 0 15px;
+  gap: 12px;
+  margin: 16px 16px 12px;
+  height: 52px;
+  border: 0;
+  border-radius: var(--radius-lg);
+  padding: 0 14px;
+  background: var(--surface);
+  box-shadow:
+    0 0 0 1px var(--border-strong),
+    0 2px 6px rgba(0, 0, 0, 0.04);
+  transition: box-shadow 180ms var(--ease-standard);
 }
 .quick-panel.expanded {
   height: 480px;
@@ -36,7 +43,7 @@
   flex-shrink: 0;
 }
 .quick-search-box > svg {
-  color: var(--text);
+  color: var(--muted);
 }
 .quick-search-box > input {
   width: 100%;
@@ -52,25 +59,29 @@
   outline: none;
 }
 .quick-search-box:focus-within {
-  border-color: var(--accent);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 .quick-search-box .brand {
   margin-left: 5px;
 }
 .quick-meta {
   border-top: 1px solid var(--border);
-  padding: 15px 22px 0;
+  padding: 12px 20px 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 0.88rem;
-  font-weight: 600;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 500;
 }
 .quick-meta kbd {
   background: transparent;
   border: 0;
   padding: 0;
   min-height: 0;
+  box-shadow: none;
 }
 .quick-empty {
   display: flex;
@@ -82,32 +93,32 @@
   text-align: center;
 }
 .quick-empty > svg {
-  color: var(--accent);
-  margin-bottom: 19px;
+  color: var(--faint);
+  margin-bottom: 16px;
 }
 .quick-empty h1 {
-  font-size: 1.65rem;
-  letter-spacing: -0.5px;
-  font-weight: 650;
-  line-height: 1.5;
+  font-size: 1.3rem;
+  letter-spacing: -0.3px;
+  font-weight: 600;
+  line-height: 1.45;
 }
 .quick-empty p {
-  font-size: 0.94rem;
+  font-size: 0.92rem;
   color: var(--muted);
   flex-wrap: wrap;
-  line-height: 1.8;
-  margin: 10px 0 25px;
-  max-width: 520px;
+  line-height: 1.7;
+  margin: 8px 0 22px;
+  max-width: 480px;
 }
 .quick-empty .button {
-  min-width: 160px;
-  min-height: 39px;
-  border-color: var(--accent);
-  color: var(--accent);
+  min-width: 150px;
+  min-height: 36px;
+  color: var(--accent-text);
 }
 .quick-footer {
   border-top: 1px solid var(--border);
-  min-height: 43px;
+  background: var(--sidebar);
+  min-height: 40px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -140,7 +151,7 @@
   width: 100%;
   min-height: 100dvh;
   border-radius: 14px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   box-shadow: none;
   display: flex;
   flex-direction: column;

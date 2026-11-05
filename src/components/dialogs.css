@@ -1,16 +1,31 @@
+/* Dialogs float over a softly dimmed app: a ring and a deep, soft shadow instead of a border.
+   They arrive with a small settle so the change has a visible cause. */
 .modal {
   color: var(--text);
   background: var(--surface);
   width: min(730px, calc(100vw - 36px));
   max-height: calc(100dvh - 48px);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  border: 0;
+  border-radius: var(--radius-xl);
   padding: 0;
   box-shadow: var(--modal-shadow);
 }
+.modal[open] {
+  animation: modal-in 220ms var(--ease-settle);
+}
 .modal::backdrop {
-  background: #14221e55;
-  backdrop-filter: blur(3px);
+  background: rgba(20, 20, 24, 0.28);
+  backdrop-filter: blur(2px);
+}
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 .modal form {
   min-height: 475px;
@@ -21,20 +36,20 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 18px 22px;
+  padding: 14px 18px 14px 22px;
   border-bottom: 1px solid var(--border);
 }
 .modal-header > div {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
 }
 .modal-header h2 {
-  font-size: 1.13rem;
-  font-weight: 650;
+  font-size: 1.05rem;
+  font-weight: 600;
 }
 .modal-header svg {
-  color: var(--accent-text);
+  color: var(--muted);
 }
 .settings-layout {
   flex: 1;
@@ -42,15 +57,15 @@
   min-height: 310px;
 }
 .settings-nav {
-  width: 155px;
+  width: 160px;
   flex-shrink: 0;
-  padding: 18px 10px;
+  padding: 14px 8px;
   background: var(--sidebar);
   border-right: 1px solid var(--border);
 }
 .settings-nav .rail-item {
   font-size: 0.88rem;
-  padding: 9px;
+  padding: 6px 9px;
 }
 .settings-body {
   padding: 22px 26px;
@@ -70,6 +85,19 @@
   gap: 18px;
   margin-bottom: 19px;
   font-size: 0.93rem;
+}
+/* Selects keep the native control (keyboard, screen readers, OS list) but drop the OS chrome:
+   a quiet field with a small chevron, like the reference's "Weekly" dropdown. The chevron is a
+   neutral grey that reads on both themes. */
+.modal select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a8a8f' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px;
+  cursor: pointer;
 }
 .setting-field select {
   min-width: 160px;
@@ -97,6 +125,42 @@
   padding: 9px 0;
   font-size: 0.9rem;
 }
+/* On/off settings read as switches. It is still a real checkbox (same keyboard, label and
+   checked state); only its drawing changes. The knob slides with the settle curve. */
+.setting-check input[type='checkbox'] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 32px;
+  height: 19px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--border-strong);
+  cursor: pointer;
+  transition: background 180ms var(--ease-standard);
+}
+.setting-check input[type='checkbox']::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 200ms var(--ease-settle);
+}
+.setting-check input[type='checkbox']:checked {
+  background: var(--accent);
+}
+.setting-check input[type='checkbox']:checked::before {
+  transform: translateX(13px);
+}
+.setting-check input[type='checkbox']:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .setting-footnote {
   color: var(--muted);
   font-size: 0.8rem;
@@ -111,7 +175,7 @@
 }
 .modal-footer {
   border-top: 1px solid var(--border);
-  padding: 14px 20px;
+  padding: 12px 18px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -137,9 +201,10 @@
   gap: 12px;
 }
 .scope-setting {
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
 }
 .scope-setting-title {
   display: flex;
@@ -152,7 +217,7 @@
 }
 .scope-setting-title strong {
   font-size: 0.9rem;
-  font-weight: 550;
+  font-weight: 500;
 }
 .scope-setting-title span {
   display: block;

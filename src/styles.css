@@ -30,17 +30,27 @@ textarea:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
+/* Fields: white, a hairline ring and a tiny drop, like the reference's text fields.
+   Hover and focus only firm up the ring; the field never jumps in size. */
 input,
 select,
 textarea {
   color: var(--text);
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  transition:
+    border-color 150ms var(--ease-standard),
+    box-shadow 150ms var(--ease-standard);
+}
+input:hover,
+select:hover,
+textarea:hover {
+  border-color: color-mix(in srgb, var(--text) 22%, transparent);
 }
 input::placeholder,
 textarea::placeholder {
-  color: var(--muted);
+  color: var(--faint);
   opacity: 1;
 }
 input[type='checkbox'],
@@ -55,8 +65,8 @@ input[type='checkbox'] {
 }
 input:not([type='checkbox']):not([type='range']),
 select {
-  min-height: 36px;
-  padding: 7px 10px;
+  min-height: 34px;
+  padding: 6px 10px;
 }
 input[type='range'] {
   min-width: 100px;
@@ -71,15 +81,19 @@ kbd {
   align-items: center;
   justify-content: center;
   white-space: nowrap;
-  min-height: 23px;
+  min-height: 21px;
   padding: 1px 6px;
-  border: 1px solid var(--border);
-  border-bottom-width: 2px;
+  border: 0;
   border-radius: 5px;
+  /* A keycap: a soft ring and a slightly firmer bottom edge instead of a thick border. */
+  box-shadow:
+    0 0 0 1px var(--border),
+    0 1px 0 var(--border-strong);
   color: var(--muted);
-  background: var(--subtle);
+  background: var(--surface);
   font-family: inherit;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
+  font-weight: 500;
   line-height: 1.4;
 }
 h1,
@@ -100,26 +114,33 @@ p {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 37px;
-  padding: 7px 14px;
-  border: 1px solid var(--border-strong);
-  border-radius: 7px;
+  gap: 7px;
+  min-height: 34px;
+  padding: 6px 13px;
+  /* A secondary button is a white surface with a ring, not an outlined box. */
+  border: 0;
+  border-radius: var(--radius-md);
   background: var(--surface);
+  box-shadow: var(--shadow-card);
   font-weight: 500;
   transition:
-    background 130ms,
-    border-color 130ms;
+    background 150ms var(--ease-standard),
+    box-shadow 150ms var(--ease-standard),
+    transform 150ms var(--ease-standard);
   white-space: nowrap;
 }
 .button:hover {
   background: var(--subtle);
-  border-color: var(--muted);
+}
+.button:active:not(:disabled) {
+  transform: translateY(0.5px);
 }
 .button.primary {
   background: var(--accent);
-  border-color: var(--accent);
   color: var(--on-accent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 80%, #000),
+    0 1px 2px rgba(0, 0, 0, 0.12);
 }
 .button.primary:hover {
   background: var(--accent-hover);
@@ -128,8 +149,8 @@ p {
   opacity: 0.5;
 }
 .button.compact {
-  padding: 5px 9px;
-  min-height: 31px;
+  padding: 4px 9px;
+  min-height: 28px;
   font-size: 0.86rem;
 }
 .icon-button {
@@ -183,10 +204,10 @@ p {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  height: 64px;
+  height: 56px;
   border-bottom: 1px solid var(--border);
-  padding-left: 24px;
-  gap: 22px;
+  padding-left: 22px;
+  gap: 18px;
   user-select: none;
 }
 .titlebar-brand {
@@ -194,29 +215,36 @@ p {
   display: flex;
   align-items: center;
 }
+/* Top-level tabs: quiet text until chosen. The chosen tab is a soft neutral fill with strong
+   text; green stays reserved for actions and focus, so it never competes with the content. */
 .main-tabs {
   display: flex;
-  gap: 10px;
+  gap: 2px;
   align-items: center;
-  border-left: 1px solid var(--border-strong);
-  padding-left: 23px;
+  border-left: 1px solid var(--border);
+  padding-left: 16px;
 }
 .main-tab {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
-  padding: 9px 16px;
+  gap: 7px;
+  padding: 6px 12px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: transparent;
-  font-weight: 550;
+  color: var(--muted);
+  font-weight: 500;
+  transition:
+    background 150ms var(--ease-standard),
+    color 150ms var(--ease-standard);
 }
 .main-tab:hover {
-  background: var(--subtle);
+  background: var(--hover);
+  color: var(--text);
 }
 .main-tab.active {
-  background: var(--accent-soft);
-  color: var(--accent-text);
+  background: var(--hover);
+  color: var(--text);
 }
 .titlebar-spacer {
   flex: 1;
@@ -257,48 +285,55 @@ p {
 .sidebar {
   display: flex;
   flex-direction: column;
-  width: 226px;
+  width: 220px;
   flex-shrink: 0;
   background: var(--sidebar);
   border-right: 1px solid var(--border);
-  padding: 22px 12px 18px;
+  padding: 18px 10px 14px;
   overflow-y: auto;
 }
+/* Sections are separated by space, not rules. */
 .rail-section {
-  padding-bottom: 22px;
-  margin-bottom: 19px;
-  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+  margin-bottom: 18px;
 }
 .rail-section h2 {
-  color: var(--muted);
-  font-size: 0.86rem;
-  font-weight: 650;
-  padding: 1px 9px 12px;
+  color: var(--faint);
+  font-size: 0.8rem;
+  font-weight: 500;
+  padding: 1px 10px 8px;
 }
 .rail-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
   width: 100%;
-  min-height: 39px;
-  padding: 9px 12px;
+  min-height: 32px;
+  padding: 6px 10px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
+  color: var(--muted);
   text-align: left;
   font-size: 0.93rem;
   line-height: 1.3;
+  transition:
+    background 150ms var(--ease-standard),
+    color 150ms var(--ease-standard);
 }
 .rail-item + .rail-item {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 .rail-item:hover {
   background: var(--hover);
+  color: var(--text);
 }
+/* The selected item is lifted off the ground: a white chip with a hairline ring. */
 .rail-item.active {
-  background: var(--accent-soft);
-  color: var(--accent-text);
-  font-weight: 550;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  color: var(--text);
+  font-weight: 500;
 }
 .rail-section-heading {
   display: flex;
@@ -311,13 +346,12 @@ p {
   padding-bottom: 0;
 }
 .rail-section-heading .icon-button {
-  border: 1px solid var(--border-strong);
-  border-radius: 5px;
+  color: var(--muted);
 }
 .rail-empty {
-  color: var(--muted);
+  color: var(--faint);
   font-size: 0.84rem;
-  padding: 12px 10px;
+  padding: 6px 10px;
   line-height: 1.7;
 }
 .folders-section {
@@ -348,30 +382,37 @@ p {
   padding: 36px 32px 35px;
 }
 .page-heading h1 {
-  font-size: 1.9rem;
-  font-weight: 650;
-  line-height: 1.4;
-  letter-spacing: -0.7px;
+  font-size: 1.6rem;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.5px;
 }
 .page-heading p {
   color: var(--muted);
-  margin-top: 5px;
-  font-size: 1rem;
+  margin-top: 4px;
+  font-size: 0.95rem;
   line-height: 1.6;
 }
+/* The search field is the focal point of the screen: a raised white surface with a soft shadow.
+   Focus adds a thin green ring and a faint green halo, never a thick outline. */
 .search-box {
-  margin-top: 26px;
+  margin-top: 22px;
   display: flex;
   align-items: center;
-  gap: 11px;
-  border: 1.5px solid var(--accent);
-  border-radius: 8px;
-  height: 51px;
-  padding: 0 13px 0 16px;
+  gap: 10px;
+  border: 0;
+  border-radius: var(--radius-lg);
+  height: 48px;
+  padding: 0 12px 0 15px;
   background: var(--surface);
+  box-shadow:
+    0 0 0 1px var(--border-strong),
+    0 2px 6px rgba(0, 0, 0, 0.04),
+    0 8px 24px -12px rgba(50, 50, 93, 0.18);
+  transition: box-shadow 180ms var(--ease-standard);
 }
 .search-box > svg {
-  color: var(--accent-text);
+  color: var(--muted);
 }
 .search-box input {
   flex: 1;
@@ -386,7 +427,10 @@ p {
   height: 100%;
 }
 .search-box:focus-within {
-  box-shadow: 0 0 0 2px var(--accent-soft);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent),
+    0 8px 24px -12px rgba(50, 50, 93, 0.18);
 }
 .search-box input:focus-visible {
   outline: none;
@@ -396,40 +440,60 @@ p {
   flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
-  margin-top: 15px;
+  margin-top: 14px;
   gap: 12px;
 }
+/* The search modes read as one segmented control: a recessed track, and the chosen mode is a
+   raised white thumb (the reference's Day / Week / Month control). */
 .search-modes {
   display: flex;
   flex-wrap: wrap;
-  gap: 9px;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-md);
+  background: var(--subtle);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 .mode {
-  padding: 7px 17px;
-  border: 1px solid var(--border);
-  background: var(--subtle);
+  padding: 4px 13px;
+  border: 0;
+  background: transparent;
   color: var(--muted);
-  border-radius: 6px;
-  min-height: 34px;
-  font-size: 0.91rem;
+  border-radius: var(--radius-sm);
+  min-height: 28px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition:
+    background 160ms var(--ease-settle),
+    color 160ms var(--ease-standard),
+    box-shadow 160ms var(--ease-settle);
+}
+.mode:hover:not(.active):not(:disabled) {
+  color: var(--text);
 }
 .mode.active {
-  background: var(--accent-soft);
-  border-color: var(--accent-soft);
-  color: var(--accent-text);
-  font-weight: 600;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  color: var(--text);
   cursor: default;
 }
 .mode:disabled {
-  opacity: 0.7;
+  opacity: 0.55;
 }
 .filter-button {
-  min-height: 34px;
-  padding: 5px 11px;
+  min-height: 32px;
+  padding: 4px 10px;
   font-size: 0.87rem;
+  color: var(--muted);
+}
+.filter-button:hover {
+  color: var(--text);
 }
 .filter-button.selected {
-  border-color: var(--accent);
+  color: var(--text);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 1px 2px rgba(0, 0, 0, 0.04);
 }
 .filter-dot {
   width: 5px;
@@ -442,12 +506,14 @@ p {
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
-  padding: 12px 14px;
+  padding: 10px 12px;
   background: var(--subtle);
-  border: 1px solid var(--border);
-  border-radius: 7px;
+  border: 0;
+  box-shadow: inset 0 0 0 1px var(--border);
+  border-radius: var(--radius-md);
   margin-top: 12px;
   font-size: 0.86rem;
+  animation: settle-in 200ms var(--ease-settle);
 }
 .filter-panel input {
   width: 170px;
@@ -470,24 +536,25 @@ p {
   justify-content: center;
   text-align: center;
 }
+/* An empty screen invites one action. The icon is quiet (the primary button carries the colour). */
 .empty-icon {
-  color: var(--accent);
+  color: var(--faint);
   display: flex;
   justify-content: center;
-  margin-bottom: 22px;
+  margin-bottom: 18px;
 }
 .empty-state h2 {
-  font-size: 1.8rem;
-  font-weight: 650;
-  letter-spacing: -0.55px;
-  line-height: 1.5;
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+  line-height: 1.45;
 }
 .empty-copy {
-  margin-top: 12px;
-  max-width: 610px;
+  margin-top: 8px;
+  max-width: 520px;
   color: var(--muted);
-  font-size: 1.05rem;
-  line-height: 1.8;
+  font-size: 0.95rem;
+  line-height: 1.7;
 }
 .empty-copy p + p {
   margin-top: 1px;
@@ -496,34 +563,36 @@ p {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 15px;
-  margin-top: 29px;
+  gap: 10px;
+  margin-top: 24px;
 }
 .empty-actions .button {
-  min-width: 158px;
-  min-height: 40px;
+  min-width: 140px;
+  min-height: 36px;
 }
+/* The tools strip at the foot of Search: a quiet well, not another boxed card. */
 .phase-note {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 17px;
-  padding: 15px 18px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  gap: 14px;
+  padding: 12px 16px;
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: var(--sidebar);
   font-size: 0.88rem;
   color: var(--muted);
   margin-top: 20px;
 }
 .phase-note > svg {
-  color: var(--accent-text);
+  color: var(--muted);
 }
 .phase-note strong {
-  border-left: 1px solid var(--border-strong);
-  padding-left: 18px;
+  border-left: 1px solid var(--border);
+  padding-left: 14px;
   white-space: nowrap;
   color: var(--text);
-  font-weight: 550;
+  font-weight: 500;
 }
 .phase-note span {
   font-size: 0.82rem;
@@ -535,14 +604,16 @@ p {
   white-space: nowrap;
 }
 .statusbar {
-  height: 32px;
+  height: 30px;
   flex-shrink: 0;
   border-top: 1px solid var(--border);
+  background: var(--sidebar);
+  color: var(--muted);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 18px;
-  font-size: 0.81rem;
+  padding: 0 16px;
+  font-size: 0.79rem;
 }
 .statusbar > span,
 .statusbar > div {
@@ -551,8 +622,8 @@ p {
   gap: 10px;
 }
 .status-dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   background: var(--accent);
   border-radius: 50%;
 }
@@ -566,7 +637,7 @@ p {
 .status-separator {
   height: 12px;
   width: 1px;
-  background: var(--border-strong);
+  background: var(--border);
   margin: 0 6px;
 }
 .registered-scopes {
@@ -578,9 +649,10 @@ p {
 }
 .registered-scopes span {
   background: var(--subtle);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  font-size: 0.85rem;
+  border: 0;
+  box-shadow: inset 0 0 0 1px var(--border);
+  border-radius: 999px;
+  font-size: 0.84rem;
   padding: 2px 10px;
   color: var(--text);
 }
@@ -610,7 +682,7 @@ p {
   margin-left: auto;
 }
 .recent-row:hover {
-  background: var(--subtle);
+  background: var(--hover);
 }
 .recent-row svg {
   color: var(--muted);
@@ -647,9 +719,10 @@ p {
   display: flex;
   flex: 1;
   flex-direction: column;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  margin-top: 26px;
+  border: 0;
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-card);
+  margin-top: 22px;
   min-height: 350px;
   overflow: hidden;
 }
@@ -658,8 +731,8 @@ p {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 18px;
-  background: var(--subtle);
+  padding: 10px 18px;
+  background: var(--sidebar);
   border-bottom: 1px solid var(--border);
   font-size: 0.84rem;
 }
@@ -707,16 +780,16 @@ p {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px 10px 15px;
+  padding: 9px 12px 9px 14px;
   max-width: calc(100vw - 32px);
-  border: 1px solid var(--border-strong);
-  border-radius: 9px;
+  border: 0;
+  border-radius: var(--radius-lg);
   background: var(--surface);
-  box-shadow: var(--modal-shadow);
+  box-shadow: var(--shadow-float);
   color: var(--text);
   font-size: 0.88rem;
   line-height: 1.6;
-  animation: toast-in 160ms ease-out;
+  animation: toast-in 220ms var(--ease-settle);
 }
 .toast > svg {
   color: var(--accent);
@@ -749,10 +822,21 @@ p {
   border-radius: 50%;
   animation: pulse 900ms infinite;
 }
+/* Panels that open (filter panel, menus) arrive a few pixels below and settle into place. */
+@keyframes settle-in {
+  from {
+    opacity: 0;
+    translate: 0 -4px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
 @keyframes toast-in {
   from {
     opacity: 0;
-    translate: 0 5px;
+    translate: 0 8px;
   }
   to {
     opacity: 1;

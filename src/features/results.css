@@ -22,7 +22,7 @@
   background: var(--accent);
 }
 .index-dot.busy {
-  background: #bf8a3d;
+  background: #d08a2c;
   animation: index-pulse 1.2s infinite alternate;
 }
 @keyframes index-pulse {
@@ -68,25 +68,31 @@
   flex: 1;
   min-height: 0;
 }
+/* Result rows: separated by hairlines. Hover is a faint ink wash. The selected row gets a soft
+   accent fill and a slim accent mark on its leading edge, drawn inside the row so nothing shifts. */
 .file-result-row {
   display: flex;
   align-items: center;
-  gap: 13px;
-  padding: 13px 12px;
+  gap: 12px;
+  padding: 11px 12px;
   border-bottom: 1px solid var(--border);
   cursor: default;
-  border-left: 3px solid transparent;
+  border-radius: var(--radius-sm);
+  transition: background 120ms var(--ease-standard);
 }
 .file-result-row:hover {
-  background: var(--subtle);
+  background: var(--hover);
 }
 .file-result-row[aria-selected='true'] {
   background: var(--accent-soft);
-  border-left-color: var(--accent);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 .file-icon {
   flex-shrink: 0;
-  color: var(--accent);
+  color: var(--muted);
+}
+.file-result-row[aria-selected='true'] .file-icon {
+  color: var(--accent-text);
 }
 .file-result-name {
   display: flex;
@@ -97,11 +103,11 @@
 }
 .file-result-name strong {
   font-size: 0.94rem;
-  font-weight: 600;
+  font-weight: 500;
   overflow-wrap: anywhere;
 }
 .file-result-name > span {
-  color: var(--muted);
+  color: var(--faint);
   font-size: 0.78rem;
   text-overflow: ellipsis;
   overflow: hidden;
@@ -116,11 +122,12 @@
   color: var(--muted);
   white-space: nowrap;
 }
+/* A match is the one place real emphasis lands in a row: a soft accent highlight behind the text. */
 mark {
   color: var(--accent-text);
-  background: transparent;
-  text-decoration: underline;
-  text-underline-offset: 3px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 3px;
+  padding: 0 1px;
 }
 .results-limit {
   padding: 10px;
@@ -179,9 +186,10 @@ mark {
   font-size: 0.82rem;
   color: var(--accent-text);
   line-height: 1.8;
-  padding: 9px 10px;
+  padding: 9px 12px;
   background: var(--accent-soft);
-  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 6px;
 }
 .interpreted-expression {
   color: var(--muted);

@@ -1,3 +1,13 @@
+/* Design tokens: every colour, shadow, radius and curve the app uses.
+ *
+ * The look follows the user's reference (benji.org/stageshow, see .dev/docs/design-direction.md):
+ * - Quiet, neutral surfaces on a warm off-white ground. The neutrals have no green tint, so the
+ *   one accent colour (Prism green) is the only colour on screen.
+ * - Hairlines instead of outlines: borders are translucent ink, so they read as soft separators
+ *   on any surface, light or dark.
+ * - Depth comes from a thin ring plus a soft shadow, not from heavy borders.
+ * Values are taken from the stageshow kit (kit/stage.css) and mapped onto Prism's token names,
+ * so every existing component picks them up without changes. */
 :root {
   font-family:
     'Segoe UI Variable',
@@ -14,44 +24,82 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+
+  /* Surfaces: white content on a warm off-white ground. */
   --surface: #ffffff;
-  --sidebar: #f6f7f8;
-  --subtle: #f8f9fa;
-  --text: #202826;
-  --muted: #747d79;
-  --border: #e4e7e7;
-  --border-strong: #cdd3d0;
+  --sidebar: #f7f6f5; /* the ground: sidebar, quiet panels */
+  --subtle: #f4f3f2; /* wells: inputs at rest, toolbars, hover on white */
+
+  /* Text: neutral greys. --faint is for hints and placeholders. */
+  --text: #262628;
+  --muted: #76767a;
+  --faint: #9a9a9d;
+
+  /* Lines: translucent ink, so a separator is equally soft on white and on the ground. */
+  --border: rgba(0, 0, 0, 0.07);
+  --border-strong: rgba(0, 0, 0, 0.12);
+  --hover: rgba(0, 0, 0, 0.045);
+
+  /* The one accent: Prism green. Use it for the primary action, selection and focus only. */
   --accent: #426557;
   --accent-hover: #345647;
-  --accent-soft: #e5ede9;
+  --accent-soft: #e7eeea;
   --accent-text: #305244;
   --on-accent: #fff;
-  --hover: #e9edeb;
-  --danger: #ac4545;
-  --quick-background: #e9eeec;
-  --modal-shadow: 0 16px 60px #12251c25;
-  --quick-shadow: 0 12px 40px #162b2230, 0 2px 6px #162b2212;
+  --danger: #b4403d;
+
+  /* Depth: a hairline ring plus a soft, slightly cool drop (kit: shadow-card / -float). */
+  --shadow-card: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-float:
+    0 0 0 1px rgba(0, 0, 0, 0.06), 0 4px 16px rgba(0, 0, 0, 0.08), 0 12px 32px rgba(0, 0, 0, 0.06);
+  --modal-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.06), 0 24px 48px -12px rgba(50, 50, 93, 0.22),
+    0 12px 24px -12px rgba(0, 0, 0, 0.16);
+  --quick-background: #efeeec;
+  --quick-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.06), 0 14px 32px -8px rgba(50, 50, 93, 0.24),
+    0 4px 10px -4px rgba(0, 0, 0, 0.1);
+
+  /* Shape: a row, a field, a popover, a window. */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+
+  /* Motion: things arrive fast and settle softly (kit curve "settle"). Keep moves 150-250 ms. */
+  --ease-settle: cubic-bezier(0.05, 0.85, 0.3, 1);
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
   color: var(--text);
   background: var(--surface);
   color-scheme: light;
 }
 :root[data-theme='dark'] {
-  --surface: #1c2421;
-  --sidebar: #18201d;
-  --subtle: #232c28;
-  --text: #e6ece8;
-  --muted: #a0ada5;
-  --border: #35413a;
-  --border-strong: #48564d;
+  --surface: #1a1a1d;
+  --sidebar: #141416;
+  --subtle: #222225;
+  --text: #ececee;
+  --muted: #a0a0a5;
+  --faint: #6c6c70;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --hover: rgba(255, 255, 255, 0.06);
   --accent: #6a9d81;
   --accent-hover: #80af96;
-  --accent-soft: #2c4437;
+  --accent-soft: #24332b;
   --accent-text: #bdd7c7;
   --on-accent: #10251a;
-  --hover: #29362e;
   --danger: #f19d9d;
-  --quick-background: #111a15;
-  --modal-shadow: 0 16px 60px #0006;
-  --quick-shadow: 0 12px 40px #0006;
+  --shadow-card: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-float:
+    0 0 0 1px rgba(255, 255, 255, 0.08), 0 4px 16px rgba(0, 0, 0, 0.4),
+    0 12px 32px rgba(0, 0, 0, 0.3);
+  --modal-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.08), 0 24px 48px -12px rgba(0, 0, 0, 0.6),
+    0 12px 24px -12px rgba(0, 0, 0, 0.5);
+  --quick-background: #0f0f11;
+  --quick-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.08), 0 14px 32px -8px rgba(0, 0, 0, 0.6),
+    0 4px 10px -4px rgba(0, 0, 0, 0.4);
   color-scheme: dark;
 }

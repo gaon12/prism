@@ -15,8 +15,9 @@
            secondary links bottom-right, window buttons top-right. -->
     <main class="setup" data-screen="loading">
       <section class="hero" data-tauri-drag-region>
-        <!-- A beam of light enters the prism and leaves as a spectrum. While installing, the
-             spectrum brightens with the progress (CSS variable --done). -->
+        <!-- A thin beam enters a glass prism and leaves as one narrow, continuous spectrum.
+             Drawn like a technical illustration: ink lines on a flat light ground. While
+             installing, the spectrum grows stronger with the progress (CSS variable --done). -->
         <svg
           class="art"
           viewBox="0 0 760 480"
@@ -25,36 +26,44 @@
           data-tauri-drag-region
         >
           <defs>
-            <linearGradient id="beam" x1="0" x2="1">
-              <stop offset="0" stop-color="#fff" stop-opacity="0" />
-              <stop offset="1" stop-color="#fff" stop-opacity=".9" />
+            <!-- colours across the band, top (long wavelength) to bottom -->
+            <linearGradient
+              id="spectrum"
+              gradientUnits="userSpaceOnUse"
+              x1="0"
+              y1="118"
+              x2="0"
+              y2="262"
+            >
+              <stop offset="0" stop-color="#e2735c" />
+              <stop offset=".22" stop-color="#e9b85c" />
+              <stop offset=".44" stop-color="#8fbf86" />
+              <stop offset=".68" stop-color="#5f9ccb" />
+              <stop offset="1" stop-color="#8d7cc4" />
             </linearGradient>
-            <radialGradient id="glow">
-              <stop offset="0" stop-color="#fff" stop-opacity=".16" />
-              <stop offset="1" stop-color="#fff" stop-opacity="0" />
-            </radialGradient>
+            <!-- the band is faint as it leaves the glass and full where it meets the edge -->
+            <linearGradient id="spread" x1="0" x2="1">
+              <stop offset="0" stop-color="#fff" stop-opacity=".25" />
+              <stop offset=".55" stop-color="#fff" stop-opacity="1" />
+            </linearGradient>
+            <mask id="spread-mask">
+              <rect x="422" y="0" width="338" height="480" fill="url(#spread)" />
+            </mask>
           </defs>
-          <circle class="glow" cx="390" cy="170" r="170" fill="url(#glow)" />
-          <path class="beam" d="M0 236 L341 167" stroke="url(#beam)" />
-          <!-- inside the glass the light bends once more before it splits -->
-          <path class="beam inner" d="M341 167 L422 174" />
-          <g class="rays">
-            <path d="M422 174 L760 30 L760 92 Z" fill="#e7a07c" />
-            <path d="M422 174 L760 92 L760 152 Z" fill="#e6c97a" />
-            <path d="M422 174 L760 152 L760 212 Z" fill="#93c8a2" />
-            <path d="M422 174 L760 212 L760 272 Z" fill="#7fb2d6" />
-            <path d="M422 174 L760 272 L760 334 Z" fill="#a79bd4" />
+          <path class="beam" d="M0 236 L341 167" />
+          <g class="rays" mask="url(#spread-mask)">
+            <path d="M422 174 L760 118 L760 262 Z" fill="url(#spectrum)" />
           </g>
           <g class="prism-shape">
-            <path d="M380 92 450 228 310 228Z" />
-            <path d="M380 92v91l70 45M380 183l-70 45" />
+            <path class="face" d="M380 92 450 228 310 228Z" />
+            <path class="edge" d="M380 92v91l70 45M380 183l-70 45" />
+            <path class="beam inner" d="M341 167 L422 174" />
           </g>
         </svg>
 
         <div class="title" data-tauri-drag-region>
           <h1>Prism</h1>
           <p class="version" id="version"></p>
-          <p class="tagline" data-text="tagline"></p>
         </div>
 
         <div class="window-buttons">
@@ -85,7 +94,14 @@
           </div>
         </div>
         <button type="submit" class="primary" id="install"></button>
-        <p class="hint foot-left" id="folder-hint" aria-live="polite"></p>
+        <p class="hint below-cta" id="folder-hint" aria-live="polite"></p>
+        <!-- Agreement, like a launcher: a round checkbox and a link that opens the terms. -->
+        <div class="agree foot-left">
+          <label class="check"
+            ><input type="checkbox" id="agree" /><span data-text="agreeLabel"></span
+          ></label>
+          <button type="button" class="terms-link" id="open-terms" data-text="termsLink"></button>
+        </div>
         <div class="foot-right">
           <button
             type="button"
@@ -168,8 +184,25 @@
           ><input type="checkbox" id="launch" checked /><span data-text="launch"></span
         ></label>
       </form>
+      <!-- Terms of use. Opened from the agreement link; "Agree" ticks the checkbox for you. -->
+      <section
+        class="terms"
+        id="terms"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="terms-title"
+        hidden
+      >
+        <h2 id="terms-title"></h2>
+        <div class="terms-body" id="terms-body" tabindex="0"></div>
+        <div class="terms-actions">
+          <button type="button" class="link" id="terms-close" data-text="close"></button>
+          <button type="button" class="solid" id="terms-agree" data-text="agree"></button>
+        </div>
+      </section>
     </main>
     <script src="messages.js"></script>
+    <script src="terms.js"></script>
     <script src="setup.js"></script>
   </body>
 </html>

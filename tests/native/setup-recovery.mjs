@@ -92,6 +92,9 @@ try {
   });
   assert.equal(await page.title(), 'Prism Setup');
   await page.locator('.setup[data-screen="options"]').waitFor();
+  // Installing requires accepting the terms of use first (round checkbox, bottom-left).
+  assert.equal(await page.locator('#install').isEnabled(), false, 'install waits for agreement');
+  await page.locator('#agree').check();
   await until(
     () => page.locator('#install').isEnabled(),
     'damaged record still allows checked recovery',

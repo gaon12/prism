@@ -133,6 +133,41 @@
     $('track').setAttribute('aria-valuenow', String(Math.round(done * 100)));
   }
 
+  // ---------- Terms of use ----------
+  /** The install button works only with a usable folder and an accepted agreement. */
+  function updateInstallButton() {
+    $('install').disabled = !folderOk || !$('agree').checked;
+  }
+
+  /** Fills the terms card once, in the setup language (English when there is no translation). */
+  function renderTerms() {
+    const terms = window.SETUP_TERMS[language] || window.SETUP_TERMS.en;
+    $('terms-title').textContent = terms.title;
+    const body = $('terms-body');
+    body.replaceChildren();
+    for (const [heading, paragraph] of terms.sections) {
+      const h = document.createElement('h3');
+      h.textContent = heading;
+      const p = document.createElement('p');
+      p.textContent = paragraph;
+      body.append(h, p);
+    }
+  }
+
+  function openTerms() {
+    setCustomizing(false);
+    $('terms').hidden = false;
+    root.classList.add('reading');
+    $('terms-body').scrollTop = 0;
+    $('terms-body').focus();
+  }
+
+  function closeTerms() {
+    $('terms').hidden = true;
+    root.classList.remove('reading');
+    $('open-terms').focus();
+  }
+
   /** Opens or folds the "Custom settings" card (install folder and shortcuts). */
   function setCustomizing(open) {
     root.classList.toggle('customizing', open);
@@ -148,7 +183,8 @@
     const busy = screen === 'progress';
     $('close').disabled = busy;
     const focusTarget = {
-      options: 'install',
+      // Until the terms are accepted the install button is disabled, so start on the checkbox.
+      options: $('agree').checked ? 'install' : 'agree',
       uninstall: 'remove-data',
       restore: 'restore-ack',
       done: 'finish',
@@ -243,7 +279,7 @@
     hint.classList.toggle('error', !folderOk);
     // A folder problem can only be fixed in the custom-settings card, so open it.
     if (check.error && root.dataset.screen === 'options') setCustomizing(true);
-    $('install').disabled = !folderOk;
+    updateInstallButton();
   }
 
   async function runInstall() {
@@ -320,6 +356,7 @@
   };
 
   async function start() {
+    renderTerms();
     info = await backend.info();
     await backend.onProgress(({ stage, fraction }) => {
       $('stage').textContent = t(stageText[stage] || 'preparing');
@@ -361,9 +398,11 @@
     $('start-menu').checked = info.startMenuShortcut;
     $('install').textContent = t(info.mode === 'update' ? 'update' : 'install');
     if (info.ui === 'passive') {
+      // Started by Prism's updater: the user already agreed when installing.
       runInstall();
       return;
     }
+    updateInstallButton();
     show('options');
     checkFolder();
   }
@@ -386,7 +425,15 @@
   });
   $('options-form').addEventListener('submit', (event) => {
     event.preventDefault();
-    if (folderOk) runInstall();
+    if (folderOk && $('agree').checked) runInstall();
+  });
+  $('agree').addEventListener('change', updateInstallButton);
+  $('open-terms').addEventListener('click', openTerms);
+  $('terms-close').addEventListener('click', closeTerms);
+  $('terms-agree').addEventListener('click', () => {
+    $('agree').checked = true;
+    updateInstallButton();
+    closeTerms();
   });
   $('uninstall-form').addEventListener('submit', (event) => {
     event.preventDefault();
@@ -420,7 +467,9 @@
   // installing).
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
-    if (root.classList.contains('customizing')) {
+    if (!$('terms').hidden) {
+      closeTerms();
+    } else if (root.classList.contains('customizing')) {
       setCustomizing(false);
       $('customize').focus();
     } else if (root.dataset.screen !== 'progress') {

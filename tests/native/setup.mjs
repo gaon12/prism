@@ -202,7 +202,8 @@ try {
   assert.equal(results[2].status, 'rejected', 'finish cannot race active writes');
   assert.equal(await digest(join(installed, 'prism.exe')), expectedHash);
   console.log('[setup] native IPC concurrency and file verification passed');
-  // Exercise the visible flow as well as raw IPC rejection.
+  // Exercise the visible flow as well as raw IPC rejection. The terms must be accepted first.
+  await page.locator('#agree').check();
   await page.locator('#install').click();
   await page.locator('.setup[data-screen="done"]').waitFor();
   assert.equal(

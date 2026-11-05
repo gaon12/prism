@@ -17,6 +17,8 @@ use std::{
 };
 use unicode_normalization::UnicodeNormalization;
 use walkdir::WalkDir;
+#[path = "filename_service.rs"]
+mod service;
 
 fn normalized(value: &str) -> String {
     value
@@ -526,9 +528,20 @@ impl FileIndex {
         // catalog insertion. Disjoint directory jobs overlap reads while each
         // worker keeps only a small publication batch. Nested input roots have
         // already been coalesced, so no two jobs enumerate the same directory.
+        // Only complete drive-root reconciliations use the NTFS service.
+        // Watch-event subtrees retain the bounded ordinary-user walker.
+        let walk_paths: Vec<_> = paths
+            .iter()
+            .filter(|path| !reconcile || !self.try_service_scan(generation, path, sweep))
+            .cloned()
+            .collect();
         let jobs = Mutex::new(WalkJobs {
-            paths: paths.iter().cloned().map(|path| (path, true)).collect(),
-            outstanding: paths.len(),
+            paths: walk_paths
+                .iter()
+                .cloned()
+                .map(|path| (path, true))
+                .collect(),
+            outstanding: walk_paths.len(),
         });
         let wake = Condvar::new();
         let threads = std::thread::available_parallelism()

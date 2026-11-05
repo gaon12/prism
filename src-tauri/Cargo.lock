@@ -6289,6 +6289,8 @@ dependencies = [
  "notify",
  "pdf-extract",
  "png",
+ "prism-ntfs-protocol",
+ "prism-ntfs-windows",
  "quick-xml 0.38.4",
  "reqwest 0.12.28",
  "rusqlite",
@@ -6317,6 +6319,26 @@ dependencies = [
  "zbus-secret-service-keyring-store",
  "zeroize",
  "zip",
+]
+
+[[package]]
+name = "prism-ntfs-core"
+version = "0.1.0"
+dependencies = [
+ "prism-ntfs-protocol",
+]
+
+[[package]]
+name = "prism-ntfs-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "prism-ntfs-windows"
+version = "0.1.0"
+dependencies = [
+ "prism-ntfs-core",
+ "prism-ntfs-protocol",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -1,8 +1,9 @@
 # Optional Windows NTFS index service
 
-This is the start of the NTFS backend approved for Prism. **The service is not
-installed, registered, or connected to the app yet.** The app currently uses
-the parallel folder walker. A 5–7 second C-drive index is still unverified.
+This is the optional NTFS backend approved for Prism. **The service is not
+installed or registered yet.** The app now prefers an already running service
+for complete drive-root reconciliations and otherwise uses the parallel folder
+walker. A 5–7 second C-drive index is still unverified.
 
 Implemented:
 
@@ -65,9 +66,10 @@ Remaining integration:
    tests use a private test endpoint; they do not impersonate an installed
    service. Delta requests currently return `JournalGap`, explicitly requiring
    a new snapshot rather than claiming an unchanged catalog.
-3. Connect the ordinary-privilege app, active-scope filtering, status/progress,
-   incremental updates and immediate scope revocation. Keep the parallel walker
-   for unavailable services, non-NTFS disks, network folders and other OSes.
+3. Finish service progress details and USN-based incremental updates. The app
+   already validates the complete snapshot before publication, cancels idle
+   requests on scope revocation, filters to the active root, and retains the
+   parallel walker for unavailable services, subfolders and other OSes.
 4. Add an optional, one-time UAC service installation into an administrator-owned
    location, uninstall/update handling and installer/portable UI. Installation
    must be explicit; ordinary app startup must never silently elevate itself.

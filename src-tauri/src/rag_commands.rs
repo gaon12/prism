@@ -1,5 +1,5 @@
 use crate::{rag_service::*, secret_store::SecretValue, AppState};
-use tauri::State;
+use tauri::{State, WebviewWindow};
 
 fn service(state: &AppState) -> RagResult<RagService> {
     state.rag.clone()
@@ -18,6 +18,61 @@ pub async fn rag_create(
 ) -> RagResult<ConversationSummary> {
     let service = service(&state)?;
     blocking(move || service.create_conversation(title.as_deref())).await
+}
+#[tauri::command]
+pub async fn rag_create_filename_search(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    search: crate::index::FilenameSearch,
+    request_id: String,
+) -> RagResult<ConversationSummary> {
+    let service = service(&state)?;
+    let index = state.index.clone();
+    let keyboard = {
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|_| RagError::new(RagErrorCode::Worker))?;
+        if settings.revision != search.settings_revision {
+            return Err(RagError::new(RagErrorCode::PolicyChanged));
+        }
+        settings.keyboard_correction
+    };
+    let content = state
+        .content
+        .clone()
+        .map_err(|_| RagError::new(RagErrorCode::Worker))?;
+    let label = window.label().to_owned();
+    let cancel = content
+        .begin_search(&label, &request_id)
+        .map_err(|_| RagError::new(RagErrorCode::Input))?;
+    blocking(move || {
+        let result = service.create_filename_search(&index, &search, keyboard, &cancel);
+        content.cancel_search(&label, &request_id);
+        result
+    })
+    .await
+}
+#[tauri::command]
+pub async fn rag_file_set_page(
+    state: State<'_, AppState>,
+    id: String,
+    offset: u64,
+) -> RagResult<Option<crate::selection_set::SelectionPage>> {
+    let service = service(&state)?;
+    blocking(move || service.file_set_page(&id, offset)).await
+}
+#[tauri::command]
+pub async fn rag_edit_file_set(
+    state: State<'_, AppState>,
+    id: String,
+    revision: u64,
+    changes: Vec<(u64, bool)>,
+    all: Option<bool>,
+    clear: bool,
+) -> RagResult<()> {
+    let service = service(&state)?;
+    blocking(move || service.edit_file_set(&id, revision, &changes, all, clear)).await
 }
 #[tauri::command]
 pub async fn rag_create_from_search(

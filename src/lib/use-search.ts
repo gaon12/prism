@@ -11,6 +11,7 @@ import { pasteClipboard, useClipboard } from './clipboard';
 import { useDictionary } from './dictionary';
 import { useContentSearch } from './content';
 import { automaticBodyEligible } from './automatic-search';
+import { useIndexActivity } from './index-activity';
 
 const emptyStatus: IndexStatus = {
   scanning: false,
@@ -32,7 +33,9 @@ export function useSearch(quick = false) {
     request.dictionaryLanguage,
     settings.language,
   );
-  const [status, setStatus] = useState(emptyStatus);
+  const activity = useIndexActivity();
+  const [localStatus, setStatus] = useState(emptyStatus);
+  const status = activity?.files ?? localStatus;
   const [response, setResponse] = useState<{ key: string; data: SearchResponse } | null>(null);
   const [failure, setFailure] = useState<{ key: string; message: string } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -63,7 +66,7 @@ export function useSearch(quick = false) {
     [],
   );
   useEffect(() => {
-    if (!native) return;
+    if (!native || activity) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
@@ -88,7 +91,7 @@ export function useSearch(quick = false) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [scopesKey]);
+  }, [scopesKey, activity !== null]);
   useEffect(() => {
     if (
       request.kind !== 'files' ||

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { native } from './bridge';
 import { setSession, useClient } from './store';
+import { useIndexActivity } from './index-activity';
 
 export interface SourceFingerprint {
   sha256: string;
@@ -116,8 +117,11 @@ export function useContentSearch(active: boolean) {
     settings.hybridSearch,
     settings.automaticSemantic,
   ]);
-  const [status, setStatus] = useState(emptyStatus);
-  const [statusError, setStatusError] = useState<ContentFailure | null>(null);
+  const activity = useIndexActivity();
+  const [localStatus, setStatus] = useState(emptyStatus);
+  const [localStatusError, setStatusError] = useState<ContentFailure | null>(null);
+  const status = activity?.content ?? localStatus;
+  const statusError = activity ? activity.contentError : localStatusError;
   const [response, setResponse] = useState<{
     key: string;
     contentRevision: number;
@@ -131,7 +135,7 @@ export function useContentSearch(active: boolean) {
   const [pending, setPending] = useState<string | null>(null);
   const [selectedId, selectId] = useState<string | null>(null);
   useEffect(() => {
-    if (!active || !native) return;
+    if (!active || !native || activity) return;
     let disposed = false;
     let stop: (() => void) | undefined;
     let timer: ReturnType<typeof setTimeout>;
@@ -163,7 +167,7 @@ export function useContentSearch(active: boolean) {
       stop?.();
       clearTimeout(timer);
     };
-  }, [active]);
+  }, [active, activity !== null]);
   useEffect(() => {
     if (!active || !native || !session.query.trim() || !scopesKey) return;
     let disposed = false;

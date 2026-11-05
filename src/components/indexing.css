@@ -1,0 +1,62 @@
+.index-progress {
+  height: 3px;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--border);
+  visibility: hidden;
+}
+.index-progress[data-active='true'] {
+  visibility: visible;
+}
+.index-progress progress {
+  display: block;
+  width: 100%;
+  height: 3px;
+  border: 0;
+  accent-color: var(--accent);
+  appearance: none;
+}
+.index-progress progress::-webkit-progress-bar {
+  background: var(--border);
+}
+.index-progress progress:indeterminate {
+  background:
+    linear-gradient(90deg, transparent, var(--accent) 45%, var(--accent) 55%, transparent) 0 0 / 40%
+      100% no-repeat,
+    var(--border);
+  animation: index-sweep 1.6s ease-in-out infinite;
+}
+.index-progress progress:indeterminate::-webkit-progress-bar {
+  background: transparent;
+}
+.index-progress progress::-webkit-progress-value {
+  background: var(--accent);
+}
+.index-progress progress::-moz-progress-bar {
+  background: var(--accent);
+}
+.index-summary:has(> .index-progress) {
+  flex-wrap: wrap;
+  row-gap: 5px;
+}
+.index-summary > .index-progress {
+  flex-basis: 100%;
+}
+.content-index > .index-progress {
+  flex-basis: 100%;
+}
+@keyframes index-sweep {
+  from {
+    background-position: -65% 0;
+  }
+  to {
+    background-position: 165% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .index-progress progress:indeterminate {
+    animation: none;
+    background-position: 50% 0;
+  }
+}

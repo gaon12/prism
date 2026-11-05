@@ -16,6 +16,7 @@ import { native } from '../lib/bridge';
 import { providerNames } from '../lib/utilities';
 import type { SearchController } from '../lib/use-search';
 import { EmptyState } from '../components/EmptyState';
+import { IndexProgress } from '../components/IndexProgress';
 import './results.css';
 
 export function UtilityResult({ search }: { search: SearchController }) {
@@ -131,6 +132,7 @@ export function IndexSummary({ search }: { search: SearchController }) {
           {t('skipped')}: {status.skipped}
         </span>
       ) : null}
+      <IndexProgress active={status.scanning} label={t('indexing')} />
     </div>
   );
 }

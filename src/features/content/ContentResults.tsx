@@ -22,6 +22,7 @@ import { contentText } from './messages';
 import { matchedSegments } from '../../lib/text-match';
 import './content.css';
 import { PdfUnlockDialog } from './PdfUnlockDialog';
+import { IndexProgress } from '../../components/IndexProgress';
 
 type MessageKey = Parameters<typeof contentText>[1];
 
@@ -294,6 +295,7 @@ export function ContentResults({
               {paused ? <Play size={15} /> : <RefreshCw size={15} />}
             </button>
           </div>
+          <IndexProgress active={indexing} label={indexLabel} />
         </div>
         {status.currentPath ? (
           <p className="content-current-path" title={status.currentPath}>

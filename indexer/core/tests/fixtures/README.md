@@ -5,6 +5,11 @@ public `ntfs` 0.4.0 `testdata/testfs1` image, created with `mkntfs` and `ntfs-3g
 It contains 581 records (1,024 bytes each, 512-byte sectors). The compressed
 fixture is 13,804 bytes; no local or user disk was used.
 
+`testfs1-volume.gz` is the complete same 2,097,152-byte public image, compressed
+to 146,079 bytes. The volume fixture verifies bootstrapping the MFT runlist and
+bulk physical reads before decoding the records. The test source cannot fetch
+extension records, so it cannot accidentally stand in for a live Windows driver.
+
 - Source revision: `3110cafc0440a84f2593b5d3691e0b23b68ccb8f`.
 - [Original image](https://github.com/ColinFinck/ntfs/blob/3110cafc0440a84f2593b5d3691e0b23b68ccb8f/testdata/testfs1).
 - [Upstream creation script](https://github.com/ColinFinck/ntfs/blob/3110cafc0440a84f2593b5d3691e0b23b68ccb8f/testdata/create-testfs1.sh).

@@ -52,4 +52,5 @@ while struct.unpack_from("<I", record, offset)[0] != 0xffffffff:
 assert logical and len(logical) % record_size == 0
 destination = pathlib.Path(__file__).with_name("testfs1-mft.gz")
 destination.write_bytes(gzip.compress(logical, mtime=0))
+pathlib.Path(__file__).with_name("testfs1-volume.gz").write_bytes(gzip.compress(image, mtime=0))
 print({"records": len(logical)//record_size, "recordSize": record_size, "sectorSize": sector, "mftBytes": len(logical), "gzipBytes": destination.stat().st_size, "sha256": hashlib.sha256(logical).hexdigest()})

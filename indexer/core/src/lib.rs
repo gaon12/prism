@@ -5,6 +5,7 @@
 
 use prism_ntfs_protocol::{DriveLetter, FileRecord};
 use std::collections::{HashMap, HashSet};
+pub mod layout;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct FileReference(pub u64);
@@ -88,12 +89,42 @@ pub fn parse_record(
     sector_size: usize,
     bytes: &[u8],
 ) -> Result<Option<MetadataRecord>> {
+    if number > 0x0000_ffff_ffff_ffff {
+        return Err(ParseError::Bounds);
+    }
+    let Some(bytes) = decoded_record(bytes, sector_size, false)? else {
+        return Ok(None);
+    };
+    parse_decoded(number, &bytes).map(Some)
+}
+
+/// Kernel IOCTL buffers can already have their sector fixups applied. This
+/// entry point must only receive FSCTL_GET_NTFS_FILE_RECORD output. Raw volume
+/// reads always use `parse_record`, which requires intact on-disk markers.
+pub fn parse_kernel_record(
+    number: u64,
+    sector_size: usize,
+    bytes: &[u8],
+) -> Result<Option<MetadataRecord>> {
+    if number > 0x0000_ffff_ffff_ffff {
+        return Err(ParseError::Bounds);
+    }
+    let Some(bytes) = decoded_record(bytes, sector_size, true)? else {
+        return Ok(None);
+    };
+    parse_decoded(number, &bytes).map(Some)
+}
+
+pub(crate) fn decoded_record(
+    bytes: &[u8],
+    sector_size: usize,
+    kernel: bool,
+) -> Result<Option<Vec<u8>>> {
     if bytes.len() < 48
         || bytes.len() > 65536
         || !sector_size.is_power_of_two()
         || !(512..=4096).contains(&sector_size)
         || !bytes.len().is_multiple_of(sector_size)
-        || number > 0x0000_ffff_ffff_ffff
     {
         return Err(ParseError::Bounds);
     }
@@ -125,14 +156,27 @@ pub fn parse_record(
     }
     let mut fixed = bytes.to_vec();
     let marker = u16_at(bytes, usa)?;
+    let protected =
+        (1..usa_count).all(|sector| u16_at(bytes, sector * sector_size - 2) == Ok(marker));
+    let applied = kernel
+        && (1..usa_count).all(|sector| {
+            u16_at(bytes, sector * sector_size - 2) == u16_at(bytes, usa + sector * 2)
+        });
+    if !protected && !applied {
+        return Err(ParseError::Fixup);
+    }
     for sector in 1..usa_count {
         let end = sector * sector_size - 2;
-        if u16_at(bytes, end)? != marker {
-            return Err(ParseError::Fixup);
+        if protected {
+            fixed[end..end + 2].copy_from_slice(slice(bytes, usa + sector * 2, 2)?);
         }
-        fixed[end..end + 2].copy_from_slice(slice(bytes, usa + sector * 2, 2)?);
     }
-    let bytes = &fixed[..used];
+    fixed.truncate(used);
+    Ok(Some(fixed))
+}
+
+fn parse_decoded(number: u64, bytes: &[u8]) -> Result<MetadataRecord> {
+    let first = u16_at(bytes, 20)? as usize;
     let base = FileReference(u64_at(bytes, 32)?);
     let mut record = MetadataRecord {
         reference: FileReference(number | (u64::from(u16_at(bytes, 16)?) << 48)),
@@ -229,7 +273,7 @@ pub fn parse_record(
     if record.is_dir {
         record.size = Some(0);
     }
-    Ok(Some(record))
+    Ok(record)
 }
 
 /// Builds path metadata from the complete MFT, not a recursive directory walk.
@@ -620,5 +664,29 @@ mod tests {
             assert!(parse_record(32, 512, &bytes[..length]).is_err());
         }
         assert!(parse_record(32, 512, &vec![0; 65537]).is_err());
+    }
+    #[test]
+    fn already_applied_fixups_are_accepted_only_for_kernel_record_buffers() {
+        let original = encoded(vec![resident(0x80, b"12345")]);
+        let mut applied = original.clone();
+        for (sector, end) in [(1, 510), (2, 1022)] {
+            applied[end..end + 2].copy_from_slice(&original[48 + sector * 2..50 + sector * 2]);
+        }
+        assert_eq!(
+            parse_record(18, 512, &applied).unwrap_err(),
+            ParseError::Fixup
+        );
+        assert_eq!(
+            parse_kernel_record(18, 512, &applied)
+                .unwrap()
+                .unwrap()
+                .size,
+            Some(5)
+        );
+        applied[1022..1024].copy_from_slice(&original[1022..1024]);
+        assert_eq!(
+            parse_kernel_record(18, 512, &applied).unwrap_err(),
+            ParseError::Fixup
+        );
     }
 }

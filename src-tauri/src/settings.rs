@@ -95,6 +95,20 @@ impl Default for ClientSettings {
 }
 
 impl ClientSettings {
+    /// Persist a stable long spelling on explicit save. A folder selected via an
+    /// 8.3 alias can then go offline without losing its cached root identity.
+    /// Linked or unavailable inputs remain unchanged and are not made readable.
+    pub(crate) fn normalize_scope_paths(&mut self) {
+        for scope in &mut self.scopes {
+            if let Ok(path) = crate::path_identity::canonical(Path::new(&scope.path)) {
+                if path.is_dir() {
+                    if let Some(path) = crate::path_identity::normal(&path).to_str() {
+                        scope.path = path.to_owned();
+                    }
+                }
+            }
+        }
+    }
     pub fn validate(&self) -> Result<(), String> {
         self.clipboard.validate()?;
         self.generation.validate().map_err(|error| error.message)?;
@@ -206,6 +220,47 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn saved_scopes_keep_long_identity_and_permissions_after_an_alias_goes_offline() {
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path().join("Long configured folder name");
+        fs::create_dir(&folder).unwrap();
+        let Some(short) = crate::path_identity::short_alias(&folder).unwrap() else {
+            eprintln!("No short aliases on fixture volume; actual alias case not exercised");
+            return;
+        };
+        let canonical = crate::path_identity::normal(&fs::canonicalize(&folder).unwrap())
+            .to_string_lossy()
+            .into_owned();
+        let mut settings = ClientSettings::default();
+        settings.scopes.push(SearchScope {
+            id: "stable".into(),
+            name: "문서".into(),
+            path: short.to_string_lossy().into_owned(),
+            filename_enabled: false,
+            content_enabled: true,
+            external_allowed: false,
+        });
+        settings.normalize_scope_paths();
+        settings.validate().unwrap();
+        assert_eq!(settings.scopes[0].path, canonical);
+        assert_eq!(settings.scopes[0].id, "stable");
+        assert!(!settings.scopes[0].filename_enabled);
+        assert!(settings.scopes[0].content_enabled);
+        assert!(!settings.scopes[0].external_allowed);
+        let file = directory.path().join("settings.json");
+        write_json(&file, &settings).unwrap();
+        fs::rename(&folder, directory.path().join("offline")).unwrap();
+        assert_eq!(read_settings(&file).unwrap().scopes[0].path, canonical);
+        fs::rename(directory.path().join("offline"), &folder).unwrap();
+        let mut alias = settings.scopes[0].clone();
+        alias.id = "duplicate".into();
+        alias.path = short.to_string_lossy().into_owned();
+        settings.scopes.push(alias);
+        settings.normalize_scope_paths();
+        assert!(settings.validate().is_err());
+    }
     #[test]
     fn new_sessions_use_auto_but_legacy_and_explicit_modes_survive() {
         assert_eq!(

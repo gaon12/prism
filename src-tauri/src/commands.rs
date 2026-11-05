@@ -105,6 +105,8 @@ pub fn save_settings(
         return Err(error);
     }
     settings.validate()?;
+    settings.normalize_scope_paths();
+    settings.validate()?;
     if state.location.kind == crate::app_paths::InstallKind::Portable && settings.start_on_login {
         return Err("Login startup is unavailable in portable mode.".into());
     }

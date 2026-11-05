@@ -14,6 +14,12 @@ use std::{
 /// Registry key under HKCU. Same name the NSIS installer used, so we take over its entry.
 pub const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Prism";
 
+/// Where Windows keeps per-user "run at sign-in" commands. Prism's own autostart writes here.
+pub const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+/// Task Manager's enabled/disabled switch for each entry in [`RUN_KEY`].
+pub const STARTUP_APPROVED_KEY: &str =
+    r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+
 pub struct WindowsSystem;
 
 /// Environment variable that switches the setup into a test sandbox (see [`SandboxSystem`]).
@@ -56,6 +62,11 @@ impl SandboxSystem {
     fn entry_file(&self) -> io::Result<PathBuf> {
         let root = self.checked_root()?;
         crate::safe_path::file(&root, "uninstall-entry.json")
+    }
+    /// Stands in for Prism's HKCU Run value: a text file holding the sign-in command.
+    fn login_file(&self) -> io::Result<PathBuf> {
+        let root = self.checked_root()?;
+        crate::safe_path::file(&root, "login-startup.txt")
     }
 }
 
@@ -163,6 +174,21 @@ impl System for SandboxSystem {
         }
     }
 
+    fn login_startup(&self) -> io::Result<Option<String>> {
+        match std::fs::read_to_string(self.login_file()?) {
+            Ok(command) => Ok(Some(command)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn remove_login_startup(&self) -> io::Result<()> {
+        match std::fs::remove_file(self.login_file()?) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        }
+    }
+
     fn existing_install(&self) -> Option<(PathBuf, Option<String>)> {
         let bytes = std::fs::read(self.entry_file().ok()?).ok()?;
         let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
@@ -175,7 +201,7 @@ impl System for SandboxSystem {
 #[cfg(windows)]
 mod imp {
     use super::*;
-    use crate::install::{APP_EXE, UNINSTALLER_EXE};
+    use crate::install::{APP_EXE, LOGIN_STARTUP_NAME, UNINSTALLER_EXE};
     use windows::{
         core::{Interface, GUID, HSTRING, PWSTR},
         Win32::{
@@ -383,6 +409,39 @@ mod imp {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
                 _ => Ok(()),
             }
+        }
+
+        fn login_startup(&self) -> io::Result<Option<String>> {
+            let key = match RegKey::predef(HKEY_CURRENT_USER).open_subkey(RUN_KEY) {
+                Ok(key) => key,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            match key.get_value::<String, _>(LOGIN_STARTUP_NAME) {
+                Ok(command) => Ok(Some(command)),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error),
+            }
+        }
+
+        fn remove_login_startup(&self) -> io::Result<()> {
+            use winreg::enums::KEY_SET_VALUE;
+            // The Run value starts Prism; the StartupApproved value is Task Manager's on/off
+            // switch for it. Remove only Prism's own value from each, never the keys.
+            for path in [RUN_KEY, STARTUP_APPROVED_KEY] {
+                let key = match RegKey::predef(HKEY_CURRENT_USER)
+                    .open_subkey_with_flags(path, KEY_SET_VALUE)
+                {
+                    Ok(key) => key,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
+                };
+                match key.delete_value(LOGIN_STARTUP_NAME) {
+                    Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                    _ => {}
+                }
+            }
+            Ok(())
         }
 
         fn existing_install(&self) -> Option<(PathBuf, Option<String>)> {

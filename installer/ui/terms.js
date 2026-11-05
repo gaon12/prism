@@ -28,7 +28,7 @@ window.SETUP_TERMS = {
       ],
       [
         '5. 제거',
-        '제거할 때 "설정, 클립보드 기록, 색인도 삭제"를 선택하면 Prism이 만든 데이터를 함께 지웁니다. 선택하지 않으면 데이터는 이 PC에 남습니다. 검색 대상으로 등록한 원래 파일은 어떤 경우에도 지우지 않습니다.',
+        '제거할 때 "설정, 클립보드 기록, 색인도 삭제"를 선택하면 Prism이 만든 데이터를 함께 지웁니다. 선택하지 않으면 데이터는 이 PC에 남습니다. 로그인 시 실행 등록은 함께 해제됩니다. 검색 대상으로 등록한 원래 파일은 어떤 경우에도 지우지 않습니다.',
       ],
     ],
   },
@@ -53,7 +53,7 @@ window.SETUP_TERMS = {
       ],
       [
         '5. Uninstalling',
-        'If you choose "Also delete settings, clipboard history and indexes" when uninstalling, the data Prism created is removed; otherwise it stays on this PC. Your original files in searched folders are never deleted.',
+        'If you choose "Also delete settings, clipboard history and indexes" when uninstalling, the data Prism created is removed; otherwise it stays on this PC. Start-on-login is turned off either way. Your original files in searched folders are never deleted.',
       ],
     ],
   },

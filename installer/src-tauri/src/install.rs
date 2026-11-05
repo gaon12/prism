@@ -64,6 +64,44 @@ pub trait System {
     fn remove_uninstall_entry(&self) -> io::Result<()>;
     /// Install folder and version of an existing installation, if any.
     fn existing_install(&self) -> Option<(PathBuf, Option<String>)>;
+    /// The command Windows runs for Prism at sign-in ("Start on login" in Prism's settings),
+    /// if one is registered. The app writes it itself; see [`LOGIN_STARTUP_NAME`].
+    /// Defaults to "none" so test systems that do not care need no code.
+    fn login_startup(&self) -> io::Result<Option<String>> {
+        Ok(None)
+    }
+    /// Removes Prism's sign-in entry. Called only after [`startup_targets`] confirmed that the
+    /// entry belongs to the installation being removed.
+    fn remove_login_startup(&self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Name of Prism's value under `HKCU\...\CurrentVersion\Run` (and `StartupApproved\Run`).
+/// The app's autostart plugin uses the product name, "Prism" in src-tauri/tauri.conf.json.
+pub const LOGIN_STARTUP_NAME: &str = "Prism";
+
+/// True when a sign-in command starts `app` (this installation's prism.exe).
+///
+/// The autostart plugin writes `<path to prism.exe> --background` without quotes, so a path
+/// with spaces is not split reliably by whitespace. Instead, check that the command begins with
+/// the full exe path (ignoring case, optional quotes and the `\\?\` prefix) and that the path
+/// ends right there. A command for another copy of Prism (a portable copy, another folder)
+/// therefore never matches and is left alone.
+pub fn startup_targets(command: &str, app: &Path) -> bool {
+    fn plain(text: &str) -> String {
+        text.trim()
+            .trim_start_matches('"')
+            .trim_start_matches(r"\\?\")
+            .replace('/', r"\")
+            .to_lowercase()
+    }
+    let command = plain(command);
+    let app = plain(&app.to_string_lossy());
+    match command.strip_prefix(&app) {
+        Some(rest) => rest.is_empty() || rest.starts_with([' ', '"']),
+        None => false,
+    }
 }
 
 /// Choices from the setup window (or defaults in silent mode).
@@ -652,6 +690,14 @@ pub fn uninstall(
         let _ = fs::remove_file(link);
     }
     let _ = fs::remove_file(dir.join(RECORD_FILE));
+    // "Start on login" would otherwise keep pointing at the prism.exe deleted above. Remove
+    // the sign-in entry only when it starts this installation; it is best-effort because the
+    // app files are already gone and a leftover entry is harmless (Windows skips it).
+    if let Ok(Some(command)) = system.login_startup() {
+        if startup_targets(&command, &dir.join(APP_EXE)) {
+            let _ = system.remove_login_startup();
+        }
+    }
     crate::previous::prune(dir, None);
     // Deletes the folder only if nothing of the user's is left in it.
     let _ = fs::remove_dir(dir);
@@ -693,12 +739,15 @@ pub mod tests {
     pub struct FakeSystem {
         pub root: PathBuf,
         pub entry: RefCell<Option<UninstallEntry>>,
+        /// The "Run at sign-in" command, standing in for the HKCU Run value.
+        pub login: RefCell<Option<String>>,
     }
     impl FakeSystem {
         pub fn new(root: &Path) -> Self {
             Self {
                 root: root.to_path_buf(),
                 entry: RefCell::new(None),
+                login: RefCell::new(None),
             }
         }
     }
@@ -743,6 +792,74 @@ pub mod tests {
                 .as_ref()
                 .map(|entry| (entry.install_dir.clone(), Some(entry.version.clone())))
         }
+        fn login_startup(&self) -> io::Result<Option<String>> {
+            Ok(self.login.borrow().clone())
+        }
+        fn remove_login_startup(&self) -> io::Result<()> {
+            *self.login.borrow_mut() = None;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn startup_command_matches_only_this_installations_exe() {
+        let app = Path::new(r"C:\Users\Kim Ji\AppData\Local\Programs\Prism\prism.exe");
+        // What the autostart plugin writes: an unquoted path (spaces included) and its flag.
+        assert!(startup_targets(
+            r"C:\Users\Kim Ji\AppData\Local\Programs\Prism\prism.exe --background",
+            app
+        ));
+        assert!(startup_targets(
+            r#""c:\users\kim ji\appdata\local\programs\prism\PRISM.EXE" --background"#,
+            app
+        ));
+        assert!(startup_targets(
+            r"C:\Users\Kim Ji\AppData\Local\Programs\Prism\prism.exe",
+            Path::new(r"\\?\C:\Users\Kim Ji\AppData\Local\Programs\Prism\prism.exe")
+        ));
+        // Another copy, a longer file name or a different folder must not match.
+        for other in [
+            r"D:\Portable\Prism\prism.exe --background",
+            r"C:\Users\Kim Ji\AppData\Local\Programs\Prism\prism.exe.old --background",
+            r"C:\Users\Kim Ji\AppData\Local\Programs\Prism2\prism.exe",
+            "",
+        ] {
+            assert!(!startup_targets(other, app), "{other}");
+        }
+    }
+
+    #[test]
+    fn uninstall_removes_the_sign_in_entry_only_for_this_installation() {
+        let root = tempfile::tempdir().unwrap();
+        let (system, setup_exe, dir) = setup(root.path());
+        let payload = payload::pack(&[("prism.exe", b"v1")]).unwrap();
+        let reinstall = || {
+            install(
+                &system,
+                &payload,
+                "0.1.0",
+                &options(&dir, false),
+                &setup_exe,
+                |_, _| {},
+            )
+            .unwrap()
+        };
+        reinstall();
+        // The app registers itself with the path it runs from.
+        let ours = format!("{} --background", dir.join(APP_EXE).display());
+        *system.login.borrow_mut() = Some(ours);
+        uninstall(&system, &dir, false, |_, _| {}).unwrap();
+        assert!(
+            system.login.borrow().is_none(),
+            "this installation's entry removed"
+        );
+
+        // A sign-in entry for another copy of Prism survives the uninstall.
+        reinstall();
+        let elsewhere = r"D:\Portable\Prism\prism.exe --background".to_string();
+        *system.login.borrow_mut() = Some(elsewhere.clone());
+        uninstall(&system, &dir, false, |_, _| {}).unwrap();
+        assert_eq!(system.login.borrow().as_deref(), Some(elsewhere.as_str()));
     }
 
     fn setup(root: &Path) -> (FakeSystem, PathBuf, PathBuf) {

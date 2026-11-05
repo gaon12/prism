@@ -286,6 +286,9 @@ try {
   assert.equal(copies.length, 1);
   const copyDirectory = join(tmpdir(), copies[0]);
   await page.screenshot({ path: join(evidence, 'setup-uninstall-native.png') });
+  // "Start on login" as Prism registers it (sandbox file instead of the HKCU Run value).
+  const loginStartup = join(directory, 'login-startup.txt');
+  await writeFile(loginStartup, `${join(installed, 'prism.exe')} --background`);
   await page.locator('#uninstall-form button[type="submit"]').click();
   await page.locator('.setup[data-screen="done"]').waitFor();
   assert.equal(
@@ -299,6 +302,7 @@ try {
     'preserved settings fixture',
   );
   assert.equal(await exists(join(directory, 'uninstall-entry.json')), false);
+  assert.equal(await exists(loginStartup), false, 'sign-in entry for this installation removed');
   await page.locator('#finish').click();
   await current.browser.close();
   current = null;
@@ -312,6 +316,9 @@ try {
   child = start(executable, ['/S', `/D=${secondInstall}`], baseEnvironment);
   await exited(child);
   assert.equal(await digest(join(secondInstall, 'prism.exe')), expectedHash);
+  // A sign-in entry that starts a different copy of Prism must survive this uninstall.
+  const otherCopy = `${join(installed, 'prism.exe')} --background`;
+  await writeFile(loginStartup, otherCopy);
   const beforeSilentCopies = await temporaryCopies();
   const silentUninstall = start(join(secondInstall, 'uninstall.exe'), ['/S'], baseEnvironment);
   const silentPid = silentUninstall.pid;
@@ -333,6 +340,7 @@ try {
     await readFile(join(roaming, 'settings.json'), 'utf8'),
     'preserved settings fixture',
   );
+  assert.equal(await readFile(loginStartup, 'utf8'), otherCopy, 'other copy keeps its entry');
   assert.equal(registration(), realRegistration, 'real HKCU registration must remain identical');
   assert.deepEqual(errors, []);
   console.log(

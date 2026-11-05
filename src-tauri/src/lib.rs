@@ -3,6 +3,11 @@ mod automatic_search;
 mod chat_selection;
 mod clipboard_commands;
 mod clipboard_history;
+mod collection_commands;
+mod collection_import;
+mod collection_render;
+mod collection_service;
+mod collection_store;
 mod commands;
 mod content_commands;
 mod content_service;
@@ -96,6 +101,7 @@ pub struct AppState {
     content: Result<content_service::ContentService, content_service::ContentError>,
     rag: Result<rag_service::RagService, rag_service::RagError>,
     documents: Result<document_service::DocumentService, document_service::DocumentError>,
+    collections: collection_store::Result<collection_service::CollectionService>,
     updates: Result<update_runtime::UpdateRuntime, String>,
 }
 
@@ -294,6 +300,7 @@ pub fn run() {
                     asset_dir.join("rag"),
                     asset_dir.join("generation-secrets"),
                     asset_dir.join("documents"),
+                    asset_dir.join("collections"),
                     asset_dir.join("updates"),
                     asset_dir.join("EBWebView"),
                     asset_dir.join("WebView2"),
@@ -364,6 +371,9 @@ pub fn run() {
                 .and_then(|rag| document_service::DocumentService::open(&asset_dir, rag.clone()));
             let updates=update_runtime::UpdateRuntime::new(app.handle().clone(),&asset_dir,&location,
                 settings.updates.auto_check && config_error.is_none(),isolated_test || test_mode);
+            let collections=collection_service::CollectionService::open(&asset_dir,{
+                let app=app.handle().clone();move |progress| {let _=app.emit("prism:collections",progress);}
+            });
             #[cfg(debug_assertions)]
             let input_fixture = (isolated_test || test_mode)
                 .then(|| std::sync::Arc::new(paste_fixture::MemoryInput::default()));
@@ -400,6 +410,7 @@ pub fn run() {
                 content,
                 rag,
                 documents,
+                collections,
                 updates,
             });
             if !isolated_test && !test_mode {
@@ -479,6 +490,35 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            collection_commands::collection_list,
+            collection_commands::collection_get,
+            collection_commands::collection_work_get,
+            collection_commands::collection_unit_get,
+            collection_commands::collection_create,
+            collection_commands::collection_update,
+            collection_commands::collection_works,
+            collection_commands::collection_work_create,
+            collection_commands::collection_work_update,
+            collection_commands::collection_units,
+            collection_commands::collection_unit_create,
+            collection_commands::collection_unit_update,
+            collection_commands::collection_sources,
+            collection_commands::collection_import,
+            collection_commands::collection_cancel,
+            collection_commands::collection_jobs,
+            collection_commands::collection_pages,
+            collection_commands::collection_page_address,
+            collection_commands::collection_media,
+            collection_commands::collection_cover,
+            collection_commands::collection_reading,
+            collection_commands::collection_save_reading,
+            collection_commands::collection_remove,
+            collection_commands::collection_move_work,
+            collection_commands::collection_move_unit,
+            collection_commands::collection_move_page,
+            collection_commands::collection_relink,
+            collection_commands::collection_remove_source,
+            collection_commands::collection_open_source,
             commands::get_settings,
             commands::save_settings,
             commands::get_search_session,
@@ -595,6 +635,7 @@ pub fn run() {
                 foreground_tracker::stop();
                 if let Some(state) = app.try_state::<AppState>() {
                     if let Ok(updates)=&state.updates {updates.shutdown();}
+                    if let Ok(collections)=&state.collections {collections.cancel_all();}
                     if let Ok(documents) = &state.documents {
                         documents.cancel_all();
                     }

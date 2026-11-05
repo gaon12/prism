@@ -81,6 +81,58 @@ fn existing_or_new(path: &Path) -> io::Result<File> {
         Err(error) => Err(error),
     }
 }
+fn set_delete(file: &File, delete: bool) -> io::Result<()> {
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: delete };
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfo,
+            (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+            size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+fn write_new_marker(mut file: File) -> io::Result<()> {
+    // The caller uses CREATE_NEW + FILE_FLAG_DELETE_ON_CLOSE, so even exit
+    // immediately after creation removes our unfinished marker. Commit only
+    // after the complete contents are durable. The extended ON_CLOSE operation
+    // clears that flag; legacy FileDispositionInfo cannot cancel it. If the
+    // filesystem does not support this operation, fail closed and let the
+    // handle delete the new file rather than leave an unusable partial marker.
+    file.write_all(MARKER)?;
+    file.sync_all()?;
+    let disposition = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_ON_CLOSE | FILE_DISPOSITION_FLAG_DO_NOT_DELETE,
+    };
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfoEx,
+            (&disposition as *const FILE_DISPOSITION_INFO_EX).cast(),
+            size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+fn read_marker(file: &mut File) -> io::Result<bool> {
+    let length = file.metadata()?.len();
+    if length != MARKER.len() as u64 && length != LEGACY_MARKER.len() as u64 {
+        return Err(denied());
+    }
+    let mut bytes = vec![0; length as usize];
+    file.read_exact(&mut bytes)?;
+    if bytes != MARKER && bytes != LEGACY_MARKER {
+        return Err(denied());
+    }
+    Ok(bytes == LEGACY_MARKER)
+}
 fn transaction(path: &Path) -> io::Result<File> {
     match private_file(path, true, CREATE_NEW, true) {
         Ok(file) => Ok(file),
@@ -91,18 +143,7 @@ fn transaction(path: &Path) -> io::Result<File> {
             if file.metadata()?.len() != 0 {
                 return Err(denied());
             }
-            let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
-            if unsafe {
-                SetFileInformationByHandle(
-                    file.as_raw_handle(),
-                    FileDispositionInfo,
-                    (&disposition as *const FILE_DISPOSITION_INFO).cast(),
-                    size_of::<FILE_DISPOSITION_INFO>() as u32,
-                )
-            } == 0
-            {
-                return Err(io::Error::last_os_error());
-            }
+            set_delete(&file, true)?;
             Ok(file)
         }
         Err(error) => Err(error),
@@ -129,27 +170,14 @@ impl Store {
         protected_handle(&guard, &descriptor)?;
         let marker = directory.join("format");
         let legacy = match private_file(&marker, false, OPEN_EXISTING, false) {
-            Ok(mut file) => {
-                let length = file.metadata()?.len() as usize;
-                if length != MARKER.len() && length != LEGACY_MARKER.len() {
-                    return Err(denied());
-                }
-                let mut bytes = vec![0; length];
-                file.read_exact(&mut bytes)?;
-                if bytes != MARKER && bytes != LEGACY_MARKER {
-                    return Err(denied());
-                }
-                bytes == LEGACY_MARKER
-            }
+            Ok(mut file) => read_marker(&mut file)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 // Recover only an empty, already protected directory. Never
                 // claim a nonempty unmarked directory or its existing files.
                 if fs::read_dir(&directory)?.next().is_some() {
                     return Err(denied());
                 }
-                let mut file = private_file(&marker, true, CREATE_NEW, false)?;
-                file.write_all(MARKER)?;
-                file.sync_all()?;
+                write_new_marker(private_file(&marker, true, CREATE_NEW, true)?)?;
                 false
             }
             Err(error) => return Err(error),
@@ -286,18 +314,7 @@ impl Store {
                 break;
             }
             check().map_err(io::Error::other)?;
-            let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
-            if unsafe {
-                SetFileInformationByHandle(
-                    file.as_raw_handle(),
-                    FileDispositionInfo,
-                    (&disposition as *const FILE_DISPOSITION_INFO).cast(),
-                    size_of::<FILE_DISPOSITION_INFO>() as u32,
-                )
-            } == 0
-            {
-                return Err(io::Error::last_os_error());
-            }
+            set_delete(&file, true)?;
             total = total.saturating_sub(length);
         }
         if total > TOTAL_BUDGET {
@@ -307,6 +324,104 @@ impl Store {
             ));
         }
         Ok(())
+    }
+}
+fn remove_reserved(
+    directory: &Path,
+    legacy: bool,
+    marker: &File,
+    mut open: impl FnMut(&Path) -> io::Result<File>,
+) -> io::Result<()> {
+    let names = ["catalog.pnc".to_owned(), "catalog.next".to_owned()]
+        .into_iter()
+        .chain(
+            (b'A'..=b'Z')
+                .filter(move |_| !legacy)
+                .map(|letter| format!("catalog-{}.pnc", letter as char)),
+        );
+    let mut files = Vec::new();
+    // Validate and lock EVERY candidate before deleting any. A reserved name
+    // alone never authorizes deleting an unexpected ACL/type/hard link. Older
+    // markers do not reserve per-drive slots introduced by the new format.
+    for name in names {
+        match open(&directory.join(name)) {
+            Ok(file) => files.push(file),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    for file in files {
+        set_delete(&file, true)?;
+    }
+    // Keep the ownership proof until all payload deletions have succeeded, so
+    // interruption can safely retry with whichever reserved files remain.
+    set_delete(marker, true)
+}
+/// Called only after the exact verified service is stopped, before deleting
+/// its SCM entry or image. There is no caller-selected path or recursive delete.
+pub(super) fn remove_owned(service: &VerifiedService) -> io::Result<()> {
+    let begin = Instant::now();
+    loop {
+        match remove_owned_once(service) {
+            // SCM STOPPED can precede the old process closing its cache lock.
+            // Give only native access/sharing locks a bounded grace period;
+            // a failed ownership/type/marker check is never retried or ignored.
+            Err(error)
+                if matches!(error.raw_os_error(), Some(5 | 32 | 33))
+                    && begin.elapsed() < Duration::from_secs(5) =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            result => return result,
+        }
+    }
+}
+fn remove_owned_once(service: &VerifiedService) -> io::Result<()> {
+    let directory = service.directory.join("cache-v1");
+    let guard = match open_metadata(&directory, true) {
+        Ok(guard) => guard,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    protected_handle(&guard, &Descriptor::parse(PRIVATE_DIRECTORY)?)?;
+    let mut marker = match private_file(&directory.join("format"), true, OPEN_EXISTING, false) {
+        Ok(marker) => marker,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // An initial write interrupted before commit leaves an empty,
+            // private directory. It owns no payloads; never claim nonempty
+            // unmarked directories or recursively remove their children.
+            if fs::read_dir(&directory)?.next().is_some() {
+                return Err(denied());
+            }
+            drop(guard);
+            return remove_empty_directory(&directory);
+        }
+        Err(error) => return Err(error),
+    };
+    let legacy = read_marker(&mut marker)?;
+    // A writer still closing after SCM STOPPED makes this fail before deletion.
+    // Never proceed by ignoring a live or unrecognized transaction lock.
+    let lock = transaction(&directory.join("transaction.lock"))?;
+    remove_reserved(&directory, legacy, &marker, |path| {
+        private_file(path, true, OPEN_EXISTING, false)
+    })?;
+    drop(marker);
+    drop(lock);
+    drop(guard);
+    remove_empty_directory(&directory)
+}
+fn remove_empty_directory(directory: &Path) -> io::Result<()> {
+    match fs::remove_dir(directory) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
     }
 }
 fn replace(from: &Path, to: &Path) -> io::Result<()> {
@@ -326,6 +441,195 @@ fn replace(from: &Path, to: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    // These handles belong to ordinary-user test fixtures. Production cleanup
+    // always opens through private_file after verifying the machine directory
+    // and marker. The callback lets native deletion semantics and the reserved
+    // name policy be exercised without elevation or touching a real service.
+    fn fixture_file(path: &Path) -> io::Result<File> {
+        let file = fs::OpenOptions::new()
+            .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
+            .share_mode(0)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        regular_single_link(&file)?;
+        Ok(file)
+    }
+    fn fixture_marker(path: &Path, write: bool) -> File {
+        fs::OpenOptions::new()
+            .write(true)
+            .access_mode(GENERIC_READ | DELETE | if write { GENERIC_WRITE } else { 0 })
+            .share_mode(0)
+            .custom_flags(FILE_FLAG_DELETE_ON_CLOSE)
+            .create_new(true)
+            .open(path)
+            .unwrap()
+    }
+    #[test]
+    fn initial_marker_is_removed_before_commit_and_retained_after_fsync() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("format");
+        drop(fixture_marker(&path, true));
+        assert!(
+            !path.exists(),
+            "exit immediately after creation is recoverable"
+        );
+        let mut partial = fixture_marker(&path, true);
+        partial.write_all(&MARKER[..8]).unwrap();
+        drop(partial);
+        assert!(!path.exists(), "an interrupted partial write is removed");
+        write_new_marker(fixture_marker(&path, true)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), MARKER);
+    }
+    #[test]
+    fn failed_initial_marker_write_leaves_no_unmarked_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("format");
+        assert!(write_new_marker(fixture_marker(&path, false)).is_err());
+        assert!(!path.exists());
+        write_new_marker(fixture_marker(&path, true)).unwrap();
+        assert!(!read_marker(&mut File::open(&path).unwrap()).unwrap());
+    }
+    #[test]
+    fn marker_crash_child() {
+        let Some(directory) = std::env::var_os("PRISM_TEST_CACHE_CRASH_DIR") else {
+            return;
+        };
+        let directory = PathBuf::from(directory);
+        let mut file = fixture_marker(&directory.join("format"), true);
+        if std::env::var("PRISM_TEST_CACHE_CRASH_PARTIAL").unwrap() == "true" {
+            file.write_all(&MARKER[..8]).unwrap();
+            file.sync_all().unwrap();
+        }
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(directory.join("ready"))
+            .unwrap();
+        // Parent terminates this exact test-owned child, bypassing Rust Drop.
+        // The bounded fallback prevents an orphan if the parent itself exits.
+        std::thread::sleep(Duration::from_secs(30));
+    }
+    #[test]
+    fn forced_process_exit_removes_new_and_partially_written_markers() {
+        use std::os::windows::process::CommandExt;
+        struct OwnedChild(std::process::Child);
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        for partial in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut child = OwnedChild(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "administration::cache::tests::marker_crash_child",
+                        "--nocapture",
+                    ])
+                    .env("PRISM_TEST_CACHE_CRASH_DIR", dir.path())
+                    .env("PRISM_TEST_CACHE_CRASH_PARTIAL", partial.to_string())
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            );
+            let begin = Instant::now();
+            while !dir.path().join("ready").exists() {
+                assert!(
+                    child.0.try_wait().unwrap().is_none(),
+                    "owned child exited before readiness"
+                );
+                assert!(
+                    begin.elapsed() < Duration::from_secs(10),
+                    "owned child did not become ready"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
+            assert!(
+                !dir.path().join("format").exists(),
+                "kernel must remove the uncommitted marker without Rust Drop"
+            );
+            // A new marker can be committed immediately after the crash.
+            write_new_marker(fixture_marker(&dir.path().join("format"), true)).unwrap();
+        }
+    }
+    #[test]
+    fn cleanup_respects_each_marker_and_preserves_unknown_children() {
+        for legacy in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let marker_path = dir.path().join("format");
+            fs::write(&marker_path, if legacy { LEGACY_MARKER } else { MARKER }).unwrap();
+            for name in ["catalog.pnc", "catalog.next", "catalog-C.pnc", "unrelated"] {
+                fs::write(dir.path().join(name), b"owned fixture").unwrap();
+            }
+            let mut marker = fixture_file(&marker_path).unwrap();
+            assert_eq!(read_marker(&mut marker).unwrap(), legacy);
+            remove_reserved(dir.path(), legacy, &marker, fixture_file).unwrap();
+            drop(marker);
+            assert!(!marker_path.exists());
+            assert!(!dir.path().join("catalog.pnc").exists());
+            assert!(!dir.path().join("catalog.next").exists());
+            assert_eq!(dir.path().join("catalog-C.pnc").exists(), legacy);
+            assert_eq!(
+                fs::read(dir.path().join("unrelated")).unwrap(),
+                b"owned fixture"
+            );
+            remove_empty_directory(dir.path()).unwrap();
+            assert!(dir.path().is_dir());
+        }
+    }
+    #[test]
+    fn invalid_reserved_file_stops_cleanup_before_any_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker_path = dir.path().join("format");
+        fs::write(&marker_path, MARKER).unwrap();
+        fs::write(dir.path().join("catalog.pnc"), b"keep valid cache").unwrap();
+        fs::write(dir.path().join("catalog-Z.pnc"), b"keep linked file").unwrap();
+        fs::hard_link(
+            dir.path().join("catalog-Z.pnc"),
+            dir.path().join("unrelated"),
+        )
+        .unwrap();
+        let marker = fixture_file(&marker_path).unwrap();
+        assert_eq!(
+            remove_reserved(dir.path(), false, &marker, fixture_file)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        drop(marker);
+        assert_eq!(fs::read(marker_path).unwrap(), MARKER);
+        assert_eq!(
+            fs::read(dir.path().join("catalog.pnc")).unwrap(),
+            b"keep valid cache"
+        );
+        assert_eq!(
+            fs::read(dir.path().join("unrelated")).unwrap(),
+            b"keep linked file"
+        );
+    }
+    #[test]
+    fn invalid_markers_never_authorize_reserved_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("format");
+        for bytes in [b"".as_slice(), &MARKER[..8], b"not a Prism marker"] {
+            fs::write(&path, bytes).unwrap();
+            let mut file = fixture_file(&path).unwrap();
+            assert_eq!(
+                read_marker(&mut file).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            drop(file);
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
     #[test]
     fn ordinary_token_cannot_create_or_open_the_machine_cache() {
         if !is_elevated().unwrap() {

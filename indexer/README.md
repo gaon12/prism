@@ -52,6 +52,12 @@ Implemented:
   combined 2 GiB committed budget; one shared staging file can temporarily add
   at most the codec's 1 GiB payload bound plus its header. Only reserved, verified
   cache files can be evicted. Unknown children are preserved.
+  Initial markers are created with deletion-on-close and committed only after
+  fsync, so forced process exit cannot strand a partial marker. Explicit service
+  removal verifies all marker-reserved files before deleting any; legacy markers
+  do not authorize deleting newer drive slots. A rejected cleanup preserves the
+  SCM entry/image and restarts a previously running service. Unknown children
+  prevent only nonrecursive directory removal and remain untouched.
   A single full-catalog owner serializes snapshots and deferred writes; idle
   service memory does not retain a catalog for every drive. Deferred persistence
   follows record transfer and has its own shutdown/deadline checks. Cache failure
@@ -103,8 +109,11 @@ It prints aggregate counts and timing, never paths or file contents, and does
 not request elevation or install a service. In an ordinary-privilege session,
 `PermissionDenied` and exit code 2 are expected. With the administrative helper
 and cache codec enabled (`--features admin,prism-ntfs-core/cache`),
-verification is 69 tests on Windows and 38 portable tests under Linux;
+verification is 76 tests on Windows and 38 portable tests under Linux;
 all-target Clippy passes. These checks do not prove live C-drive speed.
+Cache lifecycle regressions use only test-owned temporary files, including
+forced termination of the test's own ordinary-user child. They do not claim
+successful elevated removal of the actual installed service.
 
 An ordinary-user probe of the actual installed service is also available:
 

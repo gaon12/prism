@@ -645,22 +645,25 @@ pub fn check_owned_service() -> io::Result<()> {
 pub fn start() -> io::Result<()> {
     require_administrator()?;
     let verified = verified_service(SERVICE_START)?;
-    match service_state(&verified.service)? {
+    ensure_running(&verified.service)
+}
+fn ensure_running(service: &ServiceHandle) -> io::Result<()> {
+    match service_state(service)? {
         SERVICE_RUNNING => return Ok(()),
-        SERVICE_START_PENDING => return wait_state(&verified.service, SERVICE_RUNNING),
-        SERVICE_STOP_PENDING => wait_state(&verified.service, SERVICE_STOPPED)?,
+        SERVICE_START_PENDING => return wait_state(service, SERVICE_RUNNING),
+        SERVICE_STOP_PENDING => wait_state(service, SERVICE_STOPPED)?,
         _ => {}
     }
-    if unsafe { StartServiceW(verified.service.raw(), 0, null()) } == 0 {
+    if unsafe { StartServiceW(service.raw(), 0, null()) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    wait_state(&verified.service, SERVICE_RUNNING)
+    wait_state(service, SERVICE_RUNNING)
 }
 /// Remove only the exact protected service. The parent directory guards stay
 /// alive across deletion; unrelated files prevent directory removal and remain.
 pub fn uninstall() -> io::Result<()> {
     require_administrator()?;
-    let verified = verified_service(SERVICE_STOP | DELETE)?;
+    let verified = verified_service(SERVICE_STOP | SERVICE_START | DELETE)?;
     let current = file_identity(&open_metadata(&std::env::current_exe()?, false)?)?;
     let installed = file_identity(&open_metadata(&verified.target, false)?)?;
     if current.VolumeSerialNumber == installed.VolumeSerialNumber
@@ -671,7 +674,22 @@ pub fn uninstall() -> io::Result<()> {
             "Remove the service through the dedicated management helper.",
         ));
     }
+    let was_running = matches!(
+        service_state(&verified.service)?,
+        SERVICE_RUNNING | SERVICE_START_PENDING
+    );
     stop(&verified.service)?;
+    // Verify all marked cache artifacts before deleting the service/image.
+    // Unknown children remain; an unsafe reserved artifact stops removal.
+    if let Err(error) = cache::remove_owned(&verified) {
+        // A rejected cache must not turn an otherwise running shared service
+        // off permanently. Keep its SCM entry/image and restore its prior
+        // running state. A previously stopped service remains stopped.
+        if was_running {
+            ensure_running(&verified.service)?;
+        }
+        return Err(error);
+    }
     if unsafe { DeleteService(verified.service.raw()) } == 0 {
         return Err(io::Error::last_os_error());
     }

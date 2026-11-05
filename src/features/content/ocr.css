@@ -1,0 +1,22 @@
+.ocr-model-card {
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+.ocr-model-card h4 {
+  margin: 0 0 8px;
+  font-size: inherit;
+}
+.ocr-model-progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  accent-color: var(--accent);
+  margin: 12px 0;
+}
+.ocr-model-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}

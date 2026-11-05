@@ -26,6 +26,7 @@ mod hybrid_search;
 mod index;
 mod keyboard_pattern;
 mod model_commands;
+mod ocr;
 mod package_context;
 mod packaged_startup;
 #[cfg(debug_assertions)]
@@ -523,6 +524,7 @@ pub fn run() {
             model_commands::model_start,
             model_commands::model_stop,
             content_commands::content_status,
+            content_commands::content_ocr_capabilities,
             content_commands::content_refresh,
             content_commands::content_cancel_index,
             content_commands::content_cancel_search,

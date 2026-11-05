@@ -8,6 +8,12 @@ use std::path::PathBuf;
 use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_opener::OpenerExt;
 #[tauri::command]
+pub async fn content_ocr_capabilities() -> Result<crate::ocr::Capabilities, ContentError> {
+    tauri::async_runtime::spawn_blocking(crate::ocr::capabilities)
+        .await
+        .map_err(|_| worker_error())
+}
+#[tauri::command]
 pub async fn search_automatic(
     window: WebviewWindow,
     state: State<'_, AppState>,

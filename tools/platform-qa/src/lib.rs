@@ -1,4 +1,6 @@
 //! Compile the exact production platform modules without Tauri, WebView or Lance.
+#[path = "../../../src-tauri/src/ocr.rs"]
+pub mod ocr;
 // Full-app callers are absent here. Keep the existing source modules' style
 // lint baseline local to this harness; the application still reports its lints.
 #[allow(dead_code, clippy::cloned_ref_to_slice_refs)]

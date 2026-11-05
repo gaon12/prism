@@ -437,6 +437,29 @@ fn configuration_command(buffer: &[usize], pointer: *const u16) -> io::Result<St
     String::from_utf16(&units[..length]).map_err(|_| denied())
 }
 
+/// Ordinary-user preflight for the settings UI. Query only; callers can report
+/// a path policy failure before requesting UAC. Installation still repeats
+/// these checks while retaining its own directory guards across all writes.
+pub fn check_install_location() -> io::Result<()> {
+    let directory = installation_directory()?;
+    let _parents = lock_ancestors(directory.parent().ok_or_else(denied)?)?;
+    match open_metadata(&directory, true) {
+        Ok(handle) => {
+            protected_handle(&handle, &Descriptor::parse(DIRECTORY_ACL)?)?;
+            match fs::symlink_metadata(directory.join("prism-file-index.exe")) {
+                Ok(_) => Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "An existing service executable will not be replaced by initial installation.",
+                )),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Initial optional installation only. An existing service or unknown binary
 /// is left untouched; replacement/update policy is intentionally separate.
 pub fn install() -> io::Result<()> {

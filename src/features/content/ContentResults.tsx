@@ -180,7 +180,8 @@ export function ContentResults({
       setBusy(false);
     }
   };
-  const openSelected = () => selected && void run(() => controller.open(selected.chunk.filePath));
+  // Opening a result goes to the matched page/line when the default app can (see open_location.rs).
+  const openSelected = () => selected && void run(() => controller.openAt(selected.chunk.id));
   const keyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (
       event.nativeEvent.isComposing ||
@@ -555,7 +556,7 @@ export function ContentResults({
                   aria-selected={hit.chunk.id === selectedId}
                   className="content-result-row"
                   onClick={() => controller.select(hit.chunk.id)}
-                  onDoubleClick={() => void run(() => controller.open(hit.chunk.filePath))}
+                  onDoubleClick={() => void run(() => controller.openAt(hit.chunk.id))}
                 >
                   <FileText
                     size={compact ? 21 : 24}

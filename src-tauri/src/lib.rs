@@ -29,6 +29,7 @@ mod index_service_commands;
 mod keyboard_pattern;
 mod model_commands;
 mod ocr;
+mod open_location;
 mod package_context;
 mod packaged_startup;
 #[cfg(debug_assertions)]
@@ -542,6 +543,7 @@ pub fn run() {
             content_commands::search_automatic,
             content_commands::content_chunks,
             content_commands::content_file_action,
+            content_commands::content_open_location,
             content_commands::content_prepare_unlock,
             content_commands::content_unlock_pdf,
             content_commands::content_cancel_unlock,

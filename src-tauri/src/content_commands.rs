@@ -148,6 +148,62 @@ pub async fn content_chunks(
     .await
     .map_err(|_| worker_error())?
 }
+/// Opens a search result's original file at the matched place when the user's default app
+/// supports it (PDF page, text line); otherwise opens it normally. Returns true when the
+/// file was opened at the match, false when it was opened normally.
+#[tauri::command]
+pub async fn content_open_location(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    chunk_id: String,
+) -> Result<bool, String> {
+    use crate::open_location::{self, Location};
+    const MAX_TEXT_BYTES: u64 = 32 * 1024 * 1024;
+    let service = state.content.clone().map_err(|error| error.message)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let chunk = service
+            .chunks(&[chunk_id], &std::sync::atomic::AtomicBool::new(false))
+            .map_err(|error| error.message)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| "The search result is no longer indexed.".to_string())?;
+        // Same scope and link checks as a normal open.
+        let path = service
+            .resolve_document(&PathBuf::from(&chunk.file_path))
+            .map_err(|error| error.message)?;
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let location = if extension == "pdf" {
+            chunk.page.map(Location::Page)
+        } else if open_location::is_text_extension(&extension) {
+            // The index keeps trimmed paragraphs, not line numbers: find the match in the file.
+            std::fs::metadata(&path)
+                .ok()
+                .filter(|meta| meta.len() <= MAX_TEXT_BYTES)
+                .and_then(|_| std::fs::read(&path).ok())
+                .and_then(|bytes| {
+                    open_location::line_of(&String::from_utf8_lossy(&bytes), &chunk.text)
+                })
+                .map(Location::Line)
+        } else {
+            None
+        };
+        if let Some(location) = location {
+            if let Ok(true) = open_location::open(&path, location) {
+                return Ok(true);
+            }
+        }
+        app.opener()
+            .open_path(path.to_string_lossy().into_owned(), None::<&str>)
+            .map_err(|_| "Could not open the content source.".to_string())?;
+        Ok(false)
+    })
+    .await
+    .map_err(|_| "Content worker stopped.".to_string())?
+}
 #[tauri::command]
 pub async fn content_file_action(
     app: AppHandle,

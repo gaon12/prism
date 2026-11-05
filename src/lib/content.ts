@@ -90,6 +90,9 @@ export const content = {
   pause: () => invoke<void>('content_cancel_index'),
   cancel: (requestId: string) => invoke<void>('content_cancel_search', { requestId }),
   open: (path: string, reveal = false) => invoke<void>('content_file_action', { path, reveal }),
+  /** Opens a result's file at the matched page/line when the default app supports it,
+   *  otherwise normally. Resolves true when it opened at the match. */
+  openAt: (chunkId: string) => invoke<boolean>('content_open_location', { chunkId }),
   chunks: (ids: string[]) => invoke<ContentChunk[]>('content_chunks', { ids }),
 };
 const emptyStatus: ContentStatus = {
@@ -314,6 +317,7 @@ export function useContentSearch(active: boolean) {
     mode: session.mode,
     query: session.query,
     open: (path: string, reveal = false) => content.open(path, reveal),
+    openAt: (chunkId: string) => content.openAt(chunkId),
   };
 }
 export type ContentController = ReturnType<typeof useContentSearch>;

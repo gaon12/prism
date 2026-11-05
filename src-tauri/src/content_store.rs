@@ -462,6 +462,25 @@ impl ContentStore {
         allowed_content_roots: &[PathBuf],
         cancel: &AtomicBool,
     ) -> Result<ContentDocumentSummary> {
+        self.replace_document_versioned(document, allowed_content_roots, None, cancel)
+    }
+    /// Text and extraction identity are one commit. A user-unlocked PDF must
+    /// never be published as an unversioned cache entry during reconciliation.
+    pub(crate) fn replace_document_versioned(
+        &self,
+        document: &ExtractedDocument,
+        allowed_content_roots: &[PathBuf],
+        extractor_version: Option<&str>,
+        cancel: &AtomicBool,
+    ) -> Result<ContentDocumentSummary> {
+        if extractor_version.is_some_and(|value| {
+            value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+        }) {
+            return Err(error(
+                ContentStoreErrorCode::InvalidInput,
+                "Invalid extraction version",
+            ));
+        }
         check_cancel(cancel)?;
         if document.sections.len() > MAX_SECTIONS {
             return Err(limit());
@@ -575,7 +594,7 @@ impl ContentStore {
             format: document.format.clone(),
             section_count: document.sections.len(),
             chunk_count: chunks.len(),
-            extractor_version: None,
+            extractor_version: extractor_version.map(String::from),
         };
         self.run(cancel, |connection| {
             let tx = connection.transaction().map_err(storage)?;
@@ -583,6 +602,9 @@ impl ContentStore {
             tx.execute("INSERT INTO content_documents(path_key,file_path,sha256,size_bytes,modified_unix_ms,format,section_count,chunk_count) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
                 params![key, source_path, document.fingerprint.sha256, document.fingerprint.size_bytes, document.fingerprint.modified_unix_ms, document.format, document.sections.len(), chunks.len()]).map_err(storage)?;
             let document_id = tx.last_insert_rowid();
+            if let Some(version) = extractor_version {
+                tx.execute("INSERT INTO content_extraction_versions(document_id,version) VALUES(?1,?2)", params![document_id, version]).map_err(storage)?;
+            }
             {
                 let mut statement = tx.prepare("INSERT INTO content_sections(document_id,section_index,text,page,paragraph,heading) VALUES(?1,?2,?3,?4,?5,?6)").map_err(storage)?;
                 for (index, section) in document.sections.iter().enumerate() { check_cancel(cancel)?; statement.execute(params![document_id,index,section.text,section.page,section.paragraph,section.heading]).map_err(storage)?; }
@@ -1308,6 +1330,59 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn extraction_version_and_unlocked_text_commit_or_roll_back_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = vec![dir.path().to_owned()];
+        let db = dir.path().join("index.sqlite");
+        let store = ContentStore::open(&db).unwrap();
+        let mut doc = document(dir.path(), "source.txt", "previouscanary");
+        store
+            .replace_document_versioned(&doc, &roots, Some("previous"), &cancel())
+            .unwrap();
+        store
+            .connection
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_version BEFORE INSERT ON content_extraction_versions
+             WHEN new.version='rejected' BEGIN SELECT RAISE(ABORT,'fixture failure'); END;",
+            )
+            .unwrap();
+        doc.sections[0].text = "replacementcanary".into();
+        assert!(store
+            .replace_document_versioned(&doc, &roots, Some("rejected"), &cancel())
+            .is_err());
+        assert_eq!(search(&store, "previouscanary", &roots).len(), 1);
+        assert!(search(&store, "replacementcanary", &roots).is_empty());
+        assert_eq!(
+            store
+                .document_summary(Path::new(&doc.file_path), &roots, &cancel())
+                .unwrap()
+                .unwrap()
+                .extractor_version
+                .as_deref(),
+            Some("previous")
+        );
+        let summary = store
+            .replace_document_versioned(&doc, &roots, Some("accepted"), &cancel())
+            .unwrap();
+        assert_eq!(summary.extractor_version.as_deref(), Some("accepted"));
+        drop(store);
+        let reopened = ContentStore::open(&db).unwrap();
+        assert_eq!(search(&reopened, "replacementcanary", &roots).len(), 1);
+        assert!(search(&reopened, "previouscanary", &roots).is_empty());
+        assert_eq!(
+            reopened
+                .document_summary(Path::new(&doc.file_path), &roots, &cancel())
+                .unwrap()
+                .unwrap()
+                .extractor_version
+                .as_deref(),
+            Some("accepted")
         );
     }
 

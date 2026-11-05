@@ -36,6 +36,7 @@
     "test:updates": "node tests/native/updates.mjs",
     "test:diagnostics": "node tests/native/diagnostics.mjs",
     "test:platform-ui": "node tests/native/platform-ui.mjs",
+    "test:ocr-platform-ui": "node tests/native/ocr-platform-ui.mjs",
     "test:content": "node tests/native/content.mjs",
     "test:pdf-unlock": "node tests/native/pdf-unlock.mjs",
     "test:ocr": "node tests/native/ocr.mjs",

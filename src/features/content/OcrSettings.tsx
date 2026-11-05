@@ -113,9 +113,14 @@ export function OcrSettings({
   const selectedInstalled =
     value.language === 'auto' ||
     capabilities?.languages.some((l) => {
-      const tag = l.tag.toLowerCase();
-      const selected = value.language.toLowerCase();
-      return tag === selected || tag.split('-')[0] === selected || selected.split('-')[0] === tag;
+      const tag = l.tag.replaceAll('_', '-').toLowerCase();
+      const selected = value.language.replaceAll('_', '-').toLowerCase();
+      return (
+        tag === selected ||
+        selected.startsWith(`${tag}-`) ||
+        tag.split('-')[0] === selected ||
+        selected.split('-')[0] === tag
+      );
     });
   const engine =
     capabilities?.engine === 'windowsNative'

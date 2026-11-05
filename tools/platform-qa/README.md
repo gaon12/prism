@@ -1,7 +1,8 @@
 # Platform module checks
 
 This independent crate compiles the production runtime inventory, archive extraction,
-embedding process, credential store, document extraction, text repository and path
+embedding process, credential store, document extraction, text repository, password-free
+PDF retry registry and path
 identity files directly. It avoids the Tauri, WebView
 and Lance build requirements so these modules can also be checked in a Linux shell.
 It does not replace the full application tests or native desktop QA.
@@ -19,6 +20,15 @@ An unresponsive-launcher check also exercises the ten-second handshake timeout
 and two-second shutdown grace period, then verifies private-group cleanup. It
 never signals a cached process ID after its child may have been reaped.
 macOS and Linux ordinary tests do not access the system credential store.
+
+Password-PDF tests use independent pypdf-generated RC4-40/128 and AES-128/256
+fixtures with public test passwords. They check both password roles, wrong
+passwords, raw source fingerprints, original page numbers and extraction budgets.
+Registry tests cover early cancellation, replay, window isolation and parser-slot
+lifetimes. The same locally patched PDF dependencies are used by the app and this
+crate; upstream provenance and the narrow legacy owner-key correction are recorded
+under `src-tauri/vendor/`. This crate does not exercise the app's retry dialog or
+embedding of unlocked text; use the native PDF test for that flow.
 
 The [native path policy workflow](../../.github/workflows/path-policy.yml) runs
 these library tests on macOS with `TMPDIR=/var/tmp`. It intentionally exercises

@@ -73,7 +73,7 @@ impl RagStore {
         let version: u32 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(storage)?;
-        if version > 3 {
+        if version > 4 {
             return Err(RagError::new(RagErrorCode::Storage));
         }
         db.execute_batch("PRAGMA journal_mode=WAL;
@@ -104,7 +104,8 @@ impl RagStore {
             .map_err(storage)?;
         }
         db.execute_batch("CREATE TABLE IF NOT EXISTS conversation_selection(conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,payload TEXT NOT NULL);").map_err(storage)?;
-        db.pragma_update(None, "user_version", 3).map_err(storage)?;
+        crate::selection_set::initialize(&db)?;
+        db.pragma_update(None, "user_version", 4).map_err(storage)?;
         db.execute(
             "INSERT OR IGNORE INTO rag_meta(key,value) VALUES('profileId',?1)",
             [fresh_id()?],
@@ -154,7 +155,7 @@ impl RagStore {
         tx.commit().map_err(storage)?;
         Ok(store)
     }
-    fn connect(&self) -> RagResult<Connection> {
+    pub(crate) fn connect(&self) -> RagResult<Connection> {
         let db = Connection::open(&self.path).map_err(storage)?;
         db.busy_timeout(Duration::from_secs(3)).map_err(storage)?;
         db.execute_batch("PRAGMA foreign_keys=ON;")
@@ -245,6 +246,9 @@ impl RagStore {
         selection: Option<&crate::chat_selection::ChatSelection>,
     ) -> RagResult<()> {
         self.summary(id)?;
+        if self.saved_selection(id)?.is_some() {
+            return Err(RagError::new(RagErrorCode::Input));
+        }
         let db = self.connect()?;
         if let Some(selection) = selection {
             db.execute("INSERT INTO conversation_selection(conversation_id,payload) VALUES(?1,?2) ON CONFLICT(conversation_id) DO UPDATE SET payload=excluded.payload", params![id,serde_json::to_string(selection).map_err(storage)?]).map_err(storage)?;
@@ -304,6 +308,7 @@ impl RagStore {
         }
         turns.reverse();
         Ok(ConversationPage {
+            selection_set: self.selection_page(id, 0, 50)?,
             selection: self.selection(id)?,
             conversation,
             turns,
@@ -544,7 +549,7 @@ mod selection_tests {
         store
             .connect()
             .unwrap()
-            .execute_batch("PRAGMA user_version=4;")
+            .execute_batch("PRAGMA user_version=5;")
             .unwrap();
         assert_eq!(
             RagStore::open(directory.path()).err().unwrap().code,

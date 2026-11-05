@@ -39,6 +39,7 @@ mod rag_store;
 mod runtime_process;
 mod runtime_supervisor;
 mod secret_store;
+mod selection_set;
 mod settings;
 mod update_backend;
 mod update_commands;

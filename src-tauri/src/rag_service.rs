@@ -464,6 +464,7 @@ pub struct ConversationSummary {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationPage {
+    pub selection_set: Option<crate::selection_set::SelectionPage>,
     pub selection: Option<crate::chat_selection::ChatSelection>,
     pub conversation: ConversationSummary,
     pub turns: Vec<ConversationTurn>,

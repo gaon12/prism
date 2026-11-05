@@ -91,9 +91,9 @@ fn scope_for(path: &Path, policy: &RagPolicy, selected: &[(String, String)]) -> 
     if !no_links(path) {
         return None;
     }
-    let canonical = fs::canonicalize(path).ok()?;
+    let canonical = crate::path_identity::canonical(path).ok()?;
     let path_key = key(&canonical);
-    if path_key != key(path) || !selected.iter().any(|(_, root)| within(&path_key, root)) {
+    if !canonical.is_file() || !selected.iter().any(|(_, root)| within(&path_key, root)) {
         return None;
     }
     let mut scopes: Vec<_> = policy
@@ -171,6 +171,99 @@ fn current_sha(path: &Path, cancel: &AtomicBool) -> RagResult<Option<String>> {
 mod tests {
     use super::*;
     use crate::rag_service::{GenerationPreferences, RagScope};
+    #[cfg(windows)]
+    #[test]
+    fn real_short_source_alias_preserves_hash_and_chunk_identity_guards() {
+        use crate::settings::SearchScope;
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path().join("A long private source folder");
+        fs::create_dir(&folder).unwrap();
+        let a = folder.join("source-a.md");
+        let b = folder.join("source-b.md");
+        fs::write(&a, "shared evidence").unwrap();
+        fs::write(&b, "shared evidence").unwrap();
+        let Some(short) = crate::path_identity::short_alias(&folder).unwrap() else {
+            eprintln!("No short aliases on fixture volume; actual alias case not exercised");
+            return;
+        };
+        let service = ContentService::open(
+            &directory.path().join("index"),
+            Err("not installed".into()),
+            |_| {},
+        )
+        .unwrap();
+        service
+            .configure(vec![SearchScope {
+                id: "docs".into(),
+                name: "docs".into(),
+                path: short.to_string_lossy().into(),
+                filename_enabled: true,
+                content_enabled: true,
+                external_allowed: false,
+            }])
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while service.status().unwrap().phase != "ready" {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let resolver = ContentSources(service);
+        let policy = RagPolicy {
+            revision: 1,
+            prefs: GenerationPreferences::default(),
+            scopes: vec![RagScope {
+                id: "docs".into(),
+                name: "docs".into(),
+                path: short.to_string_lossy().into(),
+                content_enabled: true,
+                external_allowed: false,
+            }],
+        };
+        let cancel = AtomicBool::new(false);
+        let original = resolver
+            .retrieve("shared", &[], &policy, 8, &cancel)
+            .unwrap()
+            .into_iter()
+            .find(|source| source.source.file_path.ends_with("source-a.md"))
+            .unwrap()
+            .source;
+        let mut alias = original.clone();
+        alias.file_path = short.join("source-a.md").to_string_lossy().into();
+        let checked = resolver
+            .revalidate(&[alias.clone()], &[], &policy, &cancel)
+            .unwrap();
+        assert_eq!(checked[0].state, SourceState::Current);
+        assert!(checked[0].text.as_deref().unwrap().contains("evidence"));
+        assert_eq!(
+            key(Path::new(&checked[0].source.file_path)),
+            key(&fs::canonicalize(&a).unwrap())
+        );
+        // Same hash at a different path is insufficient for the stored chunk ID.
+        alias.file_path = short.join("source-b.md").to_string_lossy().into();
+        assert_eq!(
+            resolver
+                .revalidate(&[alias], &[], &policy, &cancel)
+                .unwrap()[0]
+                .state,
+            SourceState::Changed
+        );
+        let timestamp = fs::metadata(&a).unwrap().modified().unwrap();
+        fs::write(&a, "edited evidence").unwrap();
+        File::options()
+            .write(true)
+            .open(&a)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(timestamp))
+            .unwrap();
+        assert_eq!(
+            resolver
+                .revalidate(&[original], &[], &policy, &cancel)
+                .unwrap()[0]
+                .state,
+            SourceState::Changed
+        );
+        resolver.0.shutdown();
+    }
     #[test]
     fn selecting_a_parent_folder_uses_the_most_specific_current_scope() {
         let dir = tempfile::tempdir().unwrap();
@@ -457,6 +550,7 @@ impl ContentSources {
             cancel_check(cancel)?;
             let path = Path::new(&source.file_path);
             let scope = scope_for(path, policy, &folders);
+            let canonical = crate::path_identity::canonical(path).ok();
             let state = if !path.exists() {
                 SourceState::Deleted
             } else if scope.is_none() {
@@ -471,7 +565,11 @@ impl ContentSources {
                 if sha.as_deref() == Some(source.sha256.as_str())
                     && chunks.get(&source.chunk_id).is_some_and(|chunk| {
                         chunk.fingerprint.sha256 == source.sha256
-                            && key(Path::new(&chunk.file_path)) == key(path)
+                            && canonical.as_ref().is_some_and(|canonical| {
+                                key(Path::new(&chunk.file_path)) == key(canonical)
+                            })
+                            && crate::path_identity::canonical(path).ok().as_ref()
+                                == canonical.as_ref()
                     })
                 {
                     SourceState::Current
@@ -480,6 +578,13 @@ impl ContentSources {
                 }
             };
             let mut reference = source.clone();
+            if state == SourceState::Current {
+                if let Some(canonical) = canonical {
+                    reference.file_path = crate::path_identity::normal(&canonical)
+                        .to_string_lossy()
+                        .into_owned();
+                }
+            }
             if let Some(scope) = scope {
                 reference.scope_id = scope;
             }

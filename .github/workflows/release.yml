@@ -52,14 +52,18 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - name: Use a long-name temp folder on Windows
-        # The runner's default TEMP is the 8.3 short path C:\Users\RUNNER~1\... . Prism deliberately
-        # refuses folder aliases (a path must equal its canonical form), so tests that create their
-        # fixtures under that TEMP get rejected. RUNNER_TEMP (D:\a\_temp) has no short names.
-        if: matrix.platform == 'windows'
+      - name: Use a temp folder without aliases
+        # Prism deliberately refuses folder aliases: a path must equal its canonical form and must
+        # not pass through a symlink. The runners' default temp folders break that rule, so tests
+        # that create their fixtures there get rejected:
+        #   - Windows TEMP is the 8.3 short path C:\Users\RUNNER~1\...
+        #   - macOS TMPDIR is under /var/folders, and /var is a symlink to /private/var.
+        # RUNNER_TEMP (D:\a\_temp, /Users/runner/work/_temp) is a plain, real path on both.
+        if: matrix.platform != 'linux'
         run: |
           echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
           echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Check versions, tag and updater key configuration
         id: plan
         env:

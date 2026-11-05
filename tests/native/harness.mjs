@@ -1,6 +1,6 @@
 // Only launches the test's own process with isolated settings, WebView and clipboard.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import { chromium } from '@playwright/test';
@@ -12,6 +12,46 @@ export async function until(check, label, timeout = 25_000) {
     await new Promise((done) => setTimeout(done, 100));
   }
   throw new Error(`Timed out: ${label}`);
+}
+
+// The very first WebView2 start on a fresh CI machine can take much longer than on a warm PC.
+export const WEBVIEW_START_TIMEOUT = 90_000;
+
+// Wait for a launched app's WebView debug endpoint. If it never appears, add a short note on
+// what is running (only process names and counts, never window titles or user content), so a
+// CI log can tell "slow start" apart from "no WebView was created at all".
+// `stillOk` may throw to stop early, e.g. when the process could not be started at all.
+export async function untilWebView(child, port, label, stillOk = () => {}) {
+  try {
+    await until(
+      async () => {
+        stillOk();
+        if (child.exitCode !== null) throw new Error(`Setup exited: ${child.exitCode}`);
+        try {
+          return (await fetch(`http://127.0.0.1:${port}/json/version`)).ok;
+        } catch {
+          return false;
+        }
+      },
+      label,
+      WEBVIEW_START_TIMEOUT,
+    );
+  } catch (error) {
+    if (process.platform !== 'win32' || !String(error.message).startsWith('Timed out')) throw error;
+    const count = (name) =>
+      (
+        spawnSync('tasklist', ['/FO', 'CSV', '/NH', '/FI', `IMAGENAME eq ${name}`], {
+          encoding: 'utf8',
+          windowsHide: true,
+        }).stdout ?? ''
+      )
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('"')).length;
+    error.message +=
+      ` (setup pid ${child.pid} still running; msedgewebview2.exe processes: ` +
+      `${count('msedgewebview2.exe')}; WerFault.exe: ${count('WerFault.exe')})`;
+    throw error;
+  }
 }
 export async function launch(dataDir, options = {}) {
   const reservation = createServer();

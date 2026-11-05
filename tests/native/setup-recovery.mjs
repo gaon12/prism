@@ -9,7 +9,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium } from '@playwright/test';
-import { until } from './harness.mjs';
+import { until, untilWebView } from './harness.mjs';
 import { recoveryFixture } from './setup-fixture.mjs';
 
 const executable = resolve(
@@ -77,15 +77,9 @@ let browser;
 const errors = [],
   warnings = [];
 try {
-  await until(async () => {
+  await untilWebView(child, port, 'recovery setup endpoint', () => {
     if (spawnError) throw spawnError;
-    if (child.exitCode !== null) throw new Error(`Setup exited: ${child.exitCode}`);
-    try {
-      return (await fetch(`http://127.0.0.1:${port}/json/version`)).ok;
-    } catch {
-      return false;
-    }
-  }, 'recovery setup endpoint');
+  });
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
   let page;
   await until(() => {

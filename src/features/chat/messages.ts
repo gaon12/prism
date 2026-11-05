@@ -1,6 +1,36 @@
 import type { Language } from '../../lib/types';
 
 const messages = {
+  filePages: [
+    '대상 파일 페이지',
+    'Target file pages',
+    '目标文件分页',
+    '目標檔案分頁',
+    '対象ファイルのページ',
+  ],
+  previousFiles: ['이전 파일', 'Previous files', '上一页文件', '上一頁檔案', '前のファイル'],
+  nextFiles: ['다음 파일', 'Next files', '下一页文件', '下一頁檔案', '次のファイル'],
+  filePageRange: [
+    '{total}개 중 {start}–{end}',
+    '{start}–{end} of {total}',
+    '{start}–{end}，共{total}个',
+    '{start}–{end}，共{total}個',
+    '{total}件中{start}–{end}',
+  ],
+  selectionRefreshFailed: [
+    '선택 상태를 확인하지 못했습니다. 새로고침 후 다시 시도하세요.',
+    'Could not confirm the selection. Refresh and try again.',
+    '无法确认选择状态，请刷新后重试。',
+    '無法確認選擇狀態，請重新整理後重試。',
+    '選択状態を確認できませんでした。更新して再試行してください。',
+  ],
+  snapshotIncomplete: [
+    '색인 작업 중이거나 접근할 수 없는 항목이 있어 저장한 검색 집합이 불완전할 수 있습니다.',
+    'The saved result set may be incomplete while indexing or when entries are unavailable.',
+    '索引进行中或部分项目无法访问，保存的结果集可能不完整。',
+    '索引進行中或部分項目無法存取，儲存的結果集可能不完整。',
+    '索引作成中またはアクセスできない項目があり、保存した結果が不完全な場合があります。',
+  ],
   partialSelection: [
     '일부 검색 결과',
     'Partial search results',

@@ -12,7 +12,7 @@ import {
 import { bridge, native } from '../lib/bridge';
 import { content } from '../lib/content';
 import type { ContentChunk } from '../lib/content';
-import { rag } from '../lib/rag';
+import { rag, preferSelectionPage } from '../lib/rag';
 import type {
   Citation,
   ConversationPage,
@@ -27,6 +27,7 @@ import { chatText } from './chat/messages';
 import type { ChatMessage } from './chat/messages';
 import './chat/chat.css';
 import { SearchSelection } from './chat/SearchSelection';
+import { PagedSelection } from './chat/PagedSelection';
 
 const errorCodes = new Set([
   'input',
@@ -333,7 +334,6 @@ function ConversationWorkspace({
   );
   const canSend = Boolean(
     view &&
-    !loading &&
     !loadError &&
     questionBytes <= 4096 &&
     usableScopeIds.length <= 128 &&
@@ -342,7 +342,9 @@ function ConversationWorkspace({
     !selectionDirty &&
     question.trim() &&
     (mode === 'general' ||
-      (usableScopeIds.length && (!view?.selection || view.selection.selectedDocuments.length))),
+      (usableScopeIds.length &&
+        (!view?.selection || view.selection.selectedDocuments.length) &&
+        (!view?.selectionSet || view.selectionSet.selectedCount))),
   );
   useEffect(() => {
     alive.current = true;
@@ -361,7 +363,16 @@ function ConversationWorkspace({
       .conversation(id)
       .then((next) => {
         if (!disposed && alive.current && epoch === loadEpoch.current) {
-          setPage({ key: policyKey, value: next });
+          setPage((previous) => ({
+            key: policyKey,
+            value: {
+              ...next,
+              selectionSet:
+                previous?.key === policyKey
+                  ? preferSelectionPage(previous.value.selectionSet, next.selectionSet)
+                  : next.selectionSet,
+            },
+          }));
           setNewTitle(next.conversation.title);
         }
       })
@@ -885,18 +896,38 @@ function ConversationWorkspace({
           ) : null}
         </dialog>
       ) : null}
+      {view?.selectionSet ? (
+        <PagedSelection
+          id={id}
+          initialPage={view.selectionSet}
+          language={language}
+          disabled={busy}
+          onDirty={setSelectionDirty}
+          onSaved={(selectionSet) => {
+            loadEpoch.current++;
+            setLoading(false);
+            setPage((previous) =>
+              previous ? { ...previous, value: { ...previous.value, selectionSet } } : previous,
+            );
+            setRevision((value) => value + 1);
+          }}
+        />
+      ) : null}
       {view?.selection ? (
         <SearchSelection
           selection={view.selection}
           language={language}
-          disabled={busy || loading}
+          disabled={busy}
           onDirty={setSelectionDirty}
           onSave={async (selection) => {
             await rag.setSelection(id, selection);
+            loadEpoch.current++;
+            setLoading(false);
             setPage((previous) =>
               previous ? { ...previous, value: { ...previous.value, selection } } : previous,
             );
             setSelectionDirty(false);
+            setRevision((value) => value + 1);
           }}
         />
       ) : null}

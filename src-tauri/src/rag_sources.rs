@@ -248,6 +248,61 @@ mod tests {
         );
         resolver.0.shutdown();
     }
+    fn ranking_chunk(id: &str) -> ContentChunk {
+        serde_json::from_value(serde_json::json!({
+            "id":id,"filePath":format!("/synthetic/{id}.md"),
+            "fingerprint":{"sha256":"synthetic","sizeBytes":10,"modifiedUnixMs":1},
+            "sectionIndex":0,"chunkIndex":0,"text":"synthetic ranking fixture",
+            "page":null,"paragraph":null,"heading":null,"charStart":0,"charEnd":25
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn retrieval_fuses_global_branch_ranks_instead_of_page_local_ranks() {
+        let keyword = |id: &str, score| crate::content_store::ContentSearchHit {
+            chunk: ranking_chunk(id),
+            score,
+            snippet: id.into(),
+        };
+        let semantic = |id: &str, cosine_distance| crate::vector_store::VectorSearchHit {
+            chunk: ranking_chunk(id),
+            cosine_distance,
+        };
+        let mut candidates = RetrievalCandidates::default();
+        candidates.keyword.push(keyword("both", 10.0));
+        candidates.semantic.push(semantic("both", 0.2));
+        candidates.trim(100);
+        // A later file page contributes better independent branch matches.
+        candidates.keyword.push(keyword("keyword-only", 20.0));
+        candidates.semantic.push(semantic("semantic-only", 0.1));
+        candidates.trim(100);
+        let ranked = candidates.finish(true, true, 3);
+        assert_eq!(ranked[0].0.id, "both");
+        assert!((ranked[0].1 - 2.0 / 62.0).abs() < 1e-12);
+        assert_eq!(ranked.len(), 3);
+        assert!((ranked[1].1 - 1.0 / 61.0).abs() < 1e-12);
+    }
+    #[test]
+    fn late_pages_replace_worse_candidates_without_duplicate_or_nonfinite_votes() {
+        let mut candidates = RetrievalCandidates::default();
+        for (id, distance) in [
+            ("old", 0.8),
+            ("later", 0.1),
+            ("later", 0.1),
+            ("bad", f32::NAN),
+        ] {
+            candidates
+                .semantic
+                .push(crate::vector_store::VectorSearchHit {
+                    chunk: ranking_chunk(id),
+                    cosine_distance: distance,
+                });
+            candidates.trim(1);
+        }
+        let ranked = candidates.finish(false, true, 1);
+        assert_eq!(ranked[0].0.id, "later");
+        assert!((ranked[0].1 - 0.9).abs() < 1e-6);
+    }
     #[test]
     fn selecting_a_parent_folder_uses_the_most_specific_current_scope() {
         let dir = tempfile::tempdir().unwrap();
@@ -323,6 +378,121 @@ fn reference(chunk: &ContentChunk, scope: String) -> SourceRef {
         paragraph: chunk.paragraph,
     }
 }
+/// Keep each branch globally ranked across every saved-selection batch before
+/// fusion. The branch budget is per question, never per 256-file page.
+#[derive(Default)]
+struct RetrievalCandidates {
+    keyword: Vec<crate::content_store::ContentSearchHit>,
+    semantic: Vec<crate::vector_store::VectorSearchHit>,
+}
+const HYBRID_BRANCH_LIMIT: usize = 100;
+impl RetrievalCandidates {
+    fn trim(&mut self, limit: usize) {
+        self.keyword.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                // Match ContentStore's global tie order, independent of pages.
+                .then_with(|| a.chunk.file_path.cmp(&b.chunk.file_path))
+                .then_with(|| a.chunk.section_index.cmp(&b.chunk.section_index))
+                .then_with(|| a.chunk.chunk_index.cmp(&b.chunk.chunk_index))
+                .then_with(|| a.chunk.id.cmp(&b.chunk.id))
+        });
+        self.semantic.sort_by(|a, b| {
+            a.cosine_distance
+                .total_cmp(&b.cosine_distance)
+                .then_with(|| a.chunk.id.cmp(&b.chunk.id))
+        });
+        let mut seen = HashSet::new();
+        self.keyword.retain(|hit| seen.insert(hit.chunk.id.clone()));
+        seen.clear();
+        self.semantic
+            .retain(|hit| hit.cosine_distance.is_finite() && seen.insert(hit.chunk.id.clone()));
+        self.keyword.truncate(limit);
+        self.semantic.truncate(limit);
+    }
+    fn finish(self, hybrid: bool, semantic: bool, limit: usize) -> Vec<(ContentChunk, f64)> {
+        if hybrid {
+            crate::hybrid_search::fuse_ranked(self.keyword, self.semantic, limit)
+                .into_iter()
+                .map(|hit| (hit.chunk, hit.score))
+                .collect()
+        } else if semantic {
+            self.semantic
+                .into_iter()
+                .take(limit)
+                .map(|hit| (hit.chunk, 1.0 - f64::from(hit.cosine_distance)))
+                .collect()
+        } else {
+            self.keyword
+                .into_iter()
+                .take(limit)
+                .map(|hit| (hit.chunk, hit.score))
+                .collect()
+        }
+    }
+}
+struct RetrievalPlan<'a> {
+    question: &'a str,
+    ids: &'a [String],
+    prepared: Option<&'a crate::content_service::SemanticQuery>,
+    hybrid: bool,
+    limit: usize,
+}
+impl ContentSources {
+    fn prepare_retrieval(
+        &self,
+        question: &str,
+        mode: crate::rag_service::RetrievalMode,
+        cancel: &AtomicBool,
+    ) -> RagResult<Option<crate::content_service::SemanticQuery>> {
+        if mode == crate::rag_service::RetrievalMode::Keyword {
+            return Ok(None);
+        }
+        match self.0.prepare_semantic_query(question, cancel) {
+            Ok(query) => Ok(Some(query)),
+            Err(error) if error.code == "model" || error.code == "modelNotRunning" => Ok(None),
+            Err(error) => Err(source_error(&error.code)),
+        }
+    }
+    fn collect_retrieval(
+        &self,
+        plan: &RetrievalPlan<'_>,
+        documents: Option<&[String]>,
+        candidates: &mut RetrievalCandidates,
+        cancel: &AtomicBool,
+    ) -> RagResult<()> {
+        let RetrievalPlan {
+            question,
+            ids,
+            prepared,
+            hybrid,
+            limit,
+        } = *plan;
+        if let Some(query) = prepared {
+            let filter = crate::content_store::ContentSearchFilter {
+                document_paths: documents.unwrap_or_default().to_vec(),
+                ..Default::default()
+            };
+            candidates.semantic.extend(
+                self.0
+                    .run_semantic_query(query, &filter, ids, limit, cancel)
+                    .map_err(|error| source_error(&error.code))?
+                    .hits,
+            );
+        }
+        if hybrid || prepared.is_none() {
+            match self.0.search_selected(question, "", ids, documents, cancel) {
+                Ok(response) => candidates.keyword.extend(response.hits),
+                // Long natural-language questions can exceed the lexical term
+                // budget. Semantic retrieval remains available in hybrid mode.
+                Err(error) if hybrid && error.code.eq_ignore_ascii_case("invalidInput") => {}
+                Err(error) => return Err(source_error(&error.code)),
+            }
+        }
+        candidates.trim(limit);
+        Ok(())
+    }
+}
 impl SourceResolver for ContentSources {
     fn retrieve_set(
         &self,
@@ -343,50 +513,29 @@ impl SourceResolver for ContentSources {
         }
         let ids: Vec<_> = folders.iter().map(|(id, _)| id.clone()).collect();
         let roots: Vec<_> = folders.iter().map(|(_, root)| root.clone()).collect();
-        let prepared = match self.0.prepare_semantic_query(question, cancel) {
-            Ok(value) => Some(value),
-            Err(error) if error.code == "model" || error.code == "modelNotRunning" => None,
-            Err(error) => return Err(source_error(&error.code)),
-        };
+        let prepared = self.prepare_retrieval(question, policy.prefs.retrieval, cancel)?;
+        let hybrid = policy.prefs.retrieval == crate::rag_service::RetrievalMode::Hybrid
+            && prepared.is_some();
         let limit = top_k.clamp(1, 128);
+        let branch_limit = if hybrid { HYBRID_BRANCH_LIMIT } else { limit };
         let mut after = 0;
-        let mut best = Vec::new();
+        let plan = RetrievalPlan {
+            question,
+            ids: &ids,
+            prepared: prepared.as_ref(),
+            hybrid,
+            limit: branch_limit,
+        };
+        let mut candidates = RetrievalCandidates::default();
         loop {
             cancel_check(cancel)?;
             let batch = selection.batch_in_roots(after, Some(&roots))?;
             let Some(last) = batch.last() else { break };
             after = last.id;
             let paths: Vec<_> = batch.into_iter().map(|file| file.path).collect();
-            let candidates: Vec<(ContentChunk, f64)> = if let Some(query) = &prepared {
-                let filter = crate::content_store::ContentSearchFilter {
-                    document_paths: paths,
-                    ..Default::default()
-                };
-                self.0
-                    .run_semantic_query(query, &filter, &ids, limit, cancel)
-                    .map_err(|e| source_error(&e.code))?
-                    .hits
-                    .into_iter()
-                    .map(|hit| (hit.chunk, 1.0 - f64::from(hit.cosine_distance)))
-                    .collect()
-            } else {
-                self.0
-                    .search_selected(question, "", &ids, Some(&paths), cancel)
-                    .map_err(|e| source_error(&e.code))?
-                    .hits
-                    .into_iter()
-                    .map(|hit| (hit.chunk, hit.score))
-                    .collect()
-            };
-            best.extend(candidates);
-            best.sort_by(|left: &(ContentChunk, f64), right| {
-                right
-                    .1
-                    .total_cmp(&left.1)
-                    .then_with(|| left.0.id.cmp(&right.0.id))
-            });
-            best.truncate(limit);
+            self.collect_retrieval(&plan, Some(&paths), &mut candidates, cancel)?;
         }
+        let best = candidates.finish(hybrid, prepared.is_some(), limit);
         authorize(best, &folders, policy, limit, cancel)
     }
     fn retrieve(
@@ -417,35 +566,21 @@ impl SourceResolver for ContentSources {
             return Ok(vec![]);
         }
         let ids: Vec<_> = folders.iter().map(|(id, _)| id.clone()).collect();
-        let candidates = match self.0.semantic_search_selected(
+        let prepared = self.prepare_retrieval(question, policy.prefs.retrieval, cancel)?;
+        let hybrid = policy.prefs.retrieval == crate::rag_service::RetrievalMode::Hybrid
+            && prepared.is_some();
+        let limit = top_k.clamp(1, 128);
+        let branch_limit = if hybrid { HYBRID_BRANCH_LIMIT } else { limit };
+        let plan = RetrievalPlan {
             question,
-            "",
-            &ids,
-            top_k.clamp(1, 128),
-            documents,
-            cancel,
-        ) {
-            Ok(response) => response
-                .hits
-                .into_iter()
-                .map(|hit| (hit.chunk, 1.0 - f64::from(hit.cosine_distance)))
-                .collect(),
-            Err(error) if error.code == "model" || error.code == "modelNotRunning" => self
-                .0
-                .search_selected(question, "", &ids, documents, cancel)
-                .map_err(|_| RagError::new(RagErrorCode::SourceChanged))?
-                .hits
-                .into_iter()
-                .map(|hit| (hit.chunk, hit.score))
-                .collect(),
-            Err(error) if error.code == "cancelled" => {
-                return Err(RagError::new(RagErrorCode::Cancelled))
-            }
-            Err(error) if error.code == "input" => {
-                return Err(RagError::new(RagErrorCode::Context))
-            }
-            Err(_) => return Err(RagError::new(RagErrorCode::SourceChanged)),
+            ids: &ids,
+            prepared: prepared.as_ref(),
+            hybrid,
+            limit: branch_limit,
         };
+        let mut candidates = RetrievalCandidates::default();
+        self.collect_retrieval(&plan, documents, &mut candidates, cancel)?;
+        let candidates = candidates.finish(hybrid, prepared.is_some(), limit);
         authorize(candidates, &folders, policy, top_k, cancel)
     }
     fn revalidate(

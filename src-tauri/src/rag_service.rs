@@ -132,9 +132,18 @@ pub enum ProviderSlot {
     Local,
     External,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RetrievalMode {
+    #[default]
+    Hybrid,
+    Semantic,
+    Keyword,
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GenerationPreferences {
+    pub retrieval: RetrievalMode,
     pub mode: GenerationMode,
     pub priority: ProviderPriority,
     pub fallback: bool,
@@ -147,6 +156,7 @@ pub struct GenerationPreferences {
 impl Default for GenerationPreferences {
     fn default() -> Self {
         Self {
+            retrieval: RetrievalMode::Hybrid,
             mode: GenerationMode::Local,
             priority: ProviderPriority::LocalFirst,
             fallback: false,
@@ -161,6 +171,7 @@ impl Default for GenerationPreferences {
 impl fmt::Debug for GenerationPreferences {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GenerationPreferences")
+            .field("retrieval", &self.retrieval)
             .field("mode", &self.mode)
             .field("priority", &self.priority)
             .field("fallback", &self.fallback)

@@ -312,12 +312,17 @@ mod tests {
         write_json(&path, &settings).unwrap();
         settings.theme = "dark".into();
         settings.hybrid_search = false;
+        settings.generation.retrieval = crate::rag_service::RetrievalMode::Keyword;
         settings.automatic_semantic = false;
         settings.revision = 1;
         write_json(&path, &settings).unwrap();
         let loaded = read_settings(&path).unwrap();
         assert_eq!(loaded.theme, "dark");
         assert!(!loaded.hybrid_search);
+        assert_eq!(
+            loaded.generation.retrieval,
+            crate::rag_service::RetrievalMode::Keyword
+        );
         assert!(!loaded.automatic_semantic);
         assert_eq!(loaded.revision, 1);
         assert_eq!(loaded.scopes[0].name, "문서");

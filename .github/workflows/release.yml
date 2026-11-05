@@ -16,12 +16,12 @@ concurrency:
   cancel-in-progress: false
 env:
   CARGO_TERM_COLOR: always
-  CARGO_BUILD_JOBS: '2'
 
 jobs:
   build:
     name: Build ${{ matrix.platform }}
-    timeout-minutes: 120
+    # A cold build compiles LanceDB and Tauri from scratch; 120 minutes was too tight on Windows.
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +52,14 @@ jobs:
         with:
           node-version: '22'
           cache: npm
+      - name: Use a long-name temp folder on Windows
+        # The runner's default TEMP is the 8.3 short path C:\Users\RUNNER~1\... . Prism deliberately
+        # refuses folder aliases (a path must equal its canonical form), so tests that create their
+        # fixtures under that TEMP get rejected. RUNNER_TEMP (D:\a\_temp) has no short names.
+        if: matrix.platform == 'windows'
+        run: |
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Check versions, tag and updater key configuration
         id: plan
         env:
@@ -125,7 +133,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri -- build --bundles appimage --config "$BUILD_CONFIG" -- --locked
       - name: Test the native app library
-        run: cargo test --manifest-path src-tauri/Cargo.toml --release --lib --locked
+        # On macOS the universal build compiled into target/aarch64-apple-darwin. Testing the same
+        # target reuses those compiled dependencies instead of rebuilding everything for the host.
+        env:
+          TEST_TARGET: ${{ matrix.platform == 'macos' && '--target aarch64-apple-darwin' || '' }}
+        run: cargo test --manifest-path src-tauri/Cargo.toml --release --lib --locked $TEST_TARGET
       - name: Verify production UI interactions
         if: matrix.platform == 'linux'
         run: |

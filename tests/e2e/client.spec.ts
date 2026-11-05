@@ -313,8 +313,11 @@ test('shows responsive settings and quick search without horizontal overflow', a
   await expect(page.getByRole('heading', { name: '파일 검색', exact: true })).toBeVisible();
 });
 
-test('captures desktop reference states', async ({ browser }) => {
+test('captures desktop reference states', async ({ browser, baseURL }) => {
+  // A hand-made context does not inherit the config's baseURL, so pass it on.
+  // Then the test follows whichever server is running (dev 1420 or bundled preview 1421).
   const context = await browser.newContext({
+    baseURL,
     viewport: { width: 1190, height: 846 },
     deviceScaleFactor: 1.25,
     colorScheme: 'light',
@@ -323,7 +326,7 @@ test('captures desktop reference states', async ({ browser }) => {
   await page.addInitScript(() =>
     localStorage.setItem('prism.settings.v1', JSON.stringify({ onboardingVersion: 1 })),
   );
-  await page.goto('http://127.0.0.1:1420');
+  await page.goto('/');
   await expect(page.getByRole('heading', { name: '검색할 폴더를 추가하세요' })).toBeVisible();
   await page.screenshot({ path: join(evidence, 'main-reference.png') });
   await page.getByRole('button', { name: '설정', exact: true }).click();

@@ -91,6 +91,9 @@ uses `PRISM_TEST_PADDLE_INSTALLED` as an authenticated runtime seed. It recogniz
 the actual Korean image through public Automatic dispatch, sends SIGKILL only
 to its own app-parent fixture, and polls the retained worker pidfd for exit. This
 uses real inference and the normal production supervisor, not an OCR substitute.
+The same fixture exercises document extraction for mixed typed/scanned pages,
+blank-page omission and AES-256 user/owner passwords, retaining original source
+hashes and bytes without writing a decrypted PDF.
 
 For the real Windows WebView regression, set `PRISM_TEST_PADDLE_RUNTIME` to the
 materialized QA directory and run `npm run test:paddle-ocr`. It clicks the actual

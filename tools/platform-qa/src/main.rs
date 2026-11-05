@@ -58,8 +58,65 @@ fn fixture() -> Option<i32> {
         let recognized =
             pages.len() == 1 && pages[0].text.contains("프리즘") && pages[0].text.contains("74829");
         assert!(recognized);
+        // Exercise the actual extraction caller too: typed pages stay typed,
+        // scanned pages use Auto, and decrypted render bytes stay in memory.
+        use prism_platform_qa::{document_extract as extract, ocr_assets};
+        let sources = PathBuf::from(&args[1]).join("public-fixtures");
+        fs::create_dir(&sources).unwrap();
+        let options = extract::ExtractOptions {
+            ocr: automatic,
+            ..Default::default()
+        };
+        let mixed_bytes = include_bytes!("../../../tests/fixtures/ocr/mixed.pdf");
+        let mixed_path = sources.join("mixed.pdf");
+        fs::write(&mixed_path, mixed_bytes).unwrap();
+        let document = extract::extract_document(&mixed_path, &options, &cancel).unwrap();
+        assert!(document.sections[0]
+            .text
+            .contains("typed original page one"));
+        assert!(document
+            .sections
+            .iter()
+            .any(|s| s.page == Some(2) && s.text.contains("74829")));
+        assert!(document
+            .sections
+            .iter()
+            .any(|s| s.page == Some(3) && s.text.contains("typed original page three")));
+        assert!(document.sections.iter().all(|s| s.page != Some(4)));
+        assert!(document.sections.windows(2).all(|s| s[0].page <= s[1].page));
+        assert_eq!(document.fingerprint.sha256, ocr_assets::digest(mixed_bytes));
+        assert_eq!(fs::read(&mixed_path).unwrap(), mixed_bytes);
+        let encrypted = include_bytes!("../../../tests/fixtures/ocr/scan-locked.pdf");
+        let encrypted_path = sources.join("scan-locked.pdf");
+        fs::write(&encrypted_path, encrypted).unwrap();
+        for password in ["ocr-fixture-password", "ocr-fixture-owner"] {
+            let document = extract::extract_document_with_password(
+                &encrypted_path,
+                &options,
+                &cancel,
+                password,
+            )
+            .unwrap();
+            assert!(document.sections.iter().any(|s| s.page == Some(1)
+                && s.text.contains("프리즘")
+                && s.text.contains("74829")));
+            assert_eq!(document.fingerprint.sha256, ocr_assets::digest(encrypted));
+            assert_eq!(fs::read(&encrypted_path).unwrap(), encrypted);
+        }
+        assert_eq!(
+            extract::extract_document_with_password(&encrypted_path, &options, &cancel, "wrong")
+                .unwrap_err()
+                .code,
+            extract::ExtractErrorCode::PasswordRejected
+        );
+        assert_eq!(
+            fs::read_dir(&sources).unwrap().count(),
+            2,
+            "no decrypted PDF file may be written"
+        );
         fs::write(&args[2], serde_json::to_vec(&serde_json::json!({
             "pid": runtime.status().pid.unwrap(), "autoFallback": true, "actualKorean": recognized,
+            "sourceExtractionVerified": true,
         })).unwrap()).unwrap();
         loop {
             std::thread::sleep(Duration::from_secs(1));

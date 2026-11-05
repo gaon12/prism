@@ -86,6 +86,8 @@ Expensive or OS-dependent checks are opt-in:
   set `PRISM_TEST_PADDLE_INSTALLED` to the authenticated prepared runtime. The
   test copies it to a temporary profile, recognizes real text through Automatic
   dispatch, and proves the exact worker exits after SIGKILL of its own parent.
+  It also checks the actual extractor's mixed PDF page order, blank-page omission,
+  AES-256 user/owner passwords, raw fingerprints and original-file preservation.
 - `native_store_roundtrip_replacement_isolation_and_delete`: on macOS or Linux,
   set `PRISM_TEST_OS_CREDENTIALS=1` and provide an accessible **disposable** user
   keychain or Secret Service session. Creates a random QA service namespace,

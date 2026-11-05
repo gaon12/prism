@@ -92,6 +92,7 @@ fn real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill() {
     };
     assert_eq!(status["autoFallback"], true);
     assert_eq!(status["actualKorean"], true);
+    assert_eq!(status["sourceExtractionVerified"], true);
     let pid = status["pid"].as_u64().unwrap() as u32;
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
     assert!(fd >= 0);

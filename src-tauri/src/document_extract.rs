@@ -1,5 +1,6 @@
 //! Local-only document extraction. Callers must authorize the canonical path against
-//! content-index scope before invoking this module. No network, OCR, scripts or macros.
+//! content-index scope before invoking this module. OCR is opt-in and local; no
+//! network, scripts or macros are executed.
 use encoding_rs::{EUC_KR, UTF_16BE, UTF_16LE};
 use quick_xml::{events::Event, Reader};
 use serde::{Deserialize, Serialize};
@@ -43,6 +44,8 @@ pub struct ExtractedDocument {
 /// documents can be retried with larger budgets by the scheduler.
 #[derive(Debug, Clone)]
 pub struct ExtractOptions {
+    pub ocr: crate::ocr::Preferences,
+    pub ocr_limits: crate::ocr::Limits,
     pub max_file_bytes: u64,
     pub max_expanded_bytes: u64,
     pub max_text_bytes: usize,
@@ -54,6 +57,8 @@ pub struct ExtractOptions {
 impl Default for ExtractOptions {
     fn default() -> Self {
         Self {
+            ocr: crate::ocr::Preferences::default(),
+            ocr_limits: crate::ocr::Limits::default(),
             max_file_bytes: 64 * 1024 * 1024,
             max_expanded_bytes: 128 * 1024 * 1024,
             max_text_bytes: 32 * 1024 * 1024,
@@ -72,6 +77,12 @@ pub enum ExtractErrorCode {
     PasswordRejected,
     CorruptDocument,
     OcrRequired,
+    OcrUnavailable,
+    OcrLanguageUnavailable,
+    OcrNoText,
+    OcrTimedOut,
+    OcrBusy,
+    OcrFailed,
     LimitExceeded,
     Cancelled,
     Io,
@@ -171,6 +182,9 @@ fn bounded_read(mut input: impl Read, max: u64, cancel: &AtomicBool) -> Result<V
 }
 
 pub fn is_supported_extension(extension: &str) -> bool {
+    if is_image_extension(extension) {
+        return true;
+    }
     matches!(
         extension.to_ascii_lowercase().as_str(),
         "txt"
@@ -226,6 +240,67 @@ pub fn is_supported_extension(extension: &str) -> bool {
     )
 }
 
+pub fn is_image_extension(extension: &str) -> bool {
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "bmp" | "tif" | "tiff" | "webp"
+    )
+}
+
+fn ocr_error(value: crate::ocr::Error) -> ExtractError {
+    use crate::ocr::Code;
+    let code = match value.code {
+        Code::Disabled => ExtractErrorCode::OcrRequired,
+        Code::Unavailable => ExtractErrorCode::OcrUnavailable,
+        Code::LanguageUnavailable => ExtractErrorCode::OcrLanguageUnavailable,
+        Code::TimedOut => ExtractErrorCode::OcrTimedOut,
+        Code::Busy => ExtractErrorCode::OcrBusy,
+        Code::Cancelled => ExtractErrorCode::Cancelled,
+        Code::LimitExceeded => ExtractErrorCode::LimitExceeded,
+        Code::CorruptDocument => ExtractErrorCode::CorruptDocument,
+        Code::InvalidInput | Code::Failed => ExtractErrorCode::OcrFailed,
+    };
+    ExtractError {
+        code,
+        message: value.message,
+    }
+}
+
+fn recognize(
+    input: crate::ocr::Input<'_>,
+    out: &Collector<'_>,
+    remaining: usize,
+) -> Result<Vec<crate::ocr::Page>> {
+    let mut limits = out.options.ocr_limits.clone();
+    limits.max_input_bytes = limits
+        .max_input_bytes
+        .min(out.options.max_file_bytes as usize);
+    limits.max_text_bytes = limits.max_text_bytes.min(remaining);
+    limits.max_pages = limits.max_pages.min(out.options.max_sections);
+    if remaining == 0 {
+        return Err(limit());
+    }
+    crate::ocr::recognize(input, &out.options.ocr, &limits, out.cancel).map_err(ocr_error)
+}
+
+fn extract_image(bytes: &[u8], out: &mut Collector<'_>) -> Result<()> {
+    let pages = recognize(
+        crate::ocr::Input::Image(bytes),
+        out,
+        out.options.max_text_bytes.saturating_sub(out.bytes),
+    )?;
+    for page in pages {
+        extract_lines(&page.text, false, Some(page.number), out)?;
+    }
+    if out.sections.is_empty() {
+        return Err(err(
+            ExtractErrorCode::OcrNoText,
+            "Local OCR found no readable text in the image",
+        ));
+    }
+    Ok(())
+}
+
 pub fn extract_document(
     path: &Path,
     options: &ExtractOptions,
@@ -279,6 +354,10 @@ fn extract_document_inner(
             "Document format is not supported",
         ));
     }
+    // Avoid even reading raster payloads while opt-in OCR is disabled.
+    if is_image_extension(&extension) && !options.ocr.enabled {
+        return Err(ocr_error(crate::ocr::error(crate::ocr::Code::Disabled)));
+    }
     let absolute = std::path::absolute(path)
         .map_err(|_| err(ExtractErrorCode::Io, "Cannot resolve document path"))?;
     check_path(&absolute)?;
@@ -306,6 +385,7 @@ fn extract_document_inner(
         "pptx" | "xlsx" | "odt" | "ods" | "odp" => extract_office(&bytes, &extension, &mut output)?,
         "hwp" => extract_hwp(&bytes, &mut output)?,
         "pdf" => extract_pdf(&bytes, password, &mut output)?,
+        extension if is_image_extension(extension) => extract_image(&bytes, &mut output)?,
         "html" | "htm" => extract_html(&decode_text(&bytes)?, &mut output)?,
         "csv" | "tsv" => extract_delimited(
             &decode_text(&bytes)?,
@@ -916,64 +996,134 @@ fn extract_pdf(bytes: &[u8], password: Option<&str>, out: &mut Collector<'_>) ->
     }
     // pdf-extract/lopdf decoding is an in-process dependency. Cancellation is
     // observed between pages; its internal stream allocations are not capped.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
-        let options = password
-            .map(pdf_extract::LoadOptions::with_password)
-            .unwrap_or_default();
-        let doc =
-            pdf_extract::Document::load_mem_with_options(bytes, options).map_err(|value| {
-                if matches!(
-                    value,
-                    pdf_extract::Error::InvalidPassword | pdf_extract::Error::Decryption(_)
-                ) {
-                    if password.is_some() {
-                        err(
-                            ExtractErrorCode::PasswordRejected,
-                            "Could not decrypt this PDF with the supplied password",
-                        )
+    let (mut texts, render_bytes) =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<_> {
+            let options = password
+                .map(pdf_extract::LoadOptions::with_password)
+                .unwrap_or_default();
+            let mut doc =
+                pdf_extract::Document::load_mem_with_options(bytes, options).map_err(|value| {
+                    if matches!(
+                        value,
+                        pdf_extract::Error::InvalidPassword | pdf_extract::Error::Decryption(_)
+                    ) {
+                        if password.is_some() {
+                            err(
+                                ExtractErrorCode::PasswordRejected,
+                                "Could not decrypt this PDF with the supplied password",
+                            )
+                        } else {
+                            encrypted()
+                        }
                     } else {
-                        encrypted()
+                        corrupt()
                     }
-                } else {
-                    corrupt()
-                }
-            })?;
-        check_cancel(out.cancel)?;
-        if doc.is_encrypted() {
-            return Err(encrypted());
-        }
-        let pages = doc.get_pages();
-        if pages.len() > out.options.max_sections {
-            return Err(limit());
-        }
-        for number in pages.keys() {
+                })?;
             check_cancel(out.cancel)?;
-            let mut writer = TextWriter {
-                bytes: Vec::new(),
-                max: out.options.max_text_bytes.saturating_sub(out.bytes),
-                cancel: out.cancel,
-                failure: None,
-            };
-            let result = {
-                let target: &mut dyn std::io::Write = &mut writer;
-                let mut target = pdf_extract::PlainTextOutput::new(target);
-                pdf_extract::output_doc_page(&doc, &mut target, *number)
-            };
-            if let Some(error) = writer.failure {
-                return Err(error);
+            if doc.is_encrypted() {
+                return Err(encrypted());
             }
-            result.map_err(|_| corrupt())?;
-            let page_text = String::from_utf8(writer.bytes).map_err(|_| corrupt())?;
-            extract_lines(&page_text, false, Some(*number), out)?;
+            let pages = doc.get_pages();
+            if pages.len() > out.options.max_sections {
+                return Err(limit());
+            }
+            let mut texts = Vec::new();
+            let mut total = out.bytes;
+            for number in pages.keys() {
+                check_cancel(out.cancel)?;
+                let mut writer = TextWriter {
+                    bytes: Vec::new(),
+                    max: out.options.max_text_bytes.saturating_sub(total),
+                    cancel: out.cancel,
+                    failure: None,
+                };
+                let result = {
+                    let target: &mut dyn std::io::Write = &mut writer;
+                    let mut target = pdf_extract::PlainTextOutput::new(target);
+                    pdf_extract::output_doc_page(&doc, &mut target, *number)
+                };
+                if let Some(error) = writer.failure {
+                    return Err(error);
+                }
+                result.map_err(|_| corrupt())?;
+                let page_text = String::from_utf8(writer.bytes).map_err(|_| corrupt())?;
+                total += page_text.len();
+                texts.push((*number, page_text));
+            }
+            // Windows.Data.Pdf does not implement AES-256. Authentication and cipher
+            // handling already happened in the existing Rust parser, so serialize
+            // its decrypted objects only when scanned pages actually need OCR.
+            // This writer has no file target; raw-source SHA remains the identity.
+            let needs_ocr =
+                out.options.ocr.enabled && texts.iter().any(|(_, t)| t.trim().is_empty());
+            let render_bytes = if needs_ocr && doc.encryption_state.is_some() {
+                let mut writer = TextWriter {
+                    bytes: Vec::new(),
+                    max: out
+                        .options
+                        .ocr_limits
+                        .max_input_bytes
+                        .min(out.options.max_file_bytes as usize),
+                    cancel: out.cancel,
+                    failure: None,
+                };
+                let result = doc.save_to(&mut writer);
+                if let Some(error) = writer.failure {
+                    return Err(error);
+                }
+                result.map_err(|_| corrupt())?;
+                Some(zeroize::Zeroizing::new(writer.bytes))
+            } else {
+                None
+            };
+            // Drop the parser's decoded objects before allocating native raster pages.
+            Ok((texts, render_bytes))
+        }))
+        .map_err(|_| corrupt())??;
+    if out.options.ocr.enabled {
+        let wanted: Vec<_> = texts
+            .iter()
+            .filter(|(_, text)| text.trim().is_empty())
+            .map(|(number, _)| *number)
+            .collect();
+        if !wanted.is_empty() {
+            let total: usize = texts.iter().map(|(_, t)| t.len()).sum();
+            let recognized = recognize(
+                crate::ocr::Input::Pdf {
+                    bytes: render_bytes.as_deref().map(Vec::as_slice).unwrap_or(bytes),
+                    pages: &wanted,
+                },
+                out,
+                out.options
+                    .max_text_bytes
+                    .saturating_sub(out.bytes)
+                    .saturating_sub(total),
+            )?;
+            for page in recognized {
+                let target = texts
+                    .iter_mut()
+                    .find(|(number, _)| *number == page.number)
+                    .ok_or_else(corrupt)?;
+                target.1 = page.text;
+            }
         }
-        Ok(())
-    }))
-    .map_err(|_| corrupt())?;
-    result?;
+    }
+    // Keep original page order, including OCR between two typed pages.
+    for (number, text) in texts {
+        extract_lines(&text, false, Some(number), out)?;
+    }
     if out.sections.is_empty() {
         return Err(err(
-            ExtractErrorCode::OcrRequired,
-            "PDF has no extractable text; OCR is disabled",
+            if out.options.ocr.enabled {
+                ExtractErrorCode::OcrNoText
+            } else {
+                ExtractErrorCode::OcrRequired
+            },
+            if out.options.ocr.enabled {
+                "Local OCR found no readable text in the PDF"
+            } else {
+                "PDF has no extractable text; OCR is disabled"
+            },
         ));
     }
     Ok(())
@@ -2563,6 +2713,179 @@ mod tests {
         assert_eq!(
             extract("broken.pdf", b"%PDF-1.4 garbage").unwrap_err().code,
             ExtractErrorCode::CorruptDocument
+        );
+    }
+
+    #[test]
+    fn disabled_ocr_does_not_read_images_and_keeps_typed_pdf_pages() {
+        let missing = std::env::temp_dir().join("prism-ocr-never-created.png");
+        assert_eq!(
+            extract_document(
+                &missing,
+                &ExtractOptions::default(),
+                &AtomicBool::new(false)
+            )
+            .unwrap_err()
+            .code,
+            ExtractErrorCode::OcrRequired
+        );
+        let document = extract(
+            "mixed.pdf",
+            include_bytes!("../../tests/fixtures/ocr/mixed.pdf"),
+        )
+        .unwrap();
+        assert_eq!(document.sections.len(), 2);
+        assert_eq!(document.sections[0].page, Some(1));
+        assert!(document.sections[0]
+            .text
+            .contains("typed original page one"));
+        assert_eq!(document.sections[1].page, Some(3));
+        assert!(document.sections[1]
+            .text
+            .contains("typed original page three"));
+    }
+
+    /// Opt-in integration: real installed OS engine, public independent pixels,
+    /// no substitute recognizer and no network or user documents.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires Windows native OCR with the installed Korean language pack"]
+    fn windows_native_ocr_pixels_pdf_passwords_and_resource_errors() {
+        let capabilities = crate::ocr::capabilities();
+        assert!(
+            capabilities.available && capabilities.pdf_available,
+            "{capabilities:?}"
+        );
+        assert!(capabilities
+            .languages
+            .iter()
+            .any(|l| l.tag.split('-').next() == Some("ko")));
+        let dir = tempfile::tempdir().unwrap();
+        let mut options = ExtractOptions::default();
+        options.ocr.enabled = true;
+        options.ocr.language = "ko".into();
+        let cancel = AtomicBool::new(false);
+        for (name, bytes, expected_page) in [
+            (
+                "bilingual.png",
+                include_bytes!("../../tests/fixtures/ocr/bilingual.png").as_slice(),
+                1,
+            ),
+            (
+                "transparent.png",
+                include_bytes!("../../tests/fixtures/ocr/transparent.png").as_slice(),
+                1,
+            ),
+            (
+                "scan.pdf",
+                include_bytes!("../../tests/fixtures/ocr/scan.pdf").as_slice(),
+                1,
+            ),
+            (
+                "mixed.pdf",
+                include_bytes!("../../tests/fixtures/ocr/mixed.pdf").as_slice(),
+                2,
+            ),
+            (
+                "scan-locked.pdf",
+                include_bytes!("../../tests/fixtures/ocr/scan-locked.pdf").as_slice(),
+                1,
+            ),
+        ] {
+            let path = dir.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            let passwords = if name == "scan-locked.pdf" {
+                vec![Some("ocr-fixture-password"), Some("ocr-fixture-owner")]
+            } else {
+                vec![None]
+            };
+            for password in passwords {
+                println!(
+                    "OCR public fixture: {name}, owner={}",
+                    password == Some("ocr-fixture-owner")
+                );
+                let document = match password {
+                    Some(password) => {
+                        extract_document_with_password(&path, &options, &cancel, password)
+                    }
+                    None => extract_document(&path, &options, &cancel),
+                }
+                .unwrap();
+                println!("OCR recognized public fixture: {name}");
+                let text: String = document
+                    .sections
+                    .iter()
+                    .filter(|s| s.page == Some(expected_page))
+                    .flat_map(|s| s.text.chars())
+                    .filter(|c| !c.is_whitespace())
+                    .flat_map(char::to_lowercase)
+                    .collect();
+                assert!(text.contains("prismlocalsearch74829"), "{name}: {text}");
+                assert!(text.contains("프리즘문서검색74829"), "{name}: {text}");
+                assert_eq!(
+                    document.fingerprint.sha256,
+                    format!("{:x}", Sha256::digest(bytes))
+                );
+                assert_eq!(fs::read(&path).unwrap(), bytes);
+                assert!(document.sections.windows(2).all(|p| p[0].page <= p[1].page));
+                if name == "mixed.pdf" {
+                    assert!(document.sections[0]
+                        .text
+                        .contains("typed original page one"));
+                    assert!(
+                        document
+                            .sections
+                            .iter()
+                            .any(|s| s.page == Some(3)
+                                && s.text.contains("typed original page three"))
+                    );
+                    assert!(document.sections.iter().all(|s| s.page != Some(4)));
+                }
+            }
+        }
+        let locked = dir.path().join("scan-locked.pdf");
+        assert_eq!(
+            extract_document_with_password(&locked, &options, &cancel, "wrong")
+                .unwrap_err()
+                .code,
+            ExtractErrorCode::PasswordRejected
+        );
+        assert_eq!(
+            fs::read_dir(dir.path()).unwrap().count(),
+            5,
+            "no decrypted PDF file may be written"
+        );
+        let image = dir.path().join("bilingual.png");
+        options.ocr.language = "zz-Unknown".into();
+        assert_eq!(
+            extract_document(&image, &options, &cancel)
+                .unwrap_err()
+                .code,
+            ExtractErrorCode::OcrLanguageUnavailable
+        );
+        options.ocr.language = "ko".into();
+        options.ocr_limits.max_source_pixels = 1;
+        assert_eq!(
+            extract_document(&image, &options, &cancel)
+                .unwrap_err()
+                .code,
+            ExtractErrorCode::LimitExceeded
+        );
+        options.ocr_limits = crate::ocr::Limits::default();
+        options.ocr_limits.max_text_bytes = 3;
+        assert_eq!(
+            extract_document(&image, &options, &cancel)
+                .unwrap_err()
+                .code,
+            ExtractErrorCode::LimitExceeded
+        );
+        options.ocr_limits = crate::ocr::Limits::default();
+        options.ocr_limits.max_duration = std::time::Duration::from_nanos(1);
+        assert_eq!(
+            extract_document(&image, &options, &cancel)
+                .unwrap_err()
+                .code,
+            ExtractErrorCode::OcrTimedOut
         );
     }
     #[test]

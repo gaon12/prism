@@ -482,6 +482,7 @@ pub enum PageKind {
     Image,
     Pdf,
     Text,
+    Epub,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

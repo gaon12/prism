@@ -1,4 +1,6 @@
 //! Compile the exact production platform modules without Tauri, WebView or Lance.
+#[path = "../../../src-tauri/src/collection_epub.rs"]
+pub mod collection_epub;
 #[path = "../../../src-tauri/src/collection_import.rs"]
 pub mod collection_import;
 #[path = "../../../src-tauri/src/collection_render.rs"]

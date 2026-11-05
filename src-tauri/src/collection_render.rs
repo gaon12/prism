@@ -88,7 +88,7 @@ pub(crate) fn render(page: &Page, bytes: &[u8], edge: u32, cancel: &AtomicBool) 
                 })?;
             webp(&png, edge, cancel)
         }
-        PageKind::Text => Err(error(ErrorCode::Unsupported)),
+        PageKind::Text | PageKind::Epub => Err(error(ErrorCode::Unsupported)),
     }
 }
 

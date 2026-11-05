@@ -4,6 +4,7 @@ mod chat_selection;
 mod clipboard_commands;
 mod clipboard_history;
 mod collection_commands;
+mod collection_epub;
 mod collection_import;
 mod collection_render;
 mod collection_service;

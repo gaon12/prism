@@ -407,7 +407,23 @@ pub(crate) fn manifest(
                 ));
             }
         }
-        SourceKind::Epub => return Err(error(ErrorCode::Unsupported)),
+        SourceKind::Epub => {
+            let bytes = read(&path, excluded, cancel)?;
+            let digest = hash(&bytes);
+            let book = crate::collection_epub::Book::open(&bytes, cancel)?;
+            for (index, chapter) in book.chapters.iter().enumerate() {
+                check(cancel)?;
+                pages.push(page(
+                    source,
+                    Some(chapter.entry.clone()),
+                    index as u32 + 1,
+                    PageKind::Epub,
+                    chapter.entry.clone(),
+                    &digest,
+                ));
+                progress(pages.len() as u64);
+            }
+        }
         SourceKind::Text | SourceKind::Document => {
             let document = text(source, excluded, cancel)?;
             for (i, _) in text_pages(&document).into_iter().enumerate() {

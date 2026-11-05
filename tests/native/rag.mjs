@@ -250,6 +250,13 @@ try {
   );
   // Exercise the real chat controls after backend policy checks, in a separate
   // conversation so UI history cannot change the earlier taint assertions.
+  // An empty filename result has no handoff; the separate search-chat fixture
+  // verifies automatic result handoff without adding a conversation to this test.
+  await main.getByRole('button', { name: '파일명', exact: true }).click();
+  await main
+    .getByRole('textbox', { name: '검색어', exact: true })
+    .fill('unmatchable-filename-fixture');
+  await main.getByRole('heading', { name: '검색 결과가 없어요', exact: true }).waitFor();
   await main.getByRole('button', { name: '채팅', exact: true }).click();
   await main.getByRole('heading', { name: 'RAG 대화', exact: true }).waitFor();
   await main.getByRole('button', { name: '새 대화', exact: true }).click();

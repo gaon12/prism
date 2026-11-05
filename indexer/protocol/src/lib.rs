@@ -3,6 +3,7 @@
 //! Transport authentication and deadlines belong to the named-pipe adapters.
 
 use std::io::{self, Cursor, Read, Write};
+pub mod stream;
 
 pub const VERSION: u16 = 1;
 pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
@@ -77,6 +78,7 @@ pub enum FailureCode {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Response {
+    Volume { serial: u64 },
     Progress { completed: u64 },
     Records(Vec<FileRecord>),
     Removed(Vec<String>),
@@ -202,6 +204,10 @@ impl Response {
     pub fn write(&self, writer: &mut impl Write, drive: DriveLetter) -> io::Result<()> {
         let mut payload = vec![];
         match self {
+            Self::Volume { serial } => {
+                payload.push(6);
+                payload.extend_from_slice(&serial.to_le_bytes());
+            }
             Self::Progress { completed } => {
                 payload.push(1);
                 payload.extend_from_slice(&completed.to_le_bytes());
@@ -249,6 +255,9 @@ impl Response {
     pub fn read(reader: &mut impl Read, drive: DriveLetter) -> io::Result<Self> {
         let mut payload = read_frame(reader)?;
         let response = match byte(&mut payload)? {
+            6 => Self::Volume {
+                serial: u64_value(&mut payload)?,
+            },
             1 => Self::Progress {
                 completed: u64_value(&mut payload)?,
             },
@@ -353,6 +362,9 @@ mod tests {
             },
         ];
         for message in [
+            Response::Volume {
+                serial: 0xfedc_ba98_7654_3210,
+            },
             Response::Records(records),
             Response::Removed(vec!["C:\\gone.txt".into()]),
             Response::Progress {

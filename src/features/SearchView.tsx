@@ -12,6 +12,8 @@ import {
   X,
 } from 'lucide-react';
 import { EmptyState } from '../components/EmptyState';
+import { Segmented } from '../components/controls/Segmented';
+import type { SearchSession } from '../lib/types';
 import { useClient, setSession } from '../lib/store';
 import { translate } from '../lib/i18n';
 import { useSearch } from '../lib/use-search';
@@ -109,52 +111,23 @@ export function SearchView({
         <kbd>Enter</kbd>
       </div>
       <div className="search-toolbar">
-        <div className="search-modes">
-          <button
-            className={`mode ${search.request.kind === 'files' && session.mode === 'auto' ? 'active' : ''}`}
-            onClick={() =>
-              setSession({
-                mode: 'auto',
-                ...(search.request.kind !== 'files' ? { query: search.request.input } : {}),
-              })
-            }
-          >
-            {t('autoSearch')}
-          </button>
-          <button
-            className={`mode ${search.request.kind === 'files' && session.mode === 'filename' ? 'active' : ''}`}
-            onClick={() => {
-              setSession({
-                mode: 'filename',
-                ...(search.request.kind !== 'files' ? { query: search.request.input } : {}),
-              });
-            }}
-          >
-            {t('filename')}
-          </button>
-          <button
-            className={`mode ${search.request.kind === 'files' && session.mode === 'content' ? 'active' : ''}`}
-            onClick={() =>
-              setSession({
-                mode: 'content',
-                ...(search.request.kind !== 'files' ? { query: search.request.input } : {}),
-              })
-            }
-          >
-            {t('content')}
-          </button>
-          <button
-            className={`mode ${search.request.kind === 'files' && session.mode === 'semantic' ? 'active' : ''}`}
-            onClick={() =>
-              setSession({
-                mode: 'semantic',
-                ...(search.request.kind !== 'files' ? { query: search.request.input } : {}),
-              })
-            }
-          >
-            {t('semantic')}
-          </button>
-        </div>
+        <Segmented<SearchSession['mode']>
+          className="search-modes"
+          label={t('searchMode')}
+          value={search.request.kind === 'files' ? session.mode : null}
+          items={[
+            { value: 'auto', label: t('autoSearch'), description: t('automaticSearchHint') },
+            { value: 'filename', label: t('filename') },
+            { value: 'content', label: t('content') },
+            { value: 'semantic', label: t('semantic') },
+          ]}
+          onChange={(mode) =>
+            setSession({
+              mode,
+              ...(search.request.kind !== 'files' ? { query: search.request.input } : {}),
+            })
+          }
+        />
         <button
           className={`button filter-button ${filterOpen ? 'selected' : ''}`}
           aria-expanded={filterOpen}
@@ -202,9 +175,6 @@ export function SearchView({
             {t(!search.bodyActive ? 'filenameSyntax' : 'contentSyntax')}
           </span>
         </div>
-      ) : null}
-      {session.mode === 'auto' && search.request.kind === 'files' && !search.bodyActive ? (
-        <p className="setting-footnote automatic-search-note">{t('automaticSearchHint')}</p>
       ) : null}
       <IndexSummary search={search} />
       {search.request.kind === 'files' &&

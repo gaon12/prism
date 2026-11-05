@@ -2,6 +2,7 @@ import type { Language } from './types';
 
 // Each entry is Korean, English, Simplified Chinese, Traditional Chinese, Japanese.
 const messages = {
+  searchMode: ['검색 방식', 'Search mode', '搜索方式', '搜尋方式', '検索方法'],
   chatWaitingForDocument: [
     'Spotlight의 대화가 준비됐습니다. 작성 중인 문서를 저장하거나 편집을 버리면 이동합니다.',
     'Your Spotlight chat is ready. Save or discard document edits to open it.',

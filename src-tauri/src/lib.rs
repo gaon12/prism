@@ -1,5 +1,6 @@
 mod app_paths;
 mod automatic_search;
+mod chat_selection;
 mod clipboard_commands;
 mod clipboard_history;
 mod commands;

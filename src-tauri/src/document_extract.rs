@@ -2751,6 +2751,16 @@ mod tests {
     #[test]
     #[ignore = "requires Windows native OCR with the installed Korean language pack"]
     fn windows_native_ocr_pixels_pdf_passwords_and_resource_errors() {
+        verify_native_ocr_corpus();
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires actual macOS Vision with Korean recognition support; cross-compilation is not execution"]
+    fn macos_native_ocr_pixels_pdf_passwords_and_resource_errors() {
+        verify_native_ocr_corpus();
+    }
+    #[cfg(any(windows, target_os = "macos"))]
+    fn verify_native_ocr_corpus() {
         let capabilities = crate::ocr::capabilities();
         assert!(
             capabilities.available && capabilities.pdf_available,
@@ -2763,6 +2773,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut options = ExtractOptions::default();
         options.ocr.enabled = true;
+        options.ocr.engine = crate::ocr::Engine::System;
         options.ocr.language = "ko".into();
         let cancel = AtomicBool::new(false);
         for (name, bytes, expected_page) in [

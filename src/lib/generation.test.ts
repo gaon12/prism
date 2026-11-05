@@ -48,3 +48,11 @@ describe('generation preferences migration', () => {
     });
   });
 });
+
+it('migrates retrieval independently of providers and accepts explicit search modes', () => {
+  expect(normalizeGeneration({})).toMatchObject({ retrieval: 'hybrid', mode: 'local' });
+  for (const retrieval of ['keyword', 'semantic', 'hybrid']) {
+    expect(normalizeGeneration({ retrieval }).retrieval).toBe(retrieval);
+  }
+  expect(normalizeGeneration({ retrieval: 'unknown' }).retrieval).toBe('hybrid');
+});

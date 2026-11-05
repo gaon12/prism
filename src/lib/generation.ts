@@ -26,6 +26,7 @@ export interface GenerationConfig {
   temperature: number | null;
 }
 export interface GenerationPreferences {
+  retrieval: 'hybrid' | 'semantic' | 'keyword';
   mode: GenerationSlot | 'auto';
   priority: 'localFirst' | 'externalFirst';
   fallback: boolean;
@@ -36,6 +37,7 @@ export interface GenerationPreferences {
   external: GenerationConfig | null;
 }
 export const defaultGeneration: GenerationPreferences = {
+  retrieval: 'hybrid',
   mode: 'local',
   priority: 'localFirst',
   fallback: false,
@@ -66,6 +68,8 @@ export function normalizeGeneration(input: unknown): GenerationPreferences {
               : null,
         };
   return {
+    retrieval:
+      value.retrieval === 'semantic' || value.retrieval === 'keyword' ? value.retrieval : 'hybrid',
     mode: value.mode === 'external' || value.mode === 'auto' ? value.mode : 'local',
     priority: value.priority === 'externalFirst' ? 'externalFirst' : 'localFirst',
     fallback: value.fallback === true,

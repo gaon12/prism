@@ -1,6 +1,29 @@
 import type { Language } from '../../lib/types';
 
 const messages = {
+  retrieval: [
+    '채팅·문서의 근거 검색',
+    'Evidence retrieval for chat and documents',
+    '聊天与文档的依据检索',
+    '聊天與文件的依據檢索',
+    'チャット・文書の根拠検索',
+  ],
+  retrievalHybrid: [
+    '혼합 검색 (기본)',
+    'Hybrid (default)',
+    '混合检索（默认）',
+    '混合檢索（預設）',
+    'ハイブリッド（既定）',
+  ],
+  retrievalSemantic: ['의미 검색', 'Semantic', '语义检索', '語意檢索', '意味検索'],
+  retrievalKeyword: ['키워드 검색', 'Keyword', '关键词检索', '關鍵字檢索', 'キーワード検索'],
+  retrievalHelp: [
+    '혼합 검색은 키워드·의미 검색의 순위를 합칩니다. 의미 검색에는 실행 중인 로컬 임베딩 모델이 필요하며, 모델이 없으면 키워드로 검색합니다. 긴 질문으로 키워드 검색 예산을 넘으면 혼합 검색은 의미 검색만 사용합니다. 모델을 자동 실행하거나 파일 권한을 넓히지 않습니다.',
+    'Hybrid combines keyword and semantic ranks. Semantic retrieval needs a running local embedding model; without one, keywords are used. Hybrid uses semantic retrieval alone when a long question exceeds the keyword budget. Models are not started automatically and file permissions stay unchanged.',
+    '混合检索结合关键词与语义排名。语义检索需要运行中的本地嵌入模型，否则使用关键词。长问题超出关键词预算时仅使用语义检索。不会自动启动模型或扩大文件权限。',
+    '混合檢索結合關鍵字與語意排名。語意檢索需要執行中的本機嵌入模型，否則使用關鍵字。長問題超出關鍵字預算時僅使用語意檢索。不會自動啟動模型或擴大檔案權限。',
+    'ハイブリッドはキーワードと意味の順位を統合します。意味検索には起動中のローカル埋め込みモデルが必要で、未起動ならキーワードを使います。長い質問がキーワードの上限を超える場合は意味検索のみを使います。モデルの自動起動やファイル権限の拡張は行いません。',
+  ],
   title: ['생성 AI 설정', 'Generation AI', '生成式AI设置', '生成式AI設定', '生成AI設定'],
   description: [
     '사용자가 실행한 로컬 OpenAI 호환 서버 또는 외부 HTTPS 서버를 연결합니다. 이 설정은 생성 모델을 다운로드하거나 자동 실행하지 않습니다.',

@@ -542,6 +542,24 @@ export function GenerationPanel({
           </select>
         </div>
       </div>
+      <div className="generation-field">
+        <label htmlFor={`${id}-retrieval`}>{t('retrieval')}</label>
+        <select
+          id={`${id}-retrieval`}
+          value={preferences.retrieval}
+          aria-describedby={`${id}-retrieval-help`}
+          onChange={(event) =>
+            update({ retrieval: event.target.value as GenerationPreferences['retrieval'] })
+          }
+        >
+          <option value="hybrid">{t('retrievalHybrid')}</option>
+          <option value="semantic">{t('retrievalSemantic')}</option>
+          <option value="keyword">{t('retrievalKeyword')}</option>
+        </select>
+        <small id={`${id}-retrieval-help`} className="generation-note">
+          {t('retrievalHelp')}
+        </small>
+      </div>
       <label className="generation-check" htmlFor={`${id}-fallback`}>
         <input
           id={`${id}-fallback`}

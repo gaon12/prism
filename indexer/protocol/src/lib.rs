@@ -86,6 +86,65 @@ pub enum Response {
     Failure(FailureCode),
 }
 
+/// The server disconnects only after the client confirms consuming the final
+/// frame. This avoids dropping unread named-pipe data or using an unbounded
+/// FlushFileBuffers call when a client stops reading.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Acknowledgement {
+    Complete { revision: u64 },
+    Failure(FailureCode),
+}
+impl Acknowledgement {
+    pub fn write(self, writer: &mut impl Write) -> io::Result<()> {
+        let mut payload = vec![127];
+        match self {
+            Self::Complete { revision } if revision != 0 => {
+                payload.push(1);
+                payload.extend_from_slice(&revision.to_le_bytes());
+            }
+            Self::Failure(code) => {
+                payload.push(2);
+                payload.push(code as u8);
+            }
+            _ => return Err(invalid()),
+        }
+        write_frame(writer, &payload)
+    }
+    pub fn read(reader: &mut impl Read) -> io::Result<Self> {
+        let mut payload = read_frame(reader)?;
+        if byte(&mut payload)? != 127 {
+            return Err(invalid());
+        }
+        let result = match byte(&mut payload)? {
+            1 => {
+                let revision = u64_value(&mut payload)?;
+                if revision == 0 {
+                    return Err(invalid());
+                }
+                Self::Complete { revision }
+            }
+            2 => Self::Failure(failure_code(byte(&mut payload)?)?),
+            _ => return Err(invalid()),
+        };
+        finish(&payload)?;
+        Ok(result)
+    }
+}
+
+fn failure_code(code: u8) -> io::Result<FailureCode> {
+    Ok(match code {
+        1 => FailureCode::AccessDenied,
+        2 => FailureCode::Unavailable,
+        3 => FailureCode::UnsupportedVolume,
+        4 => FailureCode::Cancelled,
+        5 => FailureCode::InvalidRequest,
+        6 => FailureCode::Busy,
+        7 => FailureCode::CorruptVolume,
+        8 => FailureCode::JournalGap,
+        _ => return Err(invalid()),
+    })
+}
+
 fn invalid() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
@@ -297,17 +356,7 @@ impl Response {
             4 => Self::Finished {
                 revision: u64_value(&mut payload)?,
             },
-            5 => Self::Failure(match byte(&mut payload)? {
-                1 => FailureCode::AccessDenied,
-                2 => FailureCode::Unavailable,
-                3 => FailureCode::UnsupportedVolume,
-                4 => FailureCode::Cancelled,
-                5 => FailureCode::InvalidRequest,
-                6 => FailureCode::Busy,
-                7 => FailureCode::CorruptVolume,
-                8 => FailureCode::JournalGap,
-                _ => return Err(invalid()),
-            }),
+            5 => Self::Failure(failure_code(byte(&mut payload)?)?),
             _ => return Err(invalid()),
         };
         finish(&payload)?;
@@ -338,6 +387,29 @@ mod tests {
             assert!(DriveLetter::new(value).is_err());
         }
         assert_eq!(drive().root(), "C:\\");
+    }
+    #[test]
+    fn completion_acknowledgements_cannot_be_mistaken_for_new_requests() {
+        for ack in [
+            Acknowledgement::Complete { revision: 42 },
+            Acknowledgement::Failure(FailureCode::Busy),
+        ] {
+            let mut bytes = vec![];
+            ack.write(&mut bytes).unwrap();
+            assert_eq!(
+                Acknowledgement::read(&mut Cursor::new(&bytes)).unwrap(),
+                ack
+            );
+            assert!(Request::read(&mut Cursor::new(bytes)).is_err());
+        }
+        assert!(Acknowledgement::Complete { revision: 0 }
+            .write(&mut vec![])
+            .is_err());
+        let mut bytes = vec![];
+        Request::Snapshot { drive: drive() }
+            .write(&mut bytes)
+            .unwrap();
+        assert!(Acknowledgement::read(&mut Cursor::new(bytes)).is_err());
     }
     #[test]
     fn filenames_and_metadata_round_trip_without_unicode_normalization() {

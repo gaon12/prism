@@ -23,7 +23,7 @@ import { ContentResults } from './content/ContentResults';
 import { errorMessage, showToast } from '../lib/store';
 import { ClipboardPanel } from './clipboard/ClipboardPanel';
 import { DictionaryPanel } from './dictionary/DictionaryPanel';
-import { selectionForSearch } from '../lib/search-selection';
+import { useChatSelection } from '../lib/use-chat-selection';
 import type { ChatSelection } from '../lib/rag';
 
 export function SearchView({
@@ -52,7 +52,8 @@ export function SearchView({
   const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
   const input = useRef<HTMLInputElement>(null);
   const [filterOpen, setFilterOpen] = useState(false);
-  const selection = selectionForSearch(search, session, settings);
+  // Steady while indexing: no flicker between parts (see use-chat-selection.ts).
+  const { selection, waitingForIndex } = useChatSelection(search, session, settings);
   const selectionKey = JSON.stringify(selection);
   useEffect(() => {
     onContextChange(JSON.parse(selectionKey) as ChatSelection | null);
@@ -158,9 +159,11 @@ export function SearchView({
             </button>
           ) : null}
           <small className="muted">
-            {!selection || selection.filenameSearch || selection.keywordSearch
-              ? t('allFilenameChatHint')
-              : t('searchChatHint').replace('{count}', String(selection.documents.length))}
+            {waitingForIndex
+              ? t('chatWaitsForIndex')
+              : !selection || selection.filenameSearch || selection.keywordSearch
+                ? t('allFilenameChatHint')
+                : t('searchChatHint').replace('{count}', String(selection.documents.length))}
           </small>
         </div>
       ) : null}

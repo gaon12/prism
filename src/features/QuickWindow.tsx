@@ -9,7 +9,7 @@ import { FileResults, IndexSummary, UtilityResult } from './SearchResults';
 import { ClipboardPanel } from './clipboard/ClipboardPanel';
 import { DictionaryPanel } from './dictionary/DictionaryPanel';
 import { ContentResults } from './content/ContentResults';
-import { selectionForSearch } from '../lib/search-selection';
+import { useChatSelection } from '../lib/use-chat-selection';
 import type { ChatSelection } from '../lib/rag';
 
 export function QuickWindow({
@@ -28,7 +28,8 @@ export function QuickWindow({
   const { t } = search;
   const input = useRef<HTMLInputElement>(null);
   const expanded = session.query.trim().length > 0;
-  const selection = selectionForSearch(search, session, settings);
+  // Steady while indexing: no flicker between parts (see use-chat-selection.ts).
+  const { selection, waitingForIndex } = useChatSelection(search, session, settings);
   const selectionKey = JSON.stringify(selection);
   useEffect(() => {
     onContextChange(JSON.parse(selectionKey) as ChatSelection | null);
@@ -189,7 +190,7 @@ export function QuickWindow({
                   onClick={() => {
                     if (selection) onChat(selection);
                   }}
-                  title="Ctrl Shift Enter"
+                  title={waitingForIndex ? t('chatWaitsForIndex') : 'Ctrl Shift Enter'}
                 >
                   <MessageSquare size={14} />
                   {t(creatingChat ? 'creatingSearchChat' : 'chatWithResults')}

@@ -24,6 +24,13 @@ const messages = {
     '儲存全部符合檔案，可在對話中更改選擇。',
     '一致するすべてのファイルを保存します。対話で選択を変更できます。',
   ],
+  chatWaitsForIndex: [
+    '색인이 끝나면 검색 결과 전체로 대화할 수 있어요.',
+    'You can chat with all results when indexing finishes.',
+    '索引完成后即可与全部搜索结果对话。',
+    '索引完成後即可與全部搜尋結果對話。',
+    'インデックス作成が終わると、すべての検索結果と対話できます。',
+  ],
   chatWithResults: [
     '검색 결과로 대화',
     'Chat with results',

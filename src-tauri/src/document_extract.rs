@@ -69,6 +69,7 @@ impl Default for ExtractOptions {
 pub enum ExtractErrorCode {
     UnsupportedFormat,
     Encrypted,
+    PasswordRejected,
     CorruptDocument,
     OcrRequired,
     LimitExceeded,
@@ -230,6 +231,42 @@ pub fn extract_document(
     options: &ExtractOptions,
     cancel: &AtomicBool,
 ) -> Result<ExtractedDocument> {
+    extract_document_inner(path, options, cancel, None)
+}
+
+/// Explicit user retry. The caller owns the transient password and must not
+/// persist it; neither the original PDF nor a decrypted copy is written here.
+pub fn extract_document_with_password(
+    path: &Path,
+    options: &ExtractOptions,
+    cancel: &AtomicBool,
+    password: &str,
+) -> Result<ExtractedDocument> {
+    if password.len() > 1024 {
+        return Err(err(
+            ExtractErrorCode::LimitExceeded,
+            "PDF password exceeds the input budget",
+        ));
+    }
+    if !path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("pdf"))
+    {
+        return Err(err(
+            ExtractErrorCode::UnsupportedFormat,
+            "Password retry currently supports PDF documents",
+        ));
+    }
+    extract_document_inner(path, options, cancel, Some(password))
+}
+
+fn extract_document_inner(
+    path: &Path,
+    options: &ExtractOptions,
+    cancel: &AtomicBool,
+    password: Option<&str>,
+) -> Result<ExtractedDocument> {
     check_cancel(cancel)?;
     let extension = path
         .extension()
@@ -268,7 +305,7 @@ pub fn extract_document(
         "docx" | "hwpx" => extract_zip(&bytes, &extension, &mut output)?,
         "pptx" | "xlsx" | "odt" | "ods" | "odp" => extract_office(&bytes, &extension, &mut output)?,
         "hwp" => extract_hwp(&bytes, &mut output)?,
-        "pdf" => extract_pdf(&bytes, &mut output)?,
+        "pdf" => extract_pdf(&bytes, password, &mut output)?,
         "html" | "htm" => extract_html(&decode_text(&bytes)?, &mut output)?,
         "csv" | "tsv" => extract_delimited(
             &decode_text(&bytes)?,
@@ -851,7 +888,7 @@ fn extract_zip(bytes: &[u8], format: &str, out: &mut Collector<'_>) -> Result<()
     Ok(())
 }
 
-fn extract_pdf(bytes: &[u8], out: &mut Collector<'_>) -> Result<()> {
+fn extract_pdf(bytes: &[u8], password: Option<&str>, out: &mut Collector<'_>) -> Result<()> {
     struct TextWriter<'a> {
         bytes: Vec<u8>,
         max: usize,
@@ -880,7 +917,28 @@ fn extract_pdf(bytes: &[u8], out: &mut Collector<'_>) -> Result<()> {
     // pdf-extract/lopdf decoding is an in-process dependency. Cancellation is
     // observed between pages; its internal stream allocations are not capped.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
-        let doc = pdf_extract::Document::load_mem(bytes).map_err(|_| corrupt())?;
+        let options = password
+            .map(pdf_extract::LoadOptions::with_password)
+            .unwrap_or_default();
+        let doc =
+            pdf_extract::Document::load_mem_with_options(bytes, options).map_err(|value| {
+                if matches!(
+                    value,
+                    pdf_extract::Error::InvalidPassword | pdf_extract::Error::Decryption(_)
+                ) {
+                    if password.is_some() {
+                        err(
+                            ExtractErrorCode::PasswordRejected,
+                            "Could not decrypt this PDF with the supplied password",
+                        )
+                    } else {
+                        encrypted()
+                    }
+                } else {
+                    corrupt()
+                }
+            })?;
+        check_cancel(out.cancel)?;
         if doc.is_encrypted() {
             return Err(encrypted());
         }
@@ -2704,6 +2762,79 @@ mod tests {
         assert!(doc.sections[1].text.ends_with(": 42"));
     }
 
+    #[test]
+    fn supplied_pdf_password_preserves_raw_fingerprint_and_page_numbers() {
+        for (bytes, password) in [
+            (
+                include_bytes!("../../tests/fixtures/encrypted-pdf/rc4-128.pdf").as_slice(),
+                "fixture-user-password",
+            ),
+            (
+                include_bytes!("../../tests/fixtures/encrypted-pdf/aes256.pdf").as_slice(),
+                "암호-fixture-密碼",
+            ),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("암호.PDF");
+            fs::write(&path, bytes).unwrap();
+            let options = ExtractOptions::default();
+            let cancel = AtomicBool::new(false);
+            assert_eq!(
+                extract_document(&path, &options, &cancel).unwrap_err().code,
+                ExtractErrorCode::Encrypted
+            );
+            let rejected = extract_document_with_password(
+                &path,
+                &options,
+                &cancel,
+                "not-the-fixture-password",
+            )
+            .unwrap_err();
+            assert_eq!(rejected.code, ExtractErrorCode::PasswordRejected);
+            assert!(!rejected.message.contains("not-the-fixture-password"));
+            for secret in [password, "fixture-owner-password"] {
+                let extracted =
+                    extract_document_with_password(&path, &options, &cancel, secret).unwrap();
+                assert_eq!(
+                    extracted
+                        .sections
+                        .iter()
+                        .filter_map(|section| section.page)
+                        .collect::<Vec<_>>(),
+                    vec![1, 3]
+                );
+                assert!(extracted.sections[1].text.contains("unlockcanarythird"));
+                assert_eq!(
+                    extracted.fingerprint.sha256,
+                    format!("{:x}", Sha256::digest(bytes))
+                );
+                assert!(!serde_json::to_string(&extracted).unwrap().contains(secret));
+            }
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            // An unopened PDF may load as a partial encrypted Document instead
+            // of a parser error. Our extraction contract still requires a password.
+            assert_eq!(
+                extract_document(&path, &options, &cancel).unwrap_err().code,
+                ExtractErrorCode::Encrypted
+            );
+            let limited = ExtractOptions {
+                max_text_bytes: 2,
+                ..Default::default()
+            };
+            assert_eq!(
+                extract_document_with_password(&path, &limited, &cancel, password)
+                    .unwrap_err()
+                    .code,
+                ExtractErrorCode::LimitExceeded
+            );
+            assert_eq!(
+                extract_document_with_password(&path, &options, &AtomicBool::new(true), password)
+                    .unwrap_err()
+                    .code,
+                ExtractErrorCode::Cancelled
+            );
+        }
+    }
     #[test]
     fn encrypted_pdf_and_ooxml_are_classified() {
         let mut doc = pdf_extract::Document::load_mem(&pdf(&["confidential fixture"])).unwrap();

@@ -21,6 +21,50 @@ fn fixture() -> Option<i32> {
         time::Duration,
     };
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--fixture-paddle-parent")
+        && args.len() == 3
+    {
+        use prism_platform_qa::{ocr, ocr_runtime};
+        use std::sync::atomic::AtomicBool;
+        let runtime = ocr_runtime::initialize(
+            PathBuf::from(&args[1]).as_path(),
+            &std::env::current_exe().unwrap(),
+            |_| {},
+        )
+        .unwrap();
+        assert!(runtime.status().available);
+        let bytes = include_bytes!("../../../tests/fixtures/ocr/bilingual.png");
+        let limits = ocr::Limits::default();
+        let cancel = AtomicBool::new(false);
+        let system = ocr::Preferences {
+            enabled: true,
+            engine: ocr::Engine::System,
+            ..Default::default()
+        };
+        assert_eq!(
+            ocr::recognize(ocr::Input::Image(bytes), &system, &limits, &cancel)
+                .unwrap_err()
+                .code,
+            ocr::Code::Unavailable
+        );
+        let automatic = ocr::Preferences {
+            engine: ocr::Engine::Auto,
+            ..system
+        };
+        let pages = ocr::recognize(ocr::Input::Image(bytes), &automatic, &limits, &cancel).unwrap();
+        let recognized =
+            pages.len() == 1 && pages[0].text.contains("프리즘") && pages[0].text.contains("74829");
+        assert!(recognized);
+        fs::write(&args[2], serde_json::to_vec(&serde_json::json!({
+            "pid": runtime.status().pid.unwrap(), "autoFallback": true, "actualKorean": recognized,
+        })).unwrap()).unwrap();
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    }
     if args
         .first()
         .is_some_and(|arg| arg == "--fixture-model-parent")

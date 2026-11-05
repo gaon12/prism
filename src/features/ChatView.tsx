@@ -26,6 +26,7 @@ import type { Language, SearchScope } from '../lib/types';
 import { chatText } from './chat/messages';
 import type { ChatMessage } from './chat/messages';
 import './chat/chat.css';
+import { SearchSelection } from './chat/SearchSelection';
 
 const errorCodes = new Set([
   'input',
@@ -297,6 +298,7 @@ function ConversationWorkspace({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
   const [question, setQuestion] = useState('');
+  const [selectionDirty, setSelectionDirty] = useState(false);
   const [mode, setMode] = useState<'documents' | 'general'>('documents');
   const [sourcesHidden, setSourcesHidden] = useState(false);
   const [job, setJob] = useState<RagJob | null>(null);
@@ -337,8 +339,10 @@ function ConversationWorkspace({
     usableScopeIds.length <= 128 &&
     !busy &&
     !action &&
+    !selectionDirty &&
     question.trim() &&
-    (mode === 'general' || usableScopeIds.length),
+    (mode === 'general' ||
+      (usableScopeIds.length && (!view?.selection || view.selection.selectedDocuments.length))),
   );
   useEffect(() => {
     alive.current = true;
@@ -662,9 +666,12 @@ function ConversationWorkspace({
     if (previewVisible && !previewDialog.current?.open) previewDialog.current?.showModal();
   }, [previewVisible]);
   return (
-    <section className="chat-workspace" aria-label={view?.conversation.title ?? t('loading')}>
+    <section
+      className="chat-workspace"
+      aria-label={view ? view.conversation.title || t('searchResultsTitle') : t('loading')}
+    >
       <header className="chat-conversation-heading">
-        <h2>{view?.conversation.title ?? t('loading')}</h2>
+        <h2>{view ? view.conversation.title || t('searchResultsTitle') : t('loading')}</h2>
         <div className="chat-actions">
           <button
             type="button"
@@ -878,6 +885,21 @@ function ConversationWorkspace({
           ) : null}
         </dialog>
       ) : null}
+      {view?.selection ? (
+        <SearchSelection
+          selection={view.selection}
+          language={language}
+          disabled={busy || loading}
+          onDirty={setSelectionDirty}
+          onSave={async (selection) => {
+            await rag.setSelection(id, selection);
+            setPage((previous) =>
+              previous ? { ...previous, value: { ...previous.value, selection } } : previous,
+            );
+            setSelectionDirty(false);
+          }}
+        />
+      ) : null}
       <div className="chat-composer">
         <details className="chat-retrieval-options">
           <summary>
@@ -1016,9 +1038,11 @@ function ConversationWorkspace({
 export function ChatView({
   onSettings,
   onModels,
+  initialConversationId = null,
 }: {
   onSettings: () => void;
   onModels?: () => void;
+  initialConversationId?: string | null;
 }) {
   const { settings, ready } = useClient();
   const language = settings.language;
@@ -1032,7 +1056,7 @@ export function ChatView({
   const [selectedScopeIds, setSelectedScopeIds] = useState<string[] | null>(null);
   const [query, setQuery] = useState('');
   const [list, setList] = useState<{ query: string; items: ConversationSummary[] } | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialConversationId);
   const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -1191,7 +1215,7 @@ export function ChatView({
                       setSelectedId(item.id);
                     }}
                   >
-                    <strong>{item.title}</strong>
+                    <strong>{item.title || t('searchResultsTitle')}</strong>
                     <span>{chatText(language, 'turns', { count: item.turnCount })}</span>
                     <time dateTime={new Date(item.updatedMs).toISOString()}>
                       {new Date(item.updatedMs).toLocaleDateString(language)}

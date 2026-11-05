@@ -126,7 +126,7 @@ section.feature-view.chat-view {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: auto;
 }
 .chat-workspace > :not(.chat-transcript) {
   flex-shrink: 0;
@@ -522,6 +522,47 @@ dialog.chat-preview::backdrop {
   white-space: nowrap;
   border: 0;
 }
+.chat-search-selection {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+  max-height: 40%;
+  overflow: auto;
+}
+.chat-search-selection summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.chat-search-selection + .chat-composer {
+  max-height: 35%;
+}
+.chat-search-selection fieldset {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+}
+.chat-selection-list {
+  max-height: 190px;
+  overflow: auto;
+}
+.chat-selection-list small,
+.chat-selection-query {
+  overflow-wrap: anywhere;
+}
+.chat-selection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 8px 0;
+}
+.search-chat-action {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0;
+}
 @media (max-width: 980px) {
   .chat-layout {
     grid-template-columns: 185px minmax(0, 1fr);
@@ -529,6 +570,12 @@ dialog.chat-preview::backdrop {
   }
 }
 @media (max-width: 700px) {
+  .chat-search-selection {
+    max-height: none;
+  }
+  .chat-search-selection + .chat-composer {
+    max-height: none;
+  }
   section.feature-view.chat-view {
     height: auto;
     min-height: 100%;

@@ -50,16 +50,39 @@ export interface ConversationTurn {
   error: RagFailure | null;
 }
 export interface ConversationPage {
+  selectionSet: SelectionPage | null;
   selection: ChatSelection | null;
   conversation: ConversationSummary;
   turns: ConversationTurn[];
   hasMore: boolean;
 }
 export interface ChatSelection {
+  filenameSearch?: FilenameSearch;
   query: string;
   documents: string[];
   selectedDocuments: string[];
   partial: boolean;
+}
+export interface FilenameSearch {
+  query: string;
+  extension: string;
+  scopeId: string | null;
+  indexRevision: number;
+  settingsRevision: number;
+}
+export interface SelectionPage {
+  query: string;
+  partial: boolean;
+  revision: number;
+  total: number;
+  selectedCount: number;
+  offset: number;
+  hasMore: boolean;
+  files: { id: number; path: string; selected: boolean }[];
+}
+/** A transcript refresh must not reset the file page or replay older selection data. */
+export function preferSelectionPage(current: SelectionPage | null, incoming: SelectionPage | null) {
+  return current && incoming && current.revision >= incoming.revision ? current : incoming;
 }
 export interface RagRequest {
   requestId: string;
@@ -108,6 +131,17 @@ export const generationCredentials = {
     invoke<void>('generation_clear_key', { slot, endpoint }),
 };
 export const rag = {
+  createFilenameSearch: (search: FilenameSearch, requestId: string) =>
+    invoke<ConversationSummary>('rag_create_filename_search', { search, requestId }),
+  fileSetPage: (id: string, offset: number) =>
+    invoke<SelectionPage | null>('rag_file_set_page', { id, offset }),
+  editFileSet: (
+    id: string,
+    revision: number,
+    changes: [number, boolean][],
+    all: boolean | null = null,
+    clear = false,
+  ) => invoke<void>('rag_edit_file_set', { id, revision, changes, all, clear }),
   createFromSearch: (selection: ChatSelection) =>
     invoke<ConversationSummary>('rag_create_from_search', { selection }),
   setSelection: (id: string, selection: ChatSelection | null) =>

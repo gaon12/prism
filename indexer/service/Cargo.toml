@@ -1,0 +1,9 @@
+[package]
+name = "prism-file-index"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+publish = false
+
+[dependencies]
+prism-ntfs-windows = { path = "../windows" }

@@ -3,10 +3,14 @@
 #[cfg(windows)]
 pub mod client;
 #[cfg(windows)]
+pub mod host;
+#[cfg(windows)]
 pub mod pipe;
 #[cfg(windows)]
 pub mod scm;
 #[cfg(windows)]
 mod security;
+#[cfg(windows)]
+pub mod service;
 #[cfg(windows)]
 pub mod volume;

@@ -26,6 +26,8 @@ use std::{
 };
 use walkdir::WalkDir;
 
+#[path = "unlock_requests.rs"]
+mod unlock_requests;
 const DIMENSIONS: usize = 768;
 pub(crate) struct SemanticQuery {
     vector: Vec<f32>,
@@ -141,6 +143,7 @@ struct Inner {
     pending: Mutex<Option<Request>>,
     scan_cancel: Mutex<Arc<AtomicBool>>,
     searches: Mutex<HashMap<String, SearchTask>>,
+    unlocks: unlock_requests::UnlockRequests,
     generation: AtomicU64,
     closed: AtomicBool,
     paused: AtomicBool,
@@ -177,6 +180,7 @@ impl ContentService {
                 pending: Mutex::new(None),
                 scan_cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
                 searches: Mutex::new(HashMap::new()),
+                unlocks: unlock_requests::UnlockRequests::default(),
                 generation: AtomicU64::new(0),
                 closed: AtomicBool::new(false),
                 paused: AtomicBool::new(false),
@@ -274,6 +278,9 @@ impl ContentService {
             scopes,
             cancel,
         });
+        if changed {
+            self.inner.unlocks.cancel_all(false);
+        }
         if let Ok(searches) = self.inner.searches.lock() {
             if changed {
                 for task in searches.values() {
@@ -311,6 +318,7 @@ impl ContentService {
     }
     pub fn shutdown(&self) {
         self.inner.closed.store(true, Ordering::Release);
+        self.inner.unlocks.cancel_all(true);
         self.cancel_index();
         if let Ok(searches) = self.inner.searches.lock() {
             for search in searches.values() {
@@ -1276,6 +1284,206 @@ impl ContentService {
         chunks.retain(|chunk| !self.is_excluded(&chunk.file_path));
         Ok(chunks)
     }
+    pub(crate) fn prepare_unlock(&self, window: &str) -> Result<String> {
+        self.inner
+            .unlocks
+            .prepare(window)
+            .map_err(|value| match value {
+                unlock_requests::StartError::Cancelled => {
+                    error("cancelled", "PDF retry cancelled.")
+                }
+                unlock_requests::StartError::Busy => {
+                    error("busy", "A previous PDF retry is still finishing.")
+                }
+                unlock_requests::StartError::Unavailable => {
+                    error("worker", "Could not prepare the PDF retry.")
+                }
+            })
+    }
+    pub(crate) fn begin_unlock(
+        &self,
+        window: &str,
+        id: &str,
+    ) -> Result<unlock_requests::UnlockPermit> {
+        if id.is_empty() || id.len() > 80 {
+            return Err(error("input", "Invalid PDF retry identifier."));
+        }
+        self.inner
+            .unlocks
+            .start(window, id)
+            .map_err(|value| match value {
+                unlock_requests::StartError::Cancelled => {
+                    error("cancelled", "PDF retry cancelled.")
+                }
+                unlock_requests::StartError::Unavailable => {
+                    error("worker", "Could not prepare the PDF retry.")
+                }
+                unlock_requests::StartError::Busy => {
+                    error("busy", "A previous PDF retry is still finishing.")
+                }
+            })
+    }
+    pub(crate) fn cancel_unlock(&self, window: &str, id: &str) {
+        if !id.is_empty() && id.len() <= 80 {
+            self.inner.unlocks.cancel(window, id);
+        }
+    }
+    fn unlock_path(&self, path: &Path, scopes: &[SearchScope]) -> Result<(PathBuf, Vec<PathBuf>)> {
+        let roots = Self::roots(scopes, None);
+        let canonical = crate::path_identity::canonical(path)
+            .map_err(|_| error("unsafePath", "The PDF path is missing or unsafe."))?;
+        if !canonical.is_file()
+            || !roots.iter().any(|root| canonical.starts_with(root))
+            || self.is_excluded(&canonical.to_string_lossy())
+        {
+            return Err(error(
+                "outsideScope",
+                "The PDF is outside current content folders.",
+            ));
+        }
+        if !canonical
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("pdf"))
+        {
+            return Err(error(
+                "unsupportedFormat",
+                "Password retry currently supports PDF documents.",
+            ));
+        }
+        Ok((canonical, roots))
+    }
+    pub(crate) fn unlock_pdf(
+        &self,
+        path: &Path,
+        password: &str,
+        cancel: &AtomicBool,
+    ) -> Result<ContentDocumentSummary> {
+        if self.inner.closed.load(Ordering::Acquire) || cancel.load(Ordering::Acquire) {
+            return Err(error("cancelled", "PDF retry cancelled."));
+        }
+        if password.len() > 1024 {
+            return Err(error("input", "PDF password exceeds the input budget."));
+        }
+        let canonical = {
+            let scopes = self
+                .inner
+                .scopes
+                .lock()
+                .map_err(|_| error("worker", "Content scopes unavailable."))?;
+            self.unlock_path(path, &scopes)?.0
+        };
+        let extracted = document_extract::extract_document_with_password(
+            &canonical,
+            &ExtractOptions::default(),
+            cancel,
+            password,
+        )
+        .map_err(|value| {
+            error(
+                serde_json::to_value(value.code)
+                    .ok()
+                    .and_then(|value| value.as_str().map(String::from))
+                    .as_deref()
+                    .unwrap_or("extract"),
+                &value.message,
+            )
+        })?;
+        self.publish_unlocked(path, &extracted, cancel)
+    }
+    fn publish_unlocked(
+        &self,
+        path: &Path,
+        extracted: &document_extract::ExtractedDocument,
+        cancel: &AtomicBool,
+    ) -> Result<ContentDocumentSummary> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        // Serialize the final authorization and publication against configure's
+        // scope update. No password is kept in the service, status or repository.
+        let scopes = self
+            .inner
+            .scopes
+            .lock()
+            .map_err(|_| error("worker", "Content scopes unavailable."))?;
+        let (canonical, roots) = self.unlock_path(path, &scopes)?;
+        if path_key(&canonical) != path_key(Path::new(&extracted.file_path)) {
+            return Err(error("sourceChanged", "The PDF changed during the retry."));
+        }
+        let mut file = fs::File::open(&canonical)
+            .map_err(|_| error("sourceChanged", "The PDF is unavailable."))?;
+        let mut digest = Sha256::new();
+        let mut buffer = [0u8; 32768];
+        let mut size = 0u64;
+        loop {
+            if cancel.load(Ordering::Acquire) || self.inner.closed.load(Ordering::Acquire) {
+                return Err(error("cancelled", "PDF retry cancelled."));
+            }
+            let count = file
+                .read(&mut buffer)
+                .map_err(|_| error("sourceChanged", "The PDF changed during the retry."))?;
+            if count == 0 {
+                break;
+            }
+            size += count as u64;
+            if size > extracted.fingerprint.size_bytes {
+                return Err(error("sourceChanged", "The PDF changed during the retry."));
+            }
+            digest.update(&buffer[..count]);
+        }
+        if size != extracted.fingerprint.size_bytes
+            || format!("{:x}", digest.finalize()) != extracted.fingerprint.sha256
+        {
+            return Err(error("sourceChanged", "The PDF changed during the retry."));
+        }
+        let already_indexed = self
+            .inner
+            .store
+            .document_summary(&canonical, &roots, cancel)
+            .map_err(|_| error("storage", "Could not inspect the content index."))?
+            .is_some();
+        let document = self
+            .inner
+            .store
+            .replace_document_versioned(extracted, &roots, Some(EXTRACTOR_VERSION), cancel)
+            .map_err(|value| {
+                error(
+                    if cancel.load(Ordering::Acquire) {
+                        "cancelled"
+                    } else {
+                        match value.code {
+                            crate::content_store::ContentStoreErrorCode::SourceChanged => {
+                                "sourceChanged"
+                            }
+                            crate::content_store::ContentStoreErrorCode::OutsideScope => {
+                                "outsideScope"
+                            }
+                            crate::content_store::ContentStoreErrorCode::UnsafePath => "unsafePath",
+                            _ => "storage",
+                        }
+                    },
+                    &value.message,
+                )
+            })?;
+        drop(scopes);
+        self.update(|status| {
+            let before = status.issues.len();
+            status
+                .issues
+                .retain(|issue| path_key(Path::new(&issue.path)) != path_key(&canonical));
+            status.skipped = status.skipped.saturating_sub(before - status.issues.len());
+            if !already_indexed {
+                status.indexed += 1;
+            }
+            status.discovered = status.discovered.max(status.indexed + status.skipped);
+        });
+        // Preserve an explicitly paused background index. Otherwise schedule the
+        // normal model worker; importing a password never starts a model itself.
+        if !self.inner.paused.load(Ordering::Acquire) {
+            let _ = self.refresh();
+        }
+        Ok(document)
+    }
     pub fn resolve_document(&self, path: &Path) -> Result<PathBuf> {
         if self.is_excluded(&path.to_string_lossy()) {
             return Err(error(
@@ -1300,7 +1508,122 @@ impl ContentService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(windows)]
+    #[test]
+    fn password_retry_preserves_pause_cache_and_current_authorization() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("source");
+        fs::create_dir(&folder).unwrap();
+        let path = folder.join("암호.pdf");
+        let bytes = include_bytes!("../../tests/fixtures/encrypted-pdf/aes256.pdf");
+        fs::write(&path, bytes).unwrap();
+        let service =
+            ContentService::open(&root.path().join("cache"), Err("no model".into()), |_| {})
+                .unwrap();
+        let scope = SearchScope {
+            id: "docs".into(),
+            name: "docs".into(),
+            path: folder.to_string_lossy().into(),
+            filename_enabled: true,
+            content_enabled: true,
+            external_allowed: false,
+        };
+        service.configure(vec![scope.clone()]).unwrap();
+        let start = Instant::now();
+        while service.status().unwrap().phase != "ready"
+            && start.elapsed() < Duration::from_secs(10)
+        {
+            thread::sleep(Duration::from_millis(20));
+        }
+        service.cancel_index();
+        let cancel = AtomicBool::new(false);
+        let denied = service
+            .unlock_pdf(&path, "wrong-fixture-password", &cancel)
+            .unwrap_err();
+        assert_eq!(denied.code, "passwordRejected");
+        assert!(service
+            .search("unlockcanary", "", None, &cancel)
+            .unwrap()
+            .hits
+            .is_empty());
+        let summary = service
+            .unlock_pdf(&path, "암호-fixture-密碼", &cancel)
+            .unwrap();
+        assert_eq!(
+            summary.extractor_version.as_deref(),
+            Some(EXTRACTOR_VERSION)
+        );
+        assert_eq!(service.status().unwrap().phase, "cancelled");
+        assert_eq!(
+            service
+                .search("unlockcanarythird", "", None, &cancel)
+                .unwrap()
+                .hits[0]
+                .chunk
+                .page,
+            Some(3)
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        let private_cache = folder.join("internal-cache");
+        fs::create_dir(&private_cache).unwrap();
+        service.exclude_paths(std::slice::from_ref(&private_cache));
+        let private_pdf = private_cache.join("hidden.pdf");
+        fs::write(&private_pdf, bytes).unwrap();
+        assert_eq!(
+            service
+                .unlock_pdf(&private_pdf, "암호-fixture-密碼", &cancel)
+                .unwrap_err()
+                .code,
+            "outsideScope"
+        );
+        let excluded = root.path().join("cache/hidden.pdf");
+        fs::write(&excluded, bytes).unwrap();
+        assert_eq!(
+            service
+                .unlock_pdf(&excluded, "암호-fixture-密碼", &cancel)
+                .unwrap_err()
+                .code,
+            "outsideScope"
+        );
+        // Revocation between parsing and publication must deny the cached body.
+        let extracted = document_extract::extract_document_with_password(
+            &path,
+            &ExtractOptions::default(),
+            &cancel,
+            "암호-fixture-密碼",
+        )
+        .unwrap();
+        let mut disabled = scope.clone();
+        disabled.content_enabled = false;
+        service.configure(vec![disabled]).unwrap();
+        assert_eq!(
+            service
+                .publish_unlocked(&path, &extracted, &cancel)
+                .unwrap_err()
+                .code,
+            "outsideScope"
+        );
+        service.configure(vec![scope]).unwrap();
+        service.cancel_index();
+        // Equal length and restored mtime must not bypass the final raw SHA.
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let mut changed = bytes.to_vec();
+        changed[0] = b'!';
+        fs::write(&path, changed).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(
+            service
+                .publish_unlocked(&path, &extracted, &cancel)
+                .unwrap_err()
+                .code,
+            "sourceChanged"
+        );
+        service.shutdown();
+    }
     #[test]
     fn linked_scope_roots_are_reported_without_indexing_the_target() {
         let directory = tempfile::tempdir().unwrap();

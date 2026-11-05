@@ -165,3 +165,48 @@ pub async fn content_file_action(
     .await
     .map_err(|_| "Content worker stopped.".to_string())?
 }
+
+#[tauri::command]
+pub async fn content_unlock_pdf(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    path: String,
+    password: String,
+    request_id: String,
+) -> Result<crate::content_store::ContentDocumentSummary, ContentError> {
+    let password = zeroize::Zeroizing::new(password);
+    let service = state.content.clone()?;
+    let permit = service.begin_unlock(window.label(), &request_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        // Both the permit and the password drop even when the caller disappears
+        // or parsing fails. The permit keeps cancelled parsing within its slot.
+        service.unlock_pdf(&PathBuf::from(path), &password, permit.cancel())
+    })
+    .await
+    .map_err(|_| worker_error())?
+}
+#[tauri::command]
+pub fn content_cancel_unlock(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    request_id: String,
+) -> Result<(), ContentError> {
+    state
+        .content
+        .as_ref()
+        .map_err(Clone::clone)?
+        .cancel_unlock(window.label(), &request_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn content_prepare_unlock(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<String, ContentError> {
+    state
+        .content
+        .as_ref()
+        .map_err(Clone::clone)?
+        .prepare_unlock(window.label())
+}

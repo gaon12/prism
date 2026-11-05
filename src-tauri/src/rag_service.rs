@@ -401,6 +401,8 @@ pub enum QuestionMode {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RagRequest {
+    #[serde(skip)]
+    pub(crate) document_set: Option<crate::selection_set::SavedSelection>,
     /// Set from the saved conversation selection, never from caller-supplied JSON.
     #[serde(skip)]
     pub(crate) document_paths: Option<Vec<String>>,
@@ -745,6 +747,62 @@ impl RagService {
             .collect();
         self.inner.store.create_search(&title, &selection)
     }
+    pub(crate) fn create_filename_search(
+        &self,
+        index: &crate::index::FileIndex,
+        search: &crate::index::FilenameSearch,
+        keyboard: bool,
+        cancel: &AtomicBool,
+    ) -> RagResult<ConversationSummary> {
+        self.inner.store.create_file_set(&search.query, |visit| {
+            index
+                .snapshot_files(search, keyboard, cancel, visit)
+                .map_err(|error| match error {
+                    crate::index::SnapshotError::Visitor(error) => error,
+                    crate::index::SnapshotError::Index(_) if cancel.load(Ordering::Acquire) => {
+                        RagError::new(RagErrorCode::Cancelled)
+                    }
+                    crate::index::SnapshotError::Index(reason) => {
+                        drop(reason);
+                        RagError::new(RagErrorCode::SourceChanged)
+                    }
+                })
+        })
+    }
+    pub(crate) fn file_set_page(
+        &self,
+        id: &str,
+        offset: u64,
+    ) -> RagResult<Option<crate::selection_set::SelectionPage>> {
+        valid_id(id)?;
+        self.inner.store.selection_page(id, offset, 50)
+    }
+    pub(crate) fn edit_file_set(
+        &self,
+        id: &str,
+        revision: u64,
+        changes: &[(u64, bool)],
+        all: Option<bool>,
+        clear: bool,
+    ) -> RagResult<()> {
+        valid_id(id)?;
+        let active = self
+            .inner
+            .active
+            .lock()
+            .map_err(|_| RagError::new(RagErrorCode::Worker))?;
+        if active.contains_key(id) {
+            return Err(RagError::new(RagErrorCode::Busy));
+        }
+        if clear {
+            if all.is_some() || !changes.is_empty() {
+                return Err(RagError::new(RagErrorCode::Input));
+            }
+            self.inner.store.clear_file_set(id, revision)
+        } else {
+            self.inner.store.edit_file_set(id, revision, changes, all)
+        }
+    }
     pub fn set_selection(
         &self,
         id: &str,
@@ -1013,9 +1071,18 @@ impl RagService {
         if input.is_none() {
             let store = self.inner.store.clone();
             let id = request.conversation_id.clone();
-            request.document_paths = blocking(move || store.selection(&id))
-                .await?
-                .map(|selection| selection.selected_documents);
+            let (set, legacy) = blocking(move || {
+                let set = store.saved_selection(&id)?;
+                let legacy = if set.is_none() {
+                    store.selection(&id)?
+                } else {
+                    None
+                };
+                Ok((set, legacy))
+            })
+            .await?;
+            request.document_set = set;
+            request.document_paths = legacy.map(|selection| selection.selected_documents);
         }
         let store = self.inner.store.clone();
         let reservation = request.clone();
@@ -1268,19 +1335,31 @@ impl RagService {
                     .unwrap_or_else(|| request.question.clone());
                 let selection = request.scope_ids.clone();
                 let documents = request.document_paths.clone();
+                let set = request.document_set.clone();
                 let snapshot = policy.clone();
                 let flag = Arc::clone(&cancel.sources);
                 let candidates = (policy.prefs.top_k() * 4).min(128);
                 source_work(
                     move || {
-                        resolver.retrieve_selected(
-                            &question,
-                            &selection,
-                            &snapshot,
-                            documents.as_deref(),
-                            candidates,
-                            &flag,
-                        )
+                        if set.is_some() {
+                            resolver.retrieve_set(
+                                &question,
+                                &selection,
+                                &snapshot,
+                                set.as_ref(),
+                                candidates,
+                                &flag,
+                            )
+                        } else {
+                            resolver.retrieve_selected(
+                                &question,
+                                &selection,
+                                &snapshot,
+                                documents.as_deref(),
+                                candidates,
+                                &flag,
+                            )
+                        }
                     },
                     cancel,
                 )
@@ -1288,23 +1367,22 @@ impl RagService {
             } else {
                 vec![]
             };
-            let candidates: Vec<_> = retrieved
-                .iter()
-                .filter(|item| {
-                    valid_source(&item.source)
-                        && scope_allowed(&policy, &item.source, remote)
-                        && crate::chat_selection::includes(
-                            request.document_paths.as_deref(),
-                            &item.source.file_path,
-                        )
-                })
-                .take(policy.prefs.top_k())
-                .map(|item| item.source.clone())
-                .collect();
+            let mut candidates = Vec::new();
+            for item in &retrieved {
+                if valid_source(&item.source)
+                    && scope_allowed(&policy, &item.source, remote)
+                    && request_document_allowed(request, &item.source.file_path)?
+                {
+                    candidates.push(item.source.clone());
+                    if candidates.len() >= policy.prefs.top_k() {
+                        break;
+                    }
+                }
+            }
             let mut refs = candidates.clone();
             for (user, assistant) in &history {
                 if history_pair_allowed(user, assistant, &policy, remote)
-                    && history_selection_allowed(user, assistant, request.document_paths.as_deref())
+                    && history_selection_allowed(user, assistant, request)?
                 {
                     let mut next = refs.clone();
                     if merge_refs(&mut next, &user.provenance)
@@ -1355,7 +1433,7 @@ impl RagService {
             let mut eligible = Vec::new();
             for (user, assistant) in history.iter() {
                 if history_pair_allowed(user, assistant, &policy, remote)
-                    && history_selection_allowed(user, assistant, request.document_paths.as_deref())
+                    && history_selection_allowed(user, assistant, request)?
                     && user
                         .provenance
                         .iter()
@@ -1756,12 +1834,23 @@ fn history_pair_allowed(
 fn history_selection_allowed(
     user: &ConversationTurn,
     assistant: &ConversationTurn,
-    documents: Option<&[String]>,
-) -> bool {
-    user.provenance
-        .iter()
-        .chain(&assistant.provenance)
-        .all(|source| crate::chat_selection::includes(documents, &source.file_path))
+    request: &RagRequest,
+) -> RagResult<bool> {
+    for source in user.provenance.iter().chain(&assistant.provenance) {
+        if !request_document_allowed(request, &source.file_path)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+fn request_document_allowed(request: &RagRequest, path: &str) -> RagResult<bool> {
+    if !crate::chat_selection::includes(request.document_paths.as_deref(), path) {
+        return Ok(false);
+    }
+    match &request.document_set {
+        Some(set) => set.contains(path),
+        None => Ok(true),
+    }
 }
 fn merge_refs(target: &mut Vec<SourceRef>, sources: &[SourceRef]) -> RagResult<()> {
     for source in sources {
@@ -2311,6 +2400,7 @@ mod tests {
     fn request(service: &RagService, conversation: &str, id: &str, question: &str) -> RagRequest {
         let _ = service;
         RagRequest {
+            document_set: None,
             document_paths: None,
             request_id: id.into(),
             conversation_id: conversation.into(),
@@ -2489,6 +2579,76 @@ mod tests {
         // Clearing is explicit; deleting the conversation also removes its snapshot.
         f.service.delete_conversation(&conversation.id).unwrap();
         assert!(reopened.selection(&conversation.id).unwrap().is_none());
+    }
+    #[test]
+    fn paged_file_sets_retrieve_late_files_and_restrict_history_without_path_arrays() {
+        let f = fixture();
+        let public = source("public", PUBLIC).source.file_path;
+        let private = source("private", PRIVATE).source.file_path;
+        let chat = f
+            .service
+            .inner
+            .store
+            .create_file_set("large fixture", |emit| {
+                for i in 0..300 {
+                    emit(&format!("/unindexed/metadata-{i}"))?;
+                }
+                emit(&public)?;
+                emit(&private)?;
+                Ok(false)
+            })
+            .unwrap();
+        runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &chat.id,
+                "large_first",
+                "First question",
+            )))
+            .unwrap();
+        assert!(f.transport.calls.lock().unwrap()[0]
+            .messages
+            .iter()
+            .any(|m| m.content.contains(PRIVATE)));
+        f.service
+            .edit_file_set(&chat.id, 1, &[(301, true)], Some(false), false)
+            .unwrap();
+        let answer = runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &chat.id,
+                "large_second",
+                "Second question",
+            )))
+            .unwrap();
+        assert!(answer.omitted_history_pairs > 0);
+        let calls = f.transport.calls.lock().unwrap();
+        let prompt: String = calls
+            .last()
+            .unwrap()
+            .messages
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect();
+        assert!(prompt.contains(PUBLIC));
+        assert!(!prompt.contains(PRIVATE));
+        assert!(!prompt.contains("First question"));
+        drop(calls);
+        f.service
+            .edit_file_set(&chat.id, 2, &[], Some(false), false)
+            .unwrap();
+        let count = f.transport.calls.lock().unwrap().len();
+        assert_eq!(
+            runtime()
+                .block_on(
+                    f.service
+                        .ask(request(&f.service, &chat.id, "large_empty", "Question"))
+                )
+                .unwrap_err()
+                .code,
+            RagErrorCode::NoSources
+        );
+        assert_eq!(count, f.transport.calls.lock().unwrap().len());
     }
     #[test]
     fn hidden_uncited_private_provenance_blocks_both_history_roles() {

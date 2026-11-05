@@ -7,7 +7,7 @@ fn main() {
     }
     #[cfg(windows)]
     if let Err(error) = prism_ntfs_windows::service::run(std::sync::Arc::new(
-        prism_ntfs_windows::host::SnapshotBackend,
+        prism_ntfs_windows::host::SnapshotBackend::default(),
     )) {
         eprintln!(
             "Filename index operation failed: {:?} (code {:?}).",

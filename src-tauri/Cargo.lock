@@ -6326,6 +6326,7 @@ name = "prism-ntfs-core"
 version = "0.1.0"
 dependencies = [
  "prism-ntfs-protocol",
+ "sha2 0.10.9",
 ]
 
 [[package]]

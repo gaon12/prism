@@ -6,7 +6,7 @@ rust-version = "1.94"
 publish = false
 
 [dependencies]
-prism-ntfs-core = { path = "../core" }
+prism-ntfs-core = { path = "../core", features = ["cache"] }
 prism-ntfs-protocol = { path = "../protocol" }
 
 [target.'cfg(windows)'.dependencies]

@@ -26,6 +26,7 @@ use windows_sys::Win32::{
     },
     UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath},
 };
+pub(crate) mod cache;
 mod upgrade;
 pub use upgrade::upgrade;
 
@@ -147,7 +148,7 @@ fn same_acl(left: *mut ACL, right: *mut ACL) -> io::Result<bool> {
     }
     Ok(true)
 }
-fn protected_handle(handle: &OwnedHandle, expected: &Descriptor) -> io::Result<()> {
+fn protected_handle(handle: &impl AsRawHandle, expected: &Descriptor) -> io::Result<()> {
     let mut descriptor = null_mut();
     let result = unsafe {
         GetSecurityInfo(
@@ -360,6 +361,9 @@ fn lock_ancestors(parent: &Path) -> io::Result<Vec<OwnedHandle>> {
 }
 
 struct ServiceHandle(NonNull<std::ffi::c_void>);
+// SAFETY: an owned SCM handle is thread-independent. Moving it transfers close
+// ownership; it does not share a borrowed QUERY_SERVICE_CONFIG output buffer.
+unsafe impl Send for ServiceHandle {}
 impl ServiceHandle {
     fn new(raw: SC_HANDLE) -> io::Result<Self> {
         Ok(Self(

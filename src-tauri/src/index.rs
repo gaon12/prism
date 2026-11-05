@@ -3,7 +3,7 @@ use crate::keyboard_pattern::{keyboard_projection, KeyboardPattern};
 use crate::settings::SearchScope;
 use chrono::{Datelike, Local, NaiveDate, TimeZone};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering as CmpOrdering,
     collections::{BTreeMap, BinaryHeap, HashSet},
@@ -41,6 +41,19 @@ fn under(path: &str, root: &str) -> bool {
         || path
             .strip_prefix(root)
             .is_some_and(|tail| tail.starts_with('/'))
+}
+pub(crate) enum SnapshotError<E> {
+    Index(String),
+    Visitor(E),
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FilenameSearch {
+    pub query: String,
+    pub extension: String,
+    pub scope_id: Option<String>,
+    pub index_revision: u64,
+    pub settings_revision: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -650,6 +663,55 @@ impl FileIndex {
         }
         Ok(canonical)
     }
+    /// Stream all matching files from one catalog revision. This deliberately
+    /// does not reuse the UI's top-200 list or allocate a second full result set.
+    pub(crate) fn snapshot_files<E>(
+        &self,
+        search: &FilenameSearch,
+        allow_keyboard: bool,
+        cancel: &AtomicBool,
+        visit: &mut dyn FnMut(&str) -> Result<(), E>,
+    ) -> Result<bool, SnapshotError<E>> {
+        let query = Query::parse(&search.query, &search.extension).map_err(SnapshotError::Index)?;
+        let catalog = self
+            .catalog
+            .read()
+            .map_err(|_| SnapshotError::Index("File index unavailable.".into()))?;
+        if catalog.status.revision != search.index_revision {
+            return Err(SnapshotError::Index("Search results changed.".into()));
+        }
+        let root = search
+            .scope_id
+            .as_deref()
+            .and_then(|id| catalog.roots.iter().find(|root| root.id == id));
+        let in_scope = |entry: &&Entry| {
+            search.scope_id.is_none() || root.is_some_and(|root| under(&entry.key, &root.key))
+        };
+        let literal = catalog
+            .entries
+            .values()
+            .filter(in_scope)
+            .any(|entry| query.matches(entry));
+        let corrected =
+            !literal && allow_keyboard && query.keyboard_terms.iter().any(Option::is_some);
+        for entry in catalog.entries.values().filter(in_scope) {
+            if cancel.load(Ordering::Acquire) {
+                return Err(SnapshotError::Index("Search cancelled.".into()));
+            }
+            if !entry.is_dir
+                && if corrected {
+                    query.matches_keyboard(entry)
+                } else {
+                    query.matches(entry)
+                }
+            {
+                visit(&entry.path).map_err(SnapshotError::Visitor)?;
+            }
+        }
+        Ok(catalog.status.scanning
+            || catalog.status.skipped > 0
+            || !catalog.status.warnings.is_empty())
+    }
 }
 fn display_path(path: &Path) -> String {
     let value = path.to_string_lossy();
@@ -1084,6 +1146,47 @@ mod tests {
             .unwrap();
         assert_eq!(missing.total, 0);
         assert!(!missing.keyboard_corrected);
+    }
+    #[test]
+    fn snapshot_streams_every_match_with_the_same_filters_and_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..505 {
+            fs::write(dir.path().join(format!("공문서-{i:03}.md")), "").unwrap();
+        }
+        fs::create_dir(dir.path().join("공문서-folder")).unwrap();
+        let index = FileIndex::new();
+        index.configure(vec![scope(dir.path(), "all")]);
+        wait(&index, || index.status().unwrap().count == 507);
+        let response = index.search("rhdanstj", "md", Some("all"), 200).unwrap();
+        assert_eq!(response.total, 505);
+        assert_eq!(response.results.len(), 200);
+        assert!(response.keyboard_corrected);
+        let mut search = FilenameSearch {
+            query: "rhdanstj".into(),
+            extension: "md".into(),
+            scope_id: Some("all".into()),
+            index_revision: response.status.revision,
+            settings_revision: 0,
+        };
+        let mut paths = Vec::new();
+        assert!(!index
+            .snapshot_files(&search, true, &AtomicBool::new(false), &mut |path| {
+                paths.push(path.to_owned());
+                Ok::<_, ()>(())
+            })
+            .ok()
+            .unwrap());
+        assert_eq!(paths.len(), 505);
+        assert!(paths.iter().all(|path| path.ends_with(".md")));
+        search.index_revision += 1;
+        assert!(index
+            .snapshot_files(
+                &search,
+                true,
+                &AtomicBool::new(false),
+                &mut |_| Ok::<_, ()>(())
+            )
+            .is_err());
     }
 }
 #[cfg(test)]

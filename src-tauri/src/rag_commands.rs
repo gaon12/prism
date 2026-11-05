@@ -1,4 +1,5 @@
 use crate::{rag_service::*, secret_store::SecretValue, AppState};
+use tauri::{AppHandle, Emitter};
 use tauri::{State, WebviewWindow};
 
 fn service(state: &AppState) -> RagResult<RagService> {
@@ -52,6 +53,48 @@ pub async fn rag_create_filename_search(
         result
     })
     .await
+}
+#[tauri::command]
+pub async fn rag_open_main_chat(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> RagResult<()> {
+    let service = service(&state)?;
+    let checked_id = id.clone();
+    blocking(move || service.check_conversation(&checked_id)).await?;
+    // Retain the request before waking the main webview: it may still be loading
+    // and not have registered its event listener yet. The event is only a wakeup.
+    *state
+        .chat_handoff
+        .lock()
+        .map_err(|_| RagError::new(RagErrorCode::Worker))? = Some(id.clone());
+    if crate::windows::show_main_window(&app).is_err() {
+        let mut pending = state
+            .chat_handoff
+            .lock()
+            .map_err(|_| RagError::new(RagErrorCode::Worker))?;
+        if pending.as_ref() == Some(&id) {
+            *pending = None;
+        }
+        return Err(RagError::new(RagErrorCode::Worker));
+    }
+    let _ = app.emit_to("main", "prism:chat-handoff", ());
+    Ok(())
+}
+#[tauri::command]
+pub fn rag_take_chat_handoff(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> RagResult<Option<String>> {
+    if window.label() != "main" {
+        return Err(RagError::new(RagErrorCode::Input));
+    }
+    Ok(state
+        .chat_handoff
+        .lock()
+        .map_err(|_| RagError::new(RagErrorCode::Worker))?
+        .take())
 }
 #[tauri::command]
 pub async fn rag_create_keyword_search(

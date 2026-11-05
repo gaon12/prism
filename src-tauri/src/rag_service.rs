@@ -734,6 +734,10 @@ impl RagService {
         valid_title(title, true)?;
         self.inner.store.create(title)
     }
+    pub(crate) fn check_conversation(&self, id: &str) -> RagResult<()> {
+        valid_id(id)?;
+        self.inner.store.summary(id).map(|_| ())
+    }
     pub fn create_from_search(
         &self,
         selection: crate::chat_selection::ChatSelection,

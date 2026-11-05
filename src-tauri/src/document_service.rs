@@ -631,6 +631,7 @@ impl DocumentService {
                 )?,
             };
             let rag_request = RagRequest {
+                document_paths: None,
                 request_id: rag_request.clone(),
                 conversation_id: conversation.clone(),
                 question: prompt,
@@ -2012,6 +2013,7 @@ mod tests {
             f.transport.push("LEGACY_BODY_NEEDLE [S1]".into());
             f.rag
                 .ask(RagRequest {
+                    document_paths: None,
                     request_id: "legacy_request".into(),
                     conversation_id: chat.id.clone(),
                     question: "Evidence based report".into(),
@@ -2043,6 +2045,7 @@ mod tests {
             f.rag
                 .ask_for_document(
                     RagRequest {
+                        document_paths: None,
                         request_id: "hidden_request".into(),
                         conversation_id: conversation,
                         question: "HIDDEN_QUESTION_NEEDLE".into(),
@@ -2245,6 +2248,7 @@ mod tests {
                 .conversation(&page.document.id)
                 .unwrap();
             let raw = RagRequest {
+                document_paths: None,
                 request_id: "raw_empty".into(),
                 conversation_id: conversation.clone(),
                 question: "Structured document payload".into(),

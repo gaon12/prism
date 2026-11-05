@@ -291,6 +291,24 @@ pub struct CheckedSource {
     pub text: Option<String>,
 }
 pub trait SourceResolver: Send + Sync {
+    /// Production resolvers must apply this restriction before their result cap.
+    /// The default keeps simpler resolvers safe even if they return fewer hits.
+    fn retrieve_selected(
+        &self,
+        question: &str,
+        scope_ids: &[String],
+        policy: &RagPolicy,
+        documents: Option<&[String]>,
+        top_k: usize,
+        cancel: &AtomicBool,
+    ) -> RagResult<Vec<RagSource>> {
+        if documents.is_some_and(<[String]>::is_empty) {
+            return Ok(vec![]);
+        }
+        let mut sources = self.retrieve(question, scope_ids, policy, top_k, cancel)?;
+        sources.retain(|item| crate::chat_selection::includes(documents, &item.source.file_path));
+        Ok(sources)
+    }
     /// Authorizes canonical paths against the current selected folders (including
     /// descendants/overlapping scopes), and tags the most specific content scope.
     fn retrieve(
@@ -346,6 +364,9 @@ pub enum QuestionMode {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RagRequest {
+    /// Set from the saved conversation selection, never from caller-supplied JSON.
+    #[serde(skip)]
+    pub(crate) document_paths: Option<Vec<String>>,
     pub request_id: String,
     pub conversation_id: String,
     pub question: String,
@@ -443,6 +464,7 @@ pub struct ConversationSummary {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationPage {
+    pub selection: Option<crate::chat_selection::ChatSelection>,
     pub conversation: ConversationSummary,
     pub turns: Vec<ConversationTurn>,
     pub has_more: bool,
@@ -672,6 +694,40 @@ impl RagService {
         valid_title(title, true)?;
         self.inner.store.create(title)
     }
+    pub fn create_from_search(
+        &self,
+        selection: crate::chat_selection::ChatSelection,
+    ) -> RagResult<ConversationSummary> {
+        crate::chat_selection::validate(&selection)?;
+        let title: String = selection
+            .query
+            .chars()
+            .take(200)
+            .filter(|c| !c.is_control())
+            .collect();
+        self.inner.store.create_search(&title, &selection)
+    }
+    pub fn set_selection(
+        &self,
+        id: &str,
+        selection: Option<crate::chat_selection::ChatSelection>,
+    ) -> RagResult<()> {
+        valid_id(id)?;
+        if let Some(value) = &selection {
+            crate::chat_selection::validate(value)?;
+        }
+        // Hold the reservation lock until persistence completes: an ask cannot
+        // start between the busy check and a change to its source restriction.
+        let active = self
+            .inner
+            .active
+            .lock()
+            .map_err(|_| RagError::new(RagErrorCode::Worker))?;
+        if active.contains_key(id) {
+            return Err(RagError::new(RagErrorCode::Busy));
+        }
+        self.inner.store.set_selection(id, selection.as_ref())
+    }
     pub(crate) fn create_for_document(&self, title: &str) -> RagResult<ConversationSummary> {
         valid_title(title, true)?;
         self.inner.store.create_for_document(title)
@@ -889,7 +945,7 @@ impl RagService {
     }
     async fn ask_inner(
         &self,
-        request: RagRequest,
+        mut request: RagRequest,
         input: Option<RagDocumentInput>,
     ) -> RagResult<RagAnswer> {
         let initial = self.policy()?;
@@ -916,6 +972,13 @@ impl RagService {
             conversation: request.conversation_id.clone(),
             request: request.request_id.clone(),
         };
+        if input.is_none() {
+            let store = self.inner.store.clone();
+            let id = request.conversation_id.clone();
+            request.document_paths = blocking(move || store.selection(&id))
+                .await?
+                .map(|selection| selection.selected_documents);
+        }
         let store = self.inner.store.clone();
         let reservation = request.clone();
         let initial_snapshot = snapshot(&initial, &request.scope_ids);
@@ -1166,11 +1229,21 @@ impl RagService {
                     .map(|input| input.retrieval_query.clone())
                     .unwrap_or_else(|| request.question.clone());
                 let selection = request.scope_ids.clone();
+                let documents = request.document_paths.clone();
                 let snapshot = policy.clone();
                 let flag = Arc::clone(&cancel.sources);
                 let candidates = (policy.prefs.top_k() * 4).min(128);
                 source_work(
-                    move || resolver.retrieve(&question, &selection, &snapshot, candidates, &flag),
+                    move || {
+                        resolver.retrieve_selected(
+                            &question,
+                            &selection,
+                            &snapshot,
+                            documents.as_deref(),
+                            candidates,
+                            &flag,
+                        )
+                    },
                     cancel,
                 )
                 .await?
@@ -1180,14 +1253,21 @@ impl RagService {
             let candidates: Vec<_> = retrieved
                 .iter()
                 .filter(|item| {
-                    valid_source(&item.source) && scope_allowed(&policy, &item.source, remote)
+                    valid_source(&item.source)
+                        && scope_allowed(&policy, &item.source, remote)
+                        && crate::chat_selection::includes(
+                            request.document_paths.as_deref(),
+                            &item.source.file_path,
+                        )
                 })
                 .take(policy.prefs.top_k())
                 .map(|item| item.source.clone())
                 .collect();
             let mut refs = candidates.clone();
             for (user, assistant) in &history {
-                if history_pair_allowed(user, assistant, &policy, remote) {
+                if history_pair_allowed(user, assistant, &policy, remote)
+                    && history_selection_allowed(user, assistant, request.document_paths.as_deref())
+                {
                     let mut next = refs.clone();
                     if merge_refs(&mut next, &user.provenance)
                         .and_then(|_| merge_refs(&mut next, &assistant.provenance))
@@ -1237,6 +1317,7 @@ impl RagService {
             let mut eligible = Vec::new();
             for (user, assistant) in history.iter() {
                 if history_pair_allowed(user, assistant, &policy, remote)
+                    && history_selection_allowed(user, assistant, request.document_paths.as_deref())
                     && user
                         .provenance
                         .iter()
@@ -1633,6 +1714,16 @@ fn history_pair_allowed(
             .chain(&assistant.provenance)
             .all(|source| valid_source(source) && scope_allowed(policy, source, remote))
         && !(assistant.evidence == EvidenceStatus::SourceLinked && assistant.provenance.is_empty())
+}
+fn history_selection_allowed(
+    user: &ConversationTurn,
+    assistant: &ConversationTurn,
+    documents: Option<&[String]>,
+) -> bool {
+    user.provenance
+        .iter()
+        .chain(&assistant.provenance)
+        .all(|source| crate::chat_selection::includes(documents, &source.file_path))
 }
 fn merge_refs(target: &mut Vec<SourceRef>, sources: &[SourceRef]) -> RagResult<()> {
     for source in sources {
@@ -2182,6 +2273,7 @@ mod tests {
     fn request(service: &RagService, conversation: &str, id: &str, question: &str) -> RagRequest {
         let _ = service;
         RagRequest {
+            document_paths: None,
             request_id: id.into(),
             conversation_id: conversation.into(),
             question: question.into(),
@@ -2281,6 +2373,84 @@ mod tests {
             RagErrorCode::ScopeBlocked
         );
         assert!(f.transport.calls.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn saved_search_selection_restricts_retrieval_history_and_survives_reopen() {
+        let f = fixture();
+        let public = source("public", PUBLIC).source.file_path;
+        let private = source("private", PRIVATE).source.file_path;
+        let mut selection = crate::chat_selection::ChatSelection {
+            query: "search fixture".into(),
+            documents: vec![public.clone(), private.clone()],
+            selected_documents: vec![public.clone(), private],
+            partial: true,
+        };
+        let conversation = f.service.create_from_search(selection.clone()).unwrap();
+        runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &conversation.id,
+                "all_files",
+                "First private question",
+            )))
+            .unwrap();
+        selection.selected_documents = vec![public.clone()];
+        f.service
+            .set_selection(&conversation.id, Some(selection.clone()))
+            .unwrap();
+        let answer = runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &conversation.id,
+                "one_file",
+                "Public follow-up",
+            )))
+            .unwrap();
+        assert!(answer.omitted_history_pairs > 0);
+        let calls = f.transport.calls.lock().unwrap();
+        let prompt: String = calls
+            .last()
+            .unwrap()
+            .messages
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect();
+        assert!(prompt.contains(PUBLIC));
+        assert!(!prompt.contains(PRIVATE));
+        assert!(!prompt.contains("First private question"));
+        drop(calls);
+        let reopened = crate::rag_store::RagStore::open(&f.directory.path().join("rag")).unwrap();
+        assert_eq!(
+            reopened
+                .selection(&conversation.id)
+                .unwrap()
+                .unwrap()
+                .selected_documents,
+            vec![public]
+        );
+        selection.selected_documents.clear();
+        f.service
+            .set_selection(&conversation.id, Some(selection))
+            .unwrap();
+        let count = f.transport.calls.lock().unwrap().len();
+        assert_eq!(
+            runtime()
+                .block_on(f.service.ask(request(
+                    &f.service,
+                    &conversation.id,
+                    "empty_files",
+                    "No document selected"
+                )))
+                .unwrap_err()
+                .code,
+            RagErrorCode::NoSources
+        );
+        assert_eq!(f.transport.calls.lock().unwrap().len(), count);
+        f.service.set_selection(&conversation.id, None).unwrap();
+        assert!(reopened.selection(&conversation.id).unwrap().is_none());
+        // Clearing is explicit; deleting the conversation also removes its snapshot.
+        f.service.delete_conversation(&conversation.id).unwrap();
+        assert!(reopened.selection(&conversation.id).unwrap().is_none());
     }
     #[test]
     fn hidden_uncited_private_provenance_blocks_both_history_roles() {

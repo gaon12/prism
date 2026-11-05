@@ -73,7 +73,7 @@ impl RagStore {
         let version: u32 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(storage)?;
-        if version > 2 {
+        if version > 3 {
             return Err(RagError::new(RagErrorCode::Storage));
         }
         db.execute_batch("PRAGMA journal_mode=WAL;
@@ -103,7 +103,8 @@ impl RagStore {
             )
             .map_err(storage)?;
         }
-        db.pragma_update(None, "user_version", 2).map_err(storage)?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS conversation_selection(conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,payload TEXT NOT NULL);").map_err(storage)?;
+        db.pragma_update(None, "user_version", 3).map_err(storage)?;
         db.execute(
             "INSERT OR IGNORE INTO rag_meta(key,value) VALUES('profileId',?1)",
             [fresh_id()?],
@@ -164,20 +165,43 @@ impl RagStore {
         &self.profile_id
     }
     pub fn create(&self, title: &str) -> RagResult<ConversationSummary> {
-        self.create_kind(title, "chat")
+        self.create_kind(title, "chat", None)
+    }
+    pub fn create_search(
+        &self,
+        title: &str,
+        selection: &crate::chat_selection::ChatSelection,
+    ) -> RagResult<ConversationSummary> {
+        self.create_kind(title, "chat", Some(selection))
     }
     pub fn create_for_document(&self, title: &str) -> RagResult<ConversationSummary> {
-        self.create_kind(title, "document")
+        self.create_kind(title, "document", None)
     }
-    fn create_kind(&self, title: &str, kind: &str) -> RagResult<ConversationSummary> {
+    fn create_kind(
+        &self,
+        title: &str,
+        kind: &str,
+        selection: Option<&crate::chat_selection::ChatSelection>,
+    ) -> RagResult<ConversationSummary> {
         let id = fresh_id()?;
         let now = now_ms();
-        self.connect()?
-            .execute(
-                "INSERT INTO conversations(id,title,created_ms,updated_ms,kind) VALUES(?1,?2,?3,?3,?4)",
-                params![id, title, now, kind],
+        let mut db = self.connect()?;
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        tx.execute(
+            "INSERT INTO conversations(id,title,created_ms,updated_ms,kind) VALUES(?1,?2,?3,?3,?4)",
+            params![id, title, now, kind],
+        )
+        .map_err(storage)?;
+        if let Some(selection) = selection {
+            tx.execute(
+                "INSERT INTO conversation_selection(conversation_id,payload) VALUES(?1,?2)",
+                params![id, serde_json::to_string(selection).map_err(storage)?],
             )
             .map_err(storage)?;
+        }
+        tx.commit().map_err(storage)?;
         Ok(ConversationSummary {
             id,
             title: title.into(),
@@ -193,6 +217,45 @@ impl RagStore {
             .query_map(params![query, limit as u64], read_summary)
             .map_err(storage)?;
         rows.collect::<Result<_, _>>().map_err(storage)
+    }
+    pub fn selection(&self, id: &str) -> RagResult<Option<crate::chat_selection::ChatSelection>> {
+        let payload: Option<String> = self
+            .connect()?
+            .query_row(
+                "SELECT payload FROM conversation_selection WHERE conversation_id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage)?;
+        payload
+            .map(|payload| {
+                if payload.len() > 4 * 1024 * 1024 {
+                    return Err(RagError::new(RagErrorCode::Storage));
+                }
+                let selection = serde_json::from_str(&payload).map_err(storage)?;
+                crate::chat_selection::validate(&selection).map_err(storage)?;
+                Ok(selection)
+            })
+            .transpose()
+    }
+    pub fn set_selection(
+        &self,
+        id: &str,
+        selection: Option<&crate::chat_selection::ChatSelection>,
+    ) -> RagResult<()> {
+        self.summary(id)?;
+        let db = self.connect()?;
+        if let Some(selection) = selection {
+            db.execute("INSERT INTO conversation_selection(conversation_id,payload) VALUES(?1,?2) ON CONFLICT(conversation_id) DO UPDATE SET payload=excluded.payload", params![id,serde_json::to_string(selection).map_err(storage)?]).map_err(storage)?;
+        } else {
+            db.execute(
+                "DELETE FROM conversation_selection WHERE conversation_id=?1",
+                [id],
+            )
+            .map_err(storage)?;
+        }
+        Ok(())
     }
     pub fn summary(&self, id: &str) -> RagResult<ConversationSummary> {
         self.connect()?.query_row("SELECT c.id,c.title,c.created_ms,c.updated_ms,(SELECT count(*) FROM conversation_turns t WHERE t.conversation_id=c.id) FROM conversations c WHERE c.id=?1",[id],read_summary).optional().map_err(storage)?.ok_or_else(||RagError::new(RagErrorCode::Input))
@@ -241,6 +304,7 @@ impl RagStore {
         }
         turns.reverse();
         Ok(ConversationPage {
+            selection: self.selection(id)?,
             conversation,
             turns,
             has_more,
@@ -431,4 +495,60 @@ fn blank_turn(
         usage: None,
         error: None,
     })
+}
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    #[test]
+    fn version_two_conversations_migrate_and_damaged_selections_fail_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = RagStore::open(directory.path()).unwrap();
+        let conversation = store.create("legacy conversation").unwrap();
+        let db = store.connect().unwrap();
+        db.execute_batch("DROP TABLE conversation_selection; PRAGMA user_version=2;")
+            .unwrap();
+        drop(db);
+        let store = RagStore::open(directory.path()).unwrap();
+        assert_eq!(
+            store.summary(&conversation.id).unwrap().title,
+            "legacy conversation"
+        );
+        assert!(store.selection(&conversation.id).unwrap().is_none());
+        let selection = crate::chat_selection::ChatSelection {
+            query: "fixture".into(),
+            documents: vec!["source.md".into()],
+            selected_documents: vec![],
+            partial: false,
+        };
+        store
+            .set_selection(&conversation.id, Some(&selection))
+            .unwrap();
+        assert!(store
+            .selection(&conversation.id)
+            .unwrap()
+            .unwrap()
+            .selected_documents
+            .is_empty());
+        store
+            .connect()
+            .unwrap()
+            .execute(
+                "UPDATE conversation_selection SET payload='damaged' WHERE conversation_id=?1",
+                [&conversation.id],
+            )
+            .unwrap();
+        assert_eq!(
+            store.selection(&conversation.id).err().unwrap().code,
+            RagErrorCode::Storage
+        );
+        store
+            .connect()
+            .unwrap()
+            .execute_batch("PRAGMA user_version=4;")
+            .unwrap();
+        assert_eq!(
+            RagStore::open(directory.path()).err().unwrap().code,
+            RagErrorCode::Storage
+        );
+    }
 }

@@ -31,3 +31,6 @@ pub mod runtime_process;
 pub mod runtime_supervisor;
 #[path = "../../../src-tauri/src/secret_store.rs"]
 pub mod secret_store;
+#[allow(dead_code)]
+#[path = "../../../src-tauri/src/unlock_requests.rs"]
+pub mod unlock_requests;

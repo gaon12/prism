@@ -147,6 +147,9 @@ Remaining integration:
    9.9 seconds versus 10.6 seconds before its allocation changes, with sampled
    peak private memory reduced from 1.99 GB to 1.28 GB. These separate runs are
    not a 5–7 second cold claim, nor proof of the newer deferred/per-drive cache.
+   Separately, the full unoptimized debug app collected 2.20 million entries
+   without warnings in 25.8 seconds including WebView startup; that measurement
+   is not interchangeable with the release filename harness.
    Delta requests currently return `JournalGap`, requiring
    a new snapshot rather than claiming an unchanged catalog.
 3. Verify the newer deferred/per-drive persistence through actual deployment,

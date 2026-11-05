@@ -49,6 +49,7 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> Result<Client
             .lock()
             .map_err(|_| "Settings are unavailable.")? = restored.clone();
         if let Ok(content) = &state.content {
+            content.set_battery_pause(restored.power.pause_on_battery);
             let _ = content.configure_with_ocr(restored.scopes.clone(), restored.ocr.clone());
         }
         state.index.configure(restored.scopes);
@@ -188,6 +189,10 @@ pub fn save_settings(
     // service independently rechecks the latest policy before every provider call.
     if let Ok(rag) = &state.rag {
         rag.cancel_all();
+    }
+    // The battery setting is cheap to apply and may change on its own, so always apply it.
+    if let Ok(content) = &state.content {
+        content.set_battery_pause(settings.power.pause_on_battery);
     }
     if changed_content {
         if let Ok(content) = &state.content {

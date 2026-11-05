@@ -29,6 +29,8 @@ export interface ClientSettings {
   generation: GenerationPreferences;
   updates: { autoCheck: boolean };
   ocr: { enabled: boolean; language: string };
+  /** Wait for AC power before starting new content indexing. Off by default. */
+  power: { pauseOnBattery: boolean };
   calculator: { precision: number; angle: 'rad' | 'deg' };
   clipboard: {
     enabled: boolean;
@@ -98,6 +100,7 @@ export const defaultSettings: ClientSettings = {
   generation: structuredClone(defaultGeneration),
   updates: { autoCheck: true },
   ocr: { enabled: false, language: 'auto' },
+  power: { pauseOnBattery: false },
   calculator: { precision: 12, angle: 'rad' },
   clipboard: {
     enabled: true,
@@ -150,6 +153,7 @@ export function normalizeSettings(input: unknown): ClientSettings {
     },
     generation: normalizeGeneration(value.generation),
     updates: { autoCheck: value.updates?.autoCheck !== false },
+    power: { pauseOnBattery: value.power?.pauseOnBattery === true },
     ocr: {
       enabled: value.ocr?.enabled === true,
       language:

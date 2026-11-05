@@ -384,6 +384,23 @@ export function SettingsDialog({
                 )}
                 <p className="setting-footnote">{t('engineNext')}</p>
                 <IndexServicePanel language={settings.language} runtime={runtime} />
+                {/* Off by default; filename search and searching itself are never paused. */}
+                <label className="setting-check">
+                  <span>
+                    {t('pauseOnBattery')}
+                    <small className="setting-hint">{t('pauseOnBatteryHint')}</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={draft.power.pauseOnBattery}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        power: { pauseOnBattery: event.target.checked },
+                      }))
+                    }
+                  />
+                </label>
                 <div className="settings-divider" />
                 <OcrSettings
                   value={draft.ocr}

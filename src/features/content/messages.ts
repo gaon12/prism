@@ -295,6 +295,13 @@ const messages = {
   ready: ['색인 대기', 'Index ready', '索引就绪', '索引就緒', '索引の準備完了'],
   indexing: ['색인 중', 'Indexing', '正在建立索引', '正在建立索引', '索引を作成中'],
   paused: ['색인 정지됨', 'Indexing paused', '索引已暂停', '索引已暫停', '索引は一時停止中'],
+  pausedBattery: [
+    '전원 연결을 기다리는 중',
+    'Waiting for power',
+    '等待接通电源',
+    '等待接上電源',
+    '電源接続を待機中',
+  ],
   indexError: ['색인 확인 필요', 'Check indexing', '请检查索引', '請檢查索引', '索引を確認'],
   discovered: ['발견', 'Found', '发现', '找到', '検出'],
   indexed: ['저장 문서', 'Stored documents', '已存文档', '已存文件', '保存済み文書'],

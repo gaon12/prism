@@ -40,6 +40,8 @@ export interface ContentStatus {
   currentPath: string | null;
   issues: { path: string; code: string; message: string }[];
   embeddingError: string | null;
+  /** "battery" while content indexing waits for AC power (pause-on-battery setting). */
+  pauseReason?: string | null;
 }
 export interface SearchDiagnostics {
   candidateCount: number;

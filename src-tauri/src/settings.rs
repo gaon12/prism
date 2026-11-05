@@ -37,6 +37,16 @@ pub struct ClientSettings {
     pub generation: crate::rag_service::GenerationPreferences,
     pub updates: UpdatePreferences,
     pub ocr: crate::ocr::Preferences,
+    pub power: PowerPreferences,
+}
+
+/// Battery behaviour. Off by default: content indexing runs on battery unless the user asks.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PowerPreferences {
+    /// Wait for AC power before starting new content indexing (text extraction, OCR,
+    /// embeddings). Filename indexing and searching are not affected.
+    pub pause_on_battery: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -92,6 +102,7 @@ impl Default for ClientSettings {
             generation: crate::rag_service::GenerationPreferences::default(),
             updates: UpdatePreferences::default(),
             ocr: crate::ocr::Preferences::default(),
+            power: PowerPreferences::default(),
         }
     }
 }

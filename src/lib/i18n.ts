@@ -24,6 +24,20 @@ const messages = {
     '儲存全部符合檔案，可在對話中更改選擇。',
     '一致するすべてのファイルを保存します。対話で選択を変更できます。',
   ],
+  pauseOnBattery: [
+    '배터리 사용 중에는 본문 색인 미루기',
+    'Wait for power before indexing content',
+    '使用电池时暂缓正文索引',
+    '使用電池時暫緩內文索引',
+    'バッテリー駆動中は本文インデックスを後回しにする',
+  ],
+  pauseOnBatteryHint: [
+    '전원에 연결되면 이어서 색인합니다. 파일명 검색과 검색 자체는 멈추지 않습니다.',
+    'Indexing continues when you plug in. Filename indexing and searching keep working.',
+    '接通电源后继续索引。文件名索引和搜索不受影响。',
+    '接上電源後繼續索引。檔名索引和搜尋不受影響。',
+    '電源につなぐと続きから作成します。ファイル名の索引と検索は止まりません。',
+  ],
   chatWaitsForIndex: [
     '색인이 끝나면 검색 결과 전체로 대화할 수 있어요.',
     'You can chat with all results when indexing finishes.',

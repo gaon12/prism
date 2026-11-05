@@ -335,3 +335,11 @@
     width: calc(100vw - 24px);
   }
 }
+/* A second, quieter line under a setting's name explaining what it does. */
+.setting-check .setting-hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.5;
+}

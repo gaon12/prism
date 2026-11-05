@@ -143,7 +143,15 @@ export function ContentResults({
     status.phase === 'indexing' || status.phase === 'scanning' || status.phase === 'embedding';
   const paused = status.phase === 'cancelled' || status.phase === 'paused';
   const indexLabel = t(
-    indexing ? 'indexing' : paused ? 'paused' : status.phase === 'error' ? 'indexError' : 'ready',
+    indexing
+      ? 'indexing'
+      : paused
+        ? status.pauseReason === 'battery'
+          ? 'pausedBattery'
+          : 'paused'
+        : status.phase === 'error'
+          ? 'indexError'
+          : 'ready',
   );
   const hardLimitReached = data?.diagnostics.hardLimitReached === true;
   const automaticKeywordLimited =

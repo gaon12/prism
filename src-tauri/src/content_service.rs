@@ -115,6 +115,9 @@ pub struct ContentStatus {
     pub current_path: Option<String>,
     pub issues: Vec<ContentIssue>,
     pub embedding_error: Option<String>,
+    /// Why phase is "paused" when the user did not pause it: "battery" while waiting for
+    /// AC power under the pause-on-battery setting. None otherwise.
+    pub pause_reason: Option<String>,
 }
 impl Default for ContentStatus {
     fn default() -> Self {
@@ -128,6 +131,7 @@ impl Default for ContentStatus {
             current_path: None,
             issues: vec![],
             embedding_error: None,
+            pause_reason: None,
         }
     }
 }
@@ -171,6 +175,8 @@ struct Inner {
     generation: AtomicU64,
     closed: AtomicBool,
     paused: AtomicBool,
+    /// The user's "pause content indexing on battery" setting.
+    battery_pause: AtomicBool,
     listener: Listener,
     last_emit: Mutex<Instant>,
     excluded: Mutex<Vec<String>>,
@@ -209,6 +215,7 @@ impl ContentService {
                 generation: AtomicU64::new(0),
                 closed: AtomicBool::new(false),
                 paused: AtomicBool::new(false),
+                battery_pause: AtomicBool::new(false),
                 listener: Arc::new(listener),
                 last_emit: Mutex::new(Instant::now() - Duration::from_secs(1)),
                 excluded: Mutex::new(vec![path_key(
@@ -377,6 +384,11 @@ impl ContentService {
         });
         Ok(())
     }
+    /// Applies the "pause content indexing on battery" setting. Turning it off lets any
+    /// waiting work start on the worker's next turn.
+    pub fn set_battery_pause(&self, enabled: bool) {
+        self.inner.battery_pause.store(enabled, Ordering::Release);
+    }
     pub fn cancel_index(&self) {
         self.inner.paused.store(true, Ordering::Release);
         if let Ok(flag) = self.inner.scan_cancel.lock() {
@@ -402,12 +414,60 @@ impl ContentService {
     }
     fn monitor(&self) {
         let mut last_scan = Instant::now();
+        // Power state is read at most every 30 s (macOS runs a small tool to read it).
+        let mut power_checked: Option<Instant> = None;
+        let mut on_battery = false;
+        let mut held_for_battery = false;
         let mut watcher: Option<RecommendedWatcher> = None;
         let mut watched_roots = Vec::new();
         let mut last_watch_attempt = Instant::now() - Duration::from_secs(60);
         loop {
             if self.inner.closed.load(Ordering::Acquire) || Arc::strong_count(&self.inner) == 1 {
                 return;
+            }
+            // Pause-on-battery: while unplugged, leave queued work waiting instead of starting
+            // it. A scan already running finishes normally. Unknown power counts as plugged in.
+            if self.inner.battery_pause.load(Ordering::Acquire) {
+                if power_checked.is_none_or(|at| at.elapsed() >= Duration::from_secs(30)) {
+                    on_battery = crate::power::on_battery() == Some(true);
+                    power_checked = Some(Instant::now());
+                }
+            } else {
+                on_battery = false;
+                power_checked = None;
+            }
+            let work_waiting = self
+                .inner
+                .pending
+                .lock()
+                .is_ok_and(|pending| pending.is_some())
+                || (self.inner.generation.load(Ordering::Acquire) > 0
+                    && !self.inner.paused.load(Ordering::Acquire)
+                    && (self.inner.dirty.load(Ordering::Acquire)
+                        || last_scan.elapsed() >= Duration::from_secs(60)));
+            if on_battery && work_waiting {
+                if !held_for_battery {
+                    held_for_battery = true;
+                    self.update(|status| {
+                        status.phase = "paused".into();
+                        status.current_path = None;
+                        status.pause_reason = Some("battery".into());
+                    });
+                }
+                thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+            if held_for_battery {
+                held_for_battery = false;
+                // Back on AC power (or the setting was turned off): rescan right away.
+                self.update(|status| {
+                    status.pause_reason = None;
+                    if status.phase == "paused" {
+                        status.phase = "ready".into();
+                    }
+                });
+                self.inner.dirty.store(true, Ordering::Release);
+                last_scan = Instant::now() - Duration::from_secs(60);
             }
             let request = self
                 .inner

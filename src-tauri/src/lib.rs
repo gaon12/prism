@@ -35,6 +35,7 @@ mod packaged_startup;
 mod paste_fixture;
 mod paste_target;
 mod path_identity;
+mod power;
 mod process_job;
 mod rag_commands;
 mod rag_service;
@@ -300,6 +301,7 @@ pub fn run() {
             }
             if config_error.is_none() {
                 if let Ok(content) = &content {
+                    content.set_battery_pause(settings.power.pause_on_battery);
                     let _ = content.configure_with_ocr(settings.scopes.clone(), settings.ocr.clone());
                 }
             }

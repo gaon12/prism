@@ -10,6 +10,12 @@ import {
   X,
   Check,
   AlertCircle,
+  PanelLeft,
+  Files,
+  History,
+  Settings2,
+  BrainCircuit,
+  ListChecks,
 } from 'lucide-react';
 import { Brand } from './components/Brand';
 import { Sidebar } from './components/Sidebar';
@@ -39,6 +45,9 @@ import { isComposing } from './lib/types';
 import type { RecommendedFolder, Tab } from './lib/types';
 import { rag } from './lib/rag';
 import { content } from './lib/content';
+import { IndexActivityProvider } from './lib/index-activity';
+import { IndexingStatus, IndexingTasks } from './components/IndexingTasks';
+import { workspaceText } from './components/workspace-messages';
 import type { ChatSelection } from './lib/rag';
 
 function useQuickMode() {
@@ -55,6 +64,16 @@ function useQuickMode() {
     document.documentElement.classList.toggle('native-quick', nativeQuick);
   }, [nativeQuick]);
   return quick;
+}
+function useCompactWorkspace() {
+  const [compact, setCompact] = useState(() => window.matchMedia('(max-width: 800px)').matches);
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 800px)');
+    const update = () => setCompact(media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  return compact;
 }
 
 export default function App() {
@@ -73,11 +92,37 @@ export default function App() {
   }, []);
   const [documentDirty, setDocumentDirty] = useState(false);
   const [recent, setRecent] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(true);
+  const [mobileLibraryOpen, setMobileLibraryOpen] = useState(false);
+  const [tasksOpen, setTasksOpen] = useState(false);
+  const libraryButton = useRef<HTMLButtonElement>(null);
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   const [recommended, setRecommended] = useState<RecommendedFolder[] | null>(null);
   const quick = useQuickMode();
+  const compactWorkspace = useCompactWorkspace();
   const needsOnboarding = settings.onboardingVersion < 1;
   const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
+  const w = (key: Parameters<typeof workspaceText>[1]) => workspaceText(settings.language, key);
+  const toggleLibrary = () => {
+    if (compactWorkspace) setMobileLibraryOpen((v) => !v);
+    else setLibraryOpen((v) => !v);
+  };
+  const closeMobileLibrary = () => {
+    setMobileLibraryOpen(false);
+    libraryButton.current?.focus();
+  };
+  useEffect(() => {
+    if (!mobileLibraryOpen) return;
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMobileLibraryOpen(false);
+        libraryButton.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', dismiss);
+    return () => window.removeEventListener('keydown', dismiss);
+  }, [mobileLibraryOpen]);
   const changeTab = (next: Tab) => {
     if (next === 'chat' && chatPending.current) return false;
     tabIntent.current++;
@@ -265,7 +310,7 @@ export default function App() {
       </main>
     );
   return (
-    <>
+    <IndexActivityProvider active={!quick}>
       {quick ? (
         <QuickWindow
           onContextChange={contextChanged}
@@ -278,30 +323,27 @@ export default function App() {
           }}
         />
       ) : (
-        <div className="app-shell">
+        <div className="app-shell ide-shell">
           <header className="titlebar" data-tauri-drag-region>
+            <button
+              ref={libraryButton}
+              type="button"
+              className="icon-button workspace-library-toggle"
+              title={w('libraryToggle')}
+              aria-label={w('libraryToggle')}
+              aria-controls="workspace-library"
+              aria-expanded={compactWorkspace ? mobileLibraryOpen : libraryOpen}
+              onClick={toggleLibrary}
+            >
+              <PanelLeft size={18} />
+            </button>
             <div className="titlebar-brand" data-tauri-drag-region>
               <Brand wordmark />
             </div>
-            <nav className="main-tabs" aria-label="Prism">
-              {(
-                [
-                  { id: 'search', icon: Search },
-                  { id: 'chat', icon: MessageSquare },
-                  { id: 'documents', icon: FileText },
-                ] as const
-              ).map((item) => (
-                <button
-                  key={item.id}
-                  className={`main-tab ${tab === item.id ? 'active' : ''}`}
-                  aria-current={tab === item.id ? 'page' : undefined}
-                  onClick={() => changeTab(item.id)}
-                >
-                  <item.icon size={19} />
-                  {t(item.id)}
-                </button>
-              ))}
-            </nav>
+            <span className="workspace-breadcrumb" data-tauri-drag-region>
+              {settings.scopes.find((scope) => scope.id === state.session.scopeId)?.name ??
+                t('allFiles')}
+            </span>
             <div className="titlebar-spacer" data-tauri-drag-region />
             <button
               className="button quick-launch"
@@ -331,53 +373,164 @@ export default function App() {
             </div>
           </header>
           <div className="workspace">
-            <Sidebar
-              recent={recent}
-              onRecent={(value) => {
-                if (changeTab('search')) setRecent(value);
-              }}
-              onSettings={() => setSettingsTab('general')}
-              onAddFolder={add}
-            />
-            <main className="main-content">
-              <UpdateBanner blocked={needsOnboarding || documentDirty} />
-              {incomingChat && documentDirty ? (
-                <div className="chat-handoff-notice" role="status">
-                  {t('chatWaitingForDocument')}
-                </div>
-              ) : null}
-              {!needsOnboarding ? <ClipboardNotice /> : null}
-              {tab === 'search' ? (
-                <SearchView
-                  recent={recent}
-                  onRecent={setRecent}
-                  onAddFolder={add}
-                  onRecommended={chooseRecommended}
-                  onSettings={() => setSettingsTab('scopes')}
-                  onContextChange={contextChanged}
-                  onChat={(selection) => void openSearchChat(selection)}
-                  creatingChat={creatingSearchChat}
-                  onCancelChat={() => {
-                    tabIntent.current++;
-                    if (creationRequest.current)
-                      void content.cancel(creationRequest.current).catch(() => {});
+            <nav className="workspace-tool-bar" aria-label={w('tools')}>
+              <button
+                type="button"
+                className={`workspace-tool ${(compactWorkspace ? mobileLibraryOpen : libraryOpen) ? 'active' : ''}`}
+                title={t('library')}
+                aria-label={t('library')}
+                aria-controls="workspace-library"
+                onClick={toggleLibrary}
+              >
+                <Files size={20} />
+              </button>
+              <button
+                type="button"
+                className={`workspace-tool ${recent && tab === 'search' ? 'active' : ''}`}
+                title={w('recentTool')}
+                aria-label={w('recentTool')}
+                onClick={() => {
+                  if (changeTab('search')) setRecent(true);
+                }}
+              >
+                <History size={20} />
+              </button>
+              <span className="workspace-tool-spacer" />
+              <button
+                type="button"
+                className="workspace-tool"
+                title={t('settings')}
+                aria-label={t('settings')}
+                onClick={() => setSettingsTab('general')}
+              >
+                <Settings2 size={20} />
+              </button>
+            </nav>
+            {mobileLibraryOpen ? (
+              <button
+                type="button"
+                className="workspace-panel-backdrop"
+                aria-label={t('close')}
+                onClick={closeMobileLibrary}
+              />
+            ) : null}
+            <div
+              id="workspace-library"
+              className="workspace-library"
+              data-open={libraryOpen}
+              data-mobile-open={mobileLibraryOpen}
+            >
+              <div className="workspace-panel-heading">
+                <strong>{t('library')}</strong>
+                <button
+                  type="button"
+                  className="icon-button small"
+                  aria-label={w('libraryToggle')}
+                  onClick={() => {
+                    if (mobileLibraryOpen) closeMobileLibrary();
+                    else setLibraryOpen(false);
                   }}
-                />
-              ) : tab === 'chat' ? (
-                <ChatView
-                  initialConversationId={initialChat}
-                  onSettings={() => setSettingsTab('scopes')}
-                />
-              ) : (
-                <DocumentsView onDirtyChange={setDocumentDirty} />
-              )}
+                >
+                  <PanelLeft size={15} />
+                </button>
+              </div>
+              <Sidebar
+                recent={recent}
+                onRecent={(value) => {
+                  if (changeTab('search')) {
+                    setRecent(value);
+                    setMobileLibraryOpen(false);
+                  }
+                }}
+                onSettings={() => setSettingsTab('general')}
+                onAddFolder={add}
+              />
+            </div>
+            <main className="main-content">
+              <nav className="main-tabs workspace-tabs" aria-label="Prism">
+                {(
+                  [
+                    { id: 'search', icon: Search },
+                    { id: 'chat', icon: MessageSquare },
+                    { id: 'documents', icon: FileText },
+                  ] as const
+                ).map((item) => (
+                  <button
+                    key={item.id}
+                    className={`main-tab ${tab === item.id ? 'active' : ''}`}
+                    aria-current={tab === item.id ? 'page' : undefined}
+                    onClick={() => changeTab(item.id)}
+                  >
+                    <item.icon size={16} />
+                    {t(item.id)}
+                  </button>
+                ))}
+              </nav>
+              <div className="workspace-editor">
+                <UpdateBanner blocked={needsOnboarding || documentDirty} />
+                {incomingChat && documentDirty ? (
+                  <div className="chat-handoff-notice" role="status">
+                    {t('chatWaitingForDocument')}
+                  </div>
+                ) : null}
+                {!needsOnboarding ? <ClipboardNotice /> : null}
+                {tab === 'search' ? (
+                  <SearchView
+                    recent={recent}
+                    onRecent={setRecent}
+                    onAddFolder={add}
+                    onRecommended={chooseRecommended}
+                    onSettings={() => setSettingsTab('scopes')}
+                    onContextChange={contextChanged}
+                    onChat={(selection) => void openSearchChat(selection)}
+                    creatingChat={creatingSearchChat}
+                    onCancelChat={() => {
+                      tabIntent.current++;
+                      if (creationRequest.current)
+                        void content.cancel(creationRequest.current).catch(() => {});
+                    }}
+                  />
+                ) : tab === 'chat' ? (
+                  <ChatView
+                    initialConversationId={initialChat}
+                    onSettings={() => setSettingsTab('scopes')}
+                  />
+                ) : (
+                  <DocumentsView onDirtyChange={setDocumentDirty} />
+                )}
+              </div>
+              {tasksOpen ? <IndexingTasks onClose={() => setTasksOpen(false)} /> : null}
             </main>
+            <nav className="workspace-tool-bar workspace-tool-bar-right" aria-label={t('ai')}>
+              <button
+                type="button"
+                className="workspace-tool"
+                title={w('aiTool')}
+                aria-label={w('aiTool')}
+                onClick={() => setSettingsTab('ai')}
+              >
+                <BrainCircuit size={20} />
+              </button>
+              <span className="workspace-tool-spacer" />
+              <button
+                type="button"
+                className={`workspace-tool ${tasksOpen ? 'active' : ''}`}
+                title={w('tasks')}
+                aria-label={w('tasks')}
+                aria-expanded={tasksOpen}
+                aria-controls="indexing-tasks"
+                onClick={() => setTasksOpen((v) => !v)}
+              >
+                <ListChecks size={20} />
+              </button>
+            </nav>
           </div>
           <footer className="statusbar">
             <span>
               <i className="status-dot" />
               {runtime.native ? t('localWorkspace') : t('browserPreview')}
             </span>
+            <IndexingStatus open={tasksOpen} onToggle={() => setTasksOpen((v) => !v)} />
             <div>
               <button onClick={() => setSettingsTab('general')}>
                 {languageNames[settings.language]}
@@ -419,6 +572,6 @@ export default function App() {
           </button>
         </div>
       ) : null}
-    </>
+    </IndexActivityProvider>
   );
 }

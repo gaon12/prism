@@ -1,0 +1,491 @@
+/* An IDE-like workbench: compact chrome, docked tools and an uninterrupted editor.
+   All panels and controls operate on the existing Prism state and commands. */
+.ide-shell {
+  height: 100dvh;
+  min-height: 480px;
+  overflow: hidden;
+}
+.ide-shell .titlebar {
+  height: 46px;
+  padding-left: 9px;
+  gap: 10px;
+  background: var(--sidebar);
+}
+.ide-shell .titlebar-brand {
+  width: auto;
+  min-width: 82px;
+}
+.ide-shell .titlebar-brand .brand {
+  gap: 8px;
+}
+.ide-shell .titlebar-brand .brand > span {
+  font-family: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.ide-shell .titlebar-brand .brand svg {
+  width: 23px;
+  height: 23px;
+}
+.workspace-library-toggle {
+  flex-shrink: 0;
+}
+.workspace-breadcrumb {
+  padding-left: 12px;
+  border-left: 1px solid var(--border-strong);
+  color: var(--muted);
+  font-size: 0.85rem;
+  max-width: 30vw;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ide-shell .quick-launch {
+  border-color: transparent;
+  background: var(--hover);
+  box-shadow: none;
+  min-height: 29px;
+  font-size: 0.8rem;
+}
+.ide-shell .window-controls {
+  display: flex;
+  padding-left: 0;
+}
+.ide-shell .workspace {
+  min-height: 0;
+  position: relative;
+}
+.workspace-tool-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  width: 44px;
+  flex: 0 0 44px;
+  padding: 8px 4px;
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
+}
+.workspace-tool-bar-right {
+  border-right: 0;
+  border-left: 1px solid var(--border);
+}
+.workspace-tool {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: var(--muted);
+  background: transparent;
+}
+.workspace-tool:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.workspace-tool.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.workspace-tool-spacer {
+  flex: 1;
+}
+.workspace-library {
+  display: flex;
+  flex-direction: column;
+  width: 240px;
+  flex: 0 0 240px;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  background: var(--sidebar);
+}
+.workspace-library[data-open='false'] {
+  display: none;
+}
+.workspace-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 38px;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.83rem;
+}
+.workspace-panel-heading strong {
+  font-weight: 600;
+}
+.ide-shell .sidebar {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  padding: 10px 7px;
+}
+.ide-shell .rail-section {
+  margin-bottom: 18px;
+}
+.ide-shell .rail-section:first-child > h2,
+.ide-shell .sidebar > .settings-link {
+  display: none;
+}
+.ide-shell .rail-item {
+  min-height: 29px;
+  padding: 5px 8px;
+  font-size: 0.85rem;
+  border-radius: 3px;
+}
+.ide-shell .rail-item.active {
+  background: var(--hover);
+  box-shadow: none;
+}
+.ide-shell .rail-item > svg {
+  width: 16px;
+  height: 16px;
+}
+.ide-shell .rail-section h2 {
+  font-size: 0.78rem;
+  padding-left: 8px;
+}
+.ide-shell .main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.ide-shell .workspace-tabs {
+  flex-shrink: 0;
+  height: 38px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 0;
+  gap: 0;
+  background: var(--sidebar);
+}
+.ide-shell .workspace-tabs .main-tab {
+  align-self: stretch;
+  padding: 0 19px;
+  border-radius: 0;
+  border-right: 1px solid var(--border);
+  border-bottom: 2px solid transparent;
+  font-size: 0.85rem;
+}
+.ide-shell .workspace-tabs .main-tab.active {
+  background: var(--surface);
+  border-bottom-color: var(--accent);
+}
+.workspace-editor {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.ide-shell .search-view,
+.ide-shell .feature-view,
+.ide-shell .documents-view {
+  padding: 20px 24px 18px;
+}
+.ide-shell .page-heading h1 {
+  font-family: inherit;
+  font-size: 1.16rem;
+  font-weight: 600;
+}
+.ide-shell .page-heading > p {
+  font-size: 0.85rem;
+  margin-top: 5px;
+}
+.ide-shell .search-box {
+  margin-top: 20px;
+  height: 47px;
+  border-radius: 6px;
+}
+.ide-shell .search-box input {
+  font-size: 1rem;
+}
+.ide-shell .search-toolbar {
+  margin-top: 11px;
+}
+.ide-shell .search-chat-action {
+  min-height: 32px;
+  margin: 10px 0;
+  gap: 10px;
+}
+.ide-shell .search-chat-action .button {
+  font-size: 0.82rem;
+  min-height: 29px;
+  padding: 5px 9px;
+}
+.ide-shell .search-chat-action small {
+  font-size: 0.76rem;
+}
+.ide-shell .phase-note {
+  border-radius: 4px;
+  box-shadow: none;
+  padding: 10px 12px;
+}
+.ide-shell .statusbar {
+  height: 28px;
+  gap: 14px;
+  padding: 0 10px;
+  font-size: 0.75rem;
+}
+.ide-shell .statusbar > span {
+  flex-shrink: 0;
+}
+.ide-shell .statusbar > div {
+  flex-shrink: 0;
+}
+.ide-shell .statusbar .workspace-index-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 440px;
+  margin-left: auto;
+  margin-right: 12px;
+  color: var(--muted);
+}
+.workspace-index-status > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-index-status > small {
+  font-variant-numeric: tabular-nums;
+}
+.workspace-index-status .index-progress {
+  width: 84px;
+  flex-shrink: 0;
+}
+.workspace-tasks {
+  flex-shrink: 0;
+  max-height: 230px;
+  overflow: auto;
+  border-top: 1px solid var(--border-strong);
+  background: var(--surface);
+}
+.workspace-tasks > header {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 34px;
+  padding: 0 10px 0 16px;
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--border);
+  z-index: 1;
+}
+.workspace-tasks h2 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.83rem;
+  font-weight: 600;
+}
+.workspace-tasks > p {
+  padding: 12px 16px;
+  font-size: 0.84rem;
+}
+.workspace-task-list {
+  display: grid;
+  gap: 13px;
+  padding: 12px 16px;
+}
+.workspace-task {
+  display: grid;
+  align-items: center;
+  grid-template-columns: 110px minmax(0, 1fr) 27px;
+  column-gap: 12px;
+  row-gap: 4px;
+  font-size: 0.8rem;
+}
+.workspace-task strong {
+  font-weight: 500;
+}
+.workspace-task > span {
+  color: var(--muted);
+}
+.workspace-task > .index-progress {
+  grid-column: 2;
+}
+.workspace-task > small {
+  grid-column: 2;
+  font-size: 0.74rem;
+}
+.workspace-task-path {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.workspace-panel-backdrop {
+  display: none;
+}
+@media (max-width: 1000px) {
+  .workspace-library {
+    width: 205px;
+    flex-basis: 205px;
+  }
+  .ide-shell .quick-launch kbd {
+    display: none;
+  }
+  .ide-shell .search-view,
+  .ide-shell .feature-view,
+  .ide-shell .documents-view {
+    padding: 18px;
+  }
+}
+@media (max-width: 800px) {
+  .workspace-library,
+  .workspace-library[data-open='false'] {
+    display: none;
+  }
+  .workspace-library[data-mobile-open='true'] {
+    display: flex;
+    position: absolute;
+    z-index: 31;
+    left: 44px;
+    top: 0;
+    bottom: 0;
+    width: min(260px, calc(100vw - 70px));
+    box-shadow: var(--shadow-float);
+  }
+  .ide-shell .workspace-library .sidebar {
+    display: flex;
+  }
+  .workspace-panel-backdrop {
+    display: block;
+    position: absolute;
+    inset: 0 0 0 44px;
+    border: 0;
+    border-radius: 0;
+    background: rgba(0, 0, 0, 0.22);
+    z-index: 30;
+  }
+  .workspace-tool-bar-right {
+    display: none;
+  }
+  .workspace-breadcrumb {
+    max-width: 25vw;
+  }
+  .ide-shell .statusbar > span {
+    display: none;
+  }
+  .ide-shell .statusbar .workspace-index-status {
+    margin-left: 0;
+    margin-right: auto;
+  }
+}
+@media (max-width: 580px) {
+  .ide-shell {
+    height: 100dvh;
+    min-height: 480px;
+  }
+  .ide-shell .titlebar {
+    height: 42px;
+    gap: 5px;
+    padding-left: 5px;
+  }
+  .ide-shell .titlebar-brand {
+    min-width: 24px;
+  }
+  .ide-shell .titlebar-brand .brand > span {
+    display: none;
+  }
+  .workspace-breadcrumb {
+    padding-left: 7px;
+    font-size: 0.78rem;
+    max-width: 22vw;
+  }
+  .ide-shell .quick-launch {
+    padding: 4px 7px;
+    min-height: 28px;
+  }
+  .ide-shell .quick-launch > span {
+    display: none;
+  }
+  .ide-shell .window-controls button {
+    width: 32px;
+  }
+  .ide-shell .workspace {
+    min-height: 0;
+  }
+  .workspace-tool-bar {
+    width: 38px;
+    flex-basis: 38px;
+    padding-left: 2px;
+    padding-right: 2px;
+  }
+  .workspace-library[data-mobile-open='true'] {
+    left: 38px;
+  }
+  .workspace-panel-backdrop {
+    left: 38px;
+  }
+  .workspace-tool {
+    width: 31px;
+    height: 33px;
+  }
+  .ide-shell .workspace-tabs {
+    height: 36px;
+    margin: 0;
+  }
+  .ide-shell .workspace-tabs .main-tab {
+    padding: 0 12px;
+    gap: 5px;
+    font-size: 0.82rem;
+  }
+  .ide-shell .search-view,
+  .ide-shell .feature-view,
+  .ide-shell .documents-view {
+    padding: 16px 12px;
+  }
+  .ide-shell .search-toolbar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .ide-shell .search-modes {
+    flex: 1 1 100%;
+  }
+  .ide-shell .search-modes > .ss-seg__option {
+    padding: 6px 3px;
+    overflow-wrap: anywhere;
+  }
+  .ide-shell .search-chat-action small {
+    flex-basis: 100%;
+    line-height: 1.5;
+  }
+  .ide-shell .statusbar {
+    height: 28px;
+    gap: 6px;
+  }
+  .workspace-index-status .index-progress {
+    width: 45px;
+  }
+  .ide-shell .statusbar > div {
+    font-size: 0.7rem;
+    gap: 5px;
+  }
+  .workspace-task {
+    grid-template-columns: minmax(0, 1fr) 27px;
+    column-gap: 6px;
+  }
+  .workspace-task > strong {
+    grid-column: 1;
+  }
+  .workspace-task > span {
+    grid-column: 1;
+  }
+  .workspace-task > button {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+  .workspace-task > .index-progress,
+  .workspace-task > small {
+    grid-column: 1 / -1;
+  }
+}

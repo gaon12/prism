@@ -31,6 +31,7 @@ mod packaged_startup;
 #[cfg(debug_assertions)]
 mod paste_fixture;
 mod paste_target;
+mod path_identity;
 mod process_job;
 mod rag_commands;
 mod rag_service;

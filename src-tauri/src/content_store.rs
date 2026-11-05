@@ -264,25 +264,9 @@ fn within(path: &Path, root: &Path) -> bool {
     true
 }
 fn no_links(path: &Path) -> bool {
-    path.ancestors()
-        .filter(|p| !p.as_os_str().is_empty())
-        .all(|ancestor| {
-            let Ok(meta) = fs::symlink_metadata(ancestor) else {
-                return false;
-            };
-            if meta.file_type().is_symlink() {
-                return false;
-            }
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::MetadataExt;
-                if meta.file_attributes() & 0x400 != 0 {
-                    return false;
-                }
-            }
-            true
-        })
+    crate::path_identity::no_links(path).is_ok()
 }
+
 fn safe_canonical(path: &Path, directory: bool) -> Option<PathBuf> {
     let absolute = std::path::absolute(path).ok()?;
     if !no_links(&absolute) {
@@ -1253,6 +1237,46 @@ mod tests {
         store
             .search(query, &ContentSearchFilter::default(), roots, 20, &cancel())
             .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_scopes_extract_search_and_purge_without_allowing_child_links() {
+        // /tmp is a real directory on Linux and the actual system alias on
+        // macOS. Compile and exercise the rest of the contract on both hosts.
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let roots = vec![dir.path().to_owned()];
+        let doc = document(dir.path(), "source.md", "한국어 alias evidence");
+        let canonical = fs::canonicalize(dir.path()).unwrap();
+        assert_eq!(Path::new(&doc.file_path), canonical.join("source.md"));
+        let store = ContentStore::open(&dir.path().join("index.sqlite")).unwrap();
+        store.replace_document(&doc, &roots, &cancel()).unwrap();
+        assert_eq!(search(&store, "evidence", &roots).len(), 1);
+        assert_eq!(
+            search(&store, "evidence", std::slice::from_ref(&canonical)).len(),
+            1
+        );
+        let linked = dir.path().join("linked");
+        std::os::unix::fs::symlink(&canonical, &linked).unwrap();
+        assert!(search(&store, "evidence", std::slice::from_ref(&linked)).is_empty());
+        let error = extract_document(
+            &linked.join("source.md"),
+            &ExtractOptions::default(),
+            &cancel(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.code,
+            crate::document_extract::ExtractErrorCode::UnsafePath
+        );
+        fs::remove_file(dir.path().join("source.md")).unwrap();
+        assert_eq!(
+            store
+                .purge_document(&dir.path().join("source.md"), &cancel())
+                .unwrap(),
+            1
+        );
+        assert!(search(&store, "evidence", &roots).is_empty());
     }
 
     #[test]

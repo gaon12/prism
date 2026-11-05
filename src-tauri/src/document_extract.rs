@@ -137,29 +137,19 @@ fn modified(meta: &Metadata) -> Option<u64> {
         .ok()
 }
 
-/// Reject symlinks/reparse points in every path component. Scope authorization
-/// remains the caller's job; this check alone is not a filesystem sandbox.
+/// Apply the shared link policy, including verified macOS root aliases.
+/// Scope authorization remains the caller's job; this is not a sandbox.
 fn check_path(path: &Path) -> Result<()> {
-    for ancestor in path.ancestors() {
-        if ancestor.as_os_str().is_empty() {
-            continue;
-        }
-        let meta = fs::symlink_metadata(ancestor)
-            .map_err(|_| err(ExtractErrorCode::Io, "Cannot inspect document path"))?;
-        let mut link = meta.file_type().is_symlink();
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-            link |= meta.file_attributes() & 0x400 != 0;
-        }
-        if link {
-            return Err(err(
+    crate::path_identity::no_links(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::InvalidInput {
+            err(
                 ExtractErrorCode::UnsafePath,
                 "Symlink or reparse-point document paths are skipped",
-            ));
+            )
+        } else {
+            err(ExtractErrorCode::Io, "Cannot inspect document path")
         }
-    }
-    Ok(())
+    })
 }
 
 fn bounded_read(mut input: impl Read, max: u64, cancel: &AtomicBool) -> Result<Vec<u8>> {

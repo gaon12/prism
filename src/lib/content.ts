@@ -80,6 +80,10 @@ function failure(cause: unknown): ContentFailure {
 export const content = {
   status: () => invoke<ContentStatus>('content_status'),
   refresh: () => invoke<void>('content_refresh'),
+  prepareUnlock: () => invoke<string>('content_prepare_unlock'),
+  unlock: (path: string, password: string, requestId: string) =>
+    invoke('content_unlock_pdf', { path, password, requestId }),
+  cancelUnlock: (requestId: string) => invoke<void>('content_cancel_unlock', { requestId }),
   pause: () => invoke<void>('content_cancel_index'),
   cancel: (requestId: string) => invoke<void>('content_cancel_search', { requestId }),
   open: (path: string, reveal = false) => invoke<void>('content_file_action', { path, reveal }),

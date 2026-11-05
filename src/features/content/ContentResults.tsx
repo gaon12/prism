@@ -21,6 +21,7 @@ import { showToast, useClient } from '../../lib/store';
 import { contentText } from './messages';
 import { matchedSegments } from '../../lib/text-match';
 import './content.css';
+import { PdfUnlockDialog } from './PdfUnlockDialog';
 
 type MessageKey = Parameters<typeof contentText>[1];
 
@@ -86,6 +87,7 @@ export function ContentResults({
   const title = t(automatic ? 'automaticTitle' : semantic ? 'semanticTitle' : 'contentTitle');
   const list = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
+  const [unlockPath, setUnlockPath] = useState<string | null>(null);
   const [actionError, setActionError] = useState<{ key: string; message: string } | null>(null);
   const viewKey = JSON.stringify([
     controller.mode,
@@ -173,6 +175,14 @@ export function ContentResults({
 
   return (
     <section className={`content-panel ${compact ? 'compact' : ''}`} aria-label={title}>
+      {unlockPath ? (
+        <PdfUnlockDialog
+          key={unlockPath}
+          path={unlockPath}
+          language={language}
+          onClose={() => setUnlockPath(null)}
+        />
+      ) : null}
       <header className="content-heading">
         {semantic ? (
           <BrainCircuit size={19} aria-hidden="true" />
@@ -323,6 +333,16 @@ export function ContentResults({
                   </div>
                   <p className="content-issue-path">{issue.path}</p>
                   {issueKey(issue.code) === 'issue' ? <p>{issue.message}</p> : null}
+                  {issue.code.toLowerCase() === 'encrypted' && /\.pdf$/iu.test(issue.path) ? (
+                    <button
+                      type="button"
+                      className="text-button"
+                      aria-label={`${t('unlockPdf')}: ${filename(issue.path)}`}
+                      onClick={() => setUnlockPath(issue.path)}
+                    >
+                      {t('unlockPdf')}
+                    </button>
+                  ) : null}
                 </li>
               ))}
             </ul>

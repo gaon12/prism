@@ -2,6 +2,80 @@ import type { Language } from '../../lib/types';
 
 // Korean, English, Simplified Chinese, Traditional Chinese, Japanese.
 const messages = {
+  unlockPdf: ['암호 입력', 'Enter password', '输入密码', '輸入密碼', 'パスワードを入力'],
+  unlockTitle: [
+    '암호 PDF 다시 색인',
+    'Index a password-protected PDF',
+    '重新索引加密PDF',
+    '重新索引加密PDF',
+    '暗号化PDFを再索引',
+  ],
+  unlockPassword: ['PDF 비밀번호', 'PDF password', 'PDF密码', 'PDF密碼', 'PDFパスワード'],
+  unlockNotice: [
+    '암호는 저장하지 않습니다. 원본 PDF는 변경하지 않으며, 추출한 본문은 허용된 폴더의 로컬 검색 색인에 저장됩니다. 원본이 바뀌면 암호를 다시 입력해야 할 수 있습니다.',
+    'The password is not saved. The original PDF stays unchanged; extracted text is stored in the local search index for authorized folders. Changed files may require the password again.',
+    '不保存密码，不修改原PDF。提取的正文会保存在授权文件夹的本地搜索索引中。原文件更改后可能需要重新输入密码。',
+    '不儲存密碼，不修改原PDF。擷取的內文會儲存在授權資料夾的本機搜尋索引中。原檔案變更後可能需要重新輸入密碼。',
+    'パスワードは保存せず、元のPDFも変更しません。抽出した本文は許可されたフォルダーのローカル検索索引に保存します。元ファイルの変更後は再入力が必要な場合があります。',
+  ],
+  unlockSubmit: [
+    '암호로 색인',
+    'Index with password',
+    '使用密码索引',
+    '使用密碼索引',
+    'パスワードで索引',
+  ],
+  unlockWorking: [
+    'PDF 처리 중…',
+    'Processing PDF…',
+    '正在处理PDF…',
+    '正在處理PDF…',
+    'PDFを処理中…',
+  ],
+  unlockCancel: ['취소', 'Cancel', '取消', '取消', 'キャンセル'],
+  unlockClose: [
+    '암호 입력 닫기',
+    'Close password entry',
+    '关闭密码输入',
+    '關閉密碼輸入',
+    'パスワード入力を閉じる',
+  ],
+  unlockRejected: [
+    '암호가 맞지 않거나 지원하지 않는 PDF 암호화 방식입니다.',
+    'The password was not accepted, or this PDF uses unsupported encryption.',
+    '密码未被接受，或此PDF使用不支持的加密方式。',
+    '密碼未被接受，或此PDF使用不支援的加密方式。',
+    'パスワードが一致しないか、未対応の暗号化方式です。',
+  ],
+  unlockLong: [
+    '암호는 UTF-8 기준 1,024바이트 이내로 입력하세요.',
+    'Enter a password of at most 1,024 UTF-8 bytes.',
+    '密码不得超过1,024个UTF-8字节。',
+    '密碼不得超過1,024個UTF-8位元組。',
+    'パスワードはUTF-8で1,024バイト以内にしてください。',
+  ],
+  unlockBusy: [
+    '이전 PDF 처리가 끝나면 다시 시도하세요.',
+    'Retry when the previous PDF operation finishes.',
+    '请在上一次PDF处理结束后重试。',
+    '請在上一次PDF處理結束後重試。',
+    '前のPDF処理が終了してから再試行してください。',
+  ],
+  unlockFailed: [
+    'PDF를 처리하지 못했습니다. 파일과 검색 범위를 확인해 주세요.',
+    'Could not process the PDF. Check the file and search folders.',
+    '无法处理PDF，请检查文件和搜索范围。',
+    '無法處理PDF，請檢查檔案及搜尋範圍。',
+    'PDFを処理できませんでした。ファイルと検索範囲を確認してください。',
+  ],
+  unlockDone: [
+    'PDF 본문을 색인했습니다.',
+    'PDF text indexed.',
+    '已索引PDF正文。',
+    '已索引PDF內文。',
+    'PDF本文を索引しました。',
+  ],
+
   automaticTitle: ['자동 검색', 'Automatic search', '自动搜索', '自動搜尋', '自動検索'],
   automaticKeywordLimitTitle: [
     '키워드 검색을 실행하지 못했습니다.',

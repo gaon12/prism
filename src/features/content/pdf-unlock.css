@@ -1,0 +1,70 @@
+.pdf-unlock-dialog {
+  width: min(500px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--modal-shadow);
+  overflow-y: auto;
+}
+.pdf-unlock-dialog::backdrop {
+  background: #12251c55;
+}
+.pdf-unlock-dialog form {
+  padding: 24px;
+}
+.pdf-unlock-dialog header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.pdf-unlock-dialog header > svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.pdf-unlock-dialog h2 {
+  font-size: 1.12rem;
+  margin: 0;
+  flex: 1;
+}
+.pdf-unlock-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.pdf-unlock-notice {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.7;
+}
+.pdf-unlock-dialog label {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin: 18px 0 7px;
+}
+.pdf-unlock-dialog input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.pdf-unlock-dialog .pdf-unlock-error {
+  margin: 10px 0 0;
+  color: var(--danger);
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+.pdf-unlock-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 24px;
+}
+@media (max-width: 460px) {
+  .pdf-unlock-dialog form {
+    padding: 18px;
+  }
+  .pdf-unlock-dialog footer .button {
+    flex: 1;
+  }
+}

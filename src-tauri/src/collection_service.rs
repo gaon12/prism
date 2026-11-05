@@ -175,13 +175,87 @@ mod tests {
             ErrorCode::Cancelled
         );
     }
+    #[test]
+    fn epub_spine_and_cached_viewports_remain_bound_to_current_references() {
+        let (dir, service, _, work, unit) = fixture();
+        let path = dir.path().join("소설.epub");
+        let original = include_bytes!("../../tests/fixtures/epub/spine.epub");
+        fs::write(&path, original).unwrap();
+        let unit = service
+            .import(&unit.id, unit.revision, vec![path.clone()])
+            .unwrap();
+        assert_eq!(unit.page_count, 2);
+        let pages = service
+            .store
+            .pages(&unit.id, unit.revision, 0, 10)
+            .unwrap()
+            .items;
+        assert_eq!(
+            pages[0].location.entry.as_deref(),
+            Some("OPS/chapters/2-first.xhtml")
+        );
+        let media = service.cover(&work.id).unwrap();
+        assert_eq!(media.page_id, pages[0].id);
+        assert!(media.data_url.is_none() && media.document.is_some());
+        assert!(media.document.unwrap().html.contains("첫 번째 장"));
+        // Only a cache-admission fixture; actual browser/first-page pixels are
+        // verified by the bundled native EPUB UI test, not this generated color.
+        let image = dir.path().join("viewport.png");
+        png(&image, [210, 40, 50, 255]);
+        let bytes =
+            collection_render::webp(&fs::read(image).unwrap(), 480, &AtomicBool::new(false))
+                .unwrap();
+        let data = format!(
+            "data:image/webp;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        );
+        let saved = service
+            .cache_epub(&pages[0].id, &pages[0].source_hash, &data)
+            .unwrap();
+        assert!(saved.data_url.is_some());
+        assert!(service.cover(&work.id).unwrap().document.is_none());
+        assert!(service
+            .media(&pages[0].id, false)
+            .unwrap()
+            .document
+            .is_some());
+        service
+            .store
+            .save_reading(&work.id, Some(&pages[1].id), false)
+            .unwrap();
+        assert_eq!(
+            service.store.reading(&work.id).unwrap().page_id.as_deref(),
+            Some(pages[1].id.as_str())
+        );
+        fs::write(&path, b"changed source").unwrap();
+        assert_eq!(
+            service.cover(&work.id).unwrap_err().code,
+            ErrorCode::SourceChanged
+        );
+        assert_eq!(
+            service
+                .cache_epub(&pages[0].id, &pages[0].source_hash, &data)
+                .unwrap_err()
+                .code,
+            ErrorCode::SourceChanged
+        );
+        assert!(service.import(&unit.id, unit.revision, vec![]).is_err());
+        assert_eq!(service.store.unit(&unit.id).unwrap().page_count, 2);
+        assert_eq!(
+            service.store.reading(&work.id).unwrap().page_id.as_deref(),
+            Some(pages[1].id.as_str())
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"changed source");
+    }
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Media {
     pub page_id: String,
+    pub source_hash: String,
     pub data_url: Option<String>,
     pub text: Option<String>,
+    pub document: Option<crate::collection_epub::Document>,
 }
 struct Active {
     cancel: Arc<AtomicBool>,
@@ -623,6 +697,36 @@ impl CollectionService {
         let source = self.store.source(&page.source_id)?;
         let cancel = &self.inner.shutdown;
         import::check(cancel)?;
+        if page.location.kind == PageKind::Epub {
+            let bytes = import::image_bytes(&source, &page, &self.inner.excluded, cancel)?;
+            let cached = thumbnail.then(|| self.cache_read(&page, 480)).flatten();
+            let document = if cached.is_none() {
+                Some(
+                    crate::collection_epub::Book::open(&bytes, cancel)?.document(
+                        page.location.number,
+                        page.location
+                            .entry
+                            .as_deref()
+                            .ok_or_else(|| error(ErrorCode::Input))?,
+                    )?,
+                )
+            } else {
+                None
+            };
+            self.check_current(&page, &source)?;
+            return Ok(Media {
+                page_id: page.id,
+                source_hash: page.source_hash,
+                data_url: cached.map(|bytes| {
+                    format!(
+                        "data:image/webp;base64,{}",
+                        base64::engine::general_purpose::STANDARD.encode(bytes)
+                    )
+                }),
+                text: None,
+                document,
+            });
+        }
         if matches!(page.location.kind, PageKind::Text) {
             if thumbnail {
                 return Err(error(ErrorCode::Unsupported));
@@ -638,8 +742,10 @@ impl CollectionService {
             self.check_current(&page, &source)?;
             return Ok(Media {
                 page_id: page.id,
+                source_hash: page.source_hash,
                 data_url: None,
                 text: Some(text),
+                document: None,
             });
         }
         // A cached image never bypasses validation of the current reference.
@@ -657,11 +763,59 @@ impl CollectionService {
         self.check_current(&page, &source)?;
         Ok(Media {
             page_id: page.id,
+            source_hash: page.source_hash,
             data_url: Some(format!(
                 "data:image/webp;base64,{}",
                 base64::engine::general_purpose::STANDARD.encode(bytes)
             )),
             text: None,
+            document: None,
+        })
+    }
+    /// Persist the real browser-rendered first viewport, never a guessed cover.
+    /// Reauthenticate the current source after rendering and re-encode bounded
+    /// WebP pixels before admitting anything to our owned cache.
+    pub fn cache_epub(&self, page_id: &str, source_hash: &str, data_url: &str) -> Result<Media> {
+        let _guard = self
+            .inner
+            .render
+            .lock()
+            .map_err(|_| error(ErrorCode::Storage))?;
+        let page = self.store.page(page_id)?;
+        if page.location.kind != PageKind::Epub
+            || page.source_hash != source_hash
+            || data_url.len() > 24 << 20
+        {
+            return Err(error(ErrorCode::SourceChanged));
+        }
+        let source = self.store.source(&page.source_id)?;
+        let cancel = &self.inner.shutdown;
+        import::image_bytes(&source, &page, &self.inner.excluded, cancel)?;
+        let payload = data_url
+            .strip_prefix("data:image/webp;base64,")
+            .ok_or_else(|| error(ErrorCode::Input))?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .map_err(|_| error(ErrorCode::Input))?;
+        let (width, height) =
+            image::ImageReader::with_format(std::io::Cursor::new(&bytes), image::ImageFormat::WebP)
+                .into_dimensions()
+                .map_err(|_| error(ErrorCode::Input))?;
+        if width == 0 || height == 0 || width.max(height) > 480 {
+            return Err(error(ErrorCode::Limit));
+        }
+        let bytes = collection_render::webp(&bytes, 480, cancel)?;
+        self.check_current(&page, &source)?;
+        self.cache_write(&page, 480, &bytes);
+        Ok(Media {
+            page_id: page.id,
+            source_hash: page.source_hash,
+            data_url: Some(format!(
+                "data:image/webp;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            )),
+            text: None,
+            document: None,
         })
     }
     fn check_current(&self, page: &Page, source: &Source) -> Result<()> {

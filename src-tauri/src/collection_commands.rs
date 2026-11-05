@@ -192,6 +192,16 @@ pub async fn collection_cover(state: State<'_, AppState>, work_id: String) -> Re
     blocking(move || service.cover(&work_id)).await
 }
 #[tauri::command]
+pub async fn collection_cache_epub(
+    state: State<'_, AppState>,
+    page_id: String,
+    source_hash: String,
+    data_url: String,
+) -> Result<Media> {
+    let service = service(&state)?;
+    blocking(move || service.cache_epub(&page_id, &source_hash, &data_url)).await
+}
+#[tauri::command]
 pub async fn collection_reading(
     state: State<'_, AppState>,
     work_id: String,

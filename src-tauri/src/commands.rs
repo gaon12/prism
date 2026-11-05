@@ -395,6 +395,7 @@ pub fn recommended_folders(app: AppHandle) -> Vec<RecommendedFolder> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeInfo {
+    platform: &'static str,
     native: bool,
     development: bool,
     install_kind: crate::app_paths::InstallKind,
@@ -405,6 +406,7 @@ pub struct RuntimeInfo {
 #[tauri::command]
 pub fn runtime_info(state: State<'_, AppState>) -> Result<RuntimeInfo, String> {
     Ok(RuntimeInfo {
+        platform: std::env::consts::OS,
         native: true,
         development: cfg!(debug_assertions),
         install_kind: state.location.kind,

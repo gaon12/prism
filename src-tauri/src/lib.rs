@@ -24,6 +24,8 @@ mod foreground_tracker;
 mod generation_runtime;
 mod hybrid_search;
 mod index;
+mod index_service;
+mod index_service_commands;
 mod keyboard_pattern;
 mod model_commands;
 mod ocr;
@@ -70,6 +72,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 pub struct AppState {
+    index_service: index_service::Controller,
     settings: Mutex<ClientSettings>,
     session: Mutex<SearchSession>,
     shortcut_error: Mutex<Option<String>>,
@@ -372,6 +375,7 @@ pub fn run() {
                 std::sync::Arc::from(paste_target::system_backend())
             };
             app.manage(AppState {
+                index_service: index_service::Controller::default(),
                 settings: Mutex::new(settings),
                 session: Mutex::new(session),
                 shortcut_error: Mutex::new(shortcut_error),
@@ -486,6 +490,8 @@ pub fn run() {
             commands::hide_quick,
             commands::resize_quick,
             commands::index_status,
+            index_service_commands::index_service_status,
+            index_service_commands::index_service_manage,
             commands::search_files,
             commands::refresh_index,
             commands::file_action,

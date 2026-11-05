@@ -6,12 +6,12 @@ use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering as CmpOrdering,
-    collections::{BTreeMap, BinaryHeap, HashSet},
+    collections::{BTreeMap, BinaryHeap, HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc, Arc, Mutex, RwLock,
+        mpsc, Arc, Condvar, Mutex, RwLock,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -84,8 +84,19 @@ struct Entry {
 }
 impl Entry {
     fn new(raw: Raw, seen: u64) -> Self {
-        let search = normalized(&raw.key);
-        let name = normalized(&raw.name);
+        // Most system paths are ASCII. Avoid NFC iteration and allocating two
+        // Hangul projections for every such path on a whole-drive scan.
+        let ascii = raw.key.is_ascii();
+        let search = if ascii {
+            raw.key.to_ascii_lowercase()
+        } else {
+            normalized(&raw.key)
+        };
+        let name = if ascii {
+            raw.name.to_ascii_lowercase()
+        } else {
+            normalized(&raw.name)
+        };
         // Initial projection keeps UTF-8 byte lengths (3-byte syllable → 3-byte jamo), so the
         // name offset is valid for both strings.
         let name_start = if search.ends_with(&name) {
@@ -95,8 +106,14 @@ impl Entry {
         } as u32;
         Self {
             path: display_path(&raw.path).into(),
-            initials_path: initial_projection(&search).map(Into::into),
-            keyboard_path: keyboard_projection(&search).map(Into::into),
+            initials_path: (!ascii)
+                .then(|| initial_projection(&search))
+                .flatten()
+                .map(Into::into),
+            keyboard_path: (!ascii)
+                .then(|| keyboard_projection(&search))
+                .flatten()
+                .map(Into::into),
             search: (search != raw.key).then(|| search.into()),
             key: raw.key.into(),
             name_start,
@@ -154,6 +171,10 @@ struct Raw {
     size: u64,
     modified_ms: Option<i64>,
 }
+struct WalkJobs {
+    paths: VecDeque<(PathBuf, bool)>,
+    outstanding: usize,
+}
 /// Entries at `root` and below it, using the sorted key order ('0' follows '/').
 fn subtree<'a>(
     entries: &'a BTreeMap<Box<str>, Entry>,
@@ -192,6 +213,61 @@ struct Catalog {
     entries: BTreeMap<Box<str>, Entry>,
     roots: Vec<Root>,
     status: IndexStatus,
+}
+
+/// Bound queued *paths*, not notifications: a downloading file can emit tens
+/// of thousands of writes without requiring another walk of the whole drive.
+#[derive(Default)]
+struct PendingPaths {
+    paths: BTreeMap<String, PathBuf>,
+    overflow: bool,
+}
+impl PendingPaths {
+    fn push(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        for path in paths {
+            let key = path_key(&path);
+            if self.paths.contains_key(&key) {
+                continue;
+            }
+            if self.paths.len() == 4096 {
+                self.overflow = true;
+                break;
+            }
+            self.paths.insert(key, path);
+        }
+    }
+    fn take(&mut self) -> (bool, Vec<PathBuf>) {
+        let overflow = std::mem::take(&mut self.overflow);
+        (overflow, minimal_paths(std::mem::take(&mut self.paths)))
+    }
+}
+
+/// Keep every scope in the catalog for filtering, but visit/watch nested roots
+/// only once. Checking ancestors also handles sibling prefixes such as a-b.
+fn minimal_paths(paths: BTreeMap<String, PathBuf>) -> Vec<PathBuf> {
+    paths
+        .iter()
+        .filter(|(key, _)| {
+            let mut parent = key.as_str();
+            while let Some((head, _)) = parent.rsplit_once('/') {
+                if paths.contains_key(head) {
+                    return false;
+                }
+                parent = head;
+            }
+            true
+        })
+        .map(|(_, path)| path.clone())
+        .collect()
+}
+
+fn root_paths(roots: &[Root]) -> Vec<PathBuf> {
+    minimal_paths(
+        roots
+            .iter()
+            .map(|root| (root.key.clone(), root.path.clone()))
+            .collect(),
+    )
 }
 #[derive(Clone)]
 pub struct FileIndex {
@@ -280,7 +356,7 @@ impl FileIndex {
             && self.generation.load(Ordering::SeqCst) == generation
     }
     fn run(&self, rx: mpsc::Receiver<(u64, Vec<SearchScope>)>) {
-        let pending = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+        let pending = Arc::new(Mutex::new(PendingPaths::default()));
         let overflow = Arc::new(AtomicBool::new(false));
         let mut watcher: Option<RecommendedWatcher> = None;
         let mut generation = 0;
@@ -302,7 +378,10 @@ impl FileIndex {
                     generation = request.0;
                     scopes = request.1;
                     watcher.take();
-                    pending.lock().map(|mut paths| paths.clear()).ok();
+                    pending
+                        .lock()
+                        .map(|mut paths| *paths = PendingPaths::default())
+                        .ok();
                     overflow.store(false, Ordering::SeqCst);
                     let mut roots = vec![];
                     let mut warnings = vec![];
@@ -326,11 +405,7 @@ impl FileIndex {
                                     dropped.store(true, Ordering::SeqCst);
                                 }
                                 if let Ok(mut paths) = queue.lock() {
-                                    if paths.len() + event.paths.len() <= 4096 {
-                                        paths.extend(event.paths);
-                                    } else {
-                                        dropped.store(true, Ordering::SeqCst);
-                                    }
+                                    paths.push(event.paths);
                                 }
                             }
                             Err(_) => {
@@ -340,12 +415,11 @@ impl FileIndex {
                         },
                     ) {
                         Ok(mut next) => {
-                            for root in &roots {
-                                if let Err(error) = next.watch(&root.path, RecursiveMode::Recursive)
-                                {
+                            for path in root_paths(&roots) {
+                                if let Err(error) = next.watch(&path, RecursiveMode::Recursive) {
                                     warnings.push(format!(
                                         "Live updates unavailable for {}: {error}",
-                                        root.path.display()
+                                        path.display()
                                     ));
                                 }
                             }
@@ -362,15 +436,7 @@ impl FileIndex {
                         catalog.status.warnings = warnings.into_iter().take(5).collect();
                     }
                     sweep += 1;
-                    self.scan(
-                        generation,
-                        &roots
-                            .iter()
-                            .map(|root| root.path.clone())
-                            .collect::<Vec<_>>(),
-                        sweep,
-                        true,
-                    );
+                    self.scan(generation, &root_paths(&roots), sweep, true);
                     last_reconcile = SystemTime::now();
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -390,30 +456,21 @@ impl FileIndex {
                 Err(_) => continue,
             };
             let interval = Duration::from_secs(if healthy { 300 } else { 120 });
-            let overflowed = overflow.swap(false, Ordering::SeqCst);
+            let (queue_overflow, paths) = match pending.lock() {
+                Ok(mut paths) => paths.take(),
+                Err(_) => continue,
+            };
+            let overflowed = overflow.swap(false, Ordering::SeqCst) || queue_overflow;
             if overflowed || last_reconcile.elapsed().unwrap_or_default() > interval {
                 if !healthy {
                     self.refresh(scopes.clone());
                     continue;
                 }
-                pending.lock().map(|mut paths| paths.clear()).ok();
                 sweep += 1;
-                self.scan(
-                    generation,
-                    &roots
-                        .iter()
-                        .map(|root| root.path.clone())
-                        .collect::<Vec<_>>(),
-                    sweep,
-                    true,
-                );
+                self.scan(generation, &root_paths(&roots), sweep, true);
                 last_reconcile = SystemTime::now();
                 continue;
             }
-            let paths = match pending.lock() {
-                Ok(mut paths) => std::mem::take(&mut *paths),
-                Err(_) => continue,
-            };
             if paths.is_empty() {
                 continue;
             }
@@ -421,21 +478,10 @@ impl FileIndex {
                 Ok(catalog) => catalog.roots.clone(),
                 Err(_) => continue,
             };
-            let mut paths: Vec<_> = paths
+            let unique: Vec<_> = paths
                 .into_iter()
                 .filter(|path| roots.iter().any(|root| under(&path_key(path), &root.key)))
                 .collect();
-            paths.sort_by_key(|path| path.components().count());
-            let mut unique = vec![];
-            for path in paths {
-                let key = path_key(&path);
-                if !unique
-                    .iter()
-                    .any(|parent: &PathBuf| under(&key, &path_key(parent)))
-                {
-                    unique.push(path);
-                }
-            }
             if !unique.is_empty() {
                 // Re-walk only the changed subtrees under a fresh sweep id, then drop entries in
                 // those subtrees that the walk no longer saw (deleted or renamed away).
@@ -476,75 +522,64 @@ impl FileIndex {
                 catalog.status.skipped = 0;
             }
         }
-        let mut batch = Vec::with_capacity(512);
-        let mut skipped = 0;
-        for path in paths {
-            if !path.exists() {
-                continue;
-            }
-            let walker = WalkDir::new(path)
-                .follow_links(false)
-                .follow_root_links(false)
-                .into_iter()
-                .filter_entry(|entry| {
-                    if entry.file_type().is_symlink() {
-                        return false;
-                    }
-                    #[cfg(windows)]
-                    {
-                        use std::os::windows::fs::MetadataExt;
-                        if entry.file_type().is_dir()
-                            && entry
-                                .metadata()
-                                .is_ok_and(|metadata| metadata.file_attributes() & 0x400 != 0)
-                            && !fs::canonicalize(entry.path())
-                                .is_ok_and(|target| path_key(&target) == path_key(entry.path()))
-                        {
-                            // Do not descend into junctions or other directory aliases. Cloud placeholders
-                            // whose canonical location is unchanged can still contribute their filenames.
-                            return false;
-                        }
-                    }
-                    true
-                });
-            for entry in walker {
-                if !self.current(generation) {
-                    return;
-                }
-                match entry {
-                    Ok(entry) => {
-                        if !entry.file_type().is_dir() && !entry.file_type().is_file() {
-                            continue;
-                        }
-                        let metadata = match entry.metadata() {
-                            Ok(metadata) => metadata,
-                            Err(_) => {
-                                skipped += 1;
-                                continue;
+        // A single recursive walk serializes directory reads, Unicode work and
+        // catalog insertion. Disjoint directory jobs overlap reads while each
+        // worker keeps only a small publication batch. Nested input roots have
+        // already been coalesced, so no two jobs enumerate the same directory.
+        let jobs = Mutex::new(WalkJobs {
+            paths: paths.iter().cloned().map(|path| (path, true)).collect(),
+            outstanding: paths.len(),
+        });
+        let wake = Condvar::new();
+        let threads = std::thread::available_parallelism()
+            .map_or(2, usize::from)
+            .clamp(1, 8);
+        std::thread::scope(|scope| {
+            for _ in 0..threads {
+                let jobs = &jobs;
+                let wake = &wake;
+                scope.spawn(move || {
+                    let mut batch = Vec::with_capacity(512);
+                    let mut skipped = 0;
+                    loop {
+                        let work = {
+                            let mut jobs = jobs.lock().unwrap_or_else(|error| error.into_inner());
+                            loop {
+                                if !self.current(generation) || jobs.outstanding == 0 {
+                                    break None;
+                                }
+                                if let Some(path) = jobs.paths.pop_front() {
+                                    break Some(path);
+                                }
+                                jobs = wake
+                                    .wait_timeout(jobs, Duration::from_millis(100))
+                                    .unwrap_or_else(|error| error.into_inner())
+                                    .0;
                             }
                         };
-                        batch.push(Raw {
-                            key: path_key(entry.path()),
-                            name: entry.file_name().to_string_lossy().to_string(),
-                            is_dir: metadata.is_dir(),
-                            size: if metadata.is_dir() { 0 } else { metadata.len() },
-                            modified_ms: metadata
-                                .modified()
-                                .ok()
-                                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                                .map(|duration| duration.as_millis() as i64),
-                            path: entry.into_path(),
-                        });
-                        if batch.len() >= 512 {
-                            self.publish(generation, sweep, &mut batch, skipped, false);
-                            skipped = 0;
-                        }
+                        let Some((path, include_root)) = work else {
+                            break;
+                        };
+                        let children = self.walk_directory(
+                            generation,
+                            &path,
+                            include_root,
+                            sweep,
+                            &mut batch,
+                            &mut skipped,
+                        );
+                        let mut jobs = jobs.lock().unwrap_or_else(|error| error.into_inner());
+                        jobs.outstanding += children.len();
+                        jobs.outstanding -= 1;
+                        jobs.paths
+                            .extend(children.into_iter().map(|path| (path, false)));
+                        wake.notify_all();
                     }
-                    Err(_) => skipped += 1,
-                }
+                    self.publish(generation, sweep, &mut batch, skipped, false);
+                });
             }
-        }
-        self.publish(generation, sweep, &mut batch, skipped, !reconcile);
+        });
+        self.publish(generation, sweep, &mut vec![], 0, !reconcile);
         if reconcile {
             if let Ok(mut catalog) = self.catalog.write() {
                 if !self.current(generation) {
@@ -560,6 +595,88 @@ impl FileIndex {
             }
         }
     }
+    fn walk_directory(
+        &self,
+        generation: u64,
+        path: &Path,
+        include_root: bool,
+        sweep: u64,
+        batch: &mut Vec<Raw>,
+        skipped: &mut usize,
+    ) -> Vec<PathBuf> {
+        let mut children = vec![];
+        // Depth one makes directory ownership explicit. Keep WalkDir's cached
+        // Windows metadata and the existing symlink/junction safeguards.
+        let walker = WalkDir::new(path)
+            .max_depth(1)
+            .follow_links(false)
+            .follow_root_links(false)
+            .into_iter()
+            .filter_entry(|entry| {
+                if entry.file_type().is_symlink() {
+                    return false;
+                }
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    if entry.file_type().is_dir()
+                        && entry
+                            .metadata()
+                            .is_ok_and(|metadata| metadata.file_attributes() & 0x400 != 0)
+                        && !fs::canonicalize(entry.path())
+                            .is_ok_and(|target| path_key(&target) == path_key(entry.path()))
+                    {
+                        // Do not descend into junctions or other directory aliases. Cloud placeholders
+                        // whose canonical location is unchanged can still contribute their filenames.
+                        return false;
+                    }
+                }
+                true
+            });
+        for entry in walker {
+            if !self.current(generation) {
+                return children;
+            }
+            match entry {
+                Ok(entry) => {
+                    if entry.depth() == 0 && !include_root {
+                        continue;
+                    }
+                    if !entry.file_type().is_dir() && !entry.file_type().is_file() {
+                        continue;
+                    }
+                    let metadata = match entry.metadata() {
+                        Ok(metadata) => metadata,
+                        Err(_) => {
+                            *skipped += 1;
+                            continue;
+                        }
+                    };
+                    if entry.depth() > 0 && metadata.is_dir() {
+                        children.push(entry.path().to_owned());
+                    }
+                    batch.push(Raw {
+                        key: path_key(entry.path()),
+                        name: entry.file_name().to_string_lossy().to_string(),
+                        is_dir: metadata.is_dir(),
+                        size: if metadata.is_dir() { 0 } else { metadata.len() },
+                        modified_ms: metadata
+                            .modified()
+                            .ok()
+                            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                            .map(|duration| duration.as_millis() as i64),
+                        path: entry.into_path(),
+                    });
+                    if batch.len() >= 512 {
+                        self.publish(generation, sweep, batch, *skipped, false);
+                        *skipped = 0;
+                    }
+                }
+                Err(_) => *skipped += 1,
+            }
+        }
+        children
+    }
     /// Inserts a batch. Unchanged entries only get their sweep id refreshed, so a reconcile over
     /// an unchanged tree rebuilds nothing and does not bump the revision (no UI re-search).
     fn publish(
@@ -570,16 +687,48 @@ impl FileIndex {
         skipped: usize,
         done: bool,
     ) {
+        enum Update {
+            Seen(String),
+            Replace(Entry),
+        }
+        let candidates: Vec<_> = match self.catalog.read() {
+            Ok(catalog) => batch
+                .drain(..)
+                .map(|raw| {
+                    let unchanged = catalog
+                        .entries
+                        .get(raw.key.as_str())
+                        .is_some_and(|entry| entry.unchanged(&raw));
+                    (raw, unchanged)
+                })
+                .collect(),
+            Err(_) => return,
+        };
+        // Derive Unicode search data outside the catalog lock. Search/status
+        // readers and other directory workers no longer wait on this CPU work.
+        let updates: Vec<_> = candidates
+            .into_iter()
+            .map(|(raw, unchanged)| {
+                if unchanged {
+                    Update::Seen(raw.key)
+                } else {
+                    Update::Replace(Entry::new(raw, sweep))
+                }
+            })
+            .collect();
         if let Ok(mut catalog) = self.catalog.write() {
             if !self.current(generation) {
                 return;
             }
             let mut changed = false;
-            for raw in batch.drain(..) {
-                match catalog.entries.get_mut(raw.key.as_str()) {
-                    Some(entry) if entry.unchanged(&raw) => entry.seen = sweep,
-                    _ => {
-                        let entry = Entry::new(raw, sweep);
+            for update in updates {
+                match update {
+                    Update::Seen(key) => {
+                        if let Some(entry) = catalog.entries.get_mut(key.as_str()) {
+                            entry.seen = sweep;
+                        }
+                    }
+                    Update::Replace(entry) => {
                         catalog.entries.insert(entry.key.clone(), entry);
                         changed = true;
                     }
@@ -1209,6 +1358,100 @@ mod performance_tests {
             modified_ms: Some(modified),
             path,
         }
+    }
+    #[test]
+    fn repeated_download_notifications_do_not_overflow_the_queue() {
+        let mut queue = PendingPaths::default();
+        for _ in 0..20_000 {
+            queue.push([PathBuf::from("C:/models/model.part")]);
+        }
+        let (overflow, paths) = queue.take();
+        assert!(
+            !overflow,
+            "one busy file must not trigger a whole-drive scan"
+        );
+        assert_eq!(paths, [PathBuf::from("C:/models/model.part")]);
+        for n in 0..4097 {
+            queue.push([PathBuf::from(format!("C:/files/{n}.txt"))]);
+        }
+        assert!(queue.take().0, "actual event loss must still reconcile");
+        assert!(!queue.take().0);
+    }
+    #[test]
+    fn overlapping_walks_are_coalesced_without_losing_sibling_prefixes() {
+        let mut queue = PendingPaths::default();
+        queue.push(
+            [
+                "C:/a/x",
+                "C:/a",
+                "C:/a-b",
+                "C:/a-b/y",
+                "C:/ab/z",
+                "C:/a/x/deep",
+            ]
+            .map(PathBuf::from),
+        );
+        assert_eq!(
+            queue.take().1,
+            ["C:/a", "C:/a-b", "C:/ab/z"].map(PathBuf::from)
+        );
+        queue.push(["C:/", "C:/a", "D:/b"].map(PathBuf::from));
+        assert_eq!(queue.take().1, ["C:/", "D:/b"].map(PathBuf::from));
+    }
+    #[test]
+    fn parallel_walk_keeps_every_nested_file_and_cancels_revoked_scopes() {
+        let dir = tempfile::tempdir().unwrap();
+        for n in 0..32 {
+            let folder = dir.path().join(format!("{n:02}/중첩"));
+            fs::create_dir_all(&folder).unwrap();
+            for file in 0..40 {
+                fs::write(
+                    folder.join(format!("문서-{file:02}.md")),
+                    format!("{n}:{file}"),
+                )
+                .unwrap();
+            }
+        }
+        let expected: BTreeMap<_, _> = WalkDir::new(dir.path())
+            .into_iter()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let metadata = entry.metadata().unwrap();
+                (
+                    path_key(entry.path()),
+                    (
+                        metadata.is_dir(),
+                        if metadata.is_dir() { 0 } else { metadata.len() },
+                    ),
+                )
+            })
+            .collect();
+        let index = FileIndex::new();
+        let scope = || SearchScope {
+            id: "all".into(),
+            name: "all".into(),
+            path: dir.path().to_string_lossy().into_owned(),
+            filename_enabled: true,
+            content_enabled: false,
+            external_allowed: false,
+        };
+        index.configure(vec![scope()]);
+        settle(&index, expected.len());
+        let actual: BTreeMap<_, _> = index
+            .catalog
+            .read()
+            .unwrap()
+            .entries
+            .iter()
+            .map(|(key, entry)| (key.to_string(), (entry.is_dir, entry.size)))
+            .collect();
+        assert_eq!(actual, expected);
+        index.refresh(vec![scope()]);
+        index.configure(vec![]);
+        settle(&index, 0);
+        assert!(index.catalog.read().unwrap().entries.is_empty());
+        index.configure(vec![scope()]);
+        settle(&index, expected.len());
     }
     fn settle(index: &FileIndex, count: usize) {
         let start = std::time::Instant::now();

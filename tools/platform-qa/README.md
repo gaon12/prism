@@ -30,6 +30,16 @@ crate; upstream provenance and the narrow legacy owner-key correction are record
 under `src-tauri/vendor/`. This crate does not exercise the app's retry dialog or
 embedding of unlocked text; use the native PDF test for that flow.
 
+The shared OCR module validates opt-in requests, cancellation, admission leases and
+pixel scaling without requiring an OS engine in ordinary tests. On Windows,
+`windows_native_ocr_pixels_pdf_passwords_and_resource_errors -- --ignored --nocapture`
+explicitly exercises the installed Korean OCR engine against the independent
+[pixel/PDF fixtures](../../tests/fixtures/ocr/README.md). It checks transparent
+images, original mixed-page order, AES-256 user/owner passwords, missing languages
+and resource errors. Non-Windows OCR adapters remain unimplemented and return
+an explicit unavailable result; these platform checks do not establish native
+Mac/Linux recognition.
+
 The [native path policy workflow](../../.github/workflows/path-policy.yml) runs
 these library tests on macOS with `TMPDIR=/var/tmp`. It intentionally exercises
 Apple's real `/var` alias rather than replacing it with a plain runner directory.

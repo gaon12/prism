@@ -133,7 +133,16 @@
     $('track').setAttribute('aria-valuenow', String(Math.round(done * 100)));
   }
 
+  /** Opens or folds the "Custom settings" card (install folder and shortcuts). */
+  function setCustomizing(open) {
+    root.classList.toggle('customizing', open);
+    $('customize').setAttribute('aria-expanded', String(open));
+    if (open) $('folder').focus();
+  }
+
   function show(screen) {
+    // The custom-settings card belongs to the install screen only.
+    if (screen !== 'options') setCustomizing(false);
     root.dataset.screen = screen;
     // While files are being written, closing the window would leave a half-done install.
     const busy = screen === 'progress';
@@ -232,6 +241,8 @@
     if (check.previousError) message += ' ' + t('previousUnavailable');
     hint.textContent = message;
     hint.classList.toggle('error', !folderOk);
+    // A folder problem can only be fixed in the custom-settings card, so open it.
+    if (check.error && root.dataset.screen === 'options') setCustomizing(true);
     $('install').disabled = !folderOk;
   }
 
@@ -363,6 +374,9 @@
     clearTimeout(typingTimer);
     typingTimer = setTimeout(checkFolder, 250);
   });
+  $('customize').addEventListener('click', () =>
+    setCustomizing(!root.classList.contains('customizing')),
+  );
   $('browse').addEventListener('click', async () => {
     const picked = await backend.chooseFolder($('folder').value);
     if (picked) {
@@ -398,9 +412,20 @@
   });
   $('minimize').addEventListener('click', () => backend.minimize());
   $('close').addEventListener('click', () => backend.close());
-  // Esc closes the window, except while installing.
+  // Show focus rings once the keyboard is used (see .keyboard in setup.css); hide them again
+  // when the mouse is used.
+  document.addEventListener('keydown', () => root.classList.add('keyboard'), true);
+  document.addEventListener('pointerdown', () => root.classList.remove('keyboard'), true);
+  // Esc first folds the custom-settings card; otherwise it closes the window (never while
+  // installing).
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && root.dataset.screen !== 'progress') backend.close();
+    if (event.key !== 'Escape') return;
+    if (root.classList.contains('customizing')) {
+      setCustomizing(false);
+      $('customize').focus();
+    } else if (root.dataset.screen !== 'progress') {
+      backend.close();
+    }
   });
 
   start().catch((error) => showFailure(t('failed'), error, null));

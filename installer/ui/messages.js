@@ -68,6 +68,7 @@ window.SETUP_MESSAGES = {
     '更新 {old} → {v}',
     'アップデート {old} → {v}',
   ],
+  customize: ['사용자 설정', 'Custom settings', '自定义设置', '自訂設定', 'カスタム設定'],
   folderLabel: ['설치 위치', 'Install location', '安装位置', '安裝位置', 'インストール先'],
   browse: ['찾아보기', 'Browse', '浏览', '瀏覽', '参照'],
   space: [
@@ -86,7 +87,7 @@ window.SETUP_MESSAGES = {
   ],
   startMenu: ['시작 메뉴', 'Start menu', '开始菜单', '開始功能表', 'スタートメニュー'],
   desktop: ['바탕 화면', 'Desktop', '桌面', '桌面', 'デスクトップ'],
-  install: ['설치', 'Install', '安装', '安裝', 'インストール'],
+  install: ['바로 설치', 'Install now', '立即安装', '立即安裝', '今すぐインストール'],
   update: ['업데이트', 'Update', '更新', '更新', 'アップデート'],
   noPayload: [
     '이 설치 파일에는 Prism이 들어 있지 않아요. 다시 내려받아 주세요.',

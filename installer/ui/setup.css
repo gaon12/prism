@@ -1,18 +1,37 @@
 /* Prism setup window (760 x 480, no title bar).
- * Top: dark "light box" with the prism art. Bottom: a calm light panel with the choices.
- * Colours follow the app (sage accent #426557); the spectrum is the one bold element. */
+ *
+ * Look: a game-launcher style installer. The art fills the whole window and there is exactly
+ * one big button. Everything else is small and sits in a corner:
+ *
+ *   ┌──────────────────────────────────────────── _ × ┐
+ *   │ Prism 0.2.0                                       │
+ *   │ tagline            ◁ prism + spectrum art ▷       │
+ *   │                                                   │
+ *   │                    (message)                      │
+ *   │                ┌──────────────┐                   │
+ *   │                │   Install    │   ← the only bold  │
+ *   │                └──────────────┘     element        │
+ *   │ status / checkbox              Custom settings ⌄  │
+ *   └───────────────────────────────────────────────────┘
+ *
+ * Colours: dark green-black "light box" from the app's brand, the spectrum from the art, and the
+ * button in the spectrum's yellow so the eye goes straight to it. */
 
 :root {
-  --ink: #15211c; /* hero background */
-  --ink-soft: #1f2e27;
-  --paper: #f7f8f6; /* panel background */
-  --text: #202826;
-  --muted: #6b746f;
-  --line: #dfe3e1;
-  --accent: #426557;
-  --accent-hover: #345647;
-  --danger: #a24242;
-  --focus: #7fb2d6;
+  --ink: #0f1713; /* window background, darkest */
+  --ink-soft: #1d2c25; /* glow around the prism */
+  --text: #eef3f0;
+  --muted: #a9b7b0;
+  --faint: #7d8c85;
+  --line: rgba(255, 255, 255, 0.14);
+  --glass: rgba(14, 22, 18, 0.78); /* the custom-settings card */
+  --cta: #ecd189; /* spectrum yellow, a touch lighter */
+  --cta-hover: #f4dd9f;
+  --cta-text: #2a2312;
+  --danger: #d0625b;
+  --danger-hover: #dc716a;
+  --focus: #9cc6e4;
+  --settle: cubic-bezier(0.05, 0.85, 0.3, 1); /* arrive fast, settle softly */
   font-family:
     'Segoe UI Variable Text', 'Segoe UI', 'Malgun Gothic', 'Microsoft YaHei', 'Yu Gothic UI',
     sans-serif;
@@ -24,12 +43,16 @@
 * {
   box-sizing: border-box;
 }
+/* `hidden` must win over the display rules below (setup.js hides options with it). */
+[hidden] {
+  display: none !important;
+}
 html,
 body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: var(--paper);
+  background: var(--ink);
   user-select: none;
 }
 button,
@@ -37,25 +60,31 @@ input {
   font: inherit;
   color: inherit;
 }
-
-.setup {
-  display: grid;
-  grid-template-rows: 270px 1fr;
-  height: 100vh;
+p {
+  margin: 0;
 }
 
-/* ---------- Hero ---------- */
-.hero {
+.setup {
   position: relative;
+  height: 100vh;
   overflow: hidden;
-  background: radial-gradient(120% 140% at 62% 45%, var(--ink-soft), var(--ink) 60%);
-  color: #eef3f0;
+}
+
+/* ---------- Art (whole window) ---------- */
+.hero {
+  position: absolute;
+  inset: 0;
+  background:
+    /* darken the bottom so the corner text always reads */
+    linear-gradient(to bottom, transparent 55%, rgba(0, 0, 0, 0.42)),
+    radial-gradient(90% 110% at 52% 34%, var(--ink-soft), var(--ink) 62%);
 }
 .art {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
+  transition: opacity 0.3s ease;
 }
 .beam {
   stroke-width: 2.2;
@@ -72,42 +101,48 @@ input {
   stroke-linejoin: round;
 }
 .prism-shape path:first-child {
-  fill: #ffffff0d;
+  fill: #ffffff0f;
 }
 /* --done goes from 0 to 1 while installing; the spectrum brightens with it. */
 .rays {
-  opacity: calc(0.22 + 0.58 * var(--done, 0));
+  opacity: calc(0.5 + 0.4 * var(--done, 0));
   transition: opacity 0.4s ease;
 }
 .setup[data-screen='done'] .rays {
   opacity: 0.85;
 }
+/* Screens that ask a question in words step the art back so the text is easy to read. */
+.setup[data-screen='uninstall'] .art,
+.setup[data-screen='restore'] .art,
+.setup.customizing .art {
+  opacity: 0.32;
+}
 
 .title {
   position: absolute;
-  left: 40px;
-  bottom: 34px;
-  pointer-events: none;
+  top: 20px;
+  left: 26px;
 }
 .title h1 {
+  display: inline;
   margin: 0;
   font-family: 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
-  font-size: 46px;
-  font-weight: 300;
-  letter-spacing: -0.02em;
-  line-height: 1;
-}
-.tagline {
-  margin: 10px 0 0;
-  max-width: 330px;
-  color: #c4d0ca;
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 .version {
-  margin: 6px 0 0;
-  color: #8e9c95;
+  display: inline;
+  margin-left: 8px;
+  color: var(--faint);
   font-size: 12px;
+}
+.tagline {
+  margin-top: 4px;
+  max-width: 300px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
 }
 
 .window-buttons {
@@ -115,14 +150,14 @@ input {
   top: 0;
   right: 0;
   display: flex;
-  z-index: 2;
+  z-index: 3;
 }
 .window-button {
   width: 46px;
   height: 34px;
   border: 0;
   background: transparent;
-  color: #c4d0ca;
+  color: var(--muted);
   display: grid;
   place-items: center;
 }
@@ -144,27 +179,225 @@ input {
   background: transparent;
 }
 
-/* ---------- Panel ---------- */
-.panel {
-  position: relative;
-  padding: 22px 40px 24px;
-}
+/* ---------- Screens ----------
+ * Each screen is a transparent layer over the art. Its empty space lets clicks through, so the
+ * window can still be dragged by the art; only its controls catch the mouse. */
 .screen {
   display: none;
-  height: 100%;
-  flex-direction: column;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+.screen > * {
+  pointer-events: auto;
 }
 .setup[data-screen='options'] .screen-options,
 .setup[data-screen='uninstall'] .screen-uninstall,
 .setup[data-screen='restore'] .screen-restore,
 .setup[data-screen='progress'] .screen-progress,
 .setup[data-screen='done'] .screen-done {
-  display: flex;
+  display: block;
+  animation: screen-in 0.28s var(--settle);
+}
+@keyframes screen-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
 }
 
-.field-label {
+/* The message above the big button. It grows upwards, so long errors never push the button. */
+.message {
+  position: absolute;
+  left: 80px;
+  right: 80px;
+  bottom: 166px;
+  text-align: center;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.5);
+}
+.lead {
+  font-size: 18px;
   font-weight: 600;
+  line-height: 1.4;
+}
+.hint {
+  min-height: 18px;
+  margin-top: 6px;
+  color: var(--muted);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.hint.error {
+  color: #f0a29d;
+}
+
+/* ---------- The one big button ---------- */
+button.primary,
+button.danger {
+  position: absolute;
+  left: 50%;
+  bottom: 96px;
+  transform: translateX(-50%);
+  min-width: 236px;
+  height: 52px;
+  padding: 0 28px;
+  border: 0;
+  border-radius: 10px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--cta-text);
+  background: var(--cta);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    0 12px 32px -10px rgba(0, 0, 0, 0.7);
+  cursor: default;
+  transition:
+    background 0.15s ease,
+    transform 0.15s ease,
+    opacity 0.15s ease;
+}
+button.primary:hover:not(:disabled) {
+  background: var(--cta-hover);
+}
+button.danger {
+  color: #fff;
+  background: var(--danger);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 12px 32px -10px rgba(0, 0, 0, 0.7);
+}
+button.danger:hover:not(:disabled) {
+  background: var(--danger-hover);
+}
+button.primary:active:not(:disabled),
+button.danger:active:not(:disabled) {
+  transform: translateX(-50%) translateY(1px);
+}
+button:disabled {
+  opacity: 0.45;
+}
+
+/* ---------- Corners ---------- */
+.foot-left {
+  position: absolute;
+  left: 26px;
+  bottom: 20px;
+  max-width: 430px;
+  margin: 0;
+}
+.foot-right {
+  position: absolute;
+  right: 22px;
+  bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+/* Quiet text buttons for the corners ("Custom settings", "Previous version", "Back"). */
+button.link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: default;
+}
+button.link:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+}
+button.link svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.2s var(--settle);
+}
+#customize[aria-expanded='true'] {
+  color: var(--text);
+}
+#customize[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
+
+/* Round checkboxes, like the launcher's agreement circle. Still real checkboxes. */
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.check:hover {
+  color: var(--text);
+}
+.check input {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--muted);
+  background: transparent center / 11px no-repeat;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+.check input:checked {
+  border-color: var(--cta);
+  background-color: var(--cta);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m2.5 6.2 2.3 2.3 4.7-5' fill='none' stroke='%232a2312' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+.check input:disabled {
+  opacity: 0.4;
+}
+
+/* ---------- Custom settings card ----------
+ * Folded away until "Custom settings" is pressed. `visibility` (not display) lets it fade in
+ * and also keeps the hidden fields out of the Tab order. */
+.sheet {
+  position: absolute;
+  left: 50%;
+  top: 88px;
+  width: 560px;
+  padding: 18px 20px 16px;
+  border-radius: 12px;
+  background: var(--glass);
+  box-shadow:
+    0 0 0 1px var(--line),
+    0 18px 48px -12px rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(14px);
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, 8px);
+  transition:
+    opacity 0.2s ease,
+    transform 0.28s var(--settle),
+    visibility 0s linear 0.28s;
+}
+.setup.customizing .sheet {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+  transition:
+    opacity 0.2s ease,
+    transform 0.28s var(--settle);
+}
+.field-label {
+  display: block;
   margin-bottom: 8px;
+  font-weight: 600;
 }
 .folder-row {
   display: flex;
@@ -173,150 +406,86 @@ input {
 .folder-row input {
   flex: 1;
   min-width: 0;
-  height: 34px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #fff;
+  height: 36px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px var(--line);
   user-select: text;
 }
 .folder-row input:focus {
-  outline: 2px solid var(--focus);
-  outline-offset: -1px;
-  border-color: transparent;
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--focus);
 }
-.hint {
-  min-height: 18px;
-  margin: 8px 0 0;
-  color: var(--muted);
-}
-.hint.error {
-  color: var(--danger);
-}
-.lead {
-  margin: 4px 0 0;
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.bottom-row {
-  margin-top: auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-.action-pair {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.restore-ack {
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
-  max-width: 310px;
-}
-.restore-ack input {
-  accent-color: var(--accent);
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-.screen-restore .hint {
-  line-height: 1.5;
-}
-.checks {
-  display: flex;
-  gap: 18px;
-}
-.checks label {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-.checks input {
-  width: 15px;
-  height: 15px;
-  margin: 0;
-  accent-color: var(--accent);
-}
-
-button.primary,
-button.danger,
 button.secondary {
-  height: 34px;
-  border-radius: 6px;
+  height: 36px;
   padding: 0 16px;
-  border: 1px solid transparent;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
   cursor: default;
 }
-button.primary,
-button.danger {
-  min-width: 132px;
-  height: 40px;
-  font-size: 14px;
-  font-weight: 600;
-  color: #fff;
-  background: var(--accent);
-}
-button.primary:hover {
-  background: var(--accent-hover);
-}
-button.danger {
-  background: var(--danger);
-}
-button.danger:hover {
-  background: #8a3535;
-}
-button.secondary {
-  background: #fff;
-  border-color: var(--line);
-}
 button.secondary:hover {
-  background: #eef1ef;
+  background: rgba(255, 255, 255, 0.16);
 }
-button:disabled {
-  opacity: 0.5;
+.sheet-checks {
+  display: flex;
+  gap: 22px;
+  margin-top: 14px;
 }
+
 button:focus-visible,
-.checks input:focus-visible {
+.check input:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+/* setup.js focuses the main button on every screen so Enter works at once. Show that focus
+   ring only after the user starts using the keyboard (the .keyboard class), so a mouse user
+   sees the clean screen. */
+.setup:not(.keyboard) :focus-visible {
+  outline: none;
+}
 
-/* Progress: the bar is the same spectrum as the art, revealed from left to right. */
-.screen-progress {
-  justify-content: center;
+/* ---------- Progress ---------- */
+.progress {
+  position: absolute;
+  left: 26px;
+  right: 26px;
+  bottom: 24px;
 }
 .progress-text {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 10px;
-  font-size: 14px;
+  margin-bottom: 9px;
+  font-size: 13.5px;
 }
 #percent {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 .track {
-  height: 6px;
-  border-radius: 3px;
-  background: var(--line);
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12);
   overflow: hidden;
 }
+/* The bar is the same spectrum as the art, revealed from left to right. */
 .fill {
   height: 100%;
   width: calc(100% * var(--done, 0));
   background: linear-gradient(90deg, #e7a07c, #e6c97a 25%, #93c8a2 50%, #7fb2d6 75%, #a79bd4);
   /* The gradient spans the full track, so the colours stay put while the bar grows. */
-  background-size: 680px 100%;
+  background-size: 708px 100%;
   background-repeat: no-repeat;
   transition: width 0.25s ease-out;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .rays,
-  .fill {
-    transition: none;
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
   }
 }

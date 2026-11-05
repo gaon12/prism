@@ -39,9 +39,21 @@ pub struct Status {
     pub last_error: Option<Code>,
 }
 
-#[cfg(all(test, windows))]
+#[cfg(all(test, any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
 mod tests {
     use super::*;
+    fn launcher() -> PathBuf {
+        #[cfg(windows)]
+        {
+            std::env::current_exe().unwrap()
+        }
+        #[cfg(target_os = "linux")]
+        {
+            PathBuf::from(std::env::var_os("PRISM_TEST_LAUNCHER").expect(
+                "Set PRISM_TEST_LAUNCHER to the QA binary with pre-GUI supervisor dispatch",
+            ))
+        }
+    }
     #[test]
     #[ignore = "Diagnostic using an already materialized, fully authenticated official runtime."]
     fn real_paddle_startup_diagnostic() {
@@ -49,10 +61,10 @@ mod tests {
             std::env::var_os("PRISM_TEST_PADDLE_INSTALLED")
                 .expect("Set PRISM_TEST_PADDLE_INSTALLED"),
         );
-        let catalog = assets::for_target("windows-x64").unwrap();
+        let catalog = assets::for_target(assets::target()).unwrap();
         let files = package::load(&root, &catalog).unwrap();
         let app = tempfile::tempdir().unwrap();
-        let runtime = Runtime::open(app.path(), &std::env::current_exe().unwrap(), |status| {
+        let runtime = Runtime::open(app.path(), &launcher(), |status| {
             eprintln!("paddle diagnostic phase={}", status.phase)
         })
         .unwrap();
@@ -79,32 +91,32 @@ mod tests {
     #[test]
     #[ignore = "Requires the pinned 2+ GiB official artifact directory; runs the actual complete CPU pipeline."]
     fn real_paddle_install_recognition_and_cancellation() {
-        let offline = PathBuf::from(
-            std::env::var_os("PRISM_TEST_PADDLE_OFFLINE")
-                .expect("Set PRISM_TEST_PADDLE_OFFLINE to the pinned offline artifact directory"),
-        );
+        let offline = if std::env::var("PRISM_TEST_PADDLE_NETWORK").as_deref() == Ok("1") {
+            None
+        } else {
+            Some(PathBuf::from(
+                std::env::var_os("PRISM_TEST_PADDLE_OFFLINE").expect(
+                    "Set PRISM_TEST_PADDLE_OFFLINE to the pinned offline artifact directory",
+                ),
+            ))
+        };
         let directory = tempfile::tempdir().unwrap();
-        let runtime = Runtime::open(
-            directory.path(),
-            &std::env::current_exe().unwrap(),
-            |status| {
-                eprintln!(
-                    "paddle {} bytes={} files={}",
-                    status.phase, status.downloaded_bytes, status.processed_files
-                );
-            },
-        )
+        let runtime = Runtime::open(directory.path(), &launcher(), |status| {
+            eprintln!(
+                "paddle {} bytes={} files={}",
+                status.phase, status.downloaded_bytes, status.processed_files
+            );
+        })
         .unwrap();
         assert!(!runtime.status().available);
-        let installed = runtime.install(Some(&offline)).unwrap();
+        let installed = runtime.install(offline.as_deref()).unwrap();
         assert!(installed.available);
         assert_eq!(installed.processed_files, installed.total_files);
         assert_eq!(installed.downloaded_bytes, installed.total_bytes);
         // Reopening uses the authenticated inventory; no Python from PATH or
         // user packages participates in this production runtime path.
         runtime.shutdown();
-        let runtime =
-            Runtime::open(directory.path(), &std::env::current_exe().unwrap(), |_| {}).unwrap();
+        let runtime = Runtime::open(directory.path(), &launcher(), |_| {}).unwrap();
         let installed = runtime.inner.installed.lock().unwrap().clone().unwrap();
         let injected = installed.directory.join("python/foreign_import.py");
         fs::write(&injected, b"raise RuntimeError('must never load')").unwrap();
@@ -133,13 +145,26 @@ mod tests {
         assert_eq!(recognized[0].number, 1);
         assert!(recognized[0].text.contains("프리즘") && recognized[0].text.contains("74829"));
         let pid = runtime.status().pid.unwrap();
-        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-        use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
         // Retain the live child's exact kernel identity across cancellation;
         // checking a PID after the child exits could observe a reused PID.
-        let handle = unsafe { OpenProcess(0x00100000, 0, pid) };
-        assert!(!handle.is_null());
-        let process = unsafe { OwnedHandle::from_raw_handle(handle) };
+        #[cfg(windows)]
+        let process = {
+            use std::os::windows::io::{FromRawHandle, OwnedHandle};
+            use windows_sys::Win32::System::Threading::OpenProcess;
+            let handle = unsafe { OpenProcess(0x00100000, 0, pid) };
+            assert!(!handle.is_null());
+            unsafe { OwnedHandle::from_raw_handle(handle) }
+        };
+        #[cfg(target_os = "linux")]
+        let process = {
+            use std::os::fd::{FromRawFd, OwnedFd};
+            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+            assert!(
+                fd >= 0,
+                "retain the live owned worker identity with pidfd_open"
+            );
+            unsafe { OwnedFd::from_raw_fd(fd as i32) }
+        };
         eprintln!("paddle actual image passed");
         control.deadline = Instant::now() + Duration::from_secs(180);
         let recognized = runtime
@@ -178,11 +203,31 @@ mod tests {
         });
         assert!(started.elapsed() < Duration::from_secs(15));
         assert!(runtime.status().pid.is_none());
-        assert_eq!(
-            unsafe { WaitForSingleObject(process.as_raw_handle(), 5000) },
-            0,
-            "cancel must terminate the actual owned process"
-        );
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::System::Threading::WaitForSingleObject;
+            assert_eq!(
+                unsafe { WaitForSingleObject(process.as_raw_handle(), 5000) },
+                0,
+                "cancel must terminate the actual owned process"
+            );
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            let mut ready = libc::pollfd {
+                fd: process.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert_eq!(unsafe { libc::poll(&mut ready, 1, 5000) }, 1);
+            assert_ne!(
+                ready.revents & libc::POLLIN,
+                0,
+                "cancel must terminate the actual owned process"
+            );
+        }
         eprintln!("paddle actual cancellation and process exit passed");
         runtime.shutdown();
     }
@@ -641,10 +686,15 @@ impl Runtime {
             let endpoint = format!("http://127.0.0.1:{port}");
             let token = format!("{}{}", random()?, random()?);
             let mut command = Command::new(installed.directory.join(&catalog.executable));
+            command.current_dir(&installed.directory).args(["-I", "-B"]);
+            if catalog.bootstrap_entrypoint {
+                command
+                    .arg("-S")
+                    .arg(installed.directory.join(&catalog.bootstrap_path));
+            } else {
+                command.arg(installed.directory.join("worker.py"));
+            }
             command
-                .current_dir(&installed.directory)
-                .args(["-I", "-B"])
-                .arg(installed.directory.join("worker.py"))
                 .arg("--root")
                 .arg(&installed.directory)
                 .arg("--port")

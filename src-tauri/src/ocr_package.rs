@@ -12,6 +12,8 @@ use std::{
 };
 
 pub type Check<'a> = &'a dyn Fn() -> Result<()>;
+#[path = "ocr_python_tar.rs"]
+mod python_tar;
 fn not_link(meta: &fs::Metadata) -> bool {
     if meta.file_type().is_symlink() {
         return false;
@@ -69,7 +71,7 @@ pub fn hash(mut reader: impl Read, limit: u64, check: Check<'_>) -> Result<(u64,
     }
     Ok((bytes, format!("{:x}", hash.finalize())))
 }
-pub fn member(kind: Kind, value: &str) -> Result<String> {
+pub fn member(kind: Kind, value: &str, target: &str) -> Result<String> {
     assets::relative(value)?;
     if kind == Kind::Python {
         return Ok(format!("python/{value}"));
@@ -77,21 +79,27 @@ pub fn member(kind: Kind, value: &str) -> Result<String> {
     if kind != Kind::Wheel {
         return Err(error(Code::InvalidInput));
     }
+    let site = if target.starts_with("linux-") {
+        "python/lib/python3.13/site-packages"
+    } else {
+        "python/Lib/site-packages"
+    };
     let parts: Vec<_> = value.split('/').collect();
     if parts[0].ends_with(".data") {
         if parts.len() < 3 {
             return Err(error(Code::InvalidInput));
         }
         let base = match parts[1] {
-            "purelib" | "platlib" => "python/Lib/site-packages",
+            "purelib" | "platlib" => site,
             "data" => "python",
             "headers" => "python/include",
+            "scripts" if target.starts_with("linux-") => "python/bin",
             "scripts" => "python/Scripts",
             _ => return Err(error(Code::InvalidInput)),
         };
         Ok(format!("{base}/{}", parts[2..].join("/")))
     } else {
-        Ok(format!("python/Lib/site-packages/{value}"))
+        Ok(format!("{site}/{value}"))
     }
 }
 pub fn write(root: &Path, name: &str, bytes: &[u8], entries: &mut Vec<Entry>) -> Result<()> {
@@ -121,6 +129,9 @@ pub fn unpack(
     check: Check<'_>,
     progress: &dyn Fn(usize),
 ) -> Result<()> {
+    if kind == Kind::PythonTarGz {
+        return python_tar::unpack(path, catalog, root, entries, check, progress);
+    }
     let mut archive = zip::ZipArchive::new(regular(path)?).map_err(|_| error(Code::Failed))?;
     if archive.len() > 60_000 {
         return Err(error(Code::LimitExceeded));
@@ -143,7 +154,7 @@ pub fn unpack(
         if kind == Kind::Python && name.ends_with("._pth") {
             continue;
         }
-        let name = member(kind, &name)?;
+        let name = member(kind, &name, &catalog.target)?;
         let length = item.size();
         total = total
             .checked_add(length)
@@ -296,19 +307,19 @@ mod tests {
     #[test]
     fn wheel_installation_uses_data_schemes_without_running_scripts() {
         assert_eq!(
-            member(Kind::Wheel, "module/a.py").unwrap(),
+            member(Kind::Wheel, "module/a.py", "windows-x64").unwrap(),
             "python/Lib/site-packages/module/a.py"
         );
         assert_eq!(
-            member(Kind::Wheel, "x.data/platlib/a.dll").unwrap(),
+            member(Kind::Wheel, "x.data/platlib/a.dll", "windows-x64").unwrap(),
             "python/Lib/site-packages/a.dll"
         );
         assert_eq!(
-            member(Kind::Wheel, "x.data/data/share/notice").unwrap(),
+            member(Kind::Wheel, "x.data/data/share/notice", "windows-x64").unwrap(),
             "python/share/notice"
         );
-        assert!(member(Kind::Wheel, "x.data/unknown/a").is_err());
-        assert!(member(Kind::Wheel, "../escape").is_err());
+        assert!(member(Kind::Wheel, "x.data/unknown/a", "windows-x64").is_err());
+        assert!(member(Kind::Wheel, "../escape", "windows-x64").is_err());
     }
     #[test]
     fn cancelled_or_unsafe_archives_never_escape_the_owned_stage() {

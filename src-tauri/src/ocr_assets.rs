@@ -8,11 +8,13 @@ use std::path::Path;
 pub const PIPELINE: &str = "PaddleOCR-VL-1.6";
 pub const WORKER: &[u8] = include_bytes!("../../tools/ocr-runtime/worker.py");
 const WINDOWS: &str = include_str!("../../tools/ocr-runtime/windows-x64.lock.json");
+const LINUX: &str = include_str!("../../tools/ocr-runtime/linux-x64.lock.json");
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum Kind {
     Python,
+    PythonTarGz,
     Wheel,
     Model,
 }
@@ -33,6 +35,8 @@ pub struct Catalog {
     pub executable: String,
     pub bootstrap_path: String,
     pub bootstrap: String,
+    #[serde(default)]
+    pub bootstrap_entrypoint: bool,
     pub worker_sha256: String,
     pub inventory_sha256: String,
     pub file_count: usize,
@@ -81,6 +85,7 @@ pub fn relative(value: &str) -> Result<&Path> {
 pub fn for_target(target: &str) -> Result<Catalog> {
     let raw = match target {
         "windows-x64" => WINDOWS,
+        "linux-x64" => LINUX,
         _ => return Err(error(Code::Unavailable)),
     };
     let catalog: Catalog = serde_json::from_str(raw).map_err(|_| error(Code::Failed))?;
@@ -110,6 +115,7 @@ pub fn for_target(target: &str) -> Result<Catalog> {
                 url.host_str(),
                 Some(
                     "www.python.org"
+                        | "github.com"
                         | "files.pythonhosted.org"
                         | "download.pytorch.org"
                         | "download-r2.pytorch.org"
@@ -161,7 +167,12 @@ impl Catalog {
         let mut total = 0u64;
         for entry in sorted {
             relative(&entry.path)?;
-            if !is_hash(&entry.sha256) || !seen.insert(entry.path.to_ascii_lowercase()) {
+            let identity = if self.target.starts_with("windows-") {
+                entry.path.to_ascii_lowercase()
+            } else {
+                entry.path.clone()
+            };
+            if !is_hash(&entry.sha256) || !seen.insert(identity) {
                 return Err(error(Code::Failed));
             }
             total = total
@@ -233,5 +244,54 @@ mod tests {
             catalog.file_count
         ];
         assert!(catalog.validate_inventory(&fake).is_err());
+    }
+    #[test]
+    fn linux_catalog_contains_the_same_models_and_a_private_unix_bootstrap() {
+        let linux = for_target("linux-x64").unwrap();
+        let windows = for_target("windows-x64").unwrap();
+        assert!(linux.bootstrap_entrypoint && !windows.bootstrap_entrypoint);
+        assert_eq!(linux.executable, "python/bin/python3.13");
+        assert_eq!(linux.bootstrap_path, "bootstrap.py");
+        assert!(linux.assets.iter().any(|a| a.kind == Kind::PythonTarGz));
+        for model in windows.assets.iter().filter(|a| a.kind == Kind::Model) {
+            let other = linux.assets.iter().find(|a| a.path == model.path).unwrap();
+            assert_eq!(model.sha256, other.sha256);
+            assert_eq!(model.bytes, other.bytes);
+        }
+    }
+    #[test]
+    fn inventory_case_identity_is_platform_specific() {
+        let files = vec![
+            Entry {
+                path: "python/a.py".into(),
+                bytes: 1,
+                sha256: digest(b"x"),
+            },
+            Entry {
+                path: "python/A.py".into(),
+                bytes: 1,
+                sha256: digest(b"x"),
+            },
+        ];
+        let sha = digest(
+            format!(
+                "python/A.py\0{}\0{}\npython/a.py\0{}\0{}\n",
+                1,
+                digest(b"x"),
+                1,
+                digest(b"x")
+            )
+            .as_bytes(),
+        );
+        for target in ["windows-x64", "linux-x64"] {
+            let mut catalog = for_target(target).unwrap();
+            catalog.file_count = 2;
+            catalog.expanded_bytes = 2;
+            catalog.inventory_sha256 = sha.clone();
+            assert_eq!(
+                catalog.validate_inventory(&files).is_ok(),
+                target == "linux-x64"
+            );
+        }
     }
 }

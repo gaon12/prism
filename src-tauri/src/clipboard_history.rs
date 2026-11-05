@@ -479,6 +479,15 @@ impl Store {
             }
             _ => {}
         }
+        // The newest copy must sort first. The clock has millisecond resolution, so two copies
+        // in the same millisecond would tie and fall back to id order (seen on fast CI runners).
+        // Keep each new timestamp at least 1 ms after the newest one already stored.
+        let at = self
+            .items
+            .iter()
+            .map(|stored| stored.item.last_copied_ms)
+            .max()
+            .map_or(at, |latest| at.max(latest.saturating_add(1)));
         let hash = content_hash(content);
         if let Some(existing) = self.items.iter_mut().find(|stored| stored.hash == hash) {
             existing.item.last_copied_ms = at;

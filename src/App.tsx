@@ -38,6 +38,7 @@ import { languageNames, startupFailure, translate } from './lib/i18n';
 import { isComposing } from './lib/types';
 import type { RecommendedFolder, Tab } from './lib/types';
 import { rag } from './lib/rag';
+import { content } from './lib/content';
 import type { ChatSelection } from './lib/rag';
 
 function useQuickMode() {
@@ -63,6 +64,8 @@ export default function App() {
   const searchContext = useRef<ChatSelection | null>(null);
   const [initialChat, setInitialChat] = useState<string | null>(null);
   const chatPending = useRef(false);
+  const creationRequest = useRef<string | null>(null);
+  const [creatingSearchChat, setCreatingSearchChat] = useState(false);
   const tabIntent = useRef(0);
   const contextChanged = useCallback((selection: ChatSelection | null) => {
     searchContext.current = selection;
@@ -77,6 +80,8 @@ export default function App() {
   const changeTab = (next: Tab) => {
     if (next === 'chat' && chatPending.current) return false;
     tabIntent.current++;
+    if (next !== 'chat' && creationRequest.current)
+      void content.cancel(creationRequest.current).catch(() => {});
     if (tab === 'documents' && next !== tab && documentDirty) {
       showToast(t('documentUnsaved'));
       return false;
@@ -90,17 +95,24 @@ export default function App() {
     const selection = searchContext.current;
     if (!native || !selection || chatPending.current) return;
     chatPending.current = true;
+    setCreatingSearchChat(true);
     const intent = ++tabIntent.current;
+    const requestId = crypto.randomUUID();
+    creationRequest.current = requestId;
     try {
-      const conversation = await rag.createFromSearch(selection);
+      const conversation = selection.filenameSearch
+        ? await rag.createFilenameSearch(selection.filenameSearch, requestId)
+        : await rag.createFromSearch(selection);
       if (intent === tabIntent.current) {
         setInitialChat(conversation.id);
         setTab('chat');
-      }
+      } else await rag.remove(conversation.id);
     } catch (cause) {
-      showToast(errorMessage(cause));
+      if (intent === tabIntent.current) showToast(errorMessage(cause));
     } finally {
       chatPending.current = false;
+      creationRequest.current = null;
+      setCreatingSearchChat(false);
     }
   };
   useEffect(() => {
@@ -291,6 +303,12 @@ export default function App() {
                   onSettings={() => setSettingsTab('scopes')}
                   onContextChange={contextChanged}
                   onChat={() => void openSearchChat()}
+                  creatingChat={creatingSearchChat}
+                  onCancelChat={() => {
+                    tabIntent.current++;
+                    if (creationRequest.current)
+                      void content.cancel(creationRequest.current).catch(() => {});
+                  }}
                 />
               ) : tab === 'chat' ? (
                 <ChatView

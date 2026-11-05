@@ -32,6 +32,8 @@ export function SearchView({
   onSettings,
   onContextChange,
   onChat,
+  creatingChat,
+  onCancelChat,
 }: {
   recent: boolean;
   onRecent: (value: boolean) => void;
@@ -40,6 +42,8 @@ export function SearchView({
   onSettings: () => void;
   onContextChange: (selection: ChatSelection | null) => void;
   onChat: () => void;
+  creatingChat: boolean;
+  onCancelChat: () => void;
 }) {
   const { settings, session, focusTick } = useClient();
   const search = useSearch();
@@ -57,12 +61,20 @@ export function SearchView({
               search.body.data.diagnostics.hardLimitReached || search.body.data.hits.length >= 100,
             )
           : null
-        : !search.loading && !search.error && search.data
-          ? searchSelection(
-              session.query,
-              search.data.results.filter((file) => !file.isDir).map((file) => file.path),
-              search.data.total > search.data.results.length,
-            )
+        : !search.loading && !search.error && search.data && search.data.total > 0
+          ? {
+              ...(searchSelection(
+                session.query,
+                search.data.results.filter((file) => !file.isDir).map((file) => file.path),
+              ) ?? { query: session.query, documents: [], selectedDocuments: [], partial: false }),
+              filenameSearch: {
+                query: search.request.input,
+                extension: session.extension,
+                scopeId: session.scopeId,
+                indexRevision: search.data.status.revision,
+                settingsRevision: settings.revision,
+              },
+            }
           : null;
   const selectionKey = JSON.stringify(selection);
   useEffect(() => {
@@ -181,12 +193,24 @@ export function SearchView({
       </div>
       {selection ? (
         <div className="search-chat-action">
-          <button type="button" className="button" disabled={!native} onClick={onChat}>
+          <button
+            type="button"
+            className="button"
+            disabled={!native || creatingChat}
+            onClick={onChat}
+          >
             <MessageSquare size={16} />
-            {t('chatWithResults')}
+            {t(creatingChat ? 'creatingSearchChat' : 'chatWithResults')}
           </button>
+          {creatingChat ? (
+            <button type="button" className="text-button" onClick={onCancelChat}>
+              {t('cancel')}
+            </button>
+          ) : null}
           <small className="muted">
-            {t('searchChatHint').replace('{count}', String(selection.documents.length))}
+            {selection.filenameSearch
+              ? t('allFilenameChatHint')
+              : t('searchChatHint').replace('{count}', String(selection.documents.length))}
           </small>
         </div>
       ) : null}

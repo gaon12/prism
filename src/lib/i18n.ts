@@ -2,6 +2,20 @@ import type { Language } from './types';
 
 // Each entry is Korean, English, Simplified Chinese, Traditional Chinese, Japanese.
 const messages = {
+  creatingSearchChat: [
+    '대화 대상 저장 중…',
+    'Saving conversation files…',
+    '正在保存对话文件…',
+    '正在儲存對話檔案…',
+    '対話の対象を保存中…',
+  ],
+  allFilenameChatHint: [
+    '검색과 일치하는 파일 전체를 저장합니다. 채팅에서 선택을 바꿀 수 있습니다.',
+    'Save every matching file. Change the selection in chat.',
+    '保存全部匹配文件，可在对话中更改选择。',
+    '儲存全部符合檔案，可在對話中更改選擇。',
+    '一致するすべてのファイルを保存します。対話で選択を変更できます。',
+  ],
   chatWithResults: [
     '검색 결과로 대화',
     'Chat with results',

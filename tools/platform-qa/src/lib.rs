@@ -1,4 +1,6 @@
 //! Compile the exact production platform modules without Tauri, WebView or Lance.
+#[path = "../../../src-tauri/src/collection_store.rs"]
+pub mod collection_store;
 #[path = "../../../src-tauri/src/ocr.rs"]
 pub mod ocr;
 // Full-app callers are absent here. Keep the existing source modules' style

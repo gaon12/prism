@@ -10,8 +10,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(any(target_os = "macos", test))]
+#[path = "ocr_image.rs"]
+mod native_image;
+#[cfg(any(target_os = "macos", test))]
+#[path = "ocr_work.rs"]
+mod native_work;
 #[cfg(windows)]
 #[path = "ocr_windows.rs"]
+mod platform;
+#[cfg(target_os = "macos")]
+#[path = "ocr_macos.rs"]
 mod platform;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,11 +197,11 @@ impl Control<'_> {
     }
 }
 pub fn capabilities() -> Capabilities {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         platform::capabilities()
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         Capabilities {
             engine: "unavailable".into(),
@@ -255,7 +264,7 @@ pub fn recognize(
     control.check()?;
     let native = preferences.engine != Engine::PaddleVl16;
     if native {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             // A retry needs the same authorized immutable bytes. Only absence
             // of an engine/language permits Auto to try the local fallback;
@@ -306,11 +315,11 @@ pub(crate) fn render_pdf_page(
         _lease: Lease::acquire()?,
     };
     control.check()?;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         platform::render_pdf_page(bytes, page, dimension, &control)
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (bytes, page, dimension, control);
         Err(error(Code::Unavailable))
@@ -318,7 +327,7 @@ pub(crate) fn render_pdf_page(
 }
 /// Use only positive finite dimensions and floor each axis so neither the pixel
 /// area nor longest edge exceeds its budget after fitting.
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "macos", test))]
 pub(crate) fn fitted(
     width: f64,
     height: f64,
@@ -341,6 +350,9 @@ pub(crate) fn fitted(
         .min((max_pixels as f64 / (width * height)).sqrt());
     if !upscale {
         scale = scale.min(1.0);
+    }
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(error(Code::LimitExceeded));
     }
     let w = ((width * scale).floor() as u32).max(1);
     let h = ((height * scale).floor() as u32).max(1);
@@ -456,5 +468,14 @@ mod tests {
         assert_eq!(control.check().unwrap_err().code, Code::Cancelled);
         drop(control);
         drop(second);
+    }
+    #[test]
+    fn subnormal_page_geometry_cannot_turn_infinite_scaling_into_one_pixel() {
+        assert_eq!(
+            fitted(f64::MIN_POSITIVE, f64::MIN_POSITIVE, 3200, 8_000_000, true)
+                .unwrap_err()
+                .code,
+            Code::LimitExceeded
+        );
     }
 }

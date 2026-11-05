@@ -456,6 +456,8 @@ impl ContentStore {
         })
     }
 
+    // Unversioned fixture helper. Production publishes text and version together.
+    #[cfg(test)]
     pub fn replace_document(
         &self,
         document: &ExtractedDocument,
@@ -1046,6 +1048,7 @@ impl ContentStore {
 
     /// Stamp only a successfully replaced, still-current source. An interrupted
     /// parser upgrade leaves older documents unstamped and eligible for retry.
+    #[cfg(test)]
     pub fn mark_extraction_version(
         &self,
         document: &ContentDocumentSummary,

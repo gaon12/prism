@@ -297,7 +297,7 @@ fn bitmap(
         .map_err(failed)?;
     for row in pixels.chunks_mut(width as usize * 4) {
         control.check()?;
-        for p in row.chunks_exact_mut(4) {
+        for p in row.as_chunks_mut::<4>().0 {
             let alpha = u16::from(p[3]);
             for c in &mut p[..3] {
                 *c = ((u16::from(*c) * alpha + 255 * (255 - alpha) + 127) / 255) as u8;

@@ -248,12 +248,14 @@ pub fn recognize(
     }
     #[cfg(not(windows))]
     {
-        let _ = (input, control);
+        let _ = input;
+        drop(control.lease);
         Err(error(Code::Unavailable))
     }
 }
 /// Use only positive finite dimensions and floor each axis so neither the pixel
 /// area nor longest edge exceeds its budget after fitting.
+#[cfg(any(windows, test))]
 pub(crate) fn fitted(
     width: f64,
     height: f64,

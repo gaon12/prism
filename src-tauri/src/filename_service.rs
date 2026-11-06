@@ -241,6 +241,10 @@ impl FileIndex {
 }
 
 #[cfg(test)]
+#[path = "filename_service_bench.rs"]
+mod benchmark;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use prism_ntfs_protocol::FileRecord;

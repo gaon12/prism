@@ -45,10 +45,17 @@ impl XmlNode {
     }
 }
 fn xml(bytes: &[u8]) -> Result<Vec<XmlNode>> {
+    xml_with_doctype(bytes, None)
+}
+/// A caller may recognize an inert declaration. There is deliberately no DTD
+/// loader or entity resolver: text/attributes still accept only XML built-ins
+/// and numeric references. Container/package/encryption callers pass None.
+fn xml_with_doctype(bytes: &[u8], allowed: Option<fn(&str) -> bool>) -> Result<Vec<XmlNode>> {
     let text = std::str::from_utf8(bytes).map_err(|_| error(ErrorCode::Unsupported))?;
     let mut reader = Reader::from_str(text);
     let mut nodes: Vec<XmlNode> = Vec::new();
     let mut stack = Vec::new();
+    let mut declared = false;
     loop {
         let event = reader
             .read_event()
@@ -116,7 +123,16 @@ fn xml(bytes: &[u8]) -> Result<Vec<XmlNode>> {
                     );
                 }
             }
-            Event::DocType(_) => return Err(error(ErrorCode::Unsupported)),
+            Event::DocType(e) => {
+                let declaration = e.decode().map_err(|_| error(ErrorCode::Unsupported))?;
+                if declared
+                    || !nodes.is_empty()
+                    || allowed.is_none_or(|accept| !accept(&declaration))
+                {
+                    return Err(error(ErrorCode::Unsupported));
+                }
+                declared = true;
+            }
             Event::Eof => break,
             _ => {}
         }

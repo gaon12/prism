@@ -1,11 +1,71 @@
 //! Declared EPUB navigation, never a filesystem/network navigation capability.
 //! EPUB 3: https://www.w3.org/TR/epub-33/#sec-nav-toc
-use super::{check, error, resolve, xml, Book, ErrorCode, Result, XmlNode, MAX_TEXT};
+use super::{check, error, resolve, xml_with_doctype, Book, ErrorCode, Result, XmlNode, MAX_TEXT};
 use scraper::{ElementRef, Html, Selector};
 use std::collections::HashSet;
 
 const MAX_POINTS: usize = 10_000;
 const MAX_DEPTH: u32 = 32;
+
+fn xml_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\r' | '\n')
+}
+
+/// Recognize only the grammar of an external NCX declaration. Quoted public
+/// and system identifiers remain unused strings, even file/loopback URLs.
+/// A trailing internal subset, parameter entity or extra token is rejected.
+fn external_ncx_declaration(value: &str) -> bool {
+    fn word(input: &mut &str) -> String {
+        let end = input.find(xml_space).unwrap_or(input.len());
+        let word = input[..end].to_string();
+        *input = input[end..].trim_start_matches(xml_space);
+        word
+    }
+    fn quoted(input: &mut &str) -> bool {
+        let Some(quote @ ('\'' | '"')) = input.chars().next() else {
+            return false;
+        };
+        let Some(end) = input[1..].find(quote) else {
+            return false;
+        };
+        let value = &input[1..end + 1];
+        if value.is_empty() || value.contains('\0') {
+            return false;
+        }
+        *input = &input[end + 2..];
+        true
+    }
+    let mut input = value.trim_matches(xml_space);
+    if word(&mut input) != "ncx" {
+        return false;
+    }
+    match word(&mut input).as_str() {
+        "SYSTEM" => quoted(&mut input) && input.trim_matches(xml_space).is_empty(),
+        "PUBLIC" => {
+            if !quoted(&mut input) || !input.starts_with(xml_space) {
+                return false;
+            }
+            input = input.trim_start_matches(xml_space);
+            quoted(&mut input) && input.trim_matches(xml_space).is_empty()
+        }
+        _ => false,
+    }
+}
+fn navigation_xml(bytes: &[u8], ncx: bool) -> Result<Vec<XmlNode>> {
+    let accept: fn(&str) -> bool = if ncx {
+        external_ncx_declaration
+    } else {
+        |value| value.trim_matches(xml_space) == "html"
+    };
+    let nodes = xml_with_doctype(bytes, Some(accept))?;
+    if nodes
+        .first()
+        .is_none_or(|n| n.name != if ncx { "ncx" } else { "html" })
+    {
+        return Err(error(ErrorCode::Unsupported));
+    }
+    Ok(nodes)
+}
 
 #[derive(Debug)]
 pub(crate) struct NavigationPoint {
@@ -191,7 +251,7 @@ impl Book<'_> {
             let bytes = self.read(&entry, MAX_TEXT)?;
             // Validate well-formed XML/DTD boundaries, then use the HTML text
             // iterator to preserve mixed inline label order ("1 <em>A</em> end").
-            let nodes = xml(&bytes)?;
+            let nodes = navigation_xml(&bytes, false)?;
             let spine = self.chapters.iter().map(|c| c.entry.as_str()).collect();
             if let Some(ordinal) = nodes
                 .iter()
@@ -214,7 +274,7 @@ impl Book<'_> {
                 }
             }
         } else if let Some(entry) = self.ncx_entry.clone() {
-            let nodes = xml(&self.read(&entry, MAX_TEXT)?)?;
+            let nodes = navigation_xml(&self.read(&entry, MAX_TEXT)?, true)?;
             let spine = self.chapters.iter().map(|c| c.entry.as_str()).collect();
             let mut children = vec![Vec::new(); nodes.len()];
             for (i, n) in nodes.iter().enumerate() {
@@ -326,7 +386,7 @@ mod tests {
             .unwrap()
             .html
             .contains("NAV FIRST CHAPTER"));
-        let bytes = replaced("<!DOCTYPE html><html/>");
+        let bytes = replaced("<!DOCTYPE html [<!ENTITY custom 'not allowed'>]><html/>");
         assert_eq!(
             Book::open(&bytes, &cancel)
                 .unwrap()
@@ -342,5 +402,91 @@ mod tests {
         );
         assert!(fragment("%FF").is_none());
         assert!(fragment("trailing%").is_none());
+    }
+
+    #[test]
+    fn external_ncx_identifiers_are_inert_and_never_supply_entities() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("private.dtd");
+        std::fs::write(&path, "<!ENTITY private 'DTD_FILE_CONTENT_83719'>").unwrap();
+        let file = reqwest::Url::from_file_path(&path).unwrap();
+        for identifier in [
+            file.as_str(),
+            "http://127.0.0.1:9/never-read.dtd",
+            "https://www.daisy.org/z3986/2005/ncx-2005-1.dtd",
+        ] {
+            for declaration in [
+                format!("ncx SYSTEM '{identifier}'"),
+                format!("ncx PUBLIC \"-//NISO//DTD ncx 2005-1//EN\"\n '{identifier}'"),
+            ] {
+                let input = format!("<!DOCTYPE {declaration}><ncx><navMap><navPoint><navLabel><text>한국어 &amp; &#65;</text></navLabel></navPoint></navMap></ncx>");
+                let nodes = navigation_xml(input.as_bytes(), true).unwrap();
+                assert_eq!(
+                    nodes.iter().find(|n| n.name == "text").unwrap().text,
+                    "한국어 & A"
+                );
+                let unresolved = input.replace("한국어 &amp; &#65;", "&private;");
+                assert_eq!(
+                    navigation_xml(unresolved.as_bytes(), true)
+                        .err()
+                        .unwrap()
+                        .code,
+                    ErrorCode::Unsupported
+                );
+                // The ordinary package/container parser keeps rejecting it.
+                assert_eq!(
+                    super::super::xml(input.as_bytes()).err().unwrap().code,
+                    ErrorCode::Unsupported
+                );
+            }
+        }
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "<!ENTITY private 'DTD_FILE_CONTENT_83719'>"
+        );
+    }
+
+    #[test]
+    fn declaration_grammar_position_and_root_boundaries_are_checked() {
+        for declaration in [
+            "ncx",
+            "ncx SYSTEM",
+            "ncx SYSTEM ''",
+            "ncx PUBLIC 'id''uri'",
+            "ncx SYSTEM 'uri' extra",
+            "ncx SYSTEM 'uri' []",
+            "ncx [<!ENTITY private SYSTEM 'file:///never-read'>]",
+            "ncx [<!ENTITY % p SYSTEM 'http://127.0.0.1:9/p.dtd'> %p;]",
+            "html SYSTEM 'uri'",
+        ] {
+            let input = format!("<!DOCTYPE {declaration}><ncx/>");
+            assert_eq!(
+                navigation_xml(input.as_bytes(), true).err().unwrap().code,
+                ErrorCode::Unsupported,
+                "{declaration}"
+            );
+        }
+        for input in [
+            "<!DOCTYPE ncx SYSTEM 'uri'><!DOCTYPE ncx SYSTEM 'uri'><ncx/>",
+            "<ncx/><!DOCTYPE ncx SYSTEM 'uri'>",
+            "<!DOCTYPE ncx SYSTEM 'uri'><wrong/>",
+        ] {
+            assert_eq!(
+                navigation_xml(input.as_bytes(), true).err().unwrap().code,
+                ErrorCode::Unsupported
+            );
+        }
+        assert!(navigation_xml(b"<!DOCTYPE html><html/>", false).is_ok());
+        assert!(navigation_xml(b"<html/>", false).is_ok());
+        for input in [
+            b"<!DOCTYPE html SYSTEM 'uri'><html/>".as_slice(),
+            b"<!DOCTYPE html [<!ENTITY x 'v'>]><html/>",
+            b"<!DOCTYPE html><wrong/>",
+        ] {
+            assert_eq!(
+                navigation_xml(input, false).err().unwrap().code,
+                ErrorCode::Unsupported
+            );
+        }
     }
 }

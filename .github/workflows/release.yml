@@ -103,6 +103,16 @@ jobs:
           cargo test --manifest-path tools/platform-qa/Cargo.toml --locked
           cargo clippy --manifest-path tools/platform-qa/Cargo.toml --all-targets --locked -- -D warnings
           cargo fmt --manifest-path tools/platform-qa/Cargo.toml --check
+      - name: Verify actual macOS Quartz PDF previews
+        if: matrix.platform == 'macos'
+        timeout-minutes: 5
+        run: cargo test --manifest-path tools/platform-qa/Cargo.toml --locked macos_quartz_preserves_pdf_crop_rotation_and_preview_without_ocr -- --ignored --nocapture --test-threads=1
+      - name: Verify actual macOS Korean Vision recognition
+        if: matrix.platform == 'macos'
+        timeout-minutes: 5
+        # This forces System OCR. A missing native Korean capability is a real
+        # unverified platform condition, not permission to claim a Paddle pass.
+        run: cargo test --manifest-path tools/platform-qa/Cargo.toml --locked macos_native_ocr_pixels_pdf_passwords_and_resource_errors -- --ignored --nocapture --test-threads=1
       - name: Check client and release tooling
         run: |
           npm run format:check

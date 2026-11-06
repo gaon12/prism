@@ -50,6 +50,8 @@ const docCodes = new Set([
   'cancelled',
   'rag',
   'pdf',
+  'hwpx',
+  'unsupported',
   'timedOut',
 ]);
 const ragCodes = new Set([
@@ -105,21 +107,25 @@ function Failure({
   const key: DocumentMessage =
     error.code === 'pdf'
       ? 'pdfError'
-      : error.code === 'timedOut'
-        ? 'pdfTimedOut'
-        : config
-          ? 'settingsError'
-          : blocked
-            ? 'blocked'
-            : error.code === 'conflict'
-              ? 'conflict'
-              : error.code === 'outlineReviewRequired'
-                ? 'reviewRequired'
-                : error.code === 'cancelled'
-                  ? 'cancelled'
-                  : error.code === 'input' || error.code === 'limit'
-                    ? 'invalid'
-                    : 'error';
+      : error.code === 'hwpx'
+        ? 'hwpxError'
+        : error.code === 'unsupported'
+          ? 'hwpxUnsupported'
+          : error.code === 'timedOut'
+            ? 'exportTimedOut'
+            : config
+              ? 'settingsError'
+              : blocked
+                ? 'blocked'
+                : error.code === 'conflict'
+                  ? 'conflict'
+                  : error.code === 'outlineReviewRequired'
+                    ? 'reviewRequired'
+                    : error.code === 'cancelled'
+                      ? 'cancelled'
+                      : error.code === 'input' || error.code === 'limit'
+                        ? 'invalid'
+                        : 'error';
   return (
     <div className="doc-error" role="alert">
       <p>
@@ -368,10 +374,10 @@ function DocumentEditor({
   const syncPending = useRef(false);
   const aiPending = useRef(false);
   const activeRequest = useRef<string | null>(null);
-  const pdfRequest = useRef<string | null>(null);
-  const [pdfStopping, setPdfStopping] = useState(false);
-  const [pdfRunning, setPdfRunning] = useState(false);
-  const [pdfVersion, setPdfVersion] = useState<number | null>(null);
+  const exportRequest = useRef<{ request: string; format: 'pdf' | 'hwpx' } | null>(null);
+  const [exportStopping, setExportStopping] = useState(false);
+  const [exportRunning, setExportRunning] = useState(false);
+  const [exportVersion, setExportVersion] = useState<number | null>(null);
   const jobEpoch = useRef(0);
   const current = useRef<DocumentPage | null>(null);
   const dirtyRef = useRef(false);
@@ -530,7 +536,11 @@ function DocumentEditor({
     return () => {
       alive.current = false;
       epoch.current++;
-      if (pdfRequest.current) void documents.cancelPdf(pdfRequest.current).catch(() => {});
+      const pending = exportRequest.current;
+      if (pending)
+        void documents[pending.format === 'pdf' ? 'cancelPdf' : 'cancelHwpx'](
+          pending.request,
+        ).catch(() => {});
     };
   }, [id]);
   useEffect(() => {
@@ -708,11 +718,12 @@ function DocumentEditor({
       if (alive.current && token === epoch.current) setLoading(false);
     }
   };
-  const runAction = async (kind: 'rename' | 'delete' | 'export' | 'exportPdf') => {
+  const runAction = async (kind: 'rename' | 'delete' | 'export' | 'exportPdf' | 'exportHwpx') => {
     if (!page || syncPending.current || ((kind === 'rename' || kind === 'delete') && busy)) return;
     syncPending.current = true;
     setAction(kind);
-    if (kind === 'exportPdf') setPdfVersion(page.revision.sequence);
+    const fileExport = kind === 'exportPdf' || kind === 'exportHwpx';
+    if (fileExport) setExportVersion(page.revision.sequence);
     setError(null);
     setNotice(null);
     try {
@@ -731,13 +742,14 @@ function DocumentEditor({
       } else if (kind === 'delete') {
         await documents.remove(id);
         if (alive.current) onDeleted();
-      } else if (kind === 'exportPdf') {
-        const path = await bridge.choosePdfPath(page.document.title);
+      } else if (kind === 'exportPdf' || kind === 'exportHwpx') {
+        const isPdf = kind === 'exportPdf';
+        const path = await bridge[isPdf ? 'choosePdfPath' : 'chooseHwpxPath'](page.document.title);
         if (!path || !alive.current) return;
         const request = crypto.randomUUID();
-        pdfRequest.current = request;
-        setPdfRunning(true);
-        const result = await documents.exportPdf(
+        exportRequest.current = { request, format: isPdf ? 'pdf' : 'hwpx' };
+        setExportRunning(true);
+        const result = await documents[isPdf ? 'exportPdf' : 'exportHwpx'](
           id,
           page.revision.id,
           exportSources,
@@ -745,7 +757,16 @@ function DocumentEditor({
           request,
           path,
         );
-        if (alive.current) setNotice(result.omittedImages ? 'pdfExportedOmitted' : 'pdfExported');
+        if (alive.current)
+          setNotice(
+            isPdf
+              ? result.omittedImages
+                ? 'pdfExportedOmitted'
+                : 'pdfExported'
+              : result.omittedImages || ('literalHtml' in result && result.literalHtml)
+                ? 'hwpxExportedOmitted'
+                : 'hwpxExported',
+          );
       } else {
         const markdown = await documents.export(id, page.revision.id, exportSources, exportMarkers);
         if (!alive.current) return;
@@ -755,17 +776,18 @@ function DocumentEditor({
     } catch (cause) {
       if (alive.current) {
         const value = failure(cause);
-        if (kind === 'exportPdf' && value.code === 'cancelled') setNotice('pdfCancelled');
+        if (fileExport && value.code === 'cancelled')
+          setNotice(kind === 'exportPdf' ? 'pdfCancelled' : 'hwpxCancelled');
         else setError(value);
       }
     } finally {
       syncPending.current = false;
-      if (kind === 'exportPdf') pdfRequest.current = null;
+      if (fileExport) exportRequest.current = null;
       if (alive.current) {
         setAction(null);
-        setPdfStopping(false);
-        setPdfRunning(false);
-        setPdfVersion(null);
+        setExportStopping(false);
+        setExportRunning(false);
+        setExportVersion(null);
       }
     }
   };
@@ -1405,34 +1427,47 @@ function DocumentEditor({
           >
             <Download size={15} />
             {t(action === 'exportPdf' ? 'pdfExporting' : 'exportPdf')} ·{' '}
-            {documentText(language, 'version', { value: pdfVersion ?? page.revision.sequence })}
+            {documentText(language, 'version', { value: exportVersion ?? page.revision.sequence })}
+          </button>
+          <button
+            type="button"
+            className="button"
+            disabled={Boolean(action) || dirty}
+            onClick={() => void runAction('exportHwpx')}
+          >
+            <Download size={15} />
+            {t(action === 'exportHwpx' ? 'hwpxExporting' : 'exportHwpx')} ·{' '}
+            {documentText(language, 'version', { value: exportVersion ?? page.revision.sequence })}
           </button>
           {dirty ? <p className="muted">{t('exportSaveFirst')}</p> : null}
           <p className="muted">{t('pdfImages')}</p>
-          {action === 'exportPdf' ? (
+          <p className="muted">{t('hwpxHelp')}</p>
+          <p className="muted">{t('hancomAttribution')}</p>
+          {action === 'exportPdf' || action === 'exportHwpx' ? (
             <button
               type="button"
               className="button subtle"
-              disabled={pdfStopping || !pdfRunning}
+              disabled={exportStopping || !exportRunning}
               onClick={() => {
-                const request = pdfRequest.current;
-                if (!request) return;
-                setPdfStopping(true);
-                void documents
-                  .cancelPdf(request)
+                const pending = exportRequest.current;
+                if (!pending) return;
+                setExportStopping(true);
+                void documents[pending.format === 'pdf' ? 'cancelPdf' : 'cancelHwpx'](
+                  pending.request,
+                )
                   .then((cancelled) => {
-                    if (!cancelled && alive.current) setPdfStopping(false);
+                    if (!cancelled && alive.current) setExportStopping(false);
                   })
                   .catch((cause) => {
                     if (alive.current) {
-                      setPdfStopping(false);
+                      setExportStopping(false);
                       setError(failure(cause));
                     }
                   });
               }}
             >
               <Square size={14} />
-              {t('pdfStop')}
+              {t(action === 'exportPdf' ? 'pdfStop' : 'hwpxStop')}
             </button>
           ) : null}
         </details>

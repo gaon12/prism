@@ -154,6 +154,23 @@ export const documents = {
       path,
     }),
   cancelPdf: (request: string) => invoke<boolean>('doc_cancel_pdf', { request }),
+  exportHwpx: (
+    id: string,
+    revision: string,
+    includeSources: boolean,
+    includeTypeMarkers: boolean,
+    request: string,
+    path: string,
+  ) =>
+    invoke<{ omittedImages: number; literalHtml: number }>('doc_export_hwpx', {
+      id,
+      revision,
+      includeSources,
+      includeTypeMarkers,
+      request,
+      path,
+    }),
+  cancelHwpx: (request: string) => invoke<boolean>('doc_cancel_hwpx', { request }),
   generateBody: (request: DocumentGenerateRequest) =>
     invoke<DocumentRevision>('doc_generate_body', { request }),
   rewrite: (request: DocumentRewriteRequest) =>

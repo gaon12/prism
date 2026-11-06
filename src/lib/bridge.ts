@@ -25,6 +25,26 @@ function read<T>(key: string, fallback: T): T {
     return structuredClone(fallback);
   }
 }
+async function chooseDocumentPath(title: string, extension: 'pdf' | 'hwpx') {
+  if (!native) return null;
+  let safeTitle =
+    title
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, '-')
+      .trim()
+      .replace(/[ .]+$/, '') || 'untitled';
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(safeTitle))
+    safeTitle = `Prism-${safeTitle}`;
+  const encoder = new TextEncoder();
+  let shortened = '';
+  for (const character of safeTitle) {
+    if (encoder.encode(shortened + character).length > 180) break;
+    shortened += character;
+  }
+  return save({
+    defaultPath: `${shortened || 'untitled'}.${extension}`,
+    filters: [{ name: extension.toUpperCase(), extensions: [extension] }],
+  });
+}
 
 export const bridge = {
   async openSettings(tab: 'general' | 'scopes' | 'shortcuts' | 'ai') {
@@ -166,25 +186,10 @@ export const bridge = {
     return true;
   },
   async choosePdfPath(title: string): Promise<string | null> {
-    if (!native) return null;
-    let safeTitle =
-      title
-        .replace(/[<>:"/\\|?*\x00-\x1f]/g, '-')
-        .trim()
-        .replace(/[ .]+$/, '') || 'untitled';
-    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(safeTitle))
-      safeTitle = `Prism-${safeTitle}`;
-    const encoder = new TextEncoder();
-    let shortened = '';
-    for (const character of safeTitle) {
-      if (encoder.encode(shortened + character).length > 180) break;
-      shortened += character;
-    }
-    safeTitle = shortened || 'untitled';
-    return save({
-      defaultPath: `${safeTitle}.pdf`,
-      filters: [{ name: 'PDF', extensions: ['pdf'] }],
-    });
+    return chooseDocumentPath(title, 'pdf');
+  },
+  async chooseHwpxPath(title: string): Promise<string | null> {
+    return chooseDocumentPath(title, 'hwpx');
   },
   async subscribe(
     onSettings: (settings: ClientSettings) => void,

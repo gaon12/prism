@@ -7,6 +7,13 @@ identity files directly. It avoids the Tauri, WebView
 and Lance build requirements so these modules can also be checked in a Linux shell.
 It does not replace the full application tests or native desktop QA.
 
+Existing-form checks import the production DOCX/HWPX codec directly. Run
+`cargo test --manifest-path tools/platform-qa/Cargo.toml --locked form_fill`.
+They cover split runs, repeated fields, independent named/positional keys,
+value/output limits, changed originals, hard links and atomic new-file saves.
+These are package/XML and filesystem checks; they do not prove native
+Word/Hancom layout or the desktop form editor's navigation behavior.
+
 Power checks import the exact production OS adapter and test Windows flags,
 macOS `pmset` parsing, Linux power-supply rules and the fixed command's output
 and timeout limits. Run `cargo test --manifest-path tools/platform-qa/Cargo.toml

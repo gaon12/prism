@@ -17,6 +17,8 @@ pub mod document_pdf;
 pub mod document_pdf_file;
 #[path = "../../../src-tauri/src/document_pdf_job.rs"]
 pub mod document_pdf_job;
+#[path = "../../../src-tauri/src/form_fill.rs"]
+pub mod form_fill;
 #[path = "../../../src-tauri/src/ocr.rs"]
 pub mod ocr;
 #[path = "../../../src-tauri/src/ocr_assets.rs"]

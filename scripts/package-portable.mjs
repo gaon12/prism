@@ -19,6 +19,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadPackageNotices, writePackageNotices } from './package-notices.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const options = new Map();
@@ -63,6 +64,7 @@ if (
   header.readUInt16LE(offset + 4) !== 0x8664
 )
   throw new Error('Expected a Windows x64 PE executable.');
+const notices = loadPackageNotices(exe);
 
 mkdirSync(out, { recursive: true });
 const stage = mkdtempSync(join(out, '.prism-portable-'));
@@ -73,6 +75,7 @@ const zip = join(out, `${name}.zip`);
 try {
   mkdirSync(payload);
   copyFileSync(exe, join(payload, 'prism.exe'));
+  writePackageNotices(payload, notices);
   writeFileSync(join(payload, 'prism.portable'), '');
   writeFileSync(
     join(payload, 'README-portable.txt'),

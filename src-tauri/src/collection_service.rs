@@ -247,6 +247,87 @@ mod tests {
         );
         assert_eq!(fs::read(&path).unwrap(), b"changed source");
     }
+    #[test]
+    fn text_viewport_admission_preserves_reader_and_authenticates_cached_originals() {
+        let (dir, service, collection, work, unit) = fixture();
+        let path = dir.path().join("소설.txt");
+        let original = "첫 장의 한국어 원문\n<script>literal</script>\n".repeat(180);
+        fs::write(&path, &original).unwrap();
+        let unit = service
+            .import(&unit.id, unit.revision, vec![path.clone()])
+            .unwrap();
+        let pages = service
+            .store
+            .pages(&unit.id, unit.revision, 0, 10)
+            .unwrap()
+            .items;
+        assert!(pages.len() > 1);
+        let first = service.cover(&work.id).unwrap();
+        assert_eq!(first.page_id, pages[0].id);
+        assert!(first.text.as_deref().unwrap().starts_with("첫 장"));
+        assert!(first.data_url.is_none());
+        // Cache-admission fixture only: real text pixels are independently
+        // checked by the bundled collection-text UI scenario.
+        let png_path = dir.path().join("viewport.png");
+        png(&png_path, [120, 130, 140, 255]);
+        let bytes =
+            collection_render::webp(&fs::read(png_path).unwrap(), 480, &AtomicBool::new(false))
+                .unwrap();
+        let data = format!(
+            "data:image/webp;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        );
+        assert_eq!(
+            service
+                .cache_epub(&pages[0].id, &pages[0].source_hash, &data)
+                .unwrap_err()
+                .code,
+            ErrorCode::SourceChanged
+        );
+        assert_eq!(
+            service
+                .cache_text(&pages[0].id, &"0".repeat(64), &data)
+                .unwrap_err()
+                .code,
+            ErrorCode::SourceChanged
+        );
+        assert_eq!(
+            service
+                .cache_text(&pages[0].id, &pages[0].source_hash, "data:text/plain,x")
+                .unwrap_err()
+                .code,
+            ErrorCode::Input
+        );
+        service
+            .cache_text(&pages[0].id, &pages[0].source_hash, &data)
+            .unwrap();
+        assert_eq!(
+            decoded(&service.cover(&work.id).unwrap()).get_pixel(0, 0).0,
+            [120, 130, 140, 255]
+        );
+        assert_eq!(service.media(&pages[0].id, false).unwrap().text, first.text);
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        fs::write(&path, "changed original").unwrap();
+        assert_eq!(
+            service.cover(&work.id).unwrap_err().code,
+            ErrorCode::SourceChanged
+        );
+        assert_eq!(
+            service
+                .cache_text(&pages[0].id, &pages[0].source_hash, &data)
+                .unwrap_err()
+                .code,
+            ErrorCode::SourceChanged
+        );
+        fs::write(&path, &original).unwrap();
+        service
+            .remove("collection", &collection.id, collection.revision)
+            .unwrap();
+        assert!(service
+            .cache_text(&pages[0].id, &pages[0].source_hash, &data)
+            .is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -729,7 +810,22 @@ impl CollectionService {
         }
         if matches!(page.location.kind, PageKind::Text) {
             if thumbnail {
-                return Err(error(ErrorCode::Unsupported));
+                if let Some(bytes) = self.cache_read(&page, 480) {
+                    // A cached text viewport still authenticates the complete
+                    // source and current path. It never grants indexing access.
+                    import::image_bytes(&source, &page, &self.inner.excluded, cancel)?;
+                    self.check_current(&page, &source)?;
+                    return Ok(Media {
+                        page_id: page.id,
+                        source_hash: page.source_hash,
+                        data_url: Some(format!(
+                            "data:image/webp;base64,{}",
+                            base64::engine::general_purpose::STANDARD.encode(bytes)
+                        )),
+                        text: None,
+                        document: None,
+                    });
+                }
             }
             let document = import::text(&source, &self.inner.excluded, cancel)?;
             if document.fingerprint.sha256 != page.source_hash {
@@ -776,13 +872,28 @@ impl CollectionService {
     /// Reauthenticate the current source after rendering and re-encode bounded
     /// WebP pixels before admitting anything to our owned cache.
     pub fn cache_epub(&self, page_id: &str, source_hash: &str, data_url: &str) -> Result<Media> {
+        self.cache_viewport(page_id, source_hash, data_url, PageKind::Epub)
+    }
+    /// Plain/extracted text uses the same browser document in the reader and
+    /// thumbnail. Keep this separate from EPUB admission so one kind cannot
+    /// populate another kind's cache through a mismatched IPC call.
+    pub fn cache_text(&self, page_id: &str, source_hash: &str, data_url: &str) -> Result<Media> {
+        self.cache_viewport(page_id, source_hash, data_url, PageKind::Text)
+    }
+    fn cache_viewport(
+        &self,
+        page_id: &str,
+        source_hash: &str,
+        data_url: &str,
+        kind: PageKind,
+    ) -> Result<Media> {
         let _guard = self
             .inner
             .render
             .lock()
             .map_err(|_| error(ErrorCode::Storage))?;
         let page = self.store.page(page_id)?;
-        if page.location.kind != PageKind::Epub
+        if page.location.kind != kind
             || page.source_hash != source_hash
             || data_url.len() > 24 << 20
         {

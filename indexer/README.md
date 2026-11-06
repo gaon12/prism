@@ -173,6 +173,15 @@ Remaining integration:
    Separately, the full unoptimized debug app collected 2.20 million entries
    without warnings in 25.8 seconds including WebView startup; that measurement
    is not interchangeable with the release filename harness.
+   On November 6, the timing client observed about 2.04 million paths in
+   19.057 seconds on its first request (14.951 seconds before the first record,
+   3.079 seconds between first/last records, 1.026 seconds afterward). Its
+   immediate repeat took 6.590 seconds (2.952 / 2.739 / 0.898 seconds).
+   A separate current release filename harness reached app-catalog readiness in
+   8.240 seconds without warnings. The drive contents, background load and cache
+   state differ from the earlier measurements; this is a diagnostic baseline,
+   not evidence of a controlled cold start, newer service deployment or a
+   guaranteed 5–7 second app index.
    Delta requests currently return `JournalGap`, requiring
    a new snapshot rather than claiming an unchanged catalog.
 3. Verify the newer deferred/per-drive persistence through actual deployment,

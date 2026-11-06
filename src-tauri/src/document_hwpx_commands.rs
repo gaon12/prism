@@ -142,11 +142,24 @@ pub async fn doc_export_hwpx(
             "hwpx",
             &export.bytes,
             32 << 20,
-            || worker.control.check().map_err(operation),
+            || {
+                worker.control.check().map_err(operation)?;
+                service
+                    .ensure_external(&page.revision.provenance)
+                    .map_err(Error::from)
+            },
             |stage, destination| {
-                worker
-                    .commit(|| fs::rename(stage, destination).map_err(|_| Code::Storage))
-                    .map_err(operation)
+                let result = worker.commit(|| {
+                    service
+                        .ensure_external(&page.revision.provenance)
+                        .map_err(|_| Code::Input)?;
+                    fs::rename(stage, destination).map_err(|_| Code::Storage)
+                });
+                if let Err(code) = result {
+                    service.ensure_external(&page.revision.provenance)?;
+                    return Err(operation(code));
+                }
+                Ok(())
             },
         )?;
         Ok(Summary {

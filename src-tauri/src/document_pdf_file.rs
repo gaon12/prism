@@ -17,7 +17,16 @@ impl From<document_export_file::Error> for Code {
 pub fn validate(path: &Path) -> Result<()> {
     document_export_file::validate(path, "pdf").map_err(Into::into)
 }
+#[cfg(test)]
 pub fn save(path: &Path, pdf: &Pdf, job: &Job) -> Result<()> {
+    save_checked(path, pdf, job, || Ok(()))
+}
+pub fn save_checked(
+    path: &Path,
+    pdf: &Pdf,
+    job: &Job,
+    access: impl Fn() -> Result<()>,
+) -> Result<()> {
     validate(path)?;
     job.control.check()?;
     if pdf.bytes.len() > crate::document_pdf::MAX_PDF || !pdf.bytes.starts_with(b"%PDF-") {
@@ -28,9 +37,15 @@ pub fn save(path: &Path, pdf: &Pdf, job: &Job) -> Result<()> {
         "pdf",
         &pdf.bytes,
         crate::document_pdf::MAX_PDF,
-        || job.control.check(),
+        || {
+            job.control.check()?;
+            access()
+        },
         |stage, destination| {
-            job.commit(|| fs::rename(stage, destination).map_err(|_| Code::Storage))
+            job.commit(|| {
+                access()?;
+                fs::rename(stage, destination).map_err(|_| Code::Storage)
+            })
         },
     )
 }
@@ -38,6 +53,35 @@ pub fn save(path: &Path, pdf: &Pdf, job: &Job) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn withdrawn_access_at_atomic_commit_preserves_the_selected_file() {
+        let _test = crate::document_pdf_job::test_guard();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("retained.pdf");
+        fs::write(&path, b"previous export").unwrap();
+        let pdf = Pdf {
+            bytes: include_bytes!("../../tests/fixtures/ocr/crop-clockwise.pdf").to_vec(),
+            pages: 1,
+            omitted_images: 0,
+        };
+        let job = Job::start("pdf-source-policy-request", "main").unwrap();
+        let reached = std::cell::Cell::new(false);
+        let result = save_checked(&path, &pdf, &job, || {
+            if job.committing_for_test() {
+                reached.set(true);
+                Err(Code::Input)
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(result, Err(Code::Input));
+        assert!(
+            reached.get(),
+            "permission is checked inside the commit boundary, after staging"
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"previous export");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
     #[test]
     fn real_selected_file_replacement_and_cancel_preserve_old_bytes_without_staging_remains() {
         let _test = crate::document_pdf_job::test_guard();

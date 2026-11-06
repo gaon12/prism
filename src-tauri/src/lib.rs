@@ -685,6 +685,8 @@ pub fn run() {
             document_commands::doc_create,
             document_commands::doc_list,
             document_commands::doc_get,
+            document_commands::doc_validate_access,
+            document_commands::doc_external_sources,
             document_commands::doc_current_citations,
             document_commands::doc_revisions,
             document_commands::doc_rename,

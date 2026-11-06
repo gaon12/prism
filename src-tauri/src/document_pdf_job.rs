@@ -80,6 +80,10 @@ impl Job {
             _ => None,
         }
     }
+    #[cfg(test)]
+    pub(crate) fn committing_for_test(&self) -> bool {
+        *self.phase.lock().unwrap() == Phase::Committing
+    }
     pub fn stop(&self, reason: Code) -> bool {
         use std::sync::atomic::Ordering;
         let mut phase = self.phase.lock().unwrap_or_else(|e| e.into_inner());

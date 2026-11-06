@@ -37,6 +37,32 @@ pub async fn doc_get(
     blocking(move || service.get(&id, revision_id.as_deref())).await
 }
 #[tauri::command]
+pub async fn doc_validate_access(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    id: String,
+    revision_id: String,
+) -> DocumentResult<()> {
+    if window.label() != "main" {
+        return Err(DocumentError::new(DocumentErrorCode::Input));
+    }
+    let service = service(&state)?;
+    blocking(move || service.get(&id, Some(&revision_id)).map(|_| ())).await
+}
+#[tauri::command]
+pub async fn doc_external_sources(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    id: String,
+    revision_id: String,
+) -> DocumentResult<Vec<crate::rag_external::DocumentExternalSource>> {
+    if window.label() != "main" {
+        return Err(DocumentError::new(DocumentErrorCode::Input));
+    }
+    let service = service(&state)?;
+    blocking(move || service.external_sources(&id, Some(&revision_id))).await
+}
+#[tauri::command]
 pub async fn doc_current_citations(
     state: State<'_, AppState>,
     id: String,
@@ -180,7 +206,14 @@ pub async fn doc_export_pdf(
             &worker.control,
         )
         .map_err(|code| pdf_error(worker.cancellation().unwrap_or(code)))?;
-        document_pdf_file::save(&path, &pdf, &worker).map_err(pdf_error)?;
+        if let Err(code) = document_pdf_file::save_checked(&path, &pdf, &worker, || {
+            service
+                .ensure_external(&page.revision.provenance)
+                .map_err(|_| document_pdf::Code::Input)
+        }) {
+            service.ensure_external(&page.revision.provenance)?;
+            return Err(pdf_error(code));
+        }
         Ok(PdfExportSummary {
             pages: pdf.pages,
             omitted_images: pdf.omitted_images,

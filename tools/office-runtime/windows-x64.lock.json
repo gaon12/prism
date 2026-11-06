@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "target": "windows-x64",
+  "engine": "LibreOffice",
+  "version": "26.8.2",
+  "executable": "program/python-core-3.13.17/bin/python.exe",
+  "enginePath": "program/soffice.com",
+  "inventorySha256": "53146e43f3cee7424ea7fc82773441e4187e566c2cab2d3e0b6c5a07e98c29a8",
+  "fileCount": 19426,
+  "expandedBytes": 1620519547,
+  "archive": {
+    "bytes": 544426755,
+    "sha256": "79dac4566699d5df01bd0ec3b8c830f1832aebb2ef739ebe917df1d60c0d09ab",
+    "url": null
+  },
+  "upstreamMsiSha256": "ff4b911403b67ee9e6249f820f9782c44bb32c94fdaa45b0da53a8e419e5307a"
+}

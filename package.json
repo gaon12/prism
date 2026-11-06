@@ -19,7 +19,7 @@
     "test:release-config": "node --test tests/scripts/release-config.test.mjs",
     "test:release-checksums": "node --test tests/scripts/release-checksums.test.mjs",
     "build:update-verifier": "cargo build --manifest-path tools/update-verifier/Cargo.toml --locked",
-    "test:release": "npm run build:update-verifier && node --test tests/scripts/version.test.mjs tests/scripts/manifest.test.mjs tests/scripts/release-config.test.mjs tests/scripts/release-checksums.test.mjs tests/scripts/release-signing.test.mjs tests/scripts/portable.test.mjs",
+    "test:release": "npm run build:update-verifier && node --test tests/scripts/version.test.mjs tests/scripts/manifest.test.mjs tests/scripts/release-config.test.mjs tests/scripts/release-checksums.test.mjs tests/scripts/release-signing.test.mjs tests/scripts/portable.test.mjs tests/scripts/setup-payload.test.mjs",
     "test:package-portable": "node --test tests/scripts/portable.test.mjs",
     "test:setup-core": "cargo test --manifest-path installer/core/Cargo.toml",
     "build:setup": "cargo build --manifest-path installer/src-tauri/Cargo.toml --release",

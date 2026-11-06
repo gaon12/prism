@@ -38,6 +38,13 @@ const messages = {
     '正在處理文件',
     '文書を処理中',
   ],
+  updating: [
+    '파일 변경 반영 중',
+    'Updating filenames',
+    '正在更新文件名',
+    '正在更新檔名',
+    'ファイル名を更新中',
+  ],
   waiting: [
     '전체 파일 수를 확인하고 있습니다.',
     'The final file count is not known yet.',

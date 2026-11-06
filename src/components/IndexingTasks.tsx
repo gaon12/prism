@@ -17,7 +17,7 @@ export function IndexingStatus({ open, onToggle }: { open: boolean; onToggle: ()
     activity?.fileError || activity?.contentError
       ? t('statusError')
       : activity?.files.scanning
-        ? t('collecting')
+        ? t(activity.files.initialScanComplete ? 'updating' : 'collecting')
         : activity && contentIndexBusy(activity.content)
           ? t('processing')
           : t('ready');
@@ -79,8 +79,10 @@ export function IndexingTasks({ onClose }: { onClose: () => void }) {
           <div className="workspace-task">
             <strong>{t('filenames')}</strong>
             <span>
-              {activity.files.scanning ? t('collecting') : t('ready')} ·{' '}
-              {number.format(activity.files.count)}
+              {activity.files.scanning
+                ? t(activity.files.initialScanComplete ? 'updating' : 'collecting')
+                : t('ready')}{' '}
+              · {number.format(activity.files.count)}
             </span>
             <button
               type="button"
@@ -92,8 +94,13 @@ export function IndexingTasks({ onClose }: { onClose: () => void }) {
             >
               <RefreshCw size={14} />
             </button>
-            <IndexProgress active={activity.files.scanning} label={t('collecting')} />
-            {activity.files.scanning ? <small className="muted">{t('waiting')}</small> : null}
+            <IndexProgress
+              active={activity.files.scanning}
+              label={t(activity.files.initialScanComplete ? 'updating' : 'collecting')}
+            />
+            {activity.files.scanning && !activity.files.initialScanComplete ? (
+              <small className="muted">{t('waiting')}</small>
+            ) : null}
           </div>
           <div className="workspace-task">
             <strong>{t('documents')}</strong>

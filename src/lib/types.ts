@@ -70,6 +70,7 @@ export interface FileResult {
 }
 export interface IndexStatus {
   scanning: boolean;
+  initialScanComplete: boolean;
   count: number;
   revision: number;
   skipped: number;

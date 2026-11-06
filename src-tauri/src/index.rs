@@ -221,6 +221,9 @@ fn subtree<'a>(
 #[serde(rename_all = "camelCase")]
 pub struct IndexStatus {
     pub scanning: bool,
+    /// Remains true during live updates after the first complete sweep of this
+    /// configured generation. A refresh resets it, even if old entries remain.
+    pub initial_scan_complete: bool,
     pub count: usize,
     pub revision: u64,
     pub skipped: usize,
@@ -544,6 +547,9 @@ impl FileIndex {
             return;
         }
         if let Ok(mut catalog) = self.catalog.write() {
+            if !self.current(generation) {
+                return;
+            }
             catalog.status.scanning = true;
             if reconcile {
                 catalog.status.skipped = 0;
@@ -630,6 +636,7 @@ impl FileIndex {
                 }
                 catalog.status.count = catalog.entries.len();
                 catalog.status.scanning = false;
+                catalog.status.initial_scan_complete = true;
             }
         }
     }
@@ -1191,6 +1198,45 @@ fn date_range(input: &str) -> Result<(i64, i64), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn initial_completion_survives_live_updates_but_not_refresh_or_revocation() {
+        // No background worker: drive the same real scan/publication methods
+        // deterministically so a short idle interval cannot hide the transition.
+        let (tx, _rx) = mpsc::channel();
+        let index = FileIndex {
+            catalog: Arc::new(RwLock::new(Catalog::default())),
+            generation: Arc::new(AtomicU64::new(1)),
+            tx,
+            lifetime: Arc::new(()),
+        };
+        let _owner = index.clone();
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("first.md"), "").unwrap();
+        assert!(!index.status().unwrap().initial_scan_complete);
+        index.scan(1, &[dir.path().into()], 1, true);
+        assert!(index.status().unwrap().initial_scan_complete);
+        assert_eq!(index.status().unwrap().count, 2);
+        index.publish(1, 2, &mut vec![], 0, false);
+        let updating = index.status().unwrap();
+        assert!(updating.scanning && updating.initial_scan_complete);
+        assert_eq!(
+            serde_json::to_value(updating).unwrap()["initialScanComplete"],
+            true
+        );
+        index.scan(1, &[dir.path().into()], 2, false);
+        assert!(index.status().unwrap().initial_scan_complete);
+        index.scan(1, &[dir.path().into()], 3, true);
+        assert!(index.status().unwrap().initial_scan_complete);
+        index.refresh(vec![scope(dir.path(), "files")]);
+        let refreshed = index.status().unwrap();
+        assert!(refreshed.scanning && !refreshed.initial_scan_complete);
+        index.scan(1, &[dir.path().into()], 4, true);
+        assert!(!index.status().unwrap().initial_scan_complete);
+        index.scan(2, &[dir.path().into()], 5, true);
+        assert!(index.status().unwrap().initial_scan_complete);
+        index.configure(vec![]);
+        assert!(!index.status().unwrap().initial_scan_complete);
+    }
     fn scope(path: &Path, id: &str) -> SearchScope {
         SearchScope {
             id: id.into(),

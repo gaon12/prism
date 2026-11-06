@@ -30,6 +30,10 @@ try {
     process.env.PRISM_TEST_EXECUTABLE ? { executable: process.env.PRISM_TEST_EXECUTABLE } : {},
   );
   const { main, invoke } = instance;
+  await until(
+    async () => (await invoke('index_status')).initialScanComplete,
+    'initial filename sweep complete',
+  );
   await main.getByRole('button', { name: '파일명', exact: true }).click();
   await main.getByRole('textbox', { name: '검색어', exact: true }).fill('needle');
   await main.getByRole('option').filter({ hasText: 'needle-first.md' }).waitFor();
@@ -59,6 +63,11 @@ try {
   await until(
     () => main.evaluate(() => window.__heldIndexResponse),
     'real revision-driven filename response held',
+  );
+  assert.equal(
+    (await invoke('index_status')).initialScanComplete,
+    true,
+    'live changes must preserve the initial-sweep milestone',
   );
   assert.equal(
     await main.locator('.search-chat-action').count(),

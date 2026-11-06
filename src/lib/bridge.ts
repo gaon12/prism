@@ -47,7 +47,15 @@ export const bridge = {
   async indexStatus(): Promise<IndexStatus> {
     return native
       ? invoke('index_status')
-      : { scanning: false, count: 0, revision: 0, skipped: 0, warnings: [], watching: false };
+      : {
+          scanning: false,
+          initialScanComplete: false,
+          count: 0,
+          revision: 0,
+          skipped: 0,
+          warnings: [],
+          watching: false,
+        };
   },
   async searchFiles(
     query: string,

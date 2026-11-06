@@ -13,7 +13,15 @@ interface IndexActivity {
   contentError: ContentFailure | null;
 }
 const initial: IndexActivity = {
-  files: { scanning: false, count: 0, revision: 0, skipped: 0, warnings: [], watching: false },
+  files: {
+    scanning: false,
+    initialScanComplete: false,
+    count: 0,
+    revision: 0,
+    skipped: 0,
+    warnings: [],
+    watching: false,
+  },
   content: {
     phase: 'ready',
     discovered: 0,

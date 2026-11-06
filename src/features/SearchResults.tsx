@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { setSession } from '../lib/store';
 import { native } from '../lib/bridge';
+import { workspaceText } from '../components/workspace-messages';
 import { providerNames } from '../lib/utilities';
 import type { SearchController } from '../lib/use-search';
 import { EmptyState } from '../components/EmptyState';
@@ -106,6 +107,9 @@ export function UtilityResult({ search }: { search: SearchController }) {
 
 export function IndexSummary({ search }: { search: SearchController }) {
   const { t, status } = search;
+  const label = status.scanning
+    ? workspaceText(search.language, status.initialScanComplete ? 'updating' : 'collecting')
+    : t('indexed');
   if (
     !native ||
     search.request.kind !== 'files' ||
@@ -116,7 +120,7 @@ export function IndexSummary({ search }: { search: SearchController }) {
     <div className="index-summary">
       <span>
         <span className={`index-dot ${status.scanning ? 'busy' : ''}`} />
-        {t(status.scanning ? 'indexing' : 'indexed')} · {status.count.toLocaleString()}
+        {label} · {status.count.toLocaleString()}
       </span>
       <button
         className="text-button"
@@ -132,7 +136,7 @@ export function IndexSummary({ search }: { search: SearchController }) {
           {t('skipped')}: {status.skipped}
         </span>
       ) : null}
-      <IndexProgress active={status.scanning} label={t('indexing')} />
+      <IndexProgress active={status.scanning} label={label} />
     </div>
   );
 }
@@ -173,7 +177,11 @@ export function FileResults({
     return (
       <EmptyState
         icon={<Search size={quick ? 42 : 60} strokeWidth={1.4} />}
-        title={status.scanning ? t('indexing') : t('noResults')}
+        title={
+          status.scanning
+            ? workspaceText(language, status.initialScanComplete ? 'updating' : 'collecting')
+            : t('noResults')
+        }
       >
         <p>{status.scanning ? t('searching') : t('changeQuery')}</p>
       </EmptyState>

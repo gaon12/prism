@@ -15,6 +15,7 @@ import { useIndexActivity } from './index-activity';
 
 const emptyStatus: IndexStatus = {
   scanning: false,
+  initialScanComplete: false,
   count: 0,
   revision: 0,
   skipped: 0,
@@ -74,7 +75,9 @@ export function useSearch(quick = false) {
         const next = await bridge.indexStatus();
         if (cancelled) return;
         setStatus((previous) =>
-          previous.revision === next.revision && previous.scanning === next.scanning
+          previous.revision === next.revision &&
+          previous.scanning === next.scanning &&
+          previous.initialScanComplete === next.initialScanComplete
             ? previous
             : next,
         );

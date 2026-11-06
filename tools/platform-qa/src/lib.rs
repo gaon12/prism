@@ -54,10 +54,10 @@ pub mod embedding_runtime;
 #[allow(dead_code)]
 #[path = "../../../src-tauri/src/path_identity.rs"]
 pub mod path_identity;
-#[path = "../../../src-tauri/src/process_job.rs"]
-pub mod process_job;
 #[path = "../../../src-tauri/src/power.rs"]
 pub mod power;
+#[path = "../../../src-tauri/src/process_job.rs"]
+pub mod process_job;
 #[path = "../../../src-tauri/src/runtime_process.rs"]
 pub mod runtime_process;
 #[path = "../../../src-tauri/src/runtime_supervisor.rs"]

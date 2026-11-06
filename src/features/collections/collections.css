@@ -447,6 +447,100 @@
   padding: 16px;
   scrollbar-gutter: stable;
 }
+.collection-reader-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.collection-reader-body > .collection-reader-page {
+  min-width: 0;
+}
+.collection-reader-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.collection-reader-contents {
+  width: 280px;
+  flex-shrink: 0;
+  overflow: auto;
+  background: var(--surface);
+  border-inline-end: 1px solid var(--border);
+  padding: 12px;
+  text-align: start;
+}
+.collection-contents-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.collection-contents-query {
+  width: 100%;
+  min-width: 0;
+  margin-bottom: 10px;
+}
+.collection-contents-count {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.collection-reader-contents li button[aria-current] {
+  background: var(--subtle);
+  font-weight: 600;
+}
+.collection-reader-contents ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.collection-reader-contents li {
+  margin-bottom: 3px;
+}
+.collection-reader-contents li button,
+.collection-reader-contents li span {
+  display: block;
+  width: 100%;
+  text-align: start;
+  padding: 9px 10px;
+  overflow-wrap: anywhere;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  border-radius: 5px;
+}
+.collection-reader-contents li button {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.collection-reader-contents li button:hover,
+.collection-reader-contents li button:focus-visible {
+  background: var(--subtle);
+}
+.collection-reader-contents li span {
+  color: var(--muted);
+  font-weight: 600;
+}
+.collection-navigation-notice {
+  margin: 0;
+  padding: 8px 20px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+@media (max-width: 700px) {
+  .collection-reader-contents {
+    position: absolute;
+    z-index: 2;
+    inset-block: 0;
+    inset-inline-start: 0;
+    width: min(300px, 100%);
+    box-shadow: 4px 0 12px #0002;
+  }
+}
 .collection-reader-page img {
   display: block;
   margin: 0 auto;

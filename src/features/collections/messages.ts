@@ -1,5 +1,36 @@
 import type { Language } from '../../lib/types';
 const messages = {
+  contents: ['목차', 'Contents', '目录', '目錄', '目次'],
+  closeContents: ['목차 닫기', 'Close contents', '关闭目录', '關閉目錄', '目次を閉じる'],
+  findContents: ['목차에서 찾기', 'Find in contents', '搜索目录', '搜尋目錄', '目次を検索'],
+  moreContents: [
+    '목차 더 보기',
+    'Show more contents',
+    '显示更多目录',
+    '顯示更多目錄',
+    '目次をもっと表示',
+  ],
+  contentsCount: [
+    '{n} / {total}개 표시',
+    '{n} of {total} shown',
+    '显示 {n} / {total} 项',
+    '顯示 {n} / {total} 項',
+    '{total}件中{n}件を表示',
+  ],
+  noContentsMatch: [
+    '일치하는 목차가 없어요.',
+    'No matching contents.',
+    '没有匹配的目录。',
+    '沒有符合的目錄。',
+    '一致する目次はありません。',
+  ],
+  missingFragment: [
+    '장으로 이동했지만 지정된 위치를 찾지 못했어요.',
+    'Opened the section, but its specified location was not found.',
+    '已打开章节，但未找到指定位置。',
+    '已開啟章節，但找不到指定位置。',
+    '章を開きましたが、指定された位置が見つかりませんでした。',
+  ],
   chapterPosition: [
     '{n} / {total} 장',
     '{n} / {total} sections',

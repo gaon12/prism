@@ -80,6 +80,19 @@ export interface Reading {
   completed: boolean;
   updatedMs: number;
 }
+export interface NavigationItem {
+  title: string;
+  depth: number;
+  pageId: string | null;
+  offset: number | null;
+  fragment: string | null;
+}
+export interface Navigation {
+  unitId: string;
+  unitRevision: number;
+  sourceHash: string;
+  items: NavigationItem[];
+}
 export interface Progress {
   unitId: string;
   phase: string;
@@ -144,6 +157,8 @@ export const library = {
     }),
   media: async (pageId: string, thumbnail = false) =>
     completeMedia(await invoke<Media>('collection_media', { pageId, thumbnail }), thumbnail),
+  navigation: (pageId: string, expected: number) =>
+    invoke<Navigation>('collection_navigation', { pageId, expected }),
   cover: async (workId: string) =>
     completeMedia(await invoke<Media>('collection_cover', { workId }), true),
   reading: (workId: string) => invoke<Reading>('collection_reading', { workId }),

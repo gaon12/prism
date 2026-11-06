@@ -6,16 +6,43 @@ export function EpubPage({
   title,
   onKey,
   fitWidth,
+  fragment = null,
+  navigationSequence = 0,
+  onDestination,
 }: {
   book: EpubDocument;
   title: string;
   onKey: (key: string) => void;
   fitWidth: boolean;
+  fragment?: string | null;
+  navigationSequence?: number;
+  onDestination?: (found: boolean) => void;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const container = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: book.width, height: book.height, scale: 1 });
   const [loaded, setLoaded] = useState(0);
+  const destinationCallback = useRef(onDestination);
+  destinationCallback.current = onDestination;
+  useEffect(() => {
+    if (!loaded || !navigationSequence) return;
+    const document = frame.current?.contentDocument;
+    if (!document) return;
+    let active = true;
+    void document.fonts.ready.then(() => {
+      if (!active) return;
+      const target = fragment ? document.getElementById(fragment) : null;
+      if (target) target.scrollIntoView({ block: 'start' });
+      else document.defaultView?.scrollTo(0, 0);
+      frame.current?.focus();
+      destinationCallback.current?.(!fragment || !!target);
+    });
+    // The caller's callback can change while reading. Only an explicit jump,
+    // a new document or its load should reset the user's scroll position.
+    return () => {
+      active = false;
+    };
+  }, [loaded, book, fragment, navigationSequence]);
   useEffect(() => {
     const viewport = container.current?.parentElement;
     if (!viewport) return;

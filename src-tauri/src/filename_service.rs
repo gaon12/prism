@@ -6,6 +6,9 @@ use super::*;
 use prism_ntfs_protocol::stream::Event;
 #[cfg(any(windows, test))]
 use std::io;
+#[cfg(any(windows, test))]
+#[path = "filename_catalog.rs"]
+mod catalog;
 
 impl FileIndex {
     #[cfg(not(windows))]
@@ -125,16 +128,33 @@ impl FileIndex {
                 "Collection cancelled.",
             ));
         }
-        // Derive Unicode projections and publish using the same bounded batches
-        // as the walker. A truncated, rejected or cancelled stream inserts none.
+        // Prepare Unicode projections only after terminal/root validation. A
+        // first large catalog is built privately; existing entries keep their
+        // bounded reuse path. Rejected or cancelled streams insert nothing.
         let initial = self
             .catalog
             .read()
             .is_ok_and(|catalog| catalog.entries.is_empty());
-        let rows = Mutex::new(rows.into_iter().flatten());
         let threads = std::thread::available_parallelism()
             .map_or(2, usize::from)
             .clamp(1, 8);
+        if initial && threads > 1 && rows.iter().map(Vec::len).sum::<usize>() >= 4096 {
+            let prepared = self.prepare_initial_catalog(generation, rows, sweep, threads)?;
+            return self.publish_initial_catalog(generation, prepared);
+        }
+        self.publish_service_rows(generation, rows, sweep, initial, threads)
+    }
+
+    #[cfg(any(windows, test))]
+    fn publish_service_rows(
+        &self,
+        generation: u64,
+        rows: Vec<Vec<prism_ntfs_protocol::FileRecord>>,
+        sweep: u64,
+        initial: bool,
+        threads: usize,
+    ) -> io::Result<()> {
+        let rows = Mutex::new(rows.into_iter().flatten());
         std::thread::scope(|scope| {
             let mut workers = Vec::new();
             for _ in 0..threads {
@@ -153,26 +173,7 @@ impl FileIndex {
                         if records.is_empty() {
                             break;
                         }
-                        let mut batch: Vec<_> = records
-                            .into_iter()
-                            .map(|record| {
-                                // The wire path is already validated UTF-8. Keep
-                                // it directly rather than converting to UTF-16 and
-                                // back for every entry on a Windows volume.
-                                Raw {
-                                    key: path_key_text(&record.path),
-                                    has_name: record
-                                        .path
-                                        .rsplit(['\\', '/'])
-                                        .next()
-                                        .is_some_and(|name| !name.is_empty()),
-                                    path: record.path,
-                                    is_dir: record.is_dir,
-                                    size: record.size,
-                                    modified_ms: record.modified_ms,
-                                }
-                            })
-                            .collect();
+                        let mut batch: Vec<_> = records.into_iter().map(catalog::raw).collect();
                         if initial {
                             let entries = batch
                                 .into_iter()

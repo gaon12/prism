@@ -32,8 +32,14 @@ const hash = async (path) => {
 const executableSha256 = await hash(executable);
 assert.equal(await hash(original), executableSha256);
 const python = process.env.PRISM_TEST_PYTHON ?? 'python';
-const createForm = (path, format, changed = false) => {
-  const lines = [...(changed ? ['참조: ___'] : []), '이름: {{이름}}', '주소: ___', '날짜: ___'];
+const createForm = (path, format, changed = false, extraNames = []) => {
+  const lines = [
+    ...(changed ? ['참조: ___'] : []),
+    '이름: {{이름}}',
+    '주소: ___',
+    '날짜: ___',
+    ...extraNames.map((key) => `${key}: {{${key}}}`),
+  ];
   const xml =
     format === 'docx'
       ? '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' +
@@ -259,6 +265,58 @@ try {
   assert.equal(hwpxResult.mimetype, 'application/hwp+zip');
   assert.equal(hwpxResult['Contents/header.xml'], inspect(hwpx)['Contents/header.xml']);
   assert.equal(await hash(hwpx), hwpxSha256);
+  const reserved = join(root, '영문 항목.docx');
+  const names = ['__proto__', 'constructor', 'toString', 'blank:1', 'field:blank:1'];
+  createForm(reserved, 'docx', false, names);
+  await main.evaluate((path) => {
+    window.__formInput.source = path;
+  }, reserved);
+  await main.getByRole('button', { name: '다른 양식', exact: true }).click();
+  await until(
+    async () => (await fields.count()) === 3 + names.length,
+    'named fields that also exist on Object.prototype',
+  );
+  for (const index of names.map((_, position) => 3 + position))
+    assert.equal(
+      await fields.nth(index).inputValue(),
+      '',
+      'field defaults contain only user-entered values',
+    );
+  for (const [index, key] of names.entries()) await fields.nth(3 + index).fill(`값 ${key}`);
+  for (const [index, key] of names.entries())
+    assert.equal(
+      await main
+        .locator('.form-fill-fields .form-fill-key')
+        .nth(3 + index)
+        .textContent(),
+      key,
+      'original placeholder names remain visible',
+    );
+  createForm(reserved, 'docx', true, names);
+  const reservedSha256 = await hash(reserved);
+  const reservedOutput = join(root, '영문 항목 저장.docx');
+  await main.evaluate((path) => {
+    window.__formInput.destination = path;
+  }, reservedOutput);
+  await save.click();
+  await reload.waitFor();
+  await reload.click();
+  await until(
+    async () => (await fields.count()) === 4 + names.length,
+    'reserved named fields reloaded',
+  );
+  for (const [index, key] of names.entries())
+    assert.equal(await fields.nth(4 + index).inputValue(), `값 ${key}`);
+  await save.click();
+  await until(() => newMode.isEnabled(), 'reserved named values saved');
+  const reservedResult = inspect(reservedOutput);
+  for (const key of names)
+    assert(reservedResult['word/document.xml'].includes(`${key}: 값 ${key}`));
+  assert(
+    reservedResult['word/document.xml'].includes('참조: ___'),
+    'a named blank:1 never fills the positional blank',
+  );
+  assert.equal(await hash(reserved), reservedSha256);
   await newMode.click();
   await main.getByRole('button', { name: '검색', exact: true }).click();
   await main.getByRole('heading', { name: '파일 검색', exact: true }).waitFor();

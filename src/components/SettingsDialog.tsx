@@ -10,6 +10,7 @@ import { generationCredentials } from '../lib/rag';
 import { bridge } from '../lib/bridge';
 import { useClient, saveSettings, scopesFromPaths, showToast, errorMessage } from '../lib/store';
 import { languageNames, translate } from '../lib/i18n';
+import { fileShortcutError } from '../lib/file-shortcut';
 import type { Language, Theme, DocumentMode } from '../lib/types';
 import './settings-dialog.css';
 import { McpSettings } from './mcp/McpSettings';
@@ -31,10 +32,15 @@ export function SettingsDialog({
   const [busy, setBusy] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
+  const shortcutError = fileShortcutError(draft.fileOpenShortcut, draft.shortcut, runtime.platform);
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
   const submit = async () => {
+    if (shortcutError) {
+      setTab('shortcuts');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -448,6 +454,26 @@ export function SettingsDialog({
                   onChange={(event) => setDraft({ ...draft, shortcut: event.target.value })}
                 />
                 <p className="setting-footnote">{t('shortcutHint')}</p>
+                <label className="shortcut-label" htmlFor="file-open-shortcut">
+                  {t('fileOpenShortcut')}
+                </label>
+                <input
+                  id="file-open-shortcut"
+                  className="shortcut-input"
+                  value={draft.fileOpenShortcut}
+                  maxLength={64}
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-invalid={!!shortcutError}
+                  aria-describedby="file-shortcut-hint file-shortcut-error"
+                  onChange={(event) => setDraft({ ...draft, fileOpenShortcut: event.target.value })}
+                />
+                <p id="file-shortcut-hint" className="setting-footnote">
+                  {t('fileShortcutHint')}
+                </p>
+                <p id="file-shortcut-error" className="form-error" role="status">
+                  {shortcutError ? t(shortcutError) : null}
+                </p>
                 {!runtime.native ? <p className="setting-footnote">{t('nativeOnly')}</p> : null}
               </>
             ) : null}
@@ -463,7 +489,7 @@ export function SettingsDialog({
           <button type="button" className="button" onClick={onClose} disabled={busy}>
             {t('cancel')}
           </button>
-          <button className="button primary" disabled={busy}>
+          <button className="button primary" disabled={busy || !!shortcutError}>
             {t('save')}
           </button>
         </div>

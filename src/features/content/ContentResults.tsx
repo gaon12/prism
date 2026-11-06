@@ -20,6 +20,8 @@ import { translate } from '../../lib/i18n';
 import { errorMessage, saveSettings, showToast, useClient } from '../../lib/store';
 import { contentText } from './messages';
 import { matchedSegments } from '../../lib/text-match';
+import { isComposing } from '../../lib/types';
+import { matchesFileShortcut } from '../../lib/file-shortcut';
 import './content.css';
 import { PdfUnlockDialog } from './PdfUnlockDialog';
 import { IndexProgress } from '../../components/IndexProgress';
@@ -89,7 +91,7 @@ export function ContentResults({
   onSettings: () => void;
   onModels: () => void;
 }) {
-  const { settings, session } = useClient();
+  const { settings, session, runtime } = useClient();
   const language = settings.language;
   const t = (key: MessageKey, values?: Record<string, string | number>) =>
     contentText(language, key, values);
@@ -183,22 +185,18 @@ export function ContentResults({
   // Opening a result goes to the matched page/line when the default app can (see open_location.rs).
   const openSelected = () => selected && void run(() => controller.openAt(selected.chunk.id));
   const keyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (
-      event.nativeEvent.isComposing ||
-      event.altKey ||
-      event.ctrlKey ||
-      event.metaKey ||
-      !data?.hits.length
-    )
+    if (isComposing(event.nativeEvent) || !data?.hits.length) return;
+    if (matchesFileShortcut(settings.fileOpenShortcut, event.nativeEvent, runtime.platform)) {
+      event.preventDefault();
+      event.stopPropagation();
+      openSelected();
       return;
+    }
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
       event.stopPropagation();
       controller.move(event.key === 'ArrowDown' ? 1 : -1);
-    } else if (event.key === 'Enter') {
-      event.preventDefault();
-      event.stopPropagation();
-      openSelected();
     } else if (event.key === 'Home' || event.key === 'End') {
       event.preventDefault();
       event.stopPropagation();

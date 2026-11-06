@@ -230,6 +230,9 @@ export function FileResults({
         className="file-result-list"
         role="listbox"
         aria-label={t('results')}
+        aria-activedescendant={search.selectedId}
+        tabIndex={0}
+        onKeyDown={search.keyDown}
         ref={list}
       >
         {data.results.map((file, index) => (
@@ -240,7 +243,10 @@ export function FileResults({
             tabIndex={-1}
             aria-selected={file.path === selected?.path}
             className="file-result-row"
-            onClick={() => setSession({ selectedPath: file.path })}
+            onClick={() => {
+              setSession({ selectedPath: file.path });
+              list.current?.focus({ preventScroll: true });
+            }}
             onDoubleClick={() => search.openFile(file.path)}
           >
             {file.isDir ? (

@@ -4,6 +4,7 @@ import { bridge, native } from './bridge';
 import { errorMessage, setSession, showToast, submitSearch, useClient } from './store';
 import { translate } from './i18n';
 import { isComposing } from './types';
+import { fileShortcutLabel, matchesFileShortcut } from './file-shortcut';
 import type { IndexStatus, SearchResponse } from './types';
 import { parseInput } from './utilities';
 import type { UtilityAnswer } from './utilities';
@@ -24,7 +25,7 @@ const emptyStatus: IndexStatus = {
 };
 export function useSearch(quick = false) {
   const listId = useId();
-  const { settings, session } = useClient();
+  const { settings, session, runtime } = useClient();
   const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
   const request = parseInput(session.query);
   const clips = useClipboard(request.kind === 'clipboard', request.input);
@@ -252,8 +253,18 @@ export function useSearch(quick = false) {
     else return;
     if (quick) await bridge.hideQuick();
   };
-  const keyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (isComposing(event.nativeEvent) || event.ctrlKey || event.metaKey || event.altKey) return;
+  const keyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (isComposing(event.nativeEvent)) return;
+    if (
+      request.kind === 'files' &&
+      matchesFileShortcut(settings.fileOpenShortcut, event.nativeEvent, runtime.platform)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      void activate().catch(report);
+      return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       if (request.kind === 'files' && bodyActive) {
         event.preventDefault();
@@ -271,7 +282,7 @@ export function useSearch(quick = false) {
       const current = files.findIndex((file) => file.path === selected?.path);
       const index = (current + (event.key === 'ArrowDown' ? 1 : -1) + files.length) % files.length;
       setSession({ selectedPath: files[index].path });
-    } else if (event.key === 'Enter') {
+    } else if (event.key === 'Enter' && request.kind !== 'files' && !event.repeat) {
       event.preventDefault();
       void activate().catch(report);
     }
@@ -312,6 +323,7 @@ export function useSearch(quick = false) {
     refresh: () => void bridge.refreshIndex().catch(report),
     t,
     language: settings.language,
+    fileOpenShortcut: fileShortcutLabel(settings.fileOpenShortcut, runtime.platform),
     session,
   };
 }

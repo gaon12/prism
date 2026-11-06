@@ -614,6 +614,41 @@ const messages = {
     '例如 Alt+Space，衝突時保留原設定。',
     '例: Alt+Space。競合時は以前の設定を保持します。',
   ],
+  fileOpenShortcut: [
+    '파일·폴더 열기',
+    'Open files and folders',
+    '打开文件和文件夹',
+    '開啟檔案和資料夾',
+    'ファイル・フォルダーを開く',
+  ],
+  fileShortcutHint: [
+    '예: Enter, Ctrl+O, F4. 검색창과 결과 목록에 적용합니다. 계산·사전·클립보드는 Enter를 사용합니다.',
+    'e.g. Enter, Ctrl+O, F4. Used in search inputs and result lists. Calculator, dictionary and clipboard keep Enter.',
+    '例如 Enter、Ctrl+O、F4。用于搜索框和结果列表。计算、词典和剪贴板仍使用 Enter。',
+    '例如 Enter、Ctrl+O、F4。適用於搜尋框和結果清單。計算、字典和剪貼簿仍使用 Enter。',
+    '例: Enter、Ctrl+O、F4。検索欄と結果一覧に適用します。計算・辞書・クリップボードは Enter のままです。',
+  ],
+  fileShortcutInvalid: [
+    'Enter, F1~F24 또는 Ctrl/Alt/Shift/Super와 영문자·숫자·Space 조합을 입력하세요.',
+    'Use Enter, F1–F24, or Ctrl/Alt/Shift/Super with a letter, digit or Space.',
+    '请输入 Enter、F1–F24，或 Ctrl/Alt/Shift/Super 与字母、数字、Space 的组合。',
+    '請輸入 Enter、F1–F24，或 Ctrl/Alt/Shift/Super 與字母、數字、Space 的組合。',
+    'Enter、F1〜F24、または Ctrl/Alt/Shift/Super と英字・数字・Space の組み合わせを入力してください。',
+  ],
+  fileShortcutReserved: [
+    '일반 문자 입력, Ctrl/Command+Enter, 창 닫기 조합은 사용할 수 없습니다.',
+    'Plain typing, Ctrl/Command+Enter and window-closing shortcuts are reserved.',
+    '不能使用普通文字输入、Ctrl/Command+Enter 或关闭窗口的组合。',
+    '不能使用一般文字輸入、Ctrl/Command+Enter 或關閉視窗的組合。',
+    '通常の文字入力、Ctrl/Command+Enter、ウィンドウを閉じるキーは使用できません。',
+  ],
+  fileShortcutConflict: [
+    '빠른 검색창 전역 단축키와 다른 키를 선택하세요.',
+    'Choose a different key from the global quick-search shortcut.',
+    '请选择与快速搜索全局快捷键不同的组合。',
+    '請選擇與快速搜尋全域快捷鍵不同的組合。',
+    'クイック検索のグローバルキーとは別のキーを選んでください。',
+  ],
   nativeOnly: [
     '데스크톱 앱에서 사용할 수 있어요.',
     'Available in the desktop app.',
@@ -779,6 +814,9 @@ export function translate(language: Language, key: MessageKey) {
 }
 export function startupFailure(language: Language, error: string) {
   const keys: Record<string, MessageKey> = {
+    fileShortcutInvalid: 'fileShortcutInvalid',
+    fileShortcutReserved: 'fileShortcutReserved',
+    fileShortcutConflict: 'fileShortcutConflict',
     STARTUP_DISABLED_BY_USER: 'startupDisabledByUser',
     STARTUP_DISABLED_BY_POLICY: 'startupDisabledByPolicy',
     STARTUP_CHANGE_FAILED: 'startupChangeFailed',

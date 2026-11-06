@@ -109,7 +109,7 @@ export function SearchView({
             <X size={16} />
           </button>
         ) : null}
-        <kbd>Enter</kbd>
+        <kbd>{search.request.kind === 'files' ? search.fileOpenShortcut : 'Enter'}</kbd>
       </div>
       <div className="search-toolbar">
         <Segmented<SearchSession['mode']>

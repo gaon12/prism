@@ -170,7 +170,7 @@ export function QuickWindow({
                     <kbd>↑ ↓</kbd> {t('move')}
                   </>
                 ) : null}
-                <kbd>Enter</kbd>{' '}
+                <kbd>{search.request.kind === 'files' ? search.fileOpenShortcut : 'Enter'}</kbd>{' '}
                 {t(
                   search.request.kind === 'calculator' || search.request.kind === 'units'
                     ? 'copy'

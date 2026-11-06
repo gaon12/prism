@@ -157,9 +157,28 @@ const alive = (pid) => {
   }
 };
 let instance;
+let diagnose = async () => ({});
 try {
   instance = await launch(data, { executable, portable: true });
   const { main, quick, invoke } = instance;
+  const outlineRequests = [];
+  main.on('request', (request) => {
+    if (request.url().includes('/doc_generate_outline')) {
+      outlineRequests.push({ url: request.url(), body: request.postData() });
+    }
+  });
+  await main.evaluate(() => {
+    window.__documentMcpClicks = [];
+    document.addEventListener(
+      'click',
+      (event) => {
+        const button = event.target.closest?.('.doc-actions button');
+        if (button)
+          window.__documentMcpClicks.push({ label: button.textContent, trusted: event.isTrusted });
+      },
+      true,
+    );
+  });
   assert.equal((await invoke('runtime_info')).development, profile === '0');
   await until(async () => {
     const status = await invoke('content_status');
@@ -192,6 +211,19 @@ try {
     },
   });
   const current = () => invoke('doc_get', { id: created.document.id, revisionId: null });
+  diagnose = async () => ({
+    outlineRequests,
+    clicks: await main.evaluate(() => window.__documentMcpClicks),
+    job: await invoke('doc_job', { id: created.document.id }).catch(() => null),
+    alerts: await main.locator('[role="alert"]').allTextContents(),
+    buttons: await main
+      .locator('.doc-actions button')
+      .evaluateAll((items) =>
+        items.map((item) => ({ text: item.textContent, disabled: item.disabled })),
+      ),
+    events: await events(),
+    errors: instance.errors,
+  });
   await main.getByRole('button', { name: '문서', exact: true }).click();
   await main
     .locator('.doc-sidebar')
@@ -464,6 +496,12 @@ try {
       errors: 0,
     }),
   );
+} catch (error) {
+  const diagnostic = await diagnose().catch((cause) => ({ diagnosticError: String(cause) }));
+  await writeFile(join(root, 'failure.json'), JSON.stringify(diagnostic, null, 2));
+  if (instance) await instance.main.screenshot({ path: join(root, 'failure.png') }).catch(() => {});
+  console.log(JSON.stringify({ root, failed: true, ...diagnostic }));
+  throw error;
 } finally {
   if (instance) await shutdown(instance);
   for (const socket of sockets) socket.destroy();

@@ -241,3 +241,7 @@ impl FileIndex {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "filename_catalog_tests.rs"]
+mod tests;

@@ -481,6 +481,45 @@ mod tests {
     }
 
     #[test]
+    fn an_eligible_first_catalog_stays_private_until_terminal_and_root_validation() {
+        for failure in 0..3 {
+            let (index, _owner) = isolated();
+            let root = tempfile::tempdir().unwrap();
+            let result = index.collect_service_snapshot(1, root.path(), 1, |_, receive| {
+                for batch in 0..8 {
+                    receive(Event::Records(
+                        (0..1024)
+                            .map(|number| {
+                                record(root.path(), &format!("private-{batch}-{number}.md"))
+                            })
+                            .collect(),
+                    ))?;
+                    assert_eq!(index.status().unwrap().count, 0);
+                }
+                match failure {
+                    0 => Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "incomplete fixture",
+                    )),
+                    1 => Ok(0),
+                    _ => {
+                        index.generation.store(2, Ordering::Release);
+                        Ok(1)
+                    }
+                }
+            });
+            assert!(result.is_err());
+            assert_eq!(
+                (
+                    index.status().unwrap().count,
+                    index.status().unwrap().revision
+                ),
+                (0, 0)
+            );
+        }
+    }
+
+    #[test]
     fn late_snapshot_failure_never_publishes_private_batches() {
         for failure in 0..3 {
             let (index, _owner) = isolated();

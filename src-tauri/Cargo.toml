@@ -88,8 +88,12 @@ zbus-secret-service-keyring-store = { version = "=1.0.1", default-features = fal
 tempfile = "3"
 roxmltree = "=0.21.2"
 
-# Large verified model files and wheel archives must remain usable in a debug
-# app too. Optimize only these CPU-heavy dependencies; app checks stay enabled.
+# Large verified assets and whole-drive filename frames must remain usable in
+# a debug app too. Optimize these CPU-heavy dependencies; app checks stay enabled.
+[profile.dev.package.prism-ntfs-protocol]
+opt-level = 3
+[profile.dev.package.prism-ntfs-windows]
+opt-level = 3
 [profile.dev.package."sha2:0.10.9"]
 opt-level = 3
 [profile.dev.package."digest:0.10.7"]

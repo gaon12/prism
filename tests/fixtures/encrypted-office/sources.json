@@ -54,5 +54,24 @@
     "url": "https://raw.githubusercontent.com/nolze/msoffcrypto-tool/bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667/tests/outputs/ecma376standard_password_plain.docx",
     "gitBlob": "4cb088b5c070bcaf7be9a8892fbfe7f37ff7be0a",
     "sourceRevision": "bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667"
+  },
+  {
+    "sha256": "8442CAC5DAAFD3211A6A1FFF393640CBE5F01FAED54D4E00D9AA4FDCBA23F7E0",
+    "license": "LICENSE-python-pptx.txt",
+    "bytes": 38616,
+    "url": "https://raw.githubusercontent.com/scanny/python-pptx/278b47b1dedd5b46ee84c286e77cdfb0bf4594be/tests/test_files/test_slides.pptx",
+    "gitBlob": "e9ead6960cda21e77a846c157c599cf88d2dd6e6",
+    "file": "reference-slides.pptx",
+    "sourceRevision": "278b47b1dedd5b46ee84c286e77cdfb0bf4594be"
+  },
+  {
+    "sha256": "2C4751D44BE1E3F66CBE6999D24CDD36E53B02C1647ABBE0FA0154E3344A50A2",
+    "generator": "nolze/msoffcrypto-tool",
+    "source": "reference-slides.pptx",
+    "bytes": 44032,
+    "generatorRevision": "bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667",
+    "file": "agile-unicode-slides.pptx",
+    "license": "LICENSE-python-pptx.txt + LICENSE-msoffcrypto-tool.txt",
+    "publicFixturePassword": "암호-fixture-密碼🔐"
   }
 ]

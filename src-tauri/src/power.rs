@@ -6,7 +6,7 @@
 //! state cannot be read never stops indexing by surprise.
 
 /// Asks the operating system once. Cheap on Windows and Linux; on macOS it runs `pmset`,
-/// so callers should cache the answer for a while (the content worker checks every 30 s).
+/// so callers should cache the answer for a while (the content worker checks every 5 s).
 pub fn on_battery() -> Option<bool> {
     imp::on_battery()
 }
@@ -29,14 +29,60 @@ mod imp {
 mod imp {
     pub fn on_battery() -> Option<bool> {
         // `pmset -g batt` prints "Now drawing from 'AC Power'" or "... 'Battery Power'".
-        let output = std::process::Command::new("/usr/bin/pmset")
-            .args(["-g", "batt"])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
+        let mut command = std::process::Command::new("/usr/bin/pmset");
+        command.args(["-g", "batt"]);
+        let output = super::power_command(command, std::time::Duration::from_secs(2))?;
+        super::from_pmset(&output)
+    }
+}
+
+/// Only used with the fixed OS power tool (which does not launch other tools).
+/// A stuck or excessively verbose tool becomes an unknown power reading; the
+/// scan's observer can then finish and release its scoped thread. No shell,
+/// user arguments, global process lookup or cancellation of another process.
+#[cfg(any(target_os = "macos", test))]
+fn power_command(
+    mut command: std::process::Command,
+    timeout: std::time::Duration,
+) -> Option<String> {
+    use std::{io::Read, process::Stdio, time::Instant};
+    const MAX_OUTPUT: usize = 16 * 1024;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW for owned test fixtures.
+    }
+    let mut child = command.spawn().ok()?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                let mut output = Vec::new();
+                child
+                    .stdout
+                    .take()?
+                    .take((MAX_OUTPUT + 1) as u64)
+                    .read_to_end(&mut output)
+                    .ok()?;
+                return (output.len() <= MAX_OUTPUT)
+                    .then(|| String::from_utf8_lossy(&output).into_owned());
+            }
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
         }
-        super::from_pmset(&String::from_utf8_lossy(&output.stdout))
     }
 }
 
@@ -144,6 +190,45 @@ fn from_linux(supplies: &[Supply]) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_power_tool_is_bounded_and_reaped_on_timeout() {
+        use std::{
+            process::Command,
+            time::{Duration, Instant},
+        };
+        let command = |mode: &str| {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command.args([
+                "--exact",
+                "power::tests::power_command_fixture",
+                "--ignored",
+                "--nocapture",
+            ]);
+            command.env("PRISM_POWER_TOOL_FIXTURE", mode);
+            command
+        };
+        let output = power_command(command("normal"), Duration::from_secs(2)).unwrap();
+        assert!(output.contains("Now drawing from 'Battery Power'"));
+        let start = Instant::now();
+        assert!(power_command(command("wait"), Duration::from_millis(100)).is_none());
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(power_command(command("flood"), Duration::from_millis(200)).is_none());
+    }
+
+    #[test]
+    #[ignore = "invoked by the parent's bounded OS-tool regression"]
+    fn power_command_fixture() {
+        use std::io::Write;
+        match std::env::var("PRISM_POWER_TOOL_FIXTURE").as_deref() {
+            Ok("normal") => println!("Now drawing from 'Battery Power'"),
+            Ok("wait") => std::thread::sleep(std::time::Duration::from_secs(30)),
+            Ok("flood") => {
+                let _ = std::io::stdout().write_all(&vec![b'x'; 1024 * 1024]);
+            }
+            _ => panic!("fixture mode missing"),
+        }
+    }
 
     fn supply(kind: &str, online: Option<&str>, status: Option<&str>) -> Supply {
         Supply {

@@ -89,7 +89,9 @@ fn main() {
             // The resources the app declares (component notices), copied beside the exe by
             // the app build. Required for a release setup; optional for local debug builds.
             let release = env::var("PROFILE").as_deref() == Ok("release");
-            let built = app_dir.join("target/release");
+            // Resolve "../.." first: the safe-path checks only accept a plain absolute folder.
+            let built = fs::canonicalize(app_dir.join("target/release"))
+                .expect("resolve the app build folder");
             for name in bundle_resources(&config_json) {
                 println!("cargo:rerun-if-changed={}", built.join(&name).display());
                 match resource_bytes(&built, &name) {

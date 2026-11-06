@@ -39,6 +39,7 @@
     "test:ocr-platform-ui": "node tests/native/ocr-platform-ui.mjs",
     "test:content": "node tests/native/content.mjs",
     "test:pdf-unlock": "node tests/native/pdf-unlock.mjs",
+    "test:office-unlock": "node tests/native/office-unlock.mjs",
     "test:ocr": "node tests/native/ocr.mjs",
     "test:paddle-ocr": "node tests/native/paddle-ocr.mjs",
     "test:indexing-ui": "node tests/native/indexing-ui.mjs",

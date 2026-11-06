@@ -162,24 +162,53 @@ try {
   instance = await launch(data, { executable, portable: true });
   const { main, quick, invoke } = instance;
   const outlineRequests = [];
+  const outlineResponses = [];
   main.on('request', (request) => {
     if (request.url().includes('/doc_generate_outline')) {
       outlineRequests.push({ url: request.url(), body: request.postData() });
     }
   });
-  await main.evaluate(() => {
-    window.__documentMcpClicks = [];
-    document.addEventListener(
-      'click',
-      (event) => {
-        const button = event.target.closest?.('.doc-actions button');
-        if (button)
-          window.__documentMcpClicks.push({ label: button.textContent, trusted: event.isTrusted });
+  main.on('response', (response) => {
+    if (!response.url().includes('/doc_generate_outline')) return;
+    const record = { status: response.status(), body: null, readError: null };
+    outlineResponses.push(record);
+    void response.text().then(
+      (body) => {
+        record.body = body.slice(0, 1600);
       },
-      true,
+      (error) => {
+        record.readError = String(error);
+      },
     );
   });
-  assert.equal((await invoke('runtime_info')).development, profile === '0');
+  await main.evaluate(() => {
+    window.__documentMcpClicks = [];
+    for (const type of ['pointerdown', 'pointerup', 'click'])
+      document.addEventListener(
+        type,
+        (event) => {
+          const button = event.target.closest?.('.doc-actions button');
+          if (button)
+            window.__documentMcpClicks.push({
+              type,
+              time: performance.now(),
+              label: button.textContent,
+              trusted: event.isTrusted,
+              disabled: button.disabled,
+              focused: document.hasFocus(),
+              options: [...document.querySelectorAll('.doc-options input')].map((input) => ({
+                type: input.type,
+                value: input.value,
+                checked: input.checked,
+              })),
+            });
+        },
+        true,
+      );
+  });
+  const runtime = await invoke('runtime_info');
+  assert.equal(runtime.development, profile === '0');
+  assert.equal(runtime.installKind, 'portable');
   await until(async () => {
     const status = await invoke('content_status');
     return status.phase === 'ready' && status.indexed === 1;
@@ -213,6 +242,7 @@ try {
   const current = () => invoke('doc_get', { id: created.document.id, revisionId: null });
   diagnose = async () => ({
     outlineRequests,
+    outlineResponses,
     clicks: await main.evaluate(() => window.__documentMcpClicks),
     job: await invoke('doc_job', { id: created.document.id }).catch(() => null),
     alerts: await main.locator('[role="alert"]').allTextContents(),

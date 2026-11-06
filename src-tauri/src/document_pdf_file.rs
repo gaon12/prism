@@ -1,31 +1,21 @@
 //! Atomic replacement of a user-selected PDF destination. Only a new, random
 //! staging file is removed on failure; an existing destination stays intact.
 use crate::{
+    document_export_file,
     document_pdf::{Code, Pdf, Result},
     document_pdf_job::Job,
 };
-use std::{
-    fs::{self, OpenOptions},
-    io::Write,
-    path::{Path, PathBuf},
-};
-struct Pending(PathBuf);
-impl Drop for Pending {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+use std::{fs, path::Path};
+impl From<document_export_file::Error> for Code {
+    fn from(value: document_export_file::Error) -> Self {
+        match value {
+            document_export_file::Error::Input => Self::Input,
+            document_export_file::Error::Storage => Self::Storage,
+        }
     }
 }
 pub fn validate(path: &Path) -> Result<()> {
-    if !path.is_absolute()
-        || path.as_os_str().as_encoded_bytes().contains(&0)
-        || !path
-            .extension()
-            .is_some_and(|v| v.eq_ignore_ascii_case("pdf"))
-        || path.file_name().is_none()
-    {
-        return Err(Code::Input);
-    }
-    Ok(())
+    document_export_file::validate(path, "pdf").map_err(Into::into)
 }
 pub fn save(path: &Path, pdf: &Pdf, job: &Job) -> Result<()> {
     validate(path)?;
@@ -33,34 +23,16 @@ pub fn save(path: &Path, pdf: &Pdf, job: &Job) -> Result<()> {
     if pdf.bytes.len() > crate::document_pdf::MAX_PDF || !pdf.bytes.starts_with(b"%PDF-") {
         return Err(Code::Input);
     }
-    let parent = fs::canonicalize(path.parent().ok_or(Code::Input)?).map_err(|_| Code::Storage)?;
-    let destination = parent.join(path.file_name().ok_or(Code::Input)?);
-    match fs::symlink_metadata(&destination) {
-        Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => return Err(Code::Input),
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(Code::Storage),
-        _ => {}
-    }
-    let mut nonce = [0; 16];
-    getrandom::fill(&mut nonce).map_err(|_| Code::Storage)?;
-    let pending = Pending(parent.join(format!(
-        ".prism-pdf-{:032x}.tmp",
-        u128::from_le_bytes(nonce)
-    )));
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&pending.0).map_err(|_| Code::Storage)?;
-    for chunk in pdf.bytes.chunks(64 << 10) {
-        job.control.check()?;
-        file.write_all(chunk).map_err(|_| Code::Storage)?;
-    }
-    file.sync_all().map_err(|_| Code::Storage)?;
-    drop(file);
-    job.commit(|| fs::rename(&pending.0, &destination).map_err(|_| Code::Storage))
+    document_export_file::save(
+        path,
+        "pdf",
+        &pdf.bytes,
+        crate::document_pdf::MAX_PDF,
+        || job.control.check(),
+        |stage, destination| {
+            job.commit(|| fs::rename(stage, destination).map_err(|_| Code::Storage))
+        },
+    )
 }
 
 #[cfg(test)]

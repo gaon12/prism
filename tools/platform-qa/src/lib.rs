@@ -9,6 +9,8 @@ pub mod collection_render;
 pub mod collection_service;
 #[path = "../../../src-tauri/src/collection_store.rs"]
 pub mod collection_store;
+#[path = "../../../src-tauri/src/document_export_file.rs"]
+pub mod document_export_file;
 #[path = "../../../src-tauri/src/document_pdf.rs"]
 pub mod document_pdf;
 #[path = "../../../src-tauri/src/document_pdf_file.rs"]

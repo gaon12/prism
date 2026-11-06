@@ -50,6 +50,7 @@
     "test:rag": "node tests/native/rag.mjs",
     "test:mcp": "node tests/native/mcp.mjs",
     "test:search-chat": "node tests/native/search-chat.mjs",
+    "test:search-chat-ranked": "node tests/native/search-chat-ranked.mjs",
     "test:chat-entry": "node tests/native/search-chat-entry.mjs",
     "test:short-paths": "node tests/native/short-paths.mjs",
     "test:documents": "node tests/native/documents.mjs",

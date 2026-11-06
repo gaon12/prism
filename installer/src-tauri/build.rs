@@ -25,7 +25,13 @@ use std::{
 
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let app_dir = manifest.join("../../src-tauri");
+    // Keep the built-resource root free of `..` components. The payload path
+    // validator deliberately rejects traversal before resolving filesystem links.
+    let app_dir = manifest
+        .parent()
+        .and_then(Path::parent)
+        .expect("setup manifest must be inside installer/src-tauri")
+        .join("src-tauri");
 
     // 1. Version
     let config = app_dir.join("tauri.conf.json");

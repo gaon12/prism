@@ -14,6 +14,9 @@ assert(
   'Supply the freshly built candidate, not an older default.',
 );
 assert.equal(process.platform, 'win32', 'This check requires Windows WebView2.');
+const requestedProfile = process.env.PRISM_TEST_EXPECT_RELEASE ?? '0';
+assert(['0', '1'].includes(requestedProfile), 'PRISM_TEST_EXPECT_RELEASE must be 0 or 1.');
+const expectRelease = requestedProfile === '1';
 const original = resolve(process.env.PRISM_TEST_EXECUTABLE);
 const directory = await mkdtemp(join(tmpdir(), 'prism-file-shortcuts-'));
 // A release binary ignores PRISM_DEV_DATA_DIR. Isolate BEFORE launching, even if
@@ -117,7 +120,11 @@ try {
   instance = await launch(data, { executable, portable: true });
   let { main, quick, invoke } = instance;
   const runtime = await invoke('runtime_info');
-  assert.equal(runtime.development, true);
+  assert.equal(
+    runtime.development,
+    !expectRelease,
+    'Candidate profile must match the requested QA profile.',
+  );
   assert.equal(runtime.installKind, 'portable');
   assert.equal((await invoke('get_settings')).fileOpenShortcut, 'Enter', 'legacy native default');
   await until(async () => (await invoke('index_status')).initialScanComplete, 'fixture filenames');
@@ -265,6 +272,7 @@ try {
       executable,
       original,
       executableSha256,
+      release: expectRelease,
       nativePersistence: true,
       finalOsActionsIntercepted: true,
     }),

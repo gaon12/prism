@@ -24,6 +24,13 @@ Implemented:
   attribute lists. Bulk reads use bounded 4 MiB blocks and validate exact
   extension references, contiguous VCN coverage and nonoverlapping physical
   extents, rather than assuming the MFT is contiguous.
+- Large MFT scans overlap those reads with at most four scoped record decoders.
+  Each worker has one outstanding job; owned buffers of at most 4 MiB are moved
+  and recycled, rather than copying the entire raw MFT again for a work queue.
+  Source I/O, cancellation/deadline callbacks, progress, ordered catalog updates
+  and journal replay stay on the calling thread. All workers are joined on
+  success, cancellation and failure. Small scans retain the sequential reader.
+  Filename, size, modification-time, hard-link and repair semantics are preserved.
 - `windows`: read-only volume handles, NTFS 3.x geometry, page-aligned buffers,
   overlapped sector-aligned reads and owned cancellation cleanup. Actual native
   I/O tests use a test-owned regular file. Explicit live read-only C-volume
@@ -114,6 +121,23 @@ all-target Clippy passes. These checks do not prove live C-drive speed.
 Cache lifecycle regressions use only test-owned temporary files, including
 forced termination of the test's own ordinary-user child. They do not claim
 successful elevated removal of the actual installed service.
+
+An explicit synthetic decoder/merge benchmark is available separately:
+
+```sh
+cargo test --release --locked --manifest-path indexer/Cargo.toml -p prism-ntfs-core --features cache --lib large_metadata_decode_and_merge_timing -- --ignored --nocapture --test-threads=1
+```
+
+It compares sequential and 2/4/8-worker runs over one million repeated resident
+or mixed public-image records. Both paths simulate the same reads into reusable
+buffers, and active metadata counts/checksums must agree. It prints three samples
+and their median. This measures decoding/merging of synthetic memory input,
+separately from installed-service I/O, cache/replay, IPC and app search readiness.
+On the November 6 Windows run, four workers reduced median decode/merge time
+from 576 to 516 ms for the resident input and from 832 to 502 ms for the mixed
+public-image input. Eight workers did not improve either median. These are
+synthetic stage timings, not a measured whole-drive speedup. The newer service
+still needs deployment and live validation before making that claim.
 
 An ordinary-user probe of the actual installed service is also available:
 

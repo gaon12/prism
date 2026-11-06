@@ -28,6 +28,14 @@ ZIP/manifest order differs from the spine. They include a
 percent-encoded Korean fragment far down a long section, a missing fragment,
 and external, escaping and non-spine targets. No user text is included.
 
+Navigation fixtures now include an inert HTML5 declaration and an external NCX
+declaration. `navigation-ncx-external.epub` changes only the NCX system identifier
+to the native test's explicit loopback trap; it must receive no requests. Package
+legacy `toc` attributes occur only when the NCX ID exists. EPUB 3 modification
+metadata, the many-entry XHTML namespace/head and NCX head/title are explicit.
+The absent-contents and malformed-target cases are deliberately incomplete or
+invalid boundary inputs. These fixtures are not an EPUBCheck conformance claim.
+
 The platform QA unit tests check order, XML/path/size/cancellation errors, CSS
 token rewriting/import cycles, encryption diagnostics and authenticated cache
 admission. Deterministic 1,600-byte font payloads test both IDPF and Adobe

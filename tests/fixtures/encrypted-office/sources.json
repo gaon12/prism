@@ -1,0 +1,58 @@
+[
+  {
+    "file": "example_password.docx",
+    "sha256": "0605624697328060FDC75CA9929EA20B9D63EBED9387FF1A97AAF9979757234A",
+    "bytes": 18432,
+    "url": "https://raw.githubusercontent.com/nolze/msoffcrypto-tool/bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667/tests/inputs/example_password.docx",
+    "gitBlob": "e36bff91729b1bf720b4b1b6762f6b9d0151e01c",
+    "sourceRevision": "bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667"
+  },
+  {
+    "file": "example_password.xlsx",
+    "sha256": "3F792E3902A615BF0E91771F3F3016B80D59098B8E492EFCDC0752748E15B997",
+    "bytes": 14848,
+    "url": "https://raw.githubusercontent.com/nolze/msoffcrypto-tool/bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667/tests/inputs/example_password.xlsx",
+    "gitBlob": "08946a6c0e714039016c84a2aa092d06cced46d1",
+    "sourceRevision": "bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667"
+  },
+  {
+    "file": "ecma376agile_sha1_password.xlsx",
+    "sha256": "4D6437EDE946382C471B681C7721E2874DE569F829238C5A6B25321B172F104B",
+    "bytes": 13824,
+    "url": "https://raw.githubusercontent.com/nolze/msoffcrypto-tool/bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667/tests/inputs/ecma376agile_sha1_password.xlsx",
+    "gitBlob": "ac116f4f851ea1b0c29507f0328bd8701f4750c3",
+    "sourceRevision": "bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667"
+  },
+  {
+    "file": "ecma376standard_password.docx",
+    "sha256": "D265DCF02F7D552486229B8C67A627EF3752FE6802B02FD2D2D485FCFBBAC5DE",
+    "bytes": 7168,
+    "url": "https://raw.githubusercontent.com/nolze/msoffcrypto-tool/bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667/tests/inputs/ecma376standard_password.docx",
+    "gitBlob": "81030b5fc2ff6699056fcf27721bad49b836c7c8",
+    "sourceRevision": "bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667"
+  },
+  {
+    "file": "example.docx",
+    "sha256": "8C8212DB6E624BFC69286E94D09B7E68C753EE86B6826E51427A33C841F133D1",
+    "bytes": 11995,
+    "url": "https://raw.githubusercontent.com/nolze/msoffcrypto-tool/bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667/tests/outputs/example.docx",
+    "gitBlob": "f3ec419252eb007be00bfa7cc4e0d0b78abaff07",
+    "sourceRevision": "bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667"
+  },
+  {
+    "file": "example.xlsx",
+    "sha256": "4DD9DD0CCBFC7FB8769F1F3307830D3CC4C5042E32D619F4B2835FADA89D13C6",
+    "bytes": 8369,
+    "url": "https://raw.githubusercontent.com/nolze/msoffcrypto-tool/bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667/tests/outputs/example.xlsx",
+    "gitBlob": "29bbbd7f19e58cd1cf0bcceb3a880bf1bda4eb07",
+    "sourceRevision": "bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667"
+  },
+  {
+    "file": "ecma376standard_password_plain.docx",
+    "sha256": "CA1C0EBB465553361B9034E696D4081DF0A2D41918F820060325B3CA634EB69B",
+    "bytes": 3939,
+    "url": "https://raw.githubusercontent.com/nolze/msoffcrypto-tool/bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667/tests/outputs/ecma376standard_password_plain.docx",
+    "gitBlob": "4cb088b5c070bcaf7be9a8892fbfe7f37ff7be0a",
+    "sourceRevision": "bdb71ea5dfbdee2f3cd86f8852e74be7a6f15667"
+  }
+]

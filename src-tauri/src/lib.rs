@@ -54,6 +54,8 @@ mod rag_sources;
 mod rag_store;
 mod runtime_process;
 mod runtime_supervisor;
+#[cfg(target_os = "linux")]
+mod pdf_renderer;
 mod secret_store;
 mod selection_set;
 mod settings;
@@ -71,6 +73,18 @@ mod windows;
 /// Internal Unix helper mode. Dispatch before desktop initialization.
 pub fn run_runtime_supervisor() -> Option<i32> {
     runtime_supervisor::dispatch()
+}
+
+/// Internal bounded Linux renderer. Dispatch before any desktop initialization.
+pub fn run_pdf_renderer() -> Option<i32> {
+    #[cfg(target_os = "linux")]
+    {
+        pdf_renderer::dispatch()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 use settings::{ClientSettings, SearchSession};

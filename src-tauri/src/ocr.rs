@@ -319,7 +319,12 @@ pub(crate) fn render_pdf_page(
     {
         platform::render_pdf_page(bytes, page, dimension, &control)
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        let launcher = std::env::current_exe().map_err(|_| error(Code::Unavailable))?;
+        crate::pdf_renderer::render(bytes, page, dimension, &launcher, cancel, control.deadline)
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = (bytes, page, dimension, control);
         Err(error(Code::Unavailable))
@@ -327,7 +332,7 @@ pub(crate) fn render_pdf_page(
 }
 /// Use only positive finite dimensions and floor each axis so neither the pixel
 /// area nor longest edge exceeds its budget after fitting.
-#[cfg(any(windows, target_os = "macos", test))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
 pub(crate) fn fitted(
     width: f64,
     height: f64,

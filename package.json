@@ -61,6 +61,7 @@
     "test:document-hwpx": "node tests/native/document-hwpx.mjs",
     "test:collections": "node tests/native/collections.mjs",
     "test:collections-epub": "node tests/native/collections-epub.mjs",
+    "test:collections-text": "node tests/native/collections-text.mjs",
     "test:onboarding": "node tests/native/onboarding.mjs",
     "test:portable": "node tests/native/portable.mjs",
     "package:portable": "node scripts/package-portable.mjs",

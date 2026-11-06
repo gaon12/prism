@@ -15,6 +15,8 @@ import { loadPackageNotices, writePackageNotices } from '../../scripts/package-n
 
 assert.equal(process.platform, 'win32');
 assert(process.env.PRISM_TEST_EXECUTABLE, 'Supply the new candidate executable');
+const profile = process.env.PRISM_TEST_EXPECT_RELEASE ?? '0';
+assert(['0', '1'].includes(profile), 'PRISM_TEST_EXPECT_RELEASE must be 0 or 1');
 const original = resolve(process.env.PRISM_TEST_EXECUTABLE);
 const root = await mkdtemp(join(tmpdir(), 'prism-index-reset-native-'));
 const portable = join(root, 'portable');
@@ -115,7 +117,7 @@ try {
   instance = await launch(data, { executable, portable: true });
   let { main, invoke } = instance;
   assert.equal((await invoke('runtime_info')).installKind, 'portable');
-  assert.equal((await invoke('runtime_info')).development, true);
+  assert.equal((await invoke('runtime_info')).development, profile === '0');
   assert.equal((await invoke('index_reset_status')).lastApplied, false);
   await until(async () => {
     const s = await invoke('content_status');
@@ -312,6 +314,7 @@ try {
     passed: true,
     root,
     executableSha256,
+    development: profile === '0',
     testSha256: await hash(fileURLToPath(import.meta.url)),
     actualRestart: true,
     filenameRebuild: true,

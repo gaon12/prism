@@ -10,7 +10,7 @@ import { generationCredentials } from '../lib/rag';
 import { bridge } from '../lib/bridge';
 import { useClient, saveSettings, scopesFromPaths, showToast, errorMessage } from '../lib/store';
 import { languageNames, translate } from '../lib/i18n';
-import type { Language, Theme } from '../lib/types';
+import type { Language, Theme, DocumentMode } from '../lib/types';
 import './settings-dialog.css';
 export type SettingsTab = 'general' | 'scopes' | 'shortcuts' | 'ai';
 
@@ -187,6 +187,22 @@ export function SettingsDialog({
                     />
                     <output htmlFor="font-size">{draft.fontSize}px</output>
                   </div>
+                </div>
+                <div className="setting-field">
+                  <label htmlFor="document-mode">{t('documentMode')}</label>
+                  <select
+                    id="document-mode"
+                    value={draft.documents.defaultMode}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        documents: { defaultMode: event.target.value as DocumentMode },
+                      })
+                    }
+                  >
+                    <option value="new">{t('documentModeNew')}</option>
+                    <option value="fill">{t('documentModeFill')}</option>
+                  </select>
                 </div>
                 <div className="settings-divider" />
                 <div className="setting-field">

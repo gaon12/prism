@@ -662,3 +662,35 @@
   border-color: var(--accent);
   background: var(--surface);
 }
+
+/* New document / fill an existing form. A quiet two-option switch under the heading. */
+.doc-mode {
+  display: inline-flex;
+  /* Only as wide as its two options, even inside a grid or flex column. */
+  justify-self: start;
+  align-self: flex-start;
+  width: fit-content;
+  gap: 2px;
+  padding: 2px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.doc-mode button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 4px 12px;
+  border-radius: calc(var(--radius-md) - 2px);
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.doc-mode button.active {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.doc-mode button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

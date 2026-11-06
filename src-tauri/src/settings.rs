@@ -38,6 +38,24 @@ pub struct ClientSettings {
     pub updates: UpdatePreferences,
     pub ocr: crate::ocr::Preferences,
     pub power: PowerPreferences,
+    pub documents: DocumentPreferences,
+}
+
+/// What the Documents tab opens with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DocumentMode {
+    /// Write a new document (the default).
+    #[default]
+    New,
+    /// Fill an existing DOCX/HWPX form.
+    Fill,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DocumentPreferences {
+    pub default_mode: DocumentMode,
 }
 
 /// Battery behaviour. Off by default: content indexing runs on battery unless the user asks.
@@ -103,6 +121,7 @@ impl Default for ClientSettings {
             updates: UpdatePreferences::default(),
             ocr: crate::ocr::Preferences::default(),
             power: PowerPreferences::default(),
+            documents: DocumentPreferences::default(),
         }
     }
 }

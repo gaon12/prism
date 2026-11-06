@@ -1,0 +1,109 @@
+/* "Fill an existing form" panel. Uses the app's shared tokens only. */
+.form-fill {
+  display: grid;
+  gap: 10px;
+}
+.form-fill-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.form-fill-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+.form-fill-note,
+.form-fill-file span,
+.form-fill-context {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.form-fill-file {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.form-fill-fields {
+  display: grid;
+  gap: 2px;
+  border-top: 1px solid var(--border);
+}
+/* One row per field: name and context on the left, the value on the right. */
+.form-fill-field {
+  display: grid;
+  grid-template-columns: minmax(8rem, 14rem) 1fr;
+  grid-template-areas:
+    'key value'
+    'context value';
+  gap: 2px 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.form-fill-key {
+  grid-area: key;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.form-fill-context {
+  grid-area: context;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.form-fill-field textarea {
+  grid-area: value;
+  min-height: 2.2rem;
+  resize: vertical;
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: inherit;
+}
+.form-fill-field textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.form-fill-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding-top: 10px;
+}
+.form-fill-status:empty {
+  display: none;
+}
+.form-fill-status {
+  margin: 0;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+.form-fill-error {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--danger);
+}
+@media (max-width: 560px) {
+  .form-fill-field {
+    grid-template-columns: 1fr;
+    grid-template-areas: 'key' 'context' 'value';
+  }
+}
+/* Read by screen readers, not shown (the mode switch already names this view). */
+.form-fill-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

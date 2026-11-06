@@ -30,6 +30,8 @@ mod embedding_package;
 mod embedding_runtime;
 mod filename_pattern;
 mod foreground_tracker;
+mod form_fill;
+mod form_fill_commands;
 mod generation_runtime;
 mod hybrid_search;
 mod index;
@@ -658,6 +660,8 @@ pub fn run() {
             document_commands::doc_rewrite,
             document_commands::doc_cancel,
             document_commands::doc_job,
+            form_fill_commands::form_fields,
+            form_fill_commands::form_fill,
             commands::window_action,
             commands::quit_app,
             commands::write_markdown

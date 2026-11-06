@@ -24,6 +24,27 @@ const messages = {
     '儲存全部符合檔案，可在對話中更改選擇。',
     '一致するすべてのファイルを保存します。対話で選択を変更できます。',
   ],
+  documentMode: [
+    '문서 탭 시작 방식',
+    'Documents tab opens with',
+    '文档标签页默认方式',
+    '文件分頁預設方式',
+    '文書タブの開始方法',
+  ],
+  documentModeNew: [
+    '새 문서 작성',
+    'Write a new document',
+    '撰写新文档',
+    '撰寫新文件',
+    '新しい文書を作成',
+  ],
+  documentModeFill: [
+    '기존 양식 채우기',
+    'Fill an existing form',
+    '填写现有表单',
+    '填寫現有表單',
+    '既存の書式に記入',
+  ],
   pauseOnBattery: [
     '배터리 사용 중에는 본문 색인 미루기',
     'Wait for power before indexing content',

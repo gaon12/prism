@@ -21,6 +21,7 @@ import type { Language, SearchScope } from '../../lib/types';
 import { documentText } from './messages';
 import type { DocumentMessage } from './messages';
 import './documents.css';
+import { FormFillPanel } from './FormFillPanel';
 const bytes = (value: string) => new TextEncoder().encode(value).length;
 const titleValid = (value: string) =>
   Boolean(value.trim() && Array.from(value).length <= 200 && !/[\u0000-\u001f\u007f]/u.test(value));
@@ -1535,6 +1536,8 @@ export function DocumentWorkspace({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<DocumentFailure | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  // "New document" or "fill an existing form"; starts from the user's setting (Q46).
+  const [mode, setMode] = useState(settings.documents.defaultMode);
   const [editorDirty, setEditorDirty] = useState(false);
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState('');
@@ -1671,6 +1674,19 @@ export function DocumentWorkspace({
           ) : null}
         </div>
       </header>
+      <div className="doc-mode" role="group" aria-label={t('modeLabel')}>
+        {(['new', 'fill'] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={mode === value}
+            className={mode === value ? 'active' : undefined}
+            onClick={() => setMode(value)}
+          >
+            {t(value === 'new' ? 'modeNew' : 'modeFill')}
+          </button>
+        ))}
+      </div>
       <details className="doc-support">
         <summary>{t('supportedFormats')}</summary>
         <p className="doc-note">{t('supported')}</p>
@@ -1680,6 +1696,8 @@ export function DocumentWorkspace({
           <FileText size={48} strokeWidth={1.25} />
           <p>{t('nativeOnly')}</p>
         </div>
+      ) : mode === 'fill' ? (
+        <FormFillPanel language={language} />
       ) : (
         <>
           <div className="doc-layout">

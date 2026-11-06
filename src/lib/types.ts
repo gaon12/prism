@@ -1,3 +1,5 @@
+/** Documents tab start: a new document, or filling an existing DOCX/HWPX form. */
+export type DocumentMode = 'new' | 'fill';
 import { defaultGeneration, normalizeGeneration } from './generation';
 import type { GenerationPreferences } from './generation';
 export type Language = 'ko' | 'en' | 'zh-CN' | 'zh-TW' | 'ja';
@@ -31,6 +33,8 @@ export interface ClientSettings {
   ocr: { enabled: boolean; language: string; engine: 'auto' | 'system' | 'paddleVl16' };
   /** Wait for AC power before starting new content indexing. Off by default. */
   power: { pauseOnBattery: boolean };
+  /** What the Documents tab opens with: write a new document (default) or fill a form. */
+  documents: { defaultMode: DocumentMode };
   calculator: { precision: number; angle: 'rad' | 'deg' };
   clipboard: {
     enabled: boolean;
@@ -102,6 +106,7 @@ export const defaultSettings: ClientSettings = {
   updates: { autoCheck: true },
   ocr: { enabled: false, language: 'auto', engine: 'auto' },
   power: { pauseOnBattery: false },
+  documents: { defaultMode: 'new' },
   calculator: { precision: 12, angle: 'rad' },
   clipboard: {
     enabled: true,
@@ -155,6 +160,7 @@ export function normalizeSettings(input: unknown): ClientSettings {
     generation: normalizeGeneration(value.generation),
     updates: { autoCheck: value.updates?.autoCheck !== false },
     power: { pauseOnBattery: value.power?.pauseOnBattery === true },
+    documents: { defaultMode: value.documents?.defaultMode === 'fill' ? 'fill' : 'new' },
     ocr: {
       enabled: value.ocr?.enabled === true,
       engine:

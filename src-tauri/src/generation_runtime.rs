@@ -716,11 +716,14 @@ mod tests {
             let (endpoint, receiver, worker) = fixture(200, answer(), !body_stall, body_stall);
             let cancellation = GenerationCancellation::new();
             let trigger = cancellation.clone();
+            // Measure from the moment cancel is pressed, not from the start of the request:
+            // client/runtime setup time on a busy CI machine is not cancellation latency.
+            let (cancelled_at, cancelled) = std::sync::mpsc::channel();
             let cancel_worker = thread::spawn(move || {
                 receiver.recv().unwrap();
+                cancelled_at.send(Instant::now()).unwrap();
                 trigger.cancel();
             });
-            let start = Instant::now();
             let failure = runtime()
                 .block_on(GenerationRuntime::new().complete(
                     &config(endpoint),
@@ -730,7 +733,10 @@ mod tests {
                 ))
                 .unwrap_err();
             assert_eq!(failure.code, GenerationErrorCode::Cancelled);
-            assert!(start.elapsed() < Duration::from_millis(450));
+            // The stall would otherwise last until the 45 s read timeout, so a quick return
+            // here can only come from cancellation.
+            let pressed = cancelled.recv().unwrap();
+            assert!(pressed.elapsed() < Duration::from_millis(450));
             cancel_worker.join().unwrap();
             worker.join().unwrap();
         }

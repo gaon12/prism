@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "platform": "windows-x86_64",
+  "product": "LibreOffice",
+  "version": "26.8.2",
+  "buildId": "9dea406ab7695df6325b11b0e19fdca8db4b7276",
+  "source": {
+    "url": "https://download.documentfoundation.org/libreoffice/stable/26.8.2/win/x86_64/LibreOffice_26.8.2_Win_x86-64.msi",
+    "metadataUrl": "https://download.documentfoundation.org/libreoffice/stable/26.8.2/win/x86_64/LibreOffice_26.8.2_Win_x86-64.msi.mirrorlist",
+    "bytes": 375934976,
+    "sha256": "ff4b911403b67ee9e6249f820f9782c44bb32c94fdaa45b0da53a8e419e5307a"
+  },
+  "interpreter": "program/python-core-3.13.17/bin/python.exe",
+  "engine": "program/soffice.com",
+  "status": "development-qa-only",
+  "notes": "This pins upstream extraction input, not a production runtime inventory or download package. No Windows Installer execution. Preserve licenses and source availability when packaging. Native Linux/macOS runtime qualification and application integration are pending."
+}

@@ -36,6 +36,10 @@ scraper = "0.24"
 cssparser = "=0.35.0"
 sha1 = "=0.10.6"
 chrono = "0.4"
+typst = "=0.15.1"
+typst-pdf = "=0.15.1"
+typst-layout = "=0.15.1"
+pulldown-cmark = { version = "=0.13.6", default-features = false, features = ["html"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 keyring-core = "=1.0.1"

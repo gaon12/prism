@@ -1,0 +1,51 @@
+[
+  {
+    "file": "NotoSansCJKkr-Regular.otf",
+    "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/Korean/NotoSansCJKkr-Regular.otf",
+    "bytes": 16433112,
+    "sha256": "6bcb2a0703aa137e874fc2dffa85f6c21ba9a67fa329e81b8c801663af7e992a",
+    "gitBlob": "dc4a7c65e6f450bf17c10a2405250b620eb78703"
+  },
+  {
+    "file": "NotoSansCJKkr-Bold.otf",
+    "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/Korean/NotoSansCJKkr-Bold.otf",
+    "bytes": 16997996,
+    "sha256": "26d0c6748500a0444844280b308f5b62c7ae92ac6c6ac88148e502dd211eb52a",
+    "gitBlob": "1157b8c79cd9e7e9f3def511eb9fb517b5fec90f"
+  },
+  {
+    "file": "NotoSansMono.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/24ddc1f324cac5d9f5aedca126d298f56e3f1640/ofl/notosansmono/NotoSansMono%5Bwdth%2Cwght%5D.ttf",
+    "bytes": 1708408,
+    "sha256": "2cb2adb378a8f574213e23df697050b83c54c27df465a2015552740b2769a081",
+    "gitBlob": "07ecc66508b893f34f09d20951039ac9c136f3b5"
+  },
+  {
+    "file": "OFL-CJK.txt",
+    "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/LICENSE",
+    "bytes": 4301,
+    "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+    "gitBlob": "d952d62c065f3f35fb83a173496e90b21525aef3"
+  },
+  {
+    "file": "OFL-Mono.txt",
+    "url": "https://raw.githubusercontent.com/google/fonts/24ddc1f324cac5d9f5aedca126d298f56e3f1640/ofl/notosansmono/OFL.txt",
+    "bytes": 4396,
+    "sha256": "cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a",
+    "gitBlob": "6843f31878c9945e1e71e1baa275546b4eefead8"
+  },
+  {
+    "file": "NotoEmoji.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/24ddc1f324cac5d9f5aedca126d298f56e3f1640/ofl/notoemoji/NotoEmoji%5Bwght%5D.ttf",
+    "bytes": 1982596,
+    "sha256": "de6c18832938afc99caf132b39d6a30a19bac7f2e812e28db2535b4608d27551",
+    "gitBlob": "c2c26ab612a88a8610ff9cfbb89299bf2aea6c7a"
+  },
+  {
+    "file": "OFL-Emoji.txt",
+    "url": "https://raw.githubusercontent.com/google/fonts/24ddc1f324cac5d9f5aedca126d298f56e3f1640/ofl/notoemoji/OFL.txt",
+    "bytes": 4330,
+    "sha256": "500bb1ccf43df7bbb522112f9133a52b16e1c35e809632f5d8609b179152de5b",
+    "gitBlob": "d09d3d0e09169f6747754e6b25faf5ba5ef6402d"
+  }
+]

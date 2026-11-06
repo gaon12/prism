@@ -3,3 +3,5 @@
 *.ico binary
 *.icns binary
 *.pdf binary
+*.otf binary
+*.ttf binary

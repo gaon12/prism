@@ -47,11 +47,15 @@ quick-xml = "0.38"
 encoding_rs = "0.8"
 pdf-extract = "=0.12.1"
 cfb = "0.14"
-tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "time", "sync"] }
+tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "time", "sync", "macros"] }
 lancedb = { version = "=0.41.0", default-features = false }
 arrow-array = "58.0.0"
 arrow-schema = "58.0.0"
 futures = "0.3"
+typst = "=0.15.1"
+typst-pdf = "=0.15.1"
+typst-layout = "=0.15.1"
+pulldown-cmark = { version = "=0.13.6", default-features = false, features = ["html"] }
 zeroize = "1"
 prism-ntfs-protocol = { path = "../indexer/protocol" }
 

@@ -32,6 +32,8 @@ pub enum DocumentErrorCode {
     Malformed,
     Limit,
     Storage,
+    Pdf,
+    TimedOut,
     Cancelled,
     Rag,
 }
@@ -53,6 +55,8 @@ impl DocumentError {
             DocumentErrorCode::Malformed => "The model returned an invalid document structure. The previous revision was preserved.",
             DocumentErrorCode::Limit => "The document exceeds the supported size or count limit.",
             DocumentErrorCode::Storage => "Document storage could not be accessed.",
+            DocumentErrorCode::Pdf => "The selected document revision could not be typeset as PDF.",
+            DocumentErrorCode::TimedOut => "PDF export exceeded its deadline.",
             DocumentErrorCode::Cancelled => "Document generation was cancelled. The previous revision was preserved.",
             DocumentErrorCode::Rag => "The generation policy or provider rejected the document request.",
         };

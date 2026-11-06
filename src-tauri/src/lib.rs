@@ -20,6 +20,9 @@ mod dictionary_service;
 mod dictionary_store;
 mod document_commands;
 mod document_extract;
+mod document_pdf;
+mod document_pdf_file;
+mod document_pdf_job;
 mod document_service;
 mod document_store;
 mod embedding_assets;
@@ -648,6 +651,8 @@ pub fn run() {
             document_commands::doc_save_manual,
             document_commands::doc_restore,
             document_commands::doc_export,
+            document_commands::doc_export_pdf,
+            document_commands::doc_cancel_pdf,
             document_commands::doc_generate_outline,
             document_commands::doc_generate_body,
             document_commands::doc_rewrite,

@@ -754,3 +754,11 @@ dialog.chat-preview::backdrop {
 .chat-conversation-list .chat-conversation-project {
   color: var(--accent);
 }
+/* External (MCP) evidence: same list style as document sources, set apart by a rule. */
+.chat-external {
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+.chat-external-toggle {
+  margin-right: auto;
+}

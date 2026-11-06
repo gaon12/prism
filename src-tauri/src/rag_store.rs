@@ -256,7 +256,7 @@ impl RagStore {
         project: Option<&str>,
     ) -> RagResult<Vec<ConversationSummary>> {
         let db = self.connect()?;
-        let mut statement=db.prepare("SELECT c.id,c.title,c.created_ms,c.updated_ms,(SELECT count(*) FROM conversation_turns t WHERE t.conversation_id=c.id),c.project FROM conversations c WHERE c.kind='chat' AND (?3 IS NULL OR c.project=?3) AND (?1='' OR instr(lower(c.title),lower(?1))>0 OR EXISTS(SELECT 1 FROM conversation_turns t WHERE t.conversation_id=c.id AND instr(lower(t.text),lower(?1))>0)) ORDER BY c.updated_ms DESC,c.id LIMIT ?2").map_err(storage)?;
+        let mut statement=db.prepare("SELECT c.id,c.title,c.created_ms,c.updated_ms,(SELECT count(*) FROM conversation_turns t WHERE t.conversation_id=c.id),c.project FROM conversations c WHERE c.kind='chat' AND (?3 IS NULL OR c.project=?3) AND (?1='' OR instr(lower(c.title),lower(?1))>0 OR EXISTS(SELECT 1 FROM conversation_turns t WHERE t.conversation_id=c.id AND instr(lower(t.text),lower(?1))>0 AND instr(t.payload,'\"scopeId\":\"mcp_')=0)) ORDER BY c.updated_ms DESC,c.id LIMIT ?2").map_err(storage)?;
         let rows = statement
             .query_map(params![query, limit as u64, project], read_summary)
             .map_err(storage)?;
@@ -543,6 +543,8 @@ fn blank_turn(
         finish_reason: None,
         usage: None,
         error: None,
+        external: vec![],
+        external_revoked: false,
     })
 }
 #[cfg(test)]

@@ -14,9 +14,8 @@
 //! Whether a question may be sent to an MCP server at all is decided by the caller with the same
 //! external-sending permissions as RAG; this module only does the protocol safely.
 
-// The settings screen already uses connect/list_tools. search()/call() are used once MCP
-// results are added to answers (the next step, agreed with Root on COLlAB); until then they
-// would only produce unused-code warnings in normal builds.
+// Used by the settings screen (connect/list_tools) and by answers (rag_external: search).
+// A few protocol helpers are only exercised by tests, hence the allowance below.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use serde_json::{json, Value};

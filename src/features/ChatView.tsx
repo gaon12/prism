@@ -89,6 +89,55 @@ function Failure({
     </div>
   );
 }
+/** External (MCP) sources use scope ids starting with `mcp_` (see rag_external.rs). */
+function isExternal(source: SourceRef) {
+  return source.scopeId.startsWith('mcp_');
+}
+
+/** What each MCP server returned for this answer: label, server, outcome and the result. */
+function ExternalList({ turn, language }: { turn: ConversationTurn; language: Language }) {
+  const t = (key: ChatMessage) => chatText(language, key);
+  return (
+    <div className="chat-citations chat-external">
+      <h4>{t('externalSources')}</h4>
+      <ul>
+        {turn.external.map((item) => {
+          const cited = turn.citations.some(
+            (citation) => citation.label === item.label && citation.isCited,
+          );
+          return (
+            <li key={`${item.serverId}:${item.label ?? item.outcome}`}>
+              <div>
+                {item.label ? <strong>[{item.label}]</strong> : null}{' '}
+                <span className="chat-source-name">{item.serverName}</span>{' '}
+                <small>
+                  {item.revoked
+                    ? t('externalRemoved')
+                    : item.outcome === 'ok'
+                      ? t(cited ? 'cited' : 'retrieved')
+                      : chatText(language, 'externalOutcome', {
+                          outcome: t(`external_${item.outcome}` as ChatMessage),
+                        })}
+                </small>
+              </div>
+              {item.text && !item.revoked ? (
+                <details className="chat-source-details">
+                  <summary>{t('externalResult')}</summary>
+                  <p className="chat-plain">
+                    {item.text}
+                    {item.truncated ? ' …' : ''}
+                  </p>
+                </details>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      <p className="chat-note">{t('externalUntrusted')}</p>
+    </div>
+  );
+}
+
 function basename(path: string) {
   return path.split(/[\\/]/u).pop() || path;
 }
@@ -158,6 +207,7 @@ function Turn({
         {turn.text ? <p className="chat-plain">{turn.text}</p> : null}
         {turn.role === 'assistant' ? (
           <>
+            {turn.externalRevoked ? <p className="chat-note">{t('externalRevoked')}</p> : null}
             {turn.status === 'noSources' ? <p className="chat-note">{t('noSources')}</p> : null}
             {turn.status === 'interrupted' ? <p className="chat-note">{t('interrupted')}</p> : null}
             {turn.status === 'cancelled' ? <p className="chat-note">{t('cancelled')}</p> : null}
@@ -194,50 +244,55 @@ function Turn({
                   <>
                     <h4>{t('citations')}</h4>
                     <ul>
-                      {turn.citations.map((citation) => (
-                        <li key={`${citation.label}:${citation.source.chunkId}`}>
-                          <div>
-                            <strong>[{citation.label}]</strong>{' '}
-                            <span className="chat-source-state" data-state={citation.state}>
-                              {t(citation.state)}
+                      {turn.citations
+                        .filter((citation) => !isExternal(citation.source))
+                        .map((citation) => (
+                          <li key={`${citation.label}:${citation.source.chunkId}`}>
+                            <div>
+                              <strong>[{citation.label}]</strong>{' '}
+                              <span className="chat-source-state" data-state={citation.state}>
+                                {t(citation.state)}
+                              </span>
+                              <small>{t(citation.isCited ? 'cited' : 'retrieved')}</small>
+                            </div>
+                            <span className="chat-source-name">
+                              {basename(citation.source.filePath)}
                             </span>
-                            <small>{t(citation.isCited ? 'cited' : 'retrieved')}</small>
-                          </div>
-                          <span className="chat-source-name">
-                            {basename(citation.source.filePath)}
-                          </span>
-                          <details className="chat-source-details">
-                            <summary>{t('sourceDetails')}</summary>
-                            <code className="chat-source-path">{citation.source.filePath}</code>
-                          </details>
-                          <span className="chat-source-location">
-                            {citation.source.page !== null
-                              ? chatText(language, 'page', { value: citation.source.page })
-                              : null}
-                            {citation.source.page !== null && citation.source.paragraph !== null
-                              ? ' · '
-                              : null}
-                            {citation.source.paragraph !== null
-                              ? chatText(language, 'paragraph', {
-                                  value: citation.source.paragraph,
-                                })
-                              : null}
-                          </span>
-                          {citation.state === 'current' ? (
-                            <button
-                              type="button"
-                              className="text-button"
-                              onClick={() => onPreview(turn, citation)}
-                            >
-                              {t('preview')}
-                            </button>
-                          ) : null}
-                        </li>
-                      ))}
+                            <details className="chat-source-details">
+                              <summary>{t('sourceDetails')}</summary>
+                              <code className="chat-source-path">{citation.source.filePath}</code>
+                            </details>
+                            <span className="chat-source-location">
+                              {citation.source.page !== null
+                                ? chatText(language, 'page', { value: citation.source.page })
+                                : null}
+                              {citation.source.page !== null && citation.source.paragraph !== null
+                                ? ' · '
+                                : null}
+                              {citation.source.paragraph !== null
+                                ? chatText(language, 'paragraph', {
+                                    value: citation.source.paragraph,
+                                  })
+                                : null}
+                            </span>
+                            {citation.state === 'current' ? (
+                              <button
+                                type="button"
+                                className="text-button"
+                                onClick={() => onPreview(turn, citation)}
+                              >
+                                {t('preview')}
+                              </button>
+                            ) : null}
+                          </li>
+                        ))}
                     </ul>
                   </>
                 )}
               </div>
+            ) : null}
+            {turn.external.length && !turn.sourcesHidden ? (
+              <ExternalList turn={turn} language={language} />
             ) : null}
             {turn.unknownCitations.length ? (
               <p className="chat-note">
@@ -273,6 +328,7 @@ function ConversationWorkspace({
   onScopes,
   policyKey,
   allowExternalQuestions,
+  externalReady,
   onSettings,
   onModels,
   onChanged,
@@ -285,6 +341,8 @@ function ConversationWorkspace({
   onScopes: (ids: string[]) => void;
   policyKey: string;
   allowExternalQuestions: boolean;
+  /** At least one MCP server with a search tool is set up and external sources are on. */
+  externalReady: boolean;
   onSettings: () => void;
   onModels: () => void;
   onChanged: () => void;
@@ -312,6 +370,8 @@ function ConversationWorkspace({
   const [selectionDirty, setSelectionDirty] = useState(false);
   const [mode, setMode] = useState<'documents' | 'general'>('documents');
   const [sourcesHidden, setSourcesHidden] = useState(false);
+  // Off for every new question: external search is chosen question by question.
+  const [external, setExternal] = useState(false);
   const [job, setJob] = useState<RagJob | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [askError, setAskError] = useState<string | null>(null);
@@ -477,8 +537,10 @@ function ConversationWorkspace({
         scopeIds: selected,
         mode,
         sourcesHidden,
+        external: externalReady && external,
       });
       if (alive.current) {
+        setExternal(false);
         if (questionVersion.current === questionAtSubmit) setQuestion('');
         onChanged();
       }
@@ -973,6 +1035,17 @@ function ConversationWorkspace({
             }}
           />
           <div className="chat-send-row">
+            {externalReady ? (
+              <label className="chat-check chat-external-toggle">
+                <input
+                  type="checkbox"
+                  checked={external}
+                  disabled={busy}
+                  onChange={(event) => setExternal(event.target.checked)}
+                />
+                <span>{t('externalAsk')}</span>
+              </label>
+            ) : null}
             <button
               type="button"
               className="button primary"
@@ -997,7 +1070,13 @@ function ConversationWorkspace({
               {cancelRequested && busy
                 ? t('cancelRequested')
                 : activeJob(job)
-                  ? t(job?.phase === 'generating' ? 'generating' : 'retrieving')
+                  ? t(
+                      job?.phase === 'generating'
+                        ? 'generating'
+                        : job?.phase === 'searchingExternal'
+                          ? 'searchingExternal'
+                          : 'retrieving',
+                    )
                   : submitting
                     ? t('pending')
                     : null}
@@ -1112,7 +1191,12 @@ export function ChatView({
   const scopeKey = JSON.stringify(
     scopes.map((scope) => [scope.id, scope.path, scope.externalAllowed]),
   );
-  const policyKey = JSON.stringify([settings.revision, scopeKey, settings.generation]);
+  const policyKey = JSON.stringify([
+    settings.revision,
+    scopeKey,
+    settings.generation,
+    settings.mcp,
+  ]);
   const [selectedScopeIds, setSelectedScopeIds] = useState<string[] | null>(null);
   const [query, setQuery] = useState('');
   const [list, setList] = useState<{ query: string; items: ConversationSummary[] } | null>(null);
@@ -1352,6 +1436,9 @@ export function ChatView({
               onScopes={setSelectedScopeIds}
               policyKey={policyKey}
               allowExternalQuestions={settings.generation.allowExternalQuestions}
+              externalReady={
+                settings.mcp.enabled && settings.mcp.servers.some((server) => server.search)
+              }
               onSettings={onSettings}
               onModels={models}
               onChanged={changed}

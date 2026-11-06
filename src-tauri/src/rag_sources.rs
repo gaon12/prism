@@ -193,6 +193,7 @@ mod tests {
         }
         let resolver = ContentSources(service);
         let policy = RagPolicy {
+            mcp: vec![],
             revision: 1,
             prefs: GenerationPreferences::default(),
             scopes: vec![RagScope {
@@ -311,6 +312,7 @@ mod tests {
         let source = child.join("source.md");
         fs::write(&source, "fixture").unwrap();
         let policy = RagPolicy {
+            mcp: vec![],
             revision: 1,
             prefs: GenerationPreferences::default(),
             scopes: vec![

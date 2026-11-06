@@ -62,6 +62,7 @@ mod pdf_renderer;
 mod power;
 mod process_job;
 mod rag_commands;
+mod rag_external;
 mod rag_service;
 mod rag_sources;
 mod rag_store;
@@ -390,6 +391,19 @@ pub fn run() {
                                         external_allowed: scope.external_allowed,
                                     })
                                     .collect(),
+                                // External sources (Q45): only when switched on, and only
+                                // servers that have a search tool chosen.
+                                mcp: if settings.mcp.enabled {
+                                    settings
+                                        .mcp
+                                        .servers
+                                        .iter()
+                                        .filter(|server| server.search.is_some())
+                                        .cloned()
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                },
                             })
                         }),
                         std::sync::Arc::new(rag_sources::ContentSources(content.clone())),

@@ -635,6 +635,7 @@ impl DocumentService {
                 )?,
             };
             let rag_request = RagRequest {
+                external: false,
                 document_set: None,
                 document_paths: None,
                 request_id: rag_request.clone(),
@@ -1336,6 +1337,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let prefs:GenerationPreferences=serde_json::from_value(serde_json::json!({"allowExternalQuestions":true,"maxContextChars":30000,"local":{"endpoint":"http://127.0.0.1:11434/v1","model":"fixture","maxTokens":1024,"temperature":null},"external":{"endpoint":"https://approved.example/v1","model":"fixture","maxTokens":1024,"temperature":null}})).unwrap();
         let policy = Arc::new(RwLock::new(RagPolicy {
+            mcp: vec![],
             revision: 1,
             prefs,
             scopes: vec![
@@ -2030,6 +2032,7 @@ mod tests {
             f.transport.push("LEGACY_BODY_NEEDLE [S1]".into());
             f.rag
                 .ask(RagRequest {
+                    external: false,
                     document_set: None,
                     document_paths: None,
                     request_id: "legacy_request".into(),
@@ -2063,6 +2066,7 @@ mod tests {
             f.rag
                 .ask_for_document(
                     RagRequest {
+                        external: false,
                         document_set: None,
                         document_paths: None,
                         request_id: "hidden_request".into(),
@@ -2270,6 +2274,7 @@ mod tests {
                 .conversation(&page.document.id)
                 .unwrap();
             let raw = RagRequest {
+                external: false,
                 document_set: None,
                 document_paths: None,
                 request_id: "raw_empty".into(),

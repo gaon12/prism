@@ -51,6 +51,32 @@ export interface ConversationTurn {
   finishReason: string | null;
   usage: Record<string, unknown> | null;
   error: RagFailure | null;
+  /** External (MCP) search results asked for this answer. */
+  external: ExternalEvidence[];
+  /** The answer used an external source that is no longer allowed; its text is hidden. */
+  externalRevoked: boolean;
+}
+/** What one MCP server returned for a question (Q45). */
+export interface ExternalEvidence {
+  /** `E1`, `E2`… when the result was given to the model. */
+  label: string | null;
+  serverId: string;
+  serverName: string;
+  tool: string;
+  fingerprint: string;
+  outcome:
+    | 'ok'
+    | 'empty'
+    | 'timedOut'
+    | 'cancelled'
+    | 'schema'
+    | 'start'
+    | 'failed'
+    | 'changed'
+    | 'skipped';
+  text: string;
+  truncated: boolean;
+  revoked: boolean;
 }
 export interface ConversationPage {
   selectionSet: SelectionPage | null;
@@ -102,6 +128,8 @@ export interface RagRequest {
   scopeIds: string[];
   mode: 'documents' | 'general';
   sourcesHidden: boolean;
+  /** Also search the configured MCP servers for this question. */
+  external: boolean;
 }
 export interface RagAnswer {
   conversationId: string;

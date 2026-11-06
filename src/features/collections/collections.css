@@ -490,23 +490,6 @@
   min-width: 100px;
   text-align: center;
 }
-.collection-reader-text {
-  max-width: 52rem;
-  margin: auto;
-  padding: 36px 46px;
-  background: var(--surface);
-  text-align: left;
-  min-height: 100%;
-  box-shadow: var(--shadow-card);
-}
-.collection-reader-text pre {
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.95;
-  font: inherit;
-  font-size: 1.1rem;
-  margin: 20px 0;
-}
 .collection-text-label {
   display: flex;
   gap: 7px;
@@ -599,9 +582,6 @@
   }
   .collection-reader-page {
     padding: 8px;
-  }
-  .collection-reader-text {
-    padding: 20px;
   }
   .collection-reference-note {
     font-size: 0.76rem;

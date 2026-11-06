@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, X, FileText } from 'lucide-react';
 import type { Language } from '../../lib/types';
 import { library, readingSettled, mediaTask } from './api';
@@ -6,6 +6,7 @@ import type { Unit, Work } from './api';
 import { useRemote } from './hooks';
 import { failureKey, libraryText } from './messages';
 import { EpubPage } from './EpubPage';
+import { textDocument } from './text-document';
 export function PageReader({
   work,
   unit,
@@ -39,6 +40,14 @@ export function PageReader({
   const total = location.data?.total ?? unit.pageCount;
   const media = useRemote(page?.id ?? '', 0, (cancelled) =>
     page ? mediaTask(() => library.media(page.id), cancelled, true) : Promise.resolve(null),
+  );
+  const readerDocument = useMemo(
+    () =>
+      media.data?.document ??
+      (media.data?.text !== null && media.data?.text !== undefined
+        ? textDocument(media.data.text)
+        : null),
+    [media.data],
   );
   useEffect(() => {
     const node = ref.current;
@@ -104,6 +113,12 @@ export function PageReader({
         <div>
           <h2 id={heading}>{work.title}</h2>
           <span>{unit.title}</span>
+          {media.data?.text !== null && media.data?.text !== undefined ? (
+            <span className="collection-text-label">
+              <FileText size={14} />
+              {t('textPreview')}
+            </span>
+          ) : null}
         </div>
         <button type="button" className="icon-button" aria-label={t('close')} onClick={close}>
           <X size={20} />
@@ -132,10 +147,10 @@ export function PageReader({
         {!error && media.data?.dataUrl ? (
           <img src={media.data.dataUrl} alt={t('pagePosition', { n: offset + 1, total })} />
         ) : null}
-        {!error && media.data?.document ? (
+        {!error && readerDocument ? (
           <EpubPage
-            key={media.data.pageId}
-            book={media.data.document}
+            key={media.data?.pageId}
+            book={readerDocument}
             fitWidth={fitWidth}
             title={page?.title ?? work.title}
             onKey={(key) => {
@@ -148,15 +163,6 @@ export function PageReader({
               else previous();
             }}
           />
-        ) : null}
-        {!error && media.data?.text !== null && media.data?.text !== undefined ? (
-          <article className="collection-reader-text">
-            <p className="collection-text-label">
-              <FileText size={14} />
-              {t('textPreview')}
-            </p>
-            <pre>{media.data.text}</pre>
-          </article>
         ) : null}
       </div>
       <footer>

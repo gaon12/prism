@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { textDocument } from './text-document';
 export type WorkKind = 'document' | 'image' | 'comic' | 'webtoon' | 'novel' | 'hitomi' | 'other';
 export type Direction = 'leftToRight' | 'rightToLeft' | 'vertical';
 export type UnitKind = 'volume' | 'chapter' | 'part' | 'document';
@@ -171,10 +172,11 @@ export const library = {
     invoke<void>('collection_open_source', { id, reveal }),
 };
 async function completeMedia(media: Media, thumbnail: boolean): Promise<Media> {
-  if (!thumbnail || !media.document) return media;
+  if (!thumbnail || media.dataUrl || (!media.document && media.text === null)) return media;
   const { epubThumbnail } = await import('./epub-render');
-  const dataUrl = await epubThumbnail(media.document);
-  return invoke<Media>('collection_cache_epub', {
+  const document = media.document ?? textDocument(media.text!);
+  const dataUrl = await epubThumbnail(document);
+  return invoke<Media>(media.document ? 'collection_cache_epub' : 'collection_cache_text', {
     pageId: media.pageId,
     sourceHash: media.sourceHash,
     dataUrl,

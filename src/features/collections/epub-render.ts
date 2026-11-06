@@ -1,7 +1,8 @@
 import type { EpubDocument } from './api';
 
-// Render the original, native-sanitized first viewport with this WebView's
-// actual HTML/CSS/image engine. No server, file URL or invented cover is used.
+// Render the same inert document used by the reader: native-sanitized EPUB
+// or escaped plain/extracted text, with this WebView's HTML/CSS/image engine.
+// No server, file URL or invented cover is used.
 // The two-task media queue also bounds this work and its native cache write.
 export async function epubThumbnail(book: EpubDocument): Promise<string> {
   if (book.html.length > 32 * 1024 ** 2 || book.width < 1 || book.height < 1)

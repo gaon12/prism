@@ -214,7 +214,15 @@ fn render(events: &[Event<'_>], ctx: &mut Context<'_>, depth: usize) -> Result<S
                 let n = ctx.note_ids.len() + 1;
                 let number = *ctx.note_ids.entry(label.to_string()).or_insert(n);
                 if ctx.rendered_notes.insert(label.to_string()) {
-                    if let Some(contents) = ctx.notes.get(label.as_ref()).cloned() {
+                    if let Some(mut contents) = ctx.notes.get(label.as_ref()).cloned() {
+                        // Keep the first paragraph inline with Typst's note
+                        // marker. A block paragraph would strand that marker
+                        // on its own line above the actual footnote text.
+                        if matches!(contents.first(), Some(Event::Start(Tag::Paragraph))) {
+                            let end = find_end(&contents, 0, TagEnd::Paragraph)?;
+                            contents.remove(end);
+                            contents.remove(0);
+                        }
                         out.push_str("#footnote[");
                         out.push_str(&render(&contents, ctx, depth + 1)?);
                         out.push_str(&format!("] <prism-note-{number}>"));

@@ -185,6 +185,19 @@ pub fn render(title: &str, text: &str, language: &str, control: &Control) -> Res
 mod tests {
     use super::*;
     use std::time::Duration as StdDuration;
+    fn capture(name: &str, pdf: &Pdf) {
+        use std::io::Write;
+        let Some(directory) = std::env::var_os("PRISM_TEST_DOCUMENT_PDF_CAPTURE_DIR") else {
+            return;
+        };
+        // Explicit developer capture only. Never replace an existing artifact.
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(std::path::Path::new(&directory).join(name))
+            .unwrap();
+        file.write_all(&pdf.bytes).unwrap();
+    }
     fn control() -> Control {
         Control {
             cancel: Arc::new(AtomicBool::new(false)),
@@ -200,6 +213,7 @@ mod tests {
 ```rust\nlet text = \"한글\";\n```\n\n\
 ![설명](https://example.invalid/private.png)\n";
         let pdf = render("프리즘 보고서", markdown, "ko", &control()).unwrap();
+        capture("multilingual.pdf", &pdf);
         assert_eq!(pdf.pages, 1);
         assert_eq!(pdf.omitted_images, 1);
         let document = pdf_extract::Document::load_mem(&pdf.bytes).unwrap();
@@ -250,6 +264,7 @@ mod tests {
             text.push_str(&format!("| 자료 {i} 한국어 中文 日本語 | {i} |\n"));
         }
         let pdf = render("보고서", &text, "ko", &control()).unwrap();
+        capture("multipage.pdf", &pdf);
         assert!(pdf.pages >= 3);
         let extracted = pdf_extract::extract_text_from_mem(&pdf.bytes).unwrap();
         for value in [

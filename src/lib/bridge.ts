@@ -89,6 +89,16 @@ export const bridge = {
     if (!native) throw new Error('NATIVE_ONLY');
     await invoke('refresh_index');
   },
+  async indexResetStatus() {
+    if (!native) return { lastApplied: false, pending: false, error: null };
+    return invoke<{ lastApplied: boolean; pending: boolean; error: string | null }>(
+      'index_reset_status',
+    );
+  },
+  async resetIndex(target: 'filename' | 'content', expectedRevision: number) {
+    if (!native) throw new Error('NATIVE_ONLY');
+    await invoke('reset_index', { target, expectedRevision });
+  },
   async fileAction(path: string, reveal = false) {
     if (!native) throw new Error('NATIVE_ONLY');
     await invoke('file_action', { path, reveal });

@@ -6,6 +6,7 @@ import { UpdatePanel } from '../features/updates/UpdatePanel';
 import { DiagnosticPanel } from '../features/diagnostics/DiagnosticPanel';
 import { OcrSettings } from '../features/content/OcrSettings';
 import { IndexServicePanel } from '../features/index-service/IndexServicePanel';
+import { IndexResetPanel } from '../features/index-reset/IndexResetPanel';
 import { generationCredentials } from '../lib/rag';
 import { bridge } from '../lib/bridge';
 import { useClient, saveSettings, scopesFromPaths, showToast, errorMessage } from '../lib/store';
@@ -414,6 +415,13 @@ export function SettingsDialog({
                 )}
                 <p className="setting-footnote">{t('engineNext')}</p>
                 <IndexServicePanel language={settings.language} runtime={runtime} />
+                <IndexResetPanel
+                  language={settings.language}
+                  native={runtime.native}
+                  revision={settings.revision}
+                  settingsDirty={JSON.stringify(draft) !== JSON.stringify(settings)}
+                  restartBlocked={!allowUpdateInstall}
+                />
                 {/* Off by default; filename search and searching itself are never paused. */}
                 <label className="setting-check">
                   <span>

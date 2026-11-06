@@ -1,0 +1,106 @@
+import type { Language } from '../../lib/types';
+const messages = {
+  title: ['색인 초기화', 'Reset indexes', '重置索引', '重設索引', 'インデックスを初期化'],
+  description: [
+    '필요한 검색 데이터만 다시 만듭니다. 원본 파일과 설정, 대화, 문서, 컬렉션, 클립보드 및 모델은 유지합니다.',
+    'Rebuild only the search data you choose. Keep original files, settings, chats, documents, collections, clipboard history and models.',
+    '仅重建所选搜索数据，保留原始文件、设置、对话、文档、收藏、剪贴板和模型。',
+    '僅重建選取的搜尋資料，保留原始檔案、設定、對話、文件、收藏、剪貼簿與模型。',
+    '選んだ検索データだけを再作成します。元のファイル・設定・チャット・文書・コレクション・クリップボード・モデルは保持します。',
+  ],
+  filename: [
+    '파일명 색인 다시 만들기',
+    'Rebuild filename index',
+    '重建文件名索引',
+    '重建檔名索引',
+    'ファイル名索引を再作成',
+  ],
+  content: [
+    '본문·의미 색인 초기화…',
+    'Reset content and semantic indexes…',
+    '重置正文及语义索引…',
+    '重設內文與語意索引…',
+    '本文・意味索引を初期化…',
+  ],
+  filenameBody: [
+    '이 앱의 파일명 검색 목록을 비운 뒤 저장된 검색 폴더에서 다시 수집합니다. 앱은 계속 사용할 수 있습니다.',
+    'Clear this app’s filename list and collect it again from saved search folders. The app stays open.',
+    '清空此应用的文件名列表，并从已保存的搜索文件夹重新收集，应用保持打开。',
+    '清空此應用程式的檔名清單，並從已儲存的搜尋資料夾重新收集，應用程式會保持開啟。',
+    'このアプリのファイル名一覧を消去し、保存済みの検索フォルダーから再収集します。アプリは開いたままです。',
+  ],
+  contentBody: [
+    'Prism을 다시 시작해 추출한 본문과 모든 의미 검색 색인을 지운 뒤, 본문 검색이 켜진 폴더에서 다시 만듭니다. 진행 중인 작업은 중단됩니다.',
+    'Restart Prism, clear extracted text and all semantic indexes, then rebuild folders with content search enabled. Running work stops.',
+    '重启 Prism，清除已提取正文及所有语义索引，再重建已启用正文搜索的文件夹。正在进行的任务将停止。',
+    '重新啟動 Prism，清除已擷取內文與所有語意索引，再重建已啟用內文搜尋的資料夾。目前工作將停止。',
+    'Prismを再起動して抽出本文と全意味索引を消去し、本文検索が有効なフォルダーを再処理します。実行中の作業は停止します。',
+  ],
+  ocr: [
+    'OCR로 추출했던 본문도 지웁니다. OCR이 꺼져 있으면 이미지 본문은 다시 추출하지 않습니다. 모델을 자동으로 다운로드하거나 시작하지 않습니다.',
+    'Previously OCR-extracted text is cleared too. With OCR off, image text is not extracted again. Models are not automatically downloaded or started.',
+    '以前 OCR 提取的正文也会清除。OCR 关闭时不会重新识别图片，也不会自动下载或启动模型。',
+    '先前以 OCR 擷取的內文也會清除。OCR 關閉時不會重新辨識圖片，也不會自動下載或啟動模型。',
+    'OCRで抽出した本文も消去します。OCRが無効なら画像の本文は再抽出しません。モデルの自動ダウンロードや起動は行いません。',
+  ],
+  restart: [
+    '초기화하고 다시 시작',
+    'Reset and restart',
+    '重置并重启',
+    '重設並重新啟動',
+    '初期化して再起動',
+  ],
+  collect: [
+    '목록 비우고 다시 수집',
+    'Clear and collect again',
+    '清空并重新收集',
+    '清空並重新收集',
+    '消去して再収集',
+  ],
+  cancel: ['취소', 'Cancel', '取消', '取消', 'キャンセル'],
+  unsaved: [
+    '저장하지 않은 변경을 먼저 저장하거나 취소해 주세요.',
+    'Save or discard unsaved changes first.',
+    '请先保存或放弃未保存的更改。',
+    '請先儲存或捨棄尚未儲存的變更。',
+    '未保存の変更を保存または破棄してください。',
+  ],
+  started: [
+    '파일명 목록을 다시 수집하고 있습니다.',
+    'Collecting the filename list again.',
+    '正在重新收集文件名列表。',
+    '正在重新收集檔名清單。',
+    'ファイル名一覧を再収集中です。',
+  ],
+  applied: [
+    '본문·의미 색인을 초기화했습니다.',
+    'Content and semantic indexes were reset.',
+    '正文及语义索引已重置。',
+    '內文與語意索引已重設。',
+    '本文・意味索引を初期化しました。',
+  ],
+  pending: [
+    '다음 시작 시 본문·의미 색인을 초기화하도록 예약되어 있습니다.',
+    'Content and semantic indexes are scheduled to reset at the next start.',
+    '已安排下次启动时重置正文及语义索引。',
+    '已排程於下次啟動時重設內文與語意索引。',
+    '次回起動時に本文・意味索引を初期化する予定です。',
+  ],
+  working: [
+    '초기화 준비 중…',
+    'Preparing reset…',
+    '正在准备重置…',
+    '正在準備重設…',
+    '初期化を準備中…',
+  ],
+  failed: [
+    '색인을 초기화하지 못했습니다. 변경된 설정과 앱의 상태를 확인한 뒤 다시 시도해 주세요.',
+    'Could not reset the index. Check changed settings and app status, then retry.',
+    '未能重置索引。请检查设置和应用状态后重试。',
+    '無法重設索引。請檢查設定與應用程式狀態後重試。',
+    '索引を初期化できませんでした。設定とアプリの状態を確認して再試行してください。',
+  ],
+} satisfies Record<string, readonly [string, string, string, string, string]>;
+const indexes: Record<Language, number> = { ko: 0, en: 1, 'zh-CN': 2, 'zh-TW': 3, ja: 4 };
+export const resetText = (language: Language, key: keyof typeof messages) =>
+  messages[key][indexes[language]];

@@ -1,0 +1,36 @@
+.index-reset-panel {
+  border-top: 1px solid var(--border);
+  margin-top: 24px;
+  padding-top: 20px;
+}
+.index-reset-panel h3 {
+  margin: 0 0 10px;
+}
+.index-reset-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+.index-reset-dialog {
+  width: min(560px, calc(100vw - 32px));
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+}
+.index-reset-dialog h2 {
+  margin: 0 0 16px;
+  font-size: 19px;
+}
+.index-reset-dialog p {
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.index-reset-dialog::backdrop {
+  background: #0006;
+}
+.index-reset-dialog .index-reset-actions {
+  justify-content: flex-end;
+}

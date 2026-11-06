@@ -1,13 +1,4 @@
 //! Compile the exact production platform modules without Tauri, WebView or Lance.
-#[path = "../../../src-tauri/src/document_pdf.rs"]
-pub mod document_pdf;
-#[path = "../../../src-tauri/src/document_pdf_job.rs"]
-pub mod document_pdf_job;
-#[path = "../../../src-tauri/src/document_pdf_file.rs"]
-pub mod document_pdf_file;
-#[cfg(target_os = "linux")]
-#[path = "../../../src-tauri/src/pdf_renderer.rs"]
-pub mod pdf_renderer;
 #[path = "../../../src-tauri/src/collection_epub.rs"]
 pub mod collection_epub;
 #[path = "../../../src-tauri/src/collection_import.rs"]
@@ -18,6 +9,12 @@ pub mod collection_render;
 pub mod collection_service;
 #[path = "../../../src-tauri/src/collection_store.rs"]
 pub mod collection_store;
+#[path = "../../../src-tauri/src/document_pdf.rs"]
+pub mod document_pdf;
+#[path = "../../../src-tauri/src/document_pdf_file.rs"]
+pub mod document_pdf_file;
+#[path = "../../../src-tauri/src/document_pdf_job.rs"]
+pub mod document_pdf_job;
 #[path = "../../../src-tauri/src/ocr.rs"]
 pub mod ocr;
 #[path = "../../../src-tauri/src/ocr_assets.rs"]
@@ -26,6 +23,9 @@ pub mod ocr_assets;
 pub mod ocr_package;
 #[path = "../../../src-tauri/src/ocr_runtime.rs"]
 pub mod ocr_runtime;
+#[cfg(target_os = "linux")]
+#[path = "../../../src-tauri/src/pdf_renderer.rs"]
+pub mod pdf_renderer;
 // Full-app callers are absent here. Keep the existing source modules' style
 // lint baseline local to this harness; the application still reports its lints.
 #[allow(dead_code, clippy::cloned_ref_to_slice_refs)]

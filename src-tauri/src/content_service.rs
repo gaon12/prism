@@ -59,9 +59,14 @@ fn extraction_version(path: &Path, preferences: &crate::ocr::Preferences) -> Str
         let model = if preferences.engine == crate::ocr::Engine::System {
             "system".into()
         } else {
-            crate::ocr_runtime::global().map(|runtime|runtime.cache_tag()).unwrap_or_else(||"not-loaded".into())
+            crate::ocr_runtime::global()
+                .map(|runtime| runtime.cache_tag())
+                .unwrap_or_else(|| "not-loaded".into())
         };
-        format!("{EXTRACTOR_VERSION}-{OCR_ENGINES_VERSION}-{engine}-{}-{model}", preferences.language)
+        format!(
+            "{EXTRACTOR_VERSION}-{OCR_ENGINES_VERSION}-{engine}-{}-{model}",
+            preferences.language
+        )
     } else {
         EXTRACTOR_VERSION.into()
     }
@@ -73,11 +78,10 @@ fn reusable_extraction(
 ) -> bool {
     stored == Some(wanted)
         || (!preferences.enabled
-            && stored
-                .is_some_and(|v| {
-                    v.starts_with(&format!("{EXTRACTOR_VERSION}-{OCR_VERSION}-"))
-                        || v.starts_with(&format!("{EXTRACTOR_VERSION}-{OCR_ENGINES_VERSION}-"))
-                }))
+            && stored.is_some_and(|v| {
+                v.starts_with(&format!("{EXTRACTOR_VERSION}-{OCR_VERSION}-"))
+                    || v.starts_with(&format!("{EXTRACTOR_VERSION}-{OCR_ENGINES_VERSION}-"))
+            }))
 }
 fn path_key(path: &Path) -> String {
     let value = path.to_string_lossy().replace('\\', "/");

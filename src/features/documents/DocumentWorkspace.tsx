@@ -1639,16 +1639,32 @@ export function DocumentWorkspace({
   onLocalDraft,
   onDirtyChange,
 }: DocumentWorkspaceProps) {
-  const { settings, ready } = useClient();
+  const { settings, ready, session } = useClient();
   const language = settings.language;
   const t = (key: DocumentMessage) => documentText(language, key);
   const id = useId();
-  const scopes = settings.scopes.filter((scope) => scope.contentEnabled);
+  // An unknown or filename-only project has no document retrieval scopes.
+  // Do not interpret a missing project descriptor as permission to use all folders.
+  const projectId = session.scopeId;
+  const project = settings.scopes.find((scope) => scope.id === projectId);
+  const scopes = settings.scopes.filter(
+    (scope) => scope.contentEnabled && (!projectId || scope.id === projectId),
+  );
   const scopesKey = JSON.stringify(
     scopes.map((scope) => [scope.id, scope.path, scope.externalAllowed]),
   );
-  const policyKey = JSON.stringify([settings.revision, scopesKey, settings.generation]);
-  const [scopeIds, setScopeIds] = useState<string[] | null>(null);
+  const policyKey = JSON.stringify([
+    projectId,
+    settings.revision,
+    scopesKey,
+    settings.generation,
+    settings.mcp,
+  ]);
+  const [scopeChoice, setScopeChoice] = useState<{
+    projectId: string | null;
+    ids: string[] | null;
+  }>({ projectId, ids: null });
+  const setScopeIds = (ids: string[]) => setScopeChoice({ projectId, ids });
   const [query, setQuery] = useState('');
   const [list, setList] = useState<{ query: string; items: DocumentSummary[] } | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -1675,8 +1691,11 @@ export function DocumentWorkspace({
   const selectionEpoch = useRef(0);
   const listEpoch = useRef(0);
   const deleted = useRef(new Set<string>());
-  const selectedScopes = (scopeIds ?? []).filter((scopeId) =>
-    scopes.some((scope) => scope.id === scopeId),
+  // Derive the new project's defaults during render, before effects run. A late
+  // saved-revision read from another project cannot reintroduce its selection.
+  const scopeIds = scopeChoice.projectId === projectId ? scopeChoice.ids : null;
+  const selectedScopes = (scopeIds ?? (ready ? scopes.map((scope) => scope.id) : [])).filter(
+    (scopeId) => scopes.some((scope) => scope.id === scopeId),
   );
   useEffect(() => {
     alive.current = true;
@@ -1688,12 +1707,14 @@ export function DocumentWorkspace({
   }, []);
   useEffect(() => {
     if (ready)
-      setScopeIds((previous) =>
-        previous === null
-          ? scopes.map((scope) => scope.id)
-          : previous.filter((id) => scopes.some((scope) => scope.id === id)),
-      );
-  }, [ready, scopesKey]);
+      setScopeChoice((previous) => ({
+        projectId,
+        ids:
+          previous.projectId !== projectId || previous.ids === null
+            ? scopes.map((scope) => scope.id)
+            : previous.ids.filter((id) => scopes.some((scope) => scope.id === id)),
+      }));
+  }, [ready, scopesKey, projectId]);
   useEffect(() => {
     if (!native) return;
     const token = ++listEpoch.current;
@@ -1794,6 +1815,22 @@ export function DocumentWorkspace({
           ) : null}
         </div>
       </header>
+      {projectId ? (
+        <p className="doc-project" role="status">
+          <FolderSearch size={14} aria-hidden="true" />
+          <span>
+            {project
+              ? documentText(
+                  language,
+                  project.contentEnabled ? 'projectScope' : 'projectNoContent',
+                  {
+                    name: project.name,
+                  },
+                )
+              : t('projectMissing')}
+          </span>
+        </p>
+      ) : null}
       <div className="doc-mode" role="group" aria-label={t('modeLabel')}>
         {(['new', 'fill'] as const).map((value) => (
           <button

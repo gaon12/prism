@@ -1,5 +1,26 @@
 import type { Language } from '../../lib/types';
 const messages = {
+  projectScope: [
+    '프로젝트: {name} · 새 문서와 AI 검색 자료는 이 폴더 안에서 선택합니다.',
+    'Project: {name} · Choose sources for new documents and AI retrieval within this folder.',
+    '项目：{name} · 新文档和AI检索仅在此文件夹中选择资料。',
+    '專案：{name} · 新文件和AI檢索僅在此資料夾內選擇資料。',
+    'プロジェクト: {name} · 新しい文書とAI検索の資料はこのフォルダー内で選びます。',
+  ],
+  projectNoContent: [
+    '프로젝트: {name} · 본문 검색이 꺼져 있어 AI 자료로 사용할 수 없습니다. 본문·AI 폴더 설정에서 변경하세요.',
+    'Project: {name} · Content search is off. Enable it in content/AI folder settings to use this project as an AI source.',
+    '项目：{name} · 正文搜索已关闭。请在正文/AI文件夹设置中启用以使用此项目资料。',
+    '專案：{name} · 內文搜尋已關閉。請在內文/AI資料夾設定中啟用以使用此專案資料。',
+    'プロジェクト: {name} · 本文検索が無効です。本文・AIフォルダー設定で有効にすると資料として使えます。',
+  ],
+  projectMissing: [
+    '프로젝트 폴더가 제거되었습니다. 다른 프로젝트나 모든 파일을 선택하세요. 다른 폴더의 자료를 자동으로 사용하지 않습니다.',
+    'This project folder was removed. Choose another project or All files. Other folders are not used automatically.',
+    '项目文件夹已移除。请选择其他项目或所有文件，不会自动使用其他文件夹。',
+    '專案資料夾已移除。請選擇其他專案或所有檔案，不會自動使用其他資料夾。',
+    'プロジェクトフォルダーが削除されました。別のプロジェクトか「すべてのファイル」を選んでください。他のフォルダーは自動使用しません。',
+  ],
   externalRevoked: [
     '이 버전에서 사용한 외부 자료의 권한이 변경되어 내용을 숨겼습니다. 원래 MCP 서버 설정을 복구하면 다시 열 수 있습니다. 현재 편집은 유지합니다.',
     'This revision is hidden because its external sources are no longer allowed. Restore the original MCP settings to reopen it. Current edits are retained.',

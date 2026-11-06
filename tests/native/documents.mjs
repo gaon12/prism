@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { launch, shutdown, until } from './harness.mjs';
+import { inspectPdf } from './pdf-inspect.mjs';
 
 const directory = await mkdtemp(join(tmpdir(), 'prism-documents-'));
 const evidence = join(tmpdir(), 'prism-ui-evidence');
@@ -120,7 +121,10 @@ server.on('connection', (socket) => {
 await new Promise((done) => server.listen(0, '127.0.0.1', done));
 let instance;
 try {
-  instance = await launch(directory);
+  instance = await launch(
+    directory,
+    process.env.PRISM_TEST_EXECUTABLE ? { executable: process.env.PRISM_TEST_EXECUTABLE } : {},
+  );
   const { invoke, main } = instance;
   const result = (command, args) =>
     main.evaluate(
@@ -268,6 +272,32 @@ try {
     exported.includes('120000원') && exported.includes('prism:fact') && exported.includes('[^S1]'),
   );
   assert(calls.every(({ packet }) => !JSON.stringify(packet).includes(directory)));
+
+  // PDF uses this same real saved revision and its authenticated RAG citation
+  // metadata. Exporting neither generates new content nor calls the provider.
+  const pdfDirectory = await mkdtemp(join(tmpdir(), 'prism-document-source-pdf-'));
+  const beforePdf = calls.length;
+  for (const sources of [true, false]) {
+    const path = join(pdfDirectory, sources ? 'with-sources.pdf' : 'without-sources.pdf');
+    const result = await invoke('doc_export_pdf', {
+      id,
+      revision: restored.id,
+      path,
+      request: crypto.randomUUID(),
+      includeSources: sources,
+      includeTypeMarkers: sources,
+    });
+    const inspected = inspectPdf(path);
+    assert.equal(result.pages, inspected.pages);
+    assert(inspected.text.includes('120000원'));
+    assert.equal(
+      inspected.text.includes('원본.md'),
+      sources,
+      'PDF source footnotes follow the saved-revision option',
+    );
+    assert.equal(inspected.text.replace(/\s+/g, '').includes('검증되지않음'), sources);
+  }
+  assert.equal(calls.length, beforePdf);
 
   // Rendered UI calls the same real IPC. Creating/reviewing/saving remains explicit.
   await main.getByRole('button', { name: '문서', exact: true }).click();
@@ -472,7 +502,10 @@ try {
   assert.equal(calls.length, count, 'Stale derived input must not be sent to the provider');
   assert.deepEqual(instance.errors, []);
   await shutdown(instance);
-  instance = await launch(directory);
+  instance = await launch(
+    directory,
+    process.env.PRISM_TEST_EXECUTABLE ? { executable: process.env.PRISM_TEST_EXECUTABLE } : {},
+  );
   assert.equal(
     (await instance.invoke('doc_get', { id, revisionId: null })).revision.id,
     restored.id,

@@ -306,6 +306,11 @@ pub struct FileIndex {
     tx: mpsc::Sender<(u64, Vec<SearchScope>)>,
     lifetime: Arc<()>,
 }
+enum RefreshKind {
+    Configure,
+    Refresh,
+    Reset,
+}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchResponse {
@@ -331,12 +336,15 @@ impl FileIndex {
         this
     }
     pub fn configure(&self, scopes: Vec<SearchScope>) {
-        self.request_refresh(scopes, true);
+        self.request_refresh(scopes, RefreshKind::Configure);
     }
     pub fn refresh(&self, scopes: Vec<SearchScope>) {
-        self.request_refresh(scopes, false);
+        self.request_refresh(scopes, RefreshKind::Refresh);
     }
-    fn request_refresh(&self, scopes: Vec<SearchScope>, clear: bool) {
+    pub fn reset(&self, scopes: Vec<SearchScope>) {
+        self.request_refresh(scopes, RefreshKind::Reset);
+    }
+    fn request_refresh(&self, scopes: Vec<SearchScope>, kind: RefreshKind) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         if let Ok(mut catalog) = self.catalog.write() {
             if self.generation.load(Ordering::SeqCst) != generation {
@@ -345,7 +353,10 @@ impl FileIndex {
             // Removed or disabled scopes must stop being searchable immediately. Entries under
             // scopes that are still configured unchanged stay visible while the rescan runs, so
             // adding a folder does not blank existing results.
-            if clear {
+            if matches!(kind, RefreshKind::Reset) {
+                catalog.entries.clear();
+                catalog.roots.clear();
+            } else if matches!(kind, RefreshKind::Configure) {
                 let kept: Vec<Root> = catalog
                     .roots
                     .iter()
@@ -1198,6 +1209,37 @@ fn date_range(input: &str) -> Result<(i64, i64), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_reset_clears_catalog_and_prevents_old_scan_publication() {
+        let (tx, _rx) = mpsc::channel();
+        let index = FileIndex {
+            catalog: Arc::new(RwLock::new(Catalog::default())),
+            generation: Arc::new(AtomicU64::new(1)),
+            tx,
+            lifetime: Arc::new(()),
+        };
+        let _owner = index.clone();
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("reset-source.md");
+        fs::write(&source, "original document stays").unwrap();
+        index.scan(1, &[dir.path().into()], 1, true);
+        assert_eq!(index.status().unwrap().count, 2);
+        index.reset(vec![scope(dir.path(), "files")]);
+        assert_eq!(index.status().unwrap().count, 0);
+        assert!(!index.status().unwrap().initial_scan_complete);
+        index.scan(1, &[dir.path().into()], 2, true);
+        assert_eq!(
+            index.status().unwrap().count,
+            0,
+            "old generation cannot refill reset catalog"
+        );
+        index.scan(2, &[dir.path().into()], 3, true);
+        assert_eq!(index.status().unwrap().count, 2);
+        assert_eq!(
+            fs::read_to_string(source).unwrap(),
+            "original document stays"
+        );
+    }
     #[test]
     fn initial_completion_survives_live_updates_but_not_refresh_or_revocation() {
         // No background worker: drive the same real scan/publication methods

@@ -275,6 +275,89 @@ pub fn refresh_index(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexResetStatus {
+    last_applied: bool,
+    pending: bool,
+    error: Option<String>,
+}
+#[tauri::command]
+pub fn index_reset_status(state: State<'_, AppState>) -> IndexResetStatus {
+    let pending = crate::index_reset::pending(&state.asset_dir);
+    IndexResetStatus {
+        last_applied: state.index_reset_applied,
+        pending: pending.as_ref().copied().unwrap_or(false),
+        error: state.index_reset_error.clone().or_else(|| pending.err()),
+    }
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IndexResetTarget {
+    Filename,
+    Content,
+}
+
+/// Explicit main-window maintenance. Never accepts a caller-supplied path.
+/// Content removal occurs only after restart, before any store is opened.
+#[tauri::command]
+pub async fn reset_index(
+    app: AppHandle,
+    window: WebviewWindow,
+    expected_revision: u64,
+    target: IndexResetTarget,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Index reset requires the main window.".into());
+    }
+    let worker = app.clone();
+    let restart = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
+        let state = worker.state::<AppState>();
+        let _operation = state
+            .index_reset_operation
+            .try_lock()
+            .map_err(|_| "Index maintenance is already running.")?;
+        if state
+            .config_error
+            .lock()
+            .map_err(|_| "Settings are unavailable.")?
+            .is_some()
+        {
+            return Err("Repair the saved settings before resetting an index.".into());
+        }
+        let settings = state
+            .settings
+            .lock()
+            .map_err(|_| "Settings are unavailable.")?;
+        if settings.revision != expected_revision {
+            return Err("SETTINGS_CHANGED".into());
+        }
+        match target {
+            IndexResetTarget::Filename => {
+                state.index.reset(settings.scopes.clone());
+                Ok(false)
+            }
+            IndexResetTarget::Content => {
+                if settings.remember_search {
+                    let session = state
+                        .session
+                        .lock()
+                        .map_err(|_| "Search state is unavailable.")?;
+                    write_json(&state.data_dir.join("session.json"), &*session)?;
+                }
+                crate::index_reset::schedule(&state.asset_dir)?;
+                Ok(true)
+            }
+        }
+    })
+    .await
+    .map_err(|_| "Index maintenance stopped unexpectedly.")??;
+    if restart {
+        app.restart();
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn file_action(
     app: AppHandle,

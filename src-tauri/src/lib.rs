@@ -38,6 +38,7 @@ mod form_fill_commands;
 mod generation_runtime;
 mod hybrid_search;
 mod index;
+mod index_reset;
 mod index_service;
 mod index_service_commands;
 mod keyboard_pattern;
@@ -118,6 +119,10 @@ pub struct AppState {
     config_error: Mutex<Option<String>>,
     chat_handoff: Mutex<Option<String>>,
     data_dir: PathBuf,
+    asset_dir: PathBuf,
+    index_reset_applied: bool,
+    index_reset_error: Option<String>,
+    index_reset_operation: Mutex<()>,
     location: app_paths::DataLocation,
     index: index::FileIndex,
     clipboard: clipboard_history::ClipboardService,
@@ -304,11 +309,18 @@ pub fn run() {
             } else {
                 app.path().app_local_data_dir()?
             };
+            // No content database/vector handle may be open when a requested
+            // reset retires its owned cache. Other app data stays in place.
+            let reset = index_reset::apply_pending(&asset_dir);
+            let index_reset_applied = matches!(reset, Ok(true));
+            let index_reset_error = reset.err();
             let embedding = embedding_runtime::EmbeddingRuntime::new(asset_dir.clone());
             let ocr_runtime=ocr_runtime::initialize(&asset_dir,&std::env::current_exe()?,{
                 let app=app.handle().clone();move|status|{let _=app.emit("prism:ocr",status);}
             });
-            let content = content_service::ContentService::open(
+            let content = if let Some(error) = &index_reset_error {
+                Err(content_service::ContentError { code: "storage".into(), message: error.clone() })
+            } else { content_service::ContentService::open(
                 &asset_dir.join("content"),
                 embedding.clone(),
                 {
@@ -317,7 +329,7 @@ pub fn run() {
                         let _ = app.emit("prism:content", status);
                     }
                 },
-            );
+            ) };
             if let Ok(content) = &content {
                 if matches!(location.kind, app_paths::InstallKind::Portable | app_paths::InstallKind::Packaged) {
                     content.exclude_paths(&[data_dir.clone()]);
@@ -445,6 +457,10 @@ pub fn run() {
                 config_error: Mutex::new(config_error),
                 chat_handoff: Mutex::new(None),
                 data_dir,
+                asset_dir,
+                index_reset_applied,
+                index_reset_error,
+                index_reset_operation: Mutex::new(()),
                 location,
                 index,
                 clipboard,
@@ -591,6 +607,8 @@ pub fn run() {
             index_service_commands::index_service_manage,
             commands::search_files,
             commands::refresh_index,
+            commands::index_reset_status,
+            commands::reset_index,
             commands::file_action,
             commands::open_web_search,
             commands::copy_text,

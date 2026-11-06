@@ -56,6 +56,8 @@ pub mod embedding_runtime;
 pub mod path_identity;
 #[path = "../../../src-tauri/src/process_job.rs"]
 pub mod process_job;
+#[path = "../../../src-tauri/src/power.rs"]
+pub mod power;
 #[path = "../../../src-tauri/src/runtime_process.rs"]
 pub mod runtime_process;
 #[path = "../../../src-tauri/src/runtime_supervisor.rs"]

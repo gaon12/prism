@@ -7,6 +7,15 @@ identity files directly. It avoids the Tauri, WebView
 and Lance build requirements so these modules can also be checked in a Linux shell.
 It does not replace the full application tests or native desktop QA.
 
+Power checks import the exact production OS adapter and test Windows flags,
+macOS `pmset` parsing, Linux power-supply rules and the fixed command's output
+and timeout limits. Run `cargo test --manifest-path tools/platform-qa/Cargo.toml
+--locked power::tests`. Its ignored subprocess fixture is invoked by the parent
+test. These checks do not change the machine's power state or prove physical
+charger transitions. Full-app content-service tests separately inject power
+readings to verify active-scan cancellation, retained search data, AC resumption
+and preservation of manual pause; they are not included in this smaller crate.
+
 Generated-document PDF checks compile the exact production Markdown converter,
 closed in-memory Typst World, export-admission registry and atomic file writer.
 They typeset actual multilingual/emoji text, tables, code, repeated footnotes and

@@ -136,32 +136,78 @@ def descendants(root):
         selected = found
 
 
-def open_live_handles(parent):
+def open_live_handles(parent, excluded=None):
     from ctypes import wintypes as w
 
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
     kernel.OpenProcess.restype = w.HANDLE
+    kernel.GetProcessTimes.argtypes = [
+        w.HANDLE,
+        ctypes.POINTER(w.FILETIME),
+        ctypes.POINTER(w.FILETIME),
+        ctypes.POINTER(w.FILETIME),
+        ctypes.POINTER(w.FILETIME),
+    ]
     kernel.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
     kernel.CloseHandle.argtypes = [w.HANDLE]
+
+    def created(handle):
+        times = [w.FILETIME() for _ in range(4)]
+        assert kernel.GetProcessTimes(handle, *[ctypes.byref(t) for t in times])
+        return times[0].dwLowDateTime | times[0].dwHighDateTime << 32
+
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         found = descendants(parent)
         if "soffice.bin" in found.values():
-            handles = [kernel.OpenProcess(0x100000, False, pid) for pid in found]
-            assert all(handles), (
-                "Own live process handles must be acquired before cancellation."
-            )
-            return kernel, handles, sorted(found.values())
+            # PPIDs outlive parents and may point to a newly reused PID. An old
+            # console with that stale PPID is not our descendant. Retain handles
+            # and compare creation times before treating anything as owned.
+            handles, names = [], []
+            try:
+                root = kernel.OpenProcess(0x101000, False, parent)
+                assert root, "Open the live owned root before cancellation"
+                handles.append(root)
+                names.append(found[parent])
+                birth = created(root)
+                for pid, name in found.items():
+                    if pid == parent:
+                        continue
+                    handle = kernel.OpenProcess(0x101000, False, pid)
+                    assert handle, "Open concrete live handles before cancellation"
+                    try:
+                        old = created(handle) < birth
+                    except BaseException:
+                        kernel.CloseHandle(handle)
+                        raise
+                    if old:
+                        if excluded is not None:
+                            excluded.append(
+                                {"name": name, "reason": "createdBeforeRoot"}
+                            )
+                        kernel.CloseHandle(handle)
+                    else:
+                        handles.append(handle)
+                        names.append(name)
+                assert "soffice.bin" in names, "The actual owned engine must be alive"
+                return kernel, handles, names
+            except BaseException:
+                for handle in handles:
+                    kernel.CloseHandle(handle)
+                raise
         time.sleep(0.05)
     raise AssertionError("Actual engine did not start")
 
 
-def await_handles(kernel, handles):
+def await_handles(kernel, handles, names=None):
     try:
-        for handle in handles:
-            assert kernel.WaitForSingleObject(handle, 5000) == 0, (
-                "Owned process survived cancellation"
+        for index, handle in enumerate(handles):
+            result = kernel.WaitForSingleObject(handle, 5000)
+            assert result == 0, (
+                "Owned process survived cancellation",
+                names[index] if names is not None else index,
+                result,
             )
     finally:
         for handle in handles:
@@ -247,7 +293,7 @@ def main():
                 child.stdin.write(b"!")
                 child.stdin.flush()
             assert child.wait(timeout=10) == 72
-            await_handles(kernel, handles)
+            await_handles(kernel, handles, names)
             child.stdin.close()
             child.stdout.close()
             child.stderr.close()
@@ -266,7 +312,7 @@ def main():
         kernel, handles, names = open_live_handles(worker)
         helper.kill()
         helper.wait(timeout=5)
-        await_handles(kernel, handles)
+        await_handles(kernel, handles, names)
         assert canary.poll() is None
         lifetime.append(
             {

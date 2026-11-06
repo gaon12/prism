@@ -13,3 +13,5 @@ zip = { version = "=9.3.0", default-features = false, features = ["deflate"] }
 hwpforge-foundation = "=0.19.1"
 pulldown-cmark = { version = "=0.13.6", default-features = false }
 getrandom = "0.3"
+[dev-dependencies]
+roxmltree = "=0.21.1"

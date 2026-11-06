@@ -13,8 +13,8 @@ cargo run --manifest-path tools/hwpx-export-qa/Cargo.toml --locked -- /absolute/
 The command renders a public synthetic fixture and uses create-new semantics;
 it never replaces an existing destination. Tests produce actual HWPX packages
 with multilingual text, tables, code and footnotes. They check visible
-classification, code without Markdown backticks, declared monospace formatting,
-column alignment definitions, empty cells, unused notes, unsafe resource
+classification, code without Markdown backticks, actual section-to-header
+references for monospace formatting and column alignment, empty cells, unused notes, unsafe resource
 references, cancellation, deadlines, depth/input limits and repeated-note
 expansion bounds. The generated package is also decoded by the codec. A decoder
 round trip alone does not prove compatibility with a native word processor.

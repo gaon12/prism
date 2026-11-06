@@ -381,6 +381,62 @@ mod tests {
         assert!(!body.contains('`') && !body.contains("PRISMHWPX"));
         assert!(body.contains("<hp:tbl") && body.contains("<hp:footNote"));
         assert!(header.contains("Noto Sans Mono") && header.contains("horizontal=\"RIGHT\""));
+        // Resolve the actual output references. A default unused RIGHT style
+        // or an unused font declaration alone would not prove either behavior.
+        let body_tree = roxmltree::Document::parse(&body).unwrap();
+        let header_tree = roxmltree::Document::parse(&header).unwrap();
+        let amount = body_tree
+            .descendants()
+            .find(|n| n.tag_name().name() == "t" && n.text() == Some("120000원"))
+            .unwrap();
+        let paragraph = amount
+            .ancestors()
+            .find(|n| n.tag_name().name() == "p")
+            .unwrap();
+        let paragraph_id = paragraph.attribute("paraPrIDRef").unwrap();
+        let shape = header_tree
+            .descendants()
+            .find(|n| n.tag_name().name() == "paraPr" && n.attribute("id") == Some(paragraph_id))
+            .unwrap();
+        assert_eq!(
+            shape
+                .descendants()
+                .find(|n| n.tag_name().name() == "align")
+                .unwrap()
+                .attribute("horizontal"),
+            Some("RIGHT")
+        );
+        let code = body_tree
+            .descendants()
+            .find(|n| n.tag_name().name() == "t" && n.text() == Some("cell code"))
+            .unwrap();
+        let run = code
+            .ancestors()
+            .find(|n| n.tag_name().name() == "run")
+            .unwrap();
+        let char_id = run.attribute("charPrIDRef").unwrap();
+        let shape = header_tree
+            .descendants()
+            .find(|n| n.tag_name().name() == "charPr" && n.attribute("id") == Some(char_id))
+            .unwrap();
+        let font_id = shape
+            .descendants()
+            .find(|n| n.tag_name().name() == "fontRef")
+            .unwrap()
+            .attribute("latin")
+            .unwrap();
+        let latin = header_tree
+            .descendants()
+            .find(|n| n.tag_name().name() == "fontface" && n.attribute("lang") == Some("LATIN"))
+            .unwrap();
+        assert_eq!(
+            latin
+                .children()
+                .find(|n| n.tag_name().name() == "font" && n.attribute("id") == Some(font_id))
+                .unwrap()
+                .attribute("face"),
+            Some("Noto Sans Mono")
+        );
         let decoded = hwpforge_smithy_hwpx::HwpxDecoder::decode(&output.bytes).unwrap();
         assert_eq!(decoded.document.sections().len(), 1);
     }

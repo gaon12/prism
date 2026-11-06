@@ -1,4 +1,4 @@
-use super::{Action, Error, Issue};
+use super::{Action, Error, Issue, OperationStage};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
@@ -22,8 +22,24 @@ use windows_sys::Win32::{
 };
 
 const HELPER: &[u8] = include_bytes!(env!("PRISM_INDEX_ADMIN_HELPER"));
-fn unavailable(_: impl std::fmt::Debug) -> Error {
-    Issue::Unavailable.into()
+fn diagnostic(stage: OperationStage, native_code: Option<i32>) -> Error {
+    Error {
+        stage: Some(stage),
+        native_code,
+        ..Issue::Unavailable.into()
+    }
+}
+fn unavailable(error: std::io::Error) -> Error {
+    diagnostic(OperationStage::Staging, error.raw_os_error())
+}
+fn launch_failure(error: std::io::Error) -> Error {
+    let mut result = diagnostic(OperationStage::Launch, error.raw_os_error());
+    result.code = match error.raw_os_error() {
+        Some(code) if code == ERROR_CANCELLED as i32 => Issue::Cancelled,
+        Some(code) if code == ERROR_ACCESS_DENIED as i32 => Issue::PermissionDenied,
+        _ => Issue::Unavailable,
+    };
+    result
 }
 fn wide(value: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
     value.as_ref().encode_wide().chain(Some(0)).collect()
@@ -46,7 +62,7 @@ fn shell_path(path: &Path) -> Result<PathBuf, Error> {
         _ => return Err(Issue::Unavailable.into()),
     }
     if units.len() >= 260 {
-        return Err(Issue::Unavailable.into());
+        return Err(diagnostic(OperationStage::Staging, None));
     }
     Ok(PathBuf::from(std::ffi::OsString::from_wide(&units)))
 }
@@ -104,7 +120,7 @@ fn create_private_directory(path: &Path) -> Result<(), Error> {
         )
     } == 0
     {
-        return Err(Issue::Unavailable.into());
+        return Err(unavailable(std::io::Error::last_os_error()));
     }
     struct Descriptor(*mut std::ffi::c_void);
     impl Drop for Descriptor {
@@ -121,7 +137,7 @@ fn create_private_directory(path: &Path) -> Result<(), Error> {
         bInheritHandle: 0,
     };
     if unsafe { CreateDirectoryW(wide(path).as_ptr(), &attributes) } == 0 {
-        return Err(Issue::Unavailable.into());
+        return Err(unavailable(std::io::Error::last_os_error()));
     }
     Ok(())
 }
@@ -144,7 +160,7 @@ impl StagedHelper {
             ancestors.push(lock_directory(&path, true).map_err(unavailable)?);
         }
         let mut nonce = [0; 16];
-        getrandom::fill(&mut nonce).map_err(unavailable)?;
+        getrandom::fill(&mut nonce).map_err(|_| diagnostic(OperationStage::Staging, None))?;
         let directory = root.join(format!(
             "Prism-index-helper-{:032x}",
             u128::from_le_bytes(nonce)
@@ -217,9 +233,9 @@ pub(super) fn launch(action: Action) -> Result<(), Error> {
     std::thread::Builder::new()
         .name("prism-service-uac".into())
         .spawn(move || launch_on_sta(action))
-        .map_err(unavailable)?
+        .map_err(|error| diagnostic(OperationStage::Worker, error.raw_os_error()))?
         .join()
-        .map_err(unavailable)?
+        .map_err(|_| diagnostic(OperationStage::Worker, None))?
 }
 fn launch_on_sta(action: Action) -> Result<(), Error> {
     let initialized = unsafe {
@@ -229,7 +245,7 @@ fn launch_on_sta(action: Action) -> Result<(), Error> {
         )
     };
     if initialized < 0 {
-        return Err(Issue::Unavailable.into());
+        return Err(diagnostic(OperationStage::Com, Some(initialized)));
     }
     struct Apartment;
     impl Drop for Apartment {
@@ -269,23 +285,24 @@ fn launch_on_sta(action: Action) -> Result<(), Error> {
     // One explicit user action reaches this point. No command text, paths or
     // payload come from webview input; only the typed operation is selectable.
     if unsafe { ShellExecuteExW(&mut execute) } == 0 {
-        let error = std::io::Error::last_os_error();
-        return Err(if error.raw_os_error() == Some(ERROR_CANCELLED as i32) {
-            Issue::Cancelled.into()
-        } else {
-            unavailable(error)
-        });
+        return Err(launch_failure(std::io::Error::last_os_error()));
     }
     if execute.hProcess.is_null() {
-        return Err(Issue::Unavailable.into());
+        return Err(diagnostic(OperationStage::Launch, None));
     }
     let process = unsafe { OwnedHandle::from_raw_handle(execute.hProcess) };
     if unsafe { WaitForSingleObject(process.as_raw_handle(), INFINITE) } != WAIT_OBJECT_0 {
-        return Err(Issue::Unavailable.into());
+        return Err(diagnostic(
+            OperationStage::Wait,
+            std::io::Error::last_os_error().raw_os_error(),
+        ));
     }
     let mut code = 0;
     if unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut code) } == 0 {
-        return Err(Issue::Unavailable.into());
+        return Err(diagnostic(
+            OperationStage::ExitCode,
+            std::io::Error::last_os_error().raw_os_error(),
+        ));
     }
     if code == 0 {
         return Ok(());
@@ -300,12 +317,40 @@ fn launch_on_sta(action: Action) -> Result<(), Error> {
             _ => Issue::Failed,
         },
         exit_code: Some(code),
+        stage: Some(OperationStage::ExitCode),
+        native_code: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_diagnostics_keep_stage_and_code_without_error_text() {
+        for (code, issue) in [
+            (ERROR_ACCESS_DENIED, Issue::PermissionDenied),
+            (ERROR_CANCELLED, Issue::Cancelled),
+            (ERROR_FILE_NOT_FOUND, Issue::Unavailable),
+        ] {
+            let result = launch_failure(std::io::Error::from_raw_os_error(code as i32));
+            assert_eq!(result.code, issue);
+            assert_eq!(result.native_code, Some(code as i32));
+            assert_eq!(serde_json::to_value(result).unwrap()["stage"], "launch");
+        }
+        let value =
+            serde_json::to_value(unavailable(std::io::Error::from_raw_os_error(5))).unwrap();
+        assert_eq!(value["stage"], "staging");
+        assert_eq!(value["nativeCode"], 5);
+        assert_eq!(value["code"], "unavailable");
+        let private = unavailable(std::io::Error::other("PRIVATE_HELPER_PATH_SENTINEL"));
+        let value = serde_json::to_string(&private).unwrap();
+        assert!(!value.contains("PRIVATE_HELPER_PATH_SENTINEL"));
+        assert!(!value.contains("nativeCode"));
+        assert_eq!(
+            serde_json::to_value(diagnostic(OperationStage::Launch, Some(740))).unwrap()["stage"],
+            "launch"
+        );
+    }
     #[test]
     fn real_compiled_helper_is_locked_and_only_owned_files_are_cleaned() {
         let staged = StagedHelper::create().unwrap();

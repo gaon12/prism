@@ -50,12 +50,29 @@ pub enum Issue {
 pub struct Error {
     pub code: Issue,
     pub exit_code: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<OperationStage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_code: Option<i32>,
+}
+/// Fixed diagnostic values only: never include helper paths or OS error text.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OperationStage {
+    Staging,
+    Worker,
+    Com,
+    Launch,
+    Wait,
+    ExitCode,
 }
 impl From<Issue> for Error {
     fn from(code: Issue) -> Self {
         Self {
             code,
             exit_code: None,
+            stage: None,
+            native_code: None,
         }
     }
 }

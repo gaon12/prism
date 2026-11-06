@@ -10,6 +10,7 @@ import { join, resolve } from 'node:path';
 import { chromium } from '@playwright/test';
 import { setupDebugPort, until, untilWebView } from './harness.mjs';
 import { recoveryFixture } from './setup-fixture.mjs';
+import { verifyInstalledPayload } from './setup-payload.mjs';
 
 const executable = resolve(
   process.env.PRISM_SETUP_EXE ?? 'installer/src-tauri/target/debug/prism-setup.exe',
@@ -168,6 +169,7 @@ try {
   const record = JSON.parse(await readFile(join(app, 'install.json'), 'utf8'));
   assert.equal(record.version, JSON.parse(await readFile('package.json', 'utf8')).version);
   assert(record.files.includes('prism.exe'));
+  await verifyInstalledPayload(app, expected);
   await page.screenshot({ path: join(evidence, 'setup-recovery-done-native.png') });
   await page.locator('#launch').uncheck();
   await page.locator('#finish').click();

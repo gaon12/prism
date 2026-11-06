@@ -9,6 +9,7 @@ import { join, resolve } from 'node:path';
 import { chromium } from '@playwright/test';
 import { setupDebugPort, until, untilWebView } from './harness.mjs';
 import { recoveryFixture } from './setup-fixture.mjs';
+import { verifyInstalledPayload } from './setup-payload.mjs';
 
 const executable = resolve(
   process.env.PRISM_SETUP_EXE ?? 'installer/src-tauri/target/debug/prism-setup.exe',
@@ -57,6 +58,10 @@ const currentHash = await hash(join(app, 'prism.exe'));
 assert.equal(
   currentHash,
   await hash(resolve(process.env.PRISM_SETUP_EXPECTED_EXE ?? 'src-tauri/target/debug/prism.exe')),
+);
+await verifyInstalledPayload(
+  app,
+  resolve(process.env.PRISM_SETUP_EXPECTED_EXE ?? 'src-tauri/target/debug/prism.exe'),
 );
 const missingVersion = spawnSync(executable, ['/S', '--restore-version', `/D=${app}`], {
   env: environment,

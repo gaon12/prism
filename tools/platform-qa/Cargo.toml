@@ -54,6 +54,7 @@ objc2-image-io = { version = "=0.3.2", default-features = false, features = ["st
 apple-native-keyring-store = { version = "=1.0.2", default-features = false, features = ["keychain"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+hayro = "=0.9.0"
 zbus-secret-service-keyring-store = { version = "=1.0.1", default-features = false, features = ["rt-async-io-crypto-rust"] }
 
 [target.'cfg(windows)'.dependencies]

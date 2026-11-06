@@ -50,6 +50,7 @@
     "test:short-paths": "node tests/native/short-paths.mjs",
     "test:documents": "node tests/native/documents.mjs",
     "test:document-pdf": "node tests/native/document-pdf.mjs",
+    "test:document-hwpx": "node tests/native/document-hwpx.mjs",
     "test:collections": "node tests/native/collections.mjs",
     "test:collections-epub": "node tests/native/collections-epub.mjs",
     "test:onboarding": "node tests/native/onboarding.mjs",

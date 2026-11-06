@@ -334,7 +334,7 @@ try {
   const uiDoc = (await invoke('doc_list', { query: '화면 검증', limit: 100 }))[0];
   const outlineButton = main.getByRole('button', { name: 'AI로 개요 생성', exact: true });
   await main.locator('.doc-options > summary').click();
-  const scopeBox = main.locator('.doc-options input[type=checkbox]');
+  const scopeBox = main.locator('.doc-options .doc-scopes input[type=checkbox]');
   await scopeBox.uncheck();
   assert.equal(await outlineButton.isDisabled(), true);
   await scopeBox.check();

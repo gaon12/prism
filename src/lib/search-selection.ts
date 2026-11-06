@@ -24,8 +24,9 @@ export function selectionForSearch(
       data.diagnostics.hardLimitReached || data.hits.length >= 100,
     );
     if (!selection) return null;
-    // A keyword result can be enumerated exactly, without the ranked preview's
-    // limits. Semantic/hybrid previews retain their explicit bounded contract.
+    // Keywords enumerate all matches beyond the display limit. Ranked search
+    // hands off every distinct file in the shown top-N hits, as an explicit
+    // fixed selection; it must never silently widen to other folder documents.
     if (session.mode === 'content' || data.automatic?.ranking === 'keyword') {
       selection.keywordSearch = {
         query: session.query,

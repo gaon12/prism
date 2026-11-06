@@ -127,6 +127,20 @@ files to verify Unicode names, renames, deletions, descendant paths and sizes;
 `--parallel` checks two concurrent clients. These options never install or
 elevate a service.
 
+For aggregate phase timing from an ordinary shell, use:
+
+```sh
+cargo run --release --manifest-path indexer/Cargo.toml -p prism-ntfs-windows --example service_timing -- --drive C
+```
+
+This prints counts/UTF-8 path-byte totals and three client-observed intervals:
+request to first record, first-to-last record transfer, and the remaining wait
+for terminal acknowledgement plus final root validation. It prints no paths and
+never elevates, installs, starts or replaces the service. These intervals do not
+separate the server's internal cache/MFT/replay work. Compare the first observed
+request and an immediate repeat separately; neither is a controlled cold-start
+measurement, and service transfer timing excludes the app's search-catalog work.
+
 The app's Windows build compiles and embeds both images automatically. For
 standalone helper validation, build the real host first (PowerShell):
 

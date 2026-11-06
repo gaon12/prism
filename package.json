@@ -55,6 +55,7 @@
     "test:short-paths": "node tests/native/short-paths.mjs",
     "test:documents": "node tests/native/documents.mjs",
     "test:document-mcp": "node tests/native/document-mcp.mjs",
+    "test:document-status": "node tests/native/document-status.mjs",
     "test:document-project": "node tests/native/document-project.mjs",
     "test:form-input": "node tests/native/form-input.mjs",
     "test:document-pdf": "node tests/native/document-pdf.mjs",

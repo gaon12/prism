@@ -287,3 +287,65 @@ fn junctions_cannot_redirect_payload_writes_or_recorded_file_deletions() {
     assert_eq!(fs::read(outside.join("note.txt")).unwrap(), b"keep");
     assert!(install::validate_install_dir(&link.join("new-install")).is_err());
 }
+
+/// The component notices ship as ordinary recorded payload files under `notices/`:
+/// installed byte for byte, replaced or dropped on update like any app file, removed on
+/// uninstall, while a user's own file in the same folder is never touched.
+#[test]
+fn component_notices_are_installed_exactly_and_only_recorded_ones_are_removed() {
+    let temp = tempfile::tempdir().unwrap();
+    let (system, dir, setup) = setup(temp.path());
+    let notices: [(&str, &[u8]); 4] = [
+        (
+            "notices/pdf-renderer.txt",
+            b"pdf renderer notice\r\n\xEF\xBB\xBF",
+        ),
+        ("notices/document-pdf.txt", b"document pdf notice"),
+        ("notices/document-hwpx.txt", b"document hwpx notice"),
+        ("notices/office-passwords.txt", b"office passwords notice"),
+    ];
+    let mut files: Vec<(&str, &[u8])> = vec![("prism.exe", b"app v1")];
+    files.extend(notices);
+    let bytes = payload::pack(&files).unwrap();
+    install::install(&system, &bytes, "0.1.0", &options(&dir), &setup, |_, _| {}).unwrap();
+    for (name, content) in notices {
+        assert_eq!(fs::read(dir.join(name)).unwrap(), content, "{name}");
+        assert!(install::read_record(&dir)
+            .files
+            .iter()
+            .any(|file| file == name));
+    }
+
+    // A user's own file next to the notices is not ours.
+    fs::write(dir.join("notices/my-note.txt"), b"user note").unwrap();
+
+    // An update that no longer ships one notice removes exactly that recorded file.
+    let mut updated: Vec<(&str, &[u8])> = vec![("prism.exe", b"app v2")];
+    updated.extend(
+        notices
+            .iter()
+            .copied()
+            .filter(|(name, _)| !name.contains("hwpx")),
+    );
+    let bytes = payload::pack(&updated).unwrap();
+    install::install(&system, &bytes, "0.2.0", &options(&dir), &setup, |_, _| {}).unwrap();
+    assert!(!dir.join("notices/document-hwpx.txt").exists());
+    assert_eq!(
+        fs::read(dir.join("notices/pdf-renderer.txt")).unwrap(),
+        notices[0].1
+    );
+    assert_eq!(
+        fs::read(dir.join("notices/my-note.txt")).unwrap(),
+        b"user note"
+    );
+
+    // Uninstall removes the recorded notices and keeps the user's file.
+    install::uninstall(&system, &dir, false, |_, _| {}).unwrap();
+    for (name, _) in notices {
+        assert!(!dir.join(name).exists(), "{name}");
+    }
+    assert_eq!(
+        fs::read(dir.join("notices/my-note.txt")).unwrap(),
+        b"user note"
+    );
+}

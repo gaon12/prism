@@ -4,7 +4,10 @@
 //!
 //! Which files are packed:
 //! - `PRISM_PAYLOAD_DIR` set: every file in that folder (for apps that ship extra files).
-//! - otherwise: `../../src-tauri/target/release/prism.exe` if it exists.
+//! - otherwise: `../../src-tauri/target/release/prism.exe` if it exists, together with the
+//!   app's bundle resources (the component notices under `notices/`) that the app build
+//!   copies beside it. The list comes from the app's `tauri.conf.json`, so the setup ships
+//!   exactly what the app bundle declares. A release setup fails if any of them is missing.
 //! - otherwise an empty payload. This keeps `cargo test` and UI work possible without building
 //!   the app first; the setup then refuses to install and says the payload is missing.
 
@@ -27,10 +30,13 @@ fn main() {
     // 1. Version
     let config = app_dir.join("tauri.conf.json");
     println!("cargo:rerun-if-changed={}", config.display());
-    let version = fs::read(&config)
+    let config_json = fs::read(&config)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|json| json["version"].as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let version = config_json["version"]
+        .as_str()
+        .map(str::to_owned)
         .unwrap_or_else(|| "0.0.0".into());
     println!("cargo:rustc-env=PRISM_VERSION={version}");
 
@@ -74,6 +80,20 @@ fn main() {
         println!("cargo:rerun-if-changed={}", exe.display());
         if let Ok(bytes) = fs::read(&exe) {
             files.push(("prism.exe".into(), bytes));
+            // The resources the app declares (component notices), copied beside the exe by
+            // the app build. Required for a release setup; optional for local debug builds.
+            let release = env::var("PROFILE").as_deref() == Ok("release");
+            let built = app_dir.join("target/release");
+            for name in bundle_resources(&config_json) {
+                println!("cargo:rerun-if-changed={}", built.join(&name).display());
+                match resource_bytes(&built, &name) {
+                    Ok(bytes) => files.push((name, bytes)),
+                    Err(error) if release => {
+                        panic!("A release setup must include the built resource {name}: {error}")
+                    }
+                    Err(_) => println!("cargo:warning=Built resource {name} not found; skipped."),
+                }
+            }
         }
     }
     if files.is_empty() {
@@ -103,6 +123,44 @@ fn main() {
         tauri_build::WindowsAttributes::new().app_manifest(include_str!("setup.manifest"));
     tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
         .expect("tauri build");
+}
+
+/// The app's declared bundle resources as "/"-separated relative names. Only plain relative
+/// file names are accepted (no globs, no parent folders), so nothing outside the build
+/// folder can be packed.
+fn bundle_resources(config: &serde_json::Value) -> Vec<String> {
+    config["bundle"]["resources"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    let name = item
+                        .as_str()
+                        .expect("bundle resources must be plain file names")
+                        .replace('\\', "/");
+                    assert!(
+                        !name.contains(['*', '?', '[']),
+                        "bundle resource globs are not supported by the setup"
+                    );
+                    safe_path::relative_name(&name).expect("bundle resource name is unsafe");
+                    name
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Reads one built resource exactly as built: a regular file (no links) inside `root`,
+/// not empty and at most 16 MiB.
+fn resource_bytes(root: &Path, name: &str) -> std::io::Result<Vec<u8>> {
+    let path = safe_path::file(root, name)?;
+    safe_path::no_links(&path)?;
+    let metadata = fs::symlink_metadata(&path)?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 16 * 1024 * 1024 {
+        return Err(std::io::Error::other("not a regular non-empty file"));
+    }
+    fs::read(path)
 }
 
 /// Adds every file below `dir` with a "/"-separated name relative to `root`.

@@ -2,9 +2,10 @@
 // Browser plugin not available: own WebView/Playwright. Only the final OS open/copy
 // calls are intercepted, so this never launches a document app or changes the clipboard.
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { expect } from '@playwright/test';
 import { launch, shutdown, until } from './harness.mjs';
 
@@ -12,14 +13,39 @@ assert(
   process.env.PRISM_TEST_EXECUTABLE,
   'Supply the freshly built candidate, not an older default.',
 );
-const executable = resolve(process.env.PRISM_TEST_EXECUTABLE);
+assert.equal(process.platform, 'win32', 'This check requires Windows WebView2.');
+const original = resolve(process.env.PRISM_TEST_EXECUTABLE);
 const directory = await mkdtemp(join(tmpdir(), 'prism-file-shortcuts-'));
+// A release binary ignores PRISM_DEV_DATA_DIR. Isolate BEFORE launching, even if
+// someone accidentally supplies release instead of the intended debug candidate.
+const portable = join(directory, 'portable');
+const data = join(portable, 'PrismData');
+await mkdir(data, { recursive: true });
+const executable = join(portable, 'prism.exe');
+await copyFile(original, executable);
+const executableSha256 = createHash('sha256')
+  .update(await readFile(original))
+  .digest('hex');
+assert.equal(
+  createHash('sha256')
+    .update(await readFile(executable))
+    .digest('hex'),
+  executableSha256,
+);
+await writeFile(join(portable, 'prism.portable'), '');
+await mkdir(join(portable, 'notices'));
+for (const name of ['pdf-renderer', 'document-pdf', 'document-hwpx', 'office-passwords']) {
+  const notice = join(dirname(original), 'notices', `${name}.txt`);
+  const target = join(portable, 'notices', `${name}.txt`);
+  await copyFile(notice, target);
+  assert.deepEqual(await readFile(target), await readFile(notice));
+}
 const folder = join(directory, 'files');
 const document = join(folder, 'needle-document.md');
 const childFolder = join(folder, 'needle-folder');
 await mkdir(childFolder, { recursive: true });
 await writeFile(document, '# 단축키\n본문검색전용문장 keyword opening fixture.');
-const settingsPath = join(directory, 'settings.json');
+const settingsPath = join(data, 'settings.json');
 await writeFile(
   settingsPath,
   JSON.stringify({
@@ -88,11 +114,11 @@ async function openWith(page, element, key, expected) {
 
 let instance;
 try {
-  instance = await launch(directory, { executable });
+  instance = await launch(data, { executable, portable: true });
   let { main, quick, invoke } = instance;
   const runtime = await invoke('runtime_info');
   assert.equal(runtime.development, true);
-  assert.equal(runtime.installKind, 'isolated');
+  assert.equal(runtime.installKind, 'portable');
   assert.equal((await invoke('get_settings')).fileOpenShortcut, 'Enter', 'legacy native default');
   await until(async () => (await invoke('index_status')).initialScanComplete, 'fixture filenames');
   await until(async () => (await invoke('content_status')).indexed >= 1, 'real fixture extraction');
@@ -226,7 +252,7 @@ try {
   await shutdown(instance);
   instance = undefined;
 
-  instance = await launch(directory, { executable });
+  instance = await launch(data, { executable, portable: true });
   assert.equal((await instance.invoke('get_settings')).fileOpenShortcut, 'Ctrl+O');
   await expect(instance.main.locator('.search-box kbd')).toHaveText('Enter'); // remembered calculator input
   await instance.main.getByRole('textbox', { name: '검색어', exact: true }).fill('needle');
@@ -237,6 +263,8 @@ try {
       passed: true,
       directory,
       executable,
+      original,
+      executableSha256,
       nativePersistence: true,
       finalOsActionsIntercepted: true,
     }),

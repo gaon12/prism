@@ -392,6 +392,7 @@ function DocumentEditor({
   const syncPending = useRef(false);
   const aiPending = useRef(false);
   const activeRequest = useRef<string | null>(null);
+  const completedRequest = useRef<string | null>(null);
   const exportRequest = useRef<{ request: string; format: 'pdf' | 'hwpx' } | null>(null);
   const [exportStopping, setExportStopping] = useState(false);
   const [exportRunning, setExportRunning] = useState(false);
@@ -613,7 +614,13 @@ function DocumentEditor({
         if (requestedAt === jobEpoch.current) {
           setJob(next);
           const signature = next ? `${next.requestId}:${next.phase}` : 'none';
-          if (previous !== null && signature !== previous && !aiActive(next)) {
+          // The successful generation response already applied this revision
+          // (or retained it for dirty-input review). Re-reading it on a late
+          // terminal poll would briefly disable actions through `loading`,
+          // swallowing a click made while that redundant read is in flight.
+          const ownCompletion =
+            next?.phase === 'complete' && next.requestId === completedRequest.current;
+          if (previous !== null && signature !== previous && !aiActive(next) && !ownCompletion) {
             void fetchCurrent();
             onChanged();
           }
@@ -725,6 +732,7 @@ function DocumentEditor({
             ? await documents.generateBody(request)
             : await documents.rewrite({ ...request, targetBlockIds: targets, selection: range });
       if (alive.current) {
+        completedRequest.current = requestId;
         jobEpoch.current++;
         setJob((previous) =>
           previous?.requestId === requestId

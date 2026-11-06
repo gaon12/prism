@@ -502,9 +502,11 @@ mod tests {
 
     #[test]
     fn an_eligible_first_catalog_stays_private_until_terminal_and_root_validation() {
-        for failure in 0..3 {
-            let (index, _owner) = isolated();
+        for failure in 0..5 {
+            let (index, owner) = isolated();
+            let mut owner = Some(owner);
             let root = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
             let result = index.collect_service_snapshot(1, root.path(), 1, |_, receive| {
                 for batch in 0..8 {
                     receive(Event::Records(
@@ -522,8 +524,16 @@ mod tests {
                         "incomplete fixture",
                     )),
                     1 => Ok(0),
-                    _ => {
+                    2 => {
                         index.generation.store(2, Ordering::Release);
+                        Ok(1)
+                    }
+                    3 => {
+                        receive(Event::Records(vec![record(outside.path(), "outside.md")]))?;
+                        Ok(1)
+                    }
+                    _ => {
+                        drop(owner.take());
                         Ok(1)
                     }
                 }

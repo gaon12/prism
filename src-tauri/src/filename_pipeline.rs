@@ -134,3 +134,7 @@ impl Drop for Preparation<'_> {
         let _ = join_all(std::mem::take(&mut self.workers), &self.stop);
     }
 }
+
+#[cfg(test)]
+#[path = "filename_pipeline_tests.rs"]
+mod tests;

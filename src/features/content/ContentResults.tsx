@@ -186,10 +186,10 @@ export function ContentResults({
   const openSelected = () => selected && void run(() => controller.openAt(selected.chunk.id));
   const keyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (isComposing(event.nativeEvent) || !data?.hits.length) return;
-    if (matchesFileShortcut(settings.fileOpenShortcut, event.nativeEvent, runtime.platform)) {
+    if (matchesFileShortcut(settings.fileOpenShortcut, event.nativeEvent, runtime.platform, true)) {
       event.preventDefault();
       event.stopPropagation();
-      openSelected();
+      if (!event.repeat) openSelected();
       return;
     }
     if (event.altKey || event.ctrlKey || event.metaKey) return;

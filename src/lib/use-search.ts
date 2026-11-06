@@ -257,11 +257,12 @@ export function useSearch(quick = false) {
     if (isComposing(event.nativeEvent)) return;
     if (
       request.kind === 'files' &&
-      matchesFileShortcut(settings.fileOpenShortcut, event.nativeEvent, runtime.platform)
+      matchesFileShortcut(settings.fileOpenShortcut, event.nativeEvent, runtime.platform, true)
     ) {
       event.preventDefault();
       event.stopPropagation();
-      void activate().catch(report);
+      // Consume the held chord too, so a browser accelerator cannot take over.
+      if (!event.repeat) void activate().catch(report);
       return;
     }
     if (event.ctrlKey || event.metaKey || event.altKey) return;

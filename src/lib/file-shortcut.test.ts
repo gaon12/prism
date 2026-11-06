@@ -46,6 +46,8 @@ describe('configurable file/folder opening', () => {
     expect(matchesFileShortcut('Ctrl+O', event({ shiftKey: true }))).toBe(false);
     expect(matchesFileShortcut('Ctrl+O', event({ ctrlKey: false }))).toBe(false);
     expect(matchesFileShortcut('Ctrl+O', event({ code: 'KeyP' }))).toBe(false);
+    // Handlers can consume a held shortcut without running another opening action.
+    expect(matchesFileShortcut('Ctrl+O', event({ repeat: true }), 'windows', true)).toBe(true);
   });
   it('resolves CommandOrControl per platform and supports numeric/function/keypad keys', () => {
     expect(matchesFileShortcut('CmdOrCtrl+O', event(), 'windows')).toBe(true);

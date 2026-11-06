@@ -95,9 +95,14 @@ type KeyEvent = Pick<
   | 'getModifierState'
 >;
 
-export function matchesFileShortcut(input: string, event: KeyEvent, platform?: string): boolean {
+export function matchesFileShortcut(
+  input: string,
+  event: KeyEvent,
+  platform?: string,
+  includeRepeats = false,
+): boolean {
   if (
-    event.repeat ||
+    (event.repeat && !includeRepeats) ||
     event.isComposing ||
     event.keyCode === 229 ||
     event.getModifierState?.('AltGraph')

@@ -18,6 +18,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadPackageNotices, writePackageNotices } from './package-notices.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SEMVER =
@@ -153,6 +154,7 @@ export function packageMsix(args = process.argv.slice(2)) {
   const exe = resolve(values.get('--exe') ?? join(root, 'src-tauri/target/release/prism.exe'));
   const out = resolve(values.get('--out') ?? join(root, 'src-tauri/target/release/bundle/msix'));
   executable(exe);
+  const notices = loadPackageNotices(exe);
   const makeappx = sdkTool('makeappx.exe');
   const signer = thumbprint ? sdkTool('signtool.exe') : null;
   const fileName = `Prism_${appVersion}_x64.msix`;
@@ -181,6 +183,7 @@ export function packageMsix(args = process.argv.slice(2)) {
     const content = join(workspace, 'content');
     mkdirSync(join(content, 'Assets'), { recursive: true });
     copyFileSync(exe, join(content, 'prism.exe'));
+    writePackageNotices(content, notices);
     for (const name of logos)
       copyFileSync(join(root, 'src-tauri/icons', name), join(content, 'Assets', name));
     writeFileSync(join(content, 'AppxManifest.xml'), manifest, { flag: 'wx' });

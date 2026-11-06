@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fillTemplate, msixVersion, sdkTool, xml } from '../../scripts/package-msix.mjs';
+import { noticeNames } from '../../scripts/package-notices.mjs';
+import { packagingDirectory, seedNotices } from './packaging-fixture.mjs';
 
 test('package versions reject lossy prerelease mapping and enforce explicit Store constraints', () => {
   assert.equal(msixVersion('0.1.0'), '0.1.0.0');
@@ -40,8 +41,7 @@ test('manifest values escape markup and reject unresolved or invalid XML data', 
 });
 
 test('invalid CLI inputs preserve preexisting staging files before any SDK work', (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'prism-msix-args-'));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const directory = packagingDirectory(t, 'msix-args');
   const out = join(directory, 'output');
   mkdirSync(join(out, 'stage'), { recursive: true });
   const sentinel = join(out, 'stage/user.txt');
@@ -67,13 +67,15 @@ test(
   'actual Windows SDK packaging preserves shared output and roundtrips fixture bytes',
   { skip: process.platform !== 'win32' },
   (t) => {
-    const directory = mkdtempSync(join(tmpdir(), 'prism-msix-sdk-'));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const directory = packagingDirectory(t, 'msix-sdk');
     const out = join(directory, 'output');
     mkdirSync(join(out, 'stage'), { recursive: true });
     writeFileSync(join(out, 'stage/user.txt'), 'preserve shared stage');
     // A small real Windows x64 executable is packaged as inert test data, never executed.
-    const fixture = join(process.env.WINDIR, 'System32/where.exe');
+    const fixture = join(directory, 'app/prism.exe');
+    mkdirSync(dirname(fixture));
+    copyFileSync(join(process.env.WINDIR, 'System32/where.exe'), fixture);
+    seedNotices(dirname(fixture));
     const command = [
       resolve('scripts/package-msix.mjs'),
       '--exe',
@@ -100,6 +102,11 @@ test(
       stdio: 'pipe',
     });
     assert.deepEqual(readFileSync(join(unpacked, 'prism.exe')), readFileSync(fixture));
+    for (const name of noticeNames)
+      assert.deepEqual(
+        readFileSync(join(unpacked, 'notices', name)),
+        readFileSync(join(dirname(fixture), 'notices', name)),
+      );
     const manifest = readFileSync(join(unpacked, 'AppxManifest.xml'), 'utf8');
     assert(manifest.includes('TaskId="PrismStartup" Enabled="false"'));
     assert(manifest.includes('EntryPoint="Windows.FullTrustApplication"'));

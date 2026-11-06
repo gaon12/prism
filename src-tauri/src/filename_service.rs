@@ -9,6 +9,9 @@ use std::io;
 #[cfg(any(windows, test))]
 #[path = "filename_catalog.rs"]
 mod catalog;
+#[cfg(any(windows, test))]
+#[path = "filename_pipeline.rs"]
+mod pipeline;
 
 impl FileIndex {
     #[cfg(not(windows))]
@@ -62,10 +65,19 @@ impl FileIndex {
             .then(|| prism_ntfs_protocol::DriveLetter::new(root_key.as_bytes()[0]).ok())
             .flatten();
         let cancel = Arc::new(AtomicBool::new(false));
+        let initial = self
+            .catalog
+            .read()
+            .is_ok_and(|catalog| catalog.entries.is_empty());
+        let threads = std::thread::available_parallelism()
+            .map_or(2, usize::from)
+            .clamp(1, 8);
         let mut rows = Vec::new();
-        let result = std::thread::scope(|scope| {
+        let mut row_count = 0usize;
+        let prepared = std::thread::scope(|scope| {
             let (stop, stopped) = mpsc::channel::<()>();
             let cancel = &cancel;
+            let mut preparation: Option<pipeline::Preparation<'_>> = None;
             scope.spawn(move || {
                 while matches!(
                     stopped.recv_timeout(Duration::from_millis(25)),
@@ -88,8 +100,8 @@ impl FileIndex {
                     Event::Records(records) => {
                         for record in &records {
                             // Whole-drive validation needs no allocated path
-                            // key. Keep decoded batches private and defer path
-                            // conversion/normalization to publication workers.
+                            // key. Only validated records may reach private
+                            // workers; they never publish during transfer.
                             let inside = drive.map_or_else(
                                 || under(&path_key(Path::new(&record.path)), &root_key),
                                 |drive| drive.contains(&record.path),
@@ -101,7 +113,20 @@ impl FileIndex {
                                 ));
                             }
                         }
-                        rows.push(records);
+                        if let Some(preparation) = &preparation {
+                            preparation.send(records)?;
+                        } else {
+                            row_count = row_count.saturating_add(records.len());
+                            rows.push(records);
+                            if initial && threads > 1 && row_count >= 4096 {
+                                preparation = Some(pipeline::Preparation::start(
+                                    scope, self, generation, sweep, threads,
+                                )?);
+                                for batch in std::mem::take(&mut rows) {
+                                    preparation.as_ref().unwrap().send(batch)?;
+                                }
+                            }
+                        }
                     }
                     Event::Progress { .. } => {}
                     Event::Finished { .. } | Event::Removed(_) => {
@@ -114,32 +139,23 @@ impl FileIndex {
                 Ok(())
             });
             drop(stop);
-            result
-        });
-        if result? == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid snapshot revision.",
-            ));
-        }
-        if !self.current(generation) {
-            return Err(io::Error::new(
-                io::ErrorKind::ConnectionAborted,
-                "Collection cancelled.",
-            ));
-        }
-        // Prepare Unicode projections only after terminal/root validation. A
-        // first large catalog is built privately; existing entries keep their
-        // bounded reuse path. Rejected or cancelled streams insert nothing.
-        let initial = self
-            .catalog
-            .read()
-            .is_ok_and(|catalog| catalog.entries.is_empty());
-        let threads = std::thread::available_parallelism()
-            .map_or(2, usize::from)
-            .clamp(1, 8);
-        if initial && threads > 1 && rows.iter().map(Vec::len).sum::<usize>() >= 4096 {
-            let prepared = self.prepare_initial_catalog(generation, rows, sweep, threads)?;
+            if result? == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Invalid snapshot revision.",
+                ));
+            }
+            if !self.current(generation) {
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "Collection cancelled.",
+                ));
+            }
+            // Dropping a failed fetch cancels and joins its private workers.
+            // Only the successful terminal/root-validated path may merge them.
+            preparation.map(pipeline::Preparation::finish).transpose()
+        })?;
+        if let Some(prepared) = prepared {
             return self.publish_initial_catalog(generation, prepared);
         }
         self.publish_service_rows(generation, rows, sweep, initial, threads)

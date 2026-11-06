@@ -4,7 +4,7 @@
 use super::*;
 use prism_ntfs_protocol::FileRecord;
 
-type Prepared = BTreeMap<Arc<str>, Entry>;
+pub(super) type Prepared = BTreeMap<Arc<str>, Entry>;
 
 pub(super) fn raw(record: FileRecord) -> Raw {
     Raw {
@@ -20,19 +20,19 @@ pub(super) fn raw(record: FileRecord) -> Raw {
         modified_ms: record.modified_ms,
     }
 }
-fn cancelled() -> io::Error {
+pub(super) fn cancelled() -> io::Error {
     io::Error::new(
         io::ErrorKind::ConnectionAborted,
         "Filename preparation cancelled.",
     )
 }
-fn worker_error() -> io::Error {
+pub(super) fn worker_error() -> io::Error {
     io::Error::other("Filename preparation worker failed.")
 }
-fn active(index: &FileIndex, generation: u64, stop: &AtomicBool) -> bool {
+pub(super) fn active(index: &FileIndex, generation: u64, stop: &AtomicBool) -> bool {
     !stop.load(Ordering::Acquire) && index.current(generation)
 }
-fn join_all(
+pub(super) fn join_all(
     handles: Vec<std::thread::ScopedJoinHandle<'_, io::Result<Prepared>>>,
     stop: &AtomicBool,
 ) -> io::Result<Vec<Prepared>> {
@@ -61,7 +61,7 @@ fn join_all(
         Ok(maps)
     }
 }
-fn insert(map: &mut Prepared, mut entry: Entry) {
+pub(super) fn insert(map: &mut Prepared, mut entry: Entry) {
     use std::collections::btree_map::Entry as Slot;
     match map.entry(entry.key.clone()) {
         Slot::Vacant(slot) => {
@@ -89,6 +89,7 @@ fn merge(mut left: Prepared, mut right: Prepared) -> Prepared {
 }
 
 impl FileIndex {
+    #[cfg(test)]
     pub(super) fn prepare_initial_catalog(
         &self,
         generation: u64,
@@ -107,7 +108,7 @@ impl FileIndex {
         }
         let stop = AtomicBool::new(false);
         let jobs = Mutex::new(rows.into_iter().flatten());
-        let mut maps = std::thread::scope(|scope| {
+        let maps = std::thread::scope(|scope| {
             let mut handles = Vec::new();
             let mut spawn_error = None;
             for _ in 0..workers {
@@ -152,8 +153,17 @@ impl FileIndex {
                 result
             }
         })?;
+        self.merge_initial_maps(generation, maps, &stop)
+    }
+
+    pub(super) fn merge_initial_maps(
+        &self,
+        generation: u64,
+        mut maps: Vec<Prepared>,
+        stop: &AtomicBool,
+    ) -> io::Result<Prepared> {
         while maps.len() > 1 {
-            if !active(self, generation, &stop) {
+            if !active(self, generation, stop) {
                 return Err(cancelled());
             }
             maps = std::thread::scope(|scope| {
@@ -166,7 +176,6 @@ impl FileIndex {
                         carry = Some(left);
                         break;
                     };
-                    let stop = &stop;
                     let handle = std::thread::Builder::new()
                         .name("prism-file-merge".into())
                         .spawn_scoped(scope, move || {
@@ -191,7 +200,7 @@ impl FileIndex {
                         }
                     }
                 }
-                let result = join_all(handles, &stop);
+                let result = join_all(handles, stop);
                 if let Some(error) = spawn_error {
                     return Err(error);
                 }
@@ -202,7 +211,7 @@ impl FileIndex {
                 Ok(maps)
             })?;
         }
-        if !active(self, generation, &stop) {
+        if !active(self, generation, stop) {
             return Err(cancelled());
         }
         Ok(maps.pop().unwrap_or_default())

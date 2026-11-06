@@ -137,6 +137,23 @@ export const documents = {
   ) => invoke<string>('doc_export', { id, revision, includeSources, includeTypeMarkers }),
   generateOutline: (request: DocumentGenerateRequest) =>
     invoke<DocumentRevision>('doc_generate_outline', { request }),
+  exportPdf: (
+    id: string,
+    revision: string,
+    includeSources: boolean,
+    includeTypeMarkers: boolean,
+    request: string,
+    path: string,
+  ) =>
+    invoke<{ pages: number; omittedImages: number }>('doc_export_pdf', {
+      id,
+      revision,
+      includeSources,
+      includeTypeMarkers,
+      request,
+      path,
+    }),
+  cancelPdf: (request: string) => invoke<boolean>('doc_cancel_pdf', { request }),
   generateBody: (request: DocumentGenerateRequest) =>
     invoke<DocumentRevision>('doc_generate_body', { request }),
   rewrite: (request: DocumentRewriteRequest) =>

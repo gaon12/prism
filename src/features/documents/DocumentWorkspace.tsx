@@ -48,6 +48,8 @@ const docCodes = new Set([
   'storage',
   'cancelled',
   'rag',
+  'pdf',
+  'timedOut',
 ]);
 const ragCodes = new Set([
   'input',
@@ -99,19 +101,24 @@ function Failure({
   const blocked = Boolean(
     error.rag && ['scopeBlocked', 'policyChanged', 'sourceChanged'].includes(error.rag.code),
   );
-  const key: DocumentMessage = config
-    ? 'settingsError'
-    : blocked
-      ? 'blocked'
-      : error.code === 'conflict'
-        ? 'conflict'
-        : error.code === 'outlineReviewRequired'
-          ? 'reviewRequired'
-          : error.code === 'cancelled'
-            ? 'cancelled'
-            : error.code === 'input' || error.code === 'limit'
-              ? 'invalid'
-              : 'error';
+  const key: DocumentMessage =
+    error.code === 'pdf'
+      ? 'pdfError'
+      : error.code === 'timedOut'
+        ? 'pdfTimedOut'
+        : config
+          ? 'settingsError'
+          : blocked
+            ? 'blocked'
+            : error.code === 'conflict'
+              ? 'conflict'
+              : error.code === 'outlineReviewRequired'
+                ? 'reviewRequired'
+                : error.code === 'cancelled'
+                  ? 'cancelled'
+                  : error.code === 'input' || error.code === 'limit'
+                    ? 'invalid'
+                    : 'error';
   return (
     <div className="doc-error" role="alert">
       <p>
@@ -360,6 +367,10 @@ function DocumentEditor({
   const syncPending = useRef(false);
   const aiPending = useRef(false);
   const activeRequest = useRef<string | null>(null);
+  const pdfRequest = useRef<string | null>(null);
+  const [pdfStopping, setPdfStopping] = useState(false);
+  const [pdfRunning, setPdfRunning] = useState(false);
+  const [pdfVersion, setPdfVersion] = useState<number | null>(null);
   const jobEpoch = useRef(0);
   const current = useRef<DocumentPage | null>(null);
   const dirtyRef = useRef(false);
@@ -518,6 +529,7 @@ function DocumentEditor({
     return () => {
       alive.current = false;
       epoch.current++;
+      if (pdfRequest.current) void documents.cancelPdf(pdfRequest.current).catch(() => {});
     };
   }, [id]);
   useEffect(() => {
@@ -695,10 +707,11 @@ function DocumentEditor({
       if (alive.current && token === epoch.current) setLoading(false);
     }
   };
-  const runAction = async (kind: 'rename' | 'delete' | 'export') => {
+  const runAction = async (kind: 'rename' | 'delete' | 'export' | 'exportPdf') => {
     if (!page || syncPending.current || ((kind === 'rename' || kind === 'delete') && busy)) return;
     syncPending.current = true;
     setAction(kind);
+    if (kind === 'exportPdf') setPdfVersion(page.revision.sequence);
     setError(null);
     setNotice(null);
     try {
@@ -717,6 +730,21 @@ function DocumentEditor({
       } else if (kind === 'delete') {
         await documents.remove(id);
         if (alive.current) onDeleted();
+      } else if (kind === 'exportPdf') {
+        const path = await bridge.choosePdfPath(page.document.title);
+        if (!path || !alive.current) return;
+        const request = crypto.randomUUID();
+        pdfRequest.current = request;
+        setPdfRunning(true);
+        const result = await documents.exportPdf(
+          id,
+          page.revision.id,
+          exportSources,
+          exportMarkers,
+          request,
+          path,
+        );
+        if (alive.current) setNotice(result.omittedImages ? 'pdfExportedOmitted' : 'pdfExported');
       } else {
         const markdown = await documents.export(id, page.revision.id, exportSources, exportMarkers);
         if (!alive.current) return;
@@ -724,10 +752,20 @@ function DocumentEditor({
           setNotice('exported');
       }
     } catch (cause) {
-      if (alive.current) setError(failure(cause));
+      if (alive.current) {
+        const value = failure(cause);
+        if (kind === 'exportPdf' && value.code === 'cancelled') setNotice('pdfCancelled');
+        else setError(value);
+      }
     } finally {
       syncPending.current = false;
-      if (alive.current) setAction(null);
+      if (kind === 'exportPdf') pdfRequest.current = null;
+      if (alive.current) {
+        setAction(null);
+        setPdfStopping(false);
+        setPdfRunning(false);
+        setPdfVersion(null);
+      }
     }
   };
   if (!page)
@@ -1330,11 +1368,12 @@ function DocumentEditor({
           </details>
         ) : null}
         <details className="doc-export">
-          <summary>{t('export')}</summary>
+          <summary>{t('exportFiles')}</summary>
           <label className="doc-check">
             <input
               type="checkbox"
               checked={exportSources}
+              disabled={Boolean(action)}
               onChange={(event) => setExportSources(event.target.checked)}
             />
             <span>{t('exportSources')}</span>
@@ -1343,6 +1382,7 @@ function DocumentEditor({
             <input
               type="checkbox"
               checked={exportMarkers}
+              disabled={Boolean(action)}
               onChange={(event) => setExportMarkers(event.target.checked)}
             />
             <span>{t('exportMarkers')}</span>
@@ -1350,12 +1390,50 @@ function DocumentEditor({
           <button
             type="button"
             className="button"
-            disabled={Boolean(action)}
+            disabled={Boolean(action) || dirty}
             onClick={() => void runAction('export')}
           >
             <Download size={15} />
             {t('export')} · {documentText(language, 'version', { value: page.revision.sequence })}
           </button>
+          <button
+            type="button"
+            className="button"
+            disabled={Boolean(action) || dirty}
+            onClick={() => void runAction('exportPdf')}
+          >
+            <Download size={15} />
+            {t(action === 'exportPdf' ? 'pdfExporting' : 'exportPdf')} ·{' '}
+            {documentText(language, 'version', { value: pdfVersion ?? page.revision.sequence })}
+          </button>
+          {dirty ? <p className="muted">{t('exportSaveFirst')}</p> : null}
+          <p className="muted">{t('pdfImages')}</p>
+          {action === 'exportPdf' ? (
+            <button
+              type="button"
+              className="button subtle"
+              disabled={pdfStopping || !pdfRunning}
+              onClick={() => {
+                const request = pdfRequest.current;
+                if (!request) return;
+                setPdfStopping(true);
+                void documents
+                  .cancelPdf(request)
+                  .then((cancelled) => {
+                    if (!cancelled && alive.current) setPdfStopping(false);
+                  })
+                  .catch((cause) => {
+                    if (alive.current) {
+                      setPdfStopping(false);
+                      setError(failure(cause));
+                    }
+                  });
+              }}
+            >
+              <Square size={14} />
+              {t('pdfStop')}
+            </button>
+          ) : null}
         </details>
         <details className="doc-history">
           <summary>{t('history')}</summary>

@@ -165,6 +165,27 @@ export const bridge = {
     }
     return true;
   },
+  async choosePdfPath(title: string): Promise<string | null> {
+    if (!native) return null;
+    let safeTitle =
+      title
+        .replace(/[<>:"/\\|?*\x00-\x1f]/g, '-')
+        .trim()
+        .replace(/[ .]+$/, '') || 'untitled';
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(safeTitle))
+      safeTitle = `Prism-${safeTitle}`;
+    const encoder = new TextEncoder();
+    let shortened = '';
+    for (const character of safeTitle) {
+      if (encoder.encode(shortened + character).length > 180) break;
+      shortened += character;
+    }
+    safeTitle = shortened || 'untitled';
+    return save({
+      defaultPath: `${safeTitle}.pdf`,
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+  },
   async subscribe(
     onSettings: (settings: ClientSettings) => void,
     onSession: (session: SearchSession) => void,

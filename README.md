@@ -119,7 +119,11 @@ If the current scope and filters find no literal or initial matches, Prism can r
 | `dict:ko 사과`, `dict:ja りんご`          | Manually look up Korean, English, Chinese or Japanese words        |
 | `clip:`                                   | Search local text, link and image clipboard history                |
 
-File results support ↑/↓ selection, Enter or double-click to open, and toolbar actions to reveal the file or copy its path. Only current indexed paths can be opened. Up to 200 results are displayed with the total match count. The index updates from native filesystem events and reconciles every five minutes while monitoring is healthy (two minutes when folders or watches need recovery) to repair missed events; unavailable folders and unreadable entries are reported. Refresh preserves the existing catalog while rescanning, and removing a search scope immediately removes its results.
+File results support ↑/↓ selection, Enter or double-click to open, and toolbar actions to reveal the file or copy its path. Only current indexed paths can be opened. Up to 200 filename results are displayed with the total match count.
+
+In **Settings → Shortcuts → Open files and folders**, replace Enter with a key such as Ctrl+O or F4. This setting applies to search inputs and filename/content result lists in both windows. It is separate from the global quick-search shortcut; calculator, dictionary and clipboard commands keep Enter. Plain typing, quick-window Ctrl/Command+Enter navigation/chat chords, Alt+F4 and Ctrl/Command+Q/W are reserved. Opening is suppressed during IME composition and key repeats.
+
+The index updates from native filesystem events and reconciles every five minutes while monitoring is healthy (two minutes when folders or watches need recovery) to repair missed events; unavailable folders and unreadable entries are reported. Refresh preserves the existing catalog while rescanning, and removing a search scope immediately removes its results.
 
 `edit-date:` accepts `=`, `>`, `>=`, `<` and `<=` with a local-calendar year, month or date (`YYYY`, `YYYY-MM`, `YYYY-MM-DD`). `>2023` starts at 2024-01-01; `>2024-01-01` starts on the next day. The UI extension filter is combined with query filters using AND. Invalid quotes, extensions and dates show an error.
 

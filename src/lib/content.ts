@@ -85,7 +85,11 @@ export const content = {
   refresh: () => invoke<void>('content_refresh'),
   prepareUnlock: () => invoke<string>('content_prepare_unlock'),
   unlock: (path: string, password: string, requestId: string) =>
-    invoke('content_unlock_pdf', { path, password, requestId }),
+    invoke(/\.(docx|xlsx|pptx)$/iu.test(path) ? 'content_unlock_office' : 'content_unlock_pdf', {
+      path,
+      password,
+      requestId,
+    }),
   cancelUnlock: (requestId: string) => invoke<void>('content_cancel_unlock', { requestId }),
   pause: () => invoke<void>('content_cancel_index'),
   cancel: (requestId: string) => invoke<void>('content_cancel_search', { requestId }),

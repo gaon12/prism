@@ -383,7 +383,8 @@ export function ContentResults({
                   </div>
                   <p className="content-issue-path">{issue.path}</p>
                   {issueKey(issue.code) === 'issue' ? <p>{issue.message}</p> : null}
-                  {issue.code.toLowerCase() === 'encrypted' && /\.pdf$/iu.test(issue.path) ? (
+                  {issue.code.toLowerCase() === 'encrypted' &&
+                  /\.(pdf|docx|xlsx|pptx)$/iu.test(issue.path) ? (
                     <button
                       type="button"
                       className="text-button"

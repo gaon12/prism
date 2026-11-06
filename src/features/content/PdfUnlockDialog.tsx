@@ -25,6 +25,7 @@ export function PdfUnlockDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<Parameters<typeof contentText>[1] | null>(null);
   const t = (key: Parameters<typeof contentText>[1]) => contentText(language, key);
+  const office = /\.(docx|xlsx|pptx)$/iu.test(path);
   const clear = () => {
     if (input.current) input.current.value = '';
     const token = active.current?.token;
@@ -73,7 +74,7 @@ export function PdfUnlockDialog({
       await content.unlock(path, password, token);
       if (!alive.current || active.current !== attempt) return;
       active.current = null;
-      showToast(t('unlockDone'));
+      showToast(t(office ? 'unlockOfficeDone' : 'unlockDone'));
       closeCallback.current();
     } catch (cause) {
       if (!alive.current || active.current !== attempt) return;
@@ -82,8 +83,10 @@ export function PdfUnlockDialog({
           ? String(cause.code).toLowerCase()
           : '';
       const known = {
-        passwordrejected: 'unlockRejected',
-        busy: 'unlockBusy',
+        passwordrejected: office ? 'unlockOfficeRejected' : 'unlockRejected',
+        busy: office ? 'unlockOfficeBusy' : 'unlockBusy',
+        unsupportedformat: office ? 'unlockOfficeUnsupported' : 'unlockFailed',
+        passwordtimedout: 'unlockTimedOut',
         cancelled: 'cancelled',
         outsidescope: 'outsideScope',
         unsafepath: 'unsafePath',
@@ -93,7 +96,9 @@ export function PdfUnlockDialog({
         corruptdocument: 'corrupt',
         io: 'io',
       } as const;
-      setError(known[code as keyof typeof known] ?? 'unlockFailed');
+      setError(
+        known[code as keyof typeof known] ?? (office ? 'unlockOfficeFailed' : 'unlockFailed'),
+      );
       input.current?.focus();
     } finally {
       if (attempt.token) void content.cancelUnlock(attempt.token).catch(() => {});
@@ -125,7 +130,7 @@ export function PdfUnlockDialog({
       >
         <header>
           <LockKeyhole size={21} aria-hidden="true" />
-          <h2 id={`${id}-title`}>{t('unlockTitle')}</h2>
+          <h2 id={`${id}-title`}>{t(office ? 'unlockOfficeTitle' : 'unlockTitle')}</h2>
           <button
             type="button"
             className="icon-button"
@@ -139,9 +144,11 @@ export function PdfUnlockDialog({
           {path.split(/[\\/]/).pop()}
         </p>
         <p id={`${id}-notice`} className="pdf-unlock-notice">
-          {t('unlockNotice')}
+          {t(office ? 'unlockOfficeNotice' : 'unlockNotice')}
         </p>
-        <label htmlFor={`${id}-password`}>{t('unlockPassword')}</label>
+        <label htmlFor={`${id}-password`}>
+          {t(office ? 'unlockOfficePassword' : 'unlockPassword')}
+        </label>
         <input
           ref={input}
           id={`${id}-password`}
@@ -161,7 +168,7 @@ export function PdfUnlockDialog({
         ) : null}
         {busy ? (
           <p className="pdf-unlock-notice" role="status">
-            {t('unlockWorking')}
+            {t(office ? 'unlockOfficeWorking' : 'unlockWorking')}
           </p>
         ) : null}
         <footer>

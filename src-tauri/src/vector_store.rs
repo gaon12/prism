@@ -1108,6 +1108,126 @@ mod tests {
     }
 
     #[test]
+    fn startup_reset_removes_real_sqlite_and_all_lance_namespaces_after_process_exit() {
+        let directory = tempfile::Builder::new()
+            .prefix("prism-reset-storage-")
+            .tempdir()
+            .unwrap();
+        fs::write(
+            directory.path().join("fixture-owner"),
+            "prism index reset storage fixture",
+        )
+        .unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "vector_store::tests::index_reset_storage_fixture",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("PRISM_RESET_STORAGE_FIXTURE", directory.path())
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let root = directory.path();
+        assert!(root.join("content/content.sqlite3").is_file());
+        assert_eq!(
+            fs::read_dir(root.join("content/vectors"))
+                .unwrap()
+                .filter(|item| item
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".lance"))
+                .count(),
+            2
+        );
+        crate::index_reset::schedule(root).unwrap();
+        assert!(crate::index_reset::apply_pending(root).unwrap());
+        assert!(!root.join("content").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("source.md")).unwrap(),
+            "resetneedle original source"
+        );
+        runtime(async {
+            let content = ContentStore::open(&root.join("content/content.sqlite3")).unwrap();
+            assert!(content
+                .search(
+                    "resetneedle",
+                    &ContentSearchFilter::default(),
+                    &[root.into()],
+                    10,
+                    &cancel()
+                )
+                .unwrap()
+                .is_empty());
+            for dimensions in [2, 3] {
+                let vectors = VectorStore::open(&root.join("content/vectors"), model(dimensions))
+                    .await
+                    .unwrap();
+                assert_eq!(vectors.table.count_rows(None).await.unwrap(), 0);
+            }
+        });
+    }
+
+    // Only the parent above invokes this, in a fresh process. Startup deletion
+    // must be tested after all real SQLite/Lance file handles have closed.
+    #[test]
+    #[ignore = "owned child fixture for the startup-reset lifecycle test"]
+    fn index_reset_storage_fixture() {
+        let root = PathBuf::from(
+            std::env::var_os("PRISM_RESET_STORAGE_FIXTURE").expect("parent fixture root"),
+        );
+        assert_eq!(
+            root.canonicalize().unwrap().parent(),
+            Some(std::env::temp_dir().canonicalize().unwrap().as_path())
+        );
+        assert!(root
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("prism-reset-storage-"));
+        assert_eq!(
+            fs::read_to_string(root.join("fixture-owner")).unwrap(),
+            "prism index reset storage fixture"
+        );
+        fs::create_dir_all(root.join("content")).unwrap();
+        runtime(async {
+            let content = ContentStore::open(&root.join("content/content.sqlite3")).unwrap();
+            let roots = vec![root.clone()];
+            let (doc, chunks) = source(
+                &root,
+                "source.md",
+                "resetneedle original source",
+                &content,
+                &roots,
+            );
+            for dimensions in [2, 3] {
+                let spec = model(dimensions);
+                let vector = vec![1.0; dimensions];
+                let vectors = VectorStore::open(&root.join("content/vectors"), spec.clone())
+                    .await
+                    .unwrap();
+                vectors
+                    .replace_document(
+                        batch(&doc, &chunks, &spec.model_fingerprint, vector),
+                        &content,
+                        &roots,
+                        &cancel(),
+                    )
+                    .await
+                    .unwrap();
+                assert!(vectors.table.count_rows(None).await.unwrap() > 0);
+            }
+        });
+    }
+
+    #[test]
     fn vector_validation_rejects_dimensions_nonfinite_and_zero() {
         assert_eq!(
             normalized_vector(&[1.0], 2).unwrap_err().code,

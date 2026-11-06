@@ -20,6 +20,14 @@ a full reading-system conformance suite. Recreate them with:
 python tests/fixtures/epub/generate.py
 ```
 
+`generate-navigation.py` independently creates `navigation.epub` (EPUB 3
+hierarchical navigation with an alternate namespace prefix and mixed inline
+labels), `navigation-ncx.epub` (legacy NCX), `navigation-spine.epub` (no
+declared contents), and `navigation-many.epub` (240 searchable entries).
+ZIP/manifest order differs from the spine. They include a
+percent-encoded Korean fragment far down a long section, a missing fragment,
+and external, escaping and non-spine targets. No user text is included.
+
 The platform QA unit tests check order, XML/path/size/cancellation errors, CSS
 token rewriting/import cycles, encryption diagnostics and authenticated cache
 admission. Deterministic 1,600-byte font payloads test both IDPF and Adobe

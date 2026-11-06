@@ -5,6 +5,8 @@ use crate::collection_store::{error, ErrorCode, PageKind, PageLocation, Result};
 use base64::Engine;
 #[path = "collection_epub_document.rs"]
 mod document;
+#[path = "collection_epub_navigation.rs"]
+mod navigation;
 #[path = "collection_epub_styles.rs"]
 mod styles;
 use quick_xml::{events::Event, Reader};
@@ -192,6 +194,8 @@ pub(crate) struct Book<'a> {
     entries: HashMap<String, usize>,
     items: HashMap<String, String>,
     pub chapters: Vec<Chapter>,
+    navigation_entry: Option<String>,
+    ncx_entry: Option<String>,
     direction: String,
     fonts: HashMap<String, (Vec<u8>, usize)>,
     resources: HashMap<String, String>,
@@ -241,6 +245,8 @@ impl<'a> Book<'a> {
             entries,
             items: HashMap::new(),
             chapters: Vec::new(),
+            navigation_entry: None,
+            ncx_entry: None,
             direction: "ltr".into(),
             fonts: HashMap::new(),
             resources: HashMap::new(),
@@ -306,10 +312,24 @@ impl<'a> Book<'a> {
                 .attr("media-type")
                 .ok_or_else(|| error(ErrorCode::Input))?
                 .to_string();
+            if node
+                .attr("properties")
+                .is_some_and(|value| value.split_whitespace().any(|p| p == "nav"))
+            {
+                book.navigation_entry.get_or_insert_with(|| entry.clone());
+            }
+            if media == "application/x-dtbncx+xml" {
+                book.ncx_entry.get_or_insert_with(|| entry.clone());
+            }
             if book.items.insert(entry.clone(), media.clone()).is_some()
                 || ids.insert(id, Item { media, entry }).is_some()
             {
                 return Err(error(ErrorCode::Input));
+            }
+        }
+        if let Some(item) = nodes[spine].attr("toc").and_then(|id| ids.get(id)) {
+            if item.media == "application/x-dtbncx+xml" {
+                book.ncx_entry = Some(item.entry.clone());
             }
         }
         for node in nodes

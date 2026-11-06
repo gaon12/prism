@@ -251,5 +251,8 @@ fn run(
 }
 
 #[cfg(test)]
+#[path = "parallel_bench.rs"]
+mod bench;
+#[cfg(test)]
 #[path = "parallel_tests.rs"]
 mod tests;

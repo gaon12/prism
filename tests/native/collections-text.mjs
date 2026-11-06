@@ -90,7 +90,9 @@ try {
   main.on('request', (request) => {
     if (request.url().startsWith('https://invalid.example/')) network.push(request.url());
   });
-  assert.equal((await invoke('runtime_info')).development, release === '0');
+  const runtime = await invoke('runtime_info');
+  assert.equal(runtime.development, release === '0');
+  assert.equal(runtime.installKind, 'portable');
   const before = await invoke('get_settings');
   collection = await invoke('collection_create', { title: '텍스트 책장', description: '' });
   work = await invoke('collection_work_create', {

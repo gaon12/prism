@@ -282,13 +282,25 @@ def run():
 
     temporary = profile / "Temp"
     temporary.mkdir(exist_ok=True)
+    # soffice embeds its own interpreter: this worker's -I/-S/-B flags do not
+    # apply to that second interpreter. Discard inherited Python overrides and
+    # prevent it from importing a user site or writing bytecode into the sealed
+    # engine. Any explicitly requested cache stays inside this request's workdir.
     environment = dict(
-        os.environ,
+        {
+            key: value
+            for key, value in os.environ.items()
+            if not key.upper().startswith("PYTHON")
+        },
         TMP=str(temporary),
         TEMP=str(temporary),
         TMPDIR=str(temporary),
         SAL_DISABLE_OPENCL="1",
         SAL_USE_VCLPLUGIN="svp",
+        PYTHONDONTWRITEBYTECODE="1",
+        PYTHONNOUSERSITE="1",
+        PYTHONSAFEPATH="1",
+        PYTHONPYCACHEPREFIX=str(profile / "python-cache"),
     )
     pipe = "prism-office-" + uuid.uuid4().hex
     started = time.monotonic()

@@ -167,6 +167,8 @@ fn error(code: &str, message: &str) -> ContentError {
 }
 type Result<T> = std::result::Result<T, ContentError>;
 type Listener = Arc<dyn Fn(ContentStatus) + Send + Sync>;
+type PowerReader = Arc<dyn Fn() -> Option<bool> + Send + Sync>;
+const POWER_POLL: Duration = Duration::from_secs(5);
 struct Request {
     generation: u64,
     scopes: Vec<SearchScope>,
@@ -195,6 +197,8 @@ struct Inner {
     paused: AtomicBool,
     /// The user's "pause content indexing on battery" setting.
     battery_pause: AtomicBool,
+    power_reader: PowerReader,
+    power_poll: Duration,
     listener: Listener,
     last_emit: Mutex<Instant>,
     excluded: Mutex<Vec<String>>,
@@ -210,6 +214,21 @@ impl ContentService {
         directory: &Path,
         embedding: std::result::Result<EmbeddingRuntime, String>,
         listener: impl Fn(ContentStatus) + Send + Sync + 'static,
+    ) -> Result<Self> {
+        Self::open_with_power_reader(
+            directory,
+            embedding,
+            listener,
+            Arc::new(crate::power::on_battery),
+            POWER_POLL,
+        )
+    }
+    fn open_with_power_reader(
+        directory: &Path,
+        embedding: std::result::Result<EmbeddingRuntime, String>,
+        listener: impl Fn(ContentStatus) + Send + Sync + 'static,
+        power_reader: PowerReader,
+        power_poll: Duration,
     ) -> Result<Self> {
         let service = Self {
             inner: Arc::new(Inner {
@@ -234,6 +253,8 @@ impl ContentService {
                 closed: AtomicBool::new(false),
                 paused: AtomicBool::new(false),
                 battery_pause: AtomicBool::new(false),
+                power_reader,
+                power_poll,
                 listener: Arc::new(listener),
                 last_emit: Mutex::new(Instant::now() - Duration::from_secs(1)),
                 excluded: Mutex::new(vec![path_key(
@@ -418,6 +439,7 @@ impl ContentService {
         self.update(|status| {
             status.phase = "cancelled".into();
             status.current_path = None;
+            status.pause_reason = None;
         });
     }
     pub fn shutdown(&self) {
@@ -432,7 +454,8 @@ impl ContentService {
     }
     fn monitor(&self) {
         let mut last_scan = Instant::now();
-        // Power state is read at most every 30 s (macOS runs a small tool to read it).
+        // Idle scans share this cache. A running scan has its own bounded observer
+        // because this scheduler waits synchronously for extraction to finish.
         let mut power_checked: Option<Instant> = None;
         let mut on_battery = false;
         let mut held_for_battery = false;
@@ -443,11 +466,11 @@ impl ContentService {
             if self.inner.closed.load(Ordering::Acquire) || Arc::strong_count(&self.inner) == 1 {
                 return;
             }
-            // Pause-on-battery: while unplugged, leave queued work waiting instead of starting
-            // it. A scan already running finishes normally. Unknown power counts as plugged in.
+            // Unknown power counts as plugged in. Explicit manual pause is independent
+            // of battery pause and must survive reconnecting the charger.
             if self.inner.battery_pause.load(Ordering::Acquire) {
-                if power_checked.is_none_or(|at| at.elapsed() >= Duration::from_secs(30)) {
-                    on_battery = crate::power::on_battery() == Some(true);
+                if power_checked.is_none_or(|at| at.elapsed() >= self.inner.power_poll) {
+                    on_battery = (self.inner.power_reader)() == Some(true);
                     power_checked = Some(Instant::now());
                 }
             } else {
@@ -464,12 +487,19 @@ impl ContentService {
                     && (self.inner.dirty.load(Ordering::Acquire)
                         || last_scan.elapsed() >= Duration::from_secs(60)));
             if on_battery && work_waiting {
-                if !held_for_battery {
+                let needs_notice = !held_for_battery
+                    || self.status().is_ok_and(|status| {
+                        status.phase != "paused"
+                            || status.pause_reason.as_deref() != Some("battery")
+                    });
+                if needs_notice {
                     held_for_battery = true;
                     self.update(|status| {
-                        status.phase = "paused".into();
-                        status.current_path = None;
-                        status.pause_reason = Some("battery".into());
+                        if !self.inner.paused.load(Ordering::Acquire) {
+                            status.phase = "paused".into();
+                            status.current_path = None;
+                            status.pause_reason = Some("battery".into());
+                        }
                     });
                 }
                 thread::sleep(Duration::from_millis(250));
@@ -481,11 +511,19 @@ impl ContentService {
                 self.update(|status| {
                     status.pause_reason = None;
                     if status.phase == "paused" {
-                        status.phase = "ready".into();
+                        status.phase =
+                            if work_waiting && !self.inner.paused.load(Ordering::Acquire) {
+                                "indexing"
+                            } else {
+                                "ready"
+                            }
+                            .into();
                     }
                 });
-                self.inner.dirty.store(true, Ordering::Release);
-                last_scan = Instant::now() - Duration::from_secs(60);
+                if !self.inner.paused.load(Ordering::Acquire) {
+                    self.inner.dirty.store(true, Ordering::Release);
+                    last_scan = Instant::now() - Duration::from_secs(60);
+                }
             }
             let request = self
                 .inner
@@ -511,6 +549,9 @@ impl ContentService {
                 }
                 self.inner.dirty.store(false, Ordering::Release);
                 self.scan(request);
+                // The scan's observer may have noticed a power transition while
+                // this scheduler was busy. Never reuse the pre-scan AC sample.
+                power_checked = None;
                 last_scan = Instant::now();
             } else if self.inner.generation.load(Ordering::Acquire) > 0
                 && !self.inner.paused.load(Ordering::Acquire)
@@ -637,7 +678,39 @@ impl ContentService {
         });
     }
     fn scan(&self, request: Request) {
-        if !self.current(&request) {
+        // A scoped observer lives exactly as long as this scan. It only signals
+        // this request's existing cancellation token, which extraction/OCR, SQL
+        // and embedding already honor. It never cancels queries or changes the
+        // user's manual pause, scopes, permissions or running model process.
+        std::thread::scope(|scope| {
+            let request = &request;
+            let (finished, receiver) = std::sync::mpsc::channel();
+            scope.spawn(move || loop {
+                match receiver.recv_timeout(self.inner.power_poll) {
+                    Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                }
+                if !self.current(request) {
+                    break;
+                }
+                if self.inner.battery_pause.load(Ordering::Acquire)
+                    && (self.inner.power_reader)() == Some(true)
+                    && self.inner.battery_pause.load(Ordering::Acquire)
+                    && self.current(request)
+                {
+                    request.cancel.store(true, Ordering::Release);
+                    // Retain completed documents and retry the interrupted scan
+                    // with a fresh token once the scheduler observes AC again.
+                    self.inner.dirty.store(true, Ordering::Release);
+                    break;
+                }
+            });
+            self.scan_inner(request);
+            let _ = finished.send(());
+        });
+    }
+    fn scan_inner(&self, request: &Request) {
+        if !self.current(request) {
             return;
         }
         let roots = Self::roots(&request.scopes, None);
@@ -681,7 +754,7 @@ impl ContentService {
             .store
             .purge_for_scopes(&roots, &unavailable, &request.cancel)
         {
-            if self.current(&request) {
+            if self.current(request) {
                 self.update(|status| {
                     status.phase = "error".into();
                     status.embedding_error = Some(error.message);
@@ -696,7 +769,7 @@ impl ContentService {
             .map(|paths| paths.clone())
             .unwrap_or_default();
         for path in &excluded {
-            if !self.current(&request) {
+            if !self.current(request) {
                 return;
             }
             let _ = self
@@ -713,7 +786,7 @@ impl ContentService {
             match self.vector() {
                 Ok(vector) => Some(vector),
                 Err(error) => {
-                    if !self.current(&request) {
+                    if !self.current(request) {
                         return;
                     }
                     self.update(|status| status.embedding_error = Some(error.message));
@@ -731,7 +804,9 @@ impl ContentService {
                 &roots,
                 &request.cancel,
             )) {
-                self.update(|status| status.embedding_error = Some(error.message));
+                if self.current(request) {
+                    self.update(|status| status.embedding_error = Some(error.message));
+                }
             }
         }
         let mut seen = HashSet::new();
@@ -752,7 +827,7 @@ impl ContentService {
                             .any(|root| under(&path_key(entry.path()), root))
                 })
             {
-                if !self.current(&request) {
+                if !self.current(request) {
                     return;
                 }
                 let entry = match entry {
@@ -840,7 +915,7 @@ impl ContentService {
                     ) {
                         Ok(extracted) => extracted,
                         Err(error) => {
-                            if !self.current(&request) {
+                            if !self.current(request) {
                                 return;
                             }
                             let code = serde_json::to_value(error.code)
@@ -851,7 +926,7 @@ impl ContentService {
                             continue;
                         }
                     };
-                    if !self.current(&request) {
+                    if !self.current(request) {
                         return;
                     }
                     match self.inner.store.replace_document_versioned(
@@ -862,7 +937,7 @@ impl ContentService {
                     ) {
                         Ok(document) => document,
                         Err(error) => {
-                            if !self.current(&request) {
+                            if !self.current(request) {
                                 return;
                             }
                             let code = serde_json::to_value(error.code)
@@ -878,7 +953,7 @@ impl ContentService {
                     if let Err(error) =
                         self.embed_document(&document, vector, &roots, &request.cancel)
                     {
-                        if self.current(&request) {
+                        if self.current(request) {
                             self.update(|status| status.embedding_error = Some(error.message));
                         }
                     } else {
@@ -888,7 +963,7 @@ impl ContentService {
                 self.update(|status| status.indexed += 1);
             }
         }
-        if !self.current(&request) {
+        if !self.current(request) {
             return;
         }
         self.update(|status| {
@@ -1736,6 +1811,209 @@ impl ContentService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wait_until(label: &str, condition: impl Fn() -> bool) {
+        let start = Instant::now();
+        while !condition() {
+            assert!(start.elapsed() < Duration::from_secs(5), "{label}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn battery_interrupts_an_active_scan_preserves_search_and_resumes_with_a_fresh_token() {
+        use std::sync::mpsc;
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("sources");
+        fs::create_dir(&folder).unwrap();
+        let cached = folder.join("cached.md");
+        let busy = folder.join("busy.md");
+        fs::write(&cached, "retainedbatterycanary cached original").unwrap();
+        fs::write(&busy, "resumedbatterycanary interrupted original").unwrap();
+        let battery = Arc::new(AtomicBool::new(false));
+        let sample = battery.clone();
+        let gated = Arc::new(AtomicBool::new(false));
+        let gate = gated.clone();
+        let (entered, observed) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let released = Mutex::new(released);
+        let service = ContentService::open_with_power_reader(
+            &root.path().join("cache"),
+            Err("no model".into()),
+            move |status| {
+                if status.phase == "ready" && !gate.swap(true, Ordering::AcqRel) {
+                    let _ = entered.send(());
+                    // Hold the actual worker in its final notification, before
+                    // its scan scope exits. Progress updates are throttled, so
+                    // only a phase transition is a deterministic listener gate.
+                    // The independent observer must cancel its active token
+                    // while this worker cannot advance the scheduler itself.
+                    let _ = released
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5));
+                }
+            },
+            Arc::new(move || Some(sample.load(Ordering::Acquire))),
+            Duration::from_millis(20),
+        )
+        .unwrap();
+        let roots = vec![crate::path_identity::canonical(&folder).unwrap()];
+        let cancel = AtomicBool::new(false);
+        let extracted =
+            document_extract::extract_document(&cached, &ExtractOptions::default(), &cancel)
+                .unwrap();
+        service
+            .inner
+            .store
+            .replace_document_versioned(&extracted, &roots, Some(EXTRACTOR_VERSION), &cancel)
+            .unwrap();
+        let scope = SearchScope {
+            id: "docs".into(),
+            name: "docs".into(),
+            path: folder.to_string_lossy().into(),
+            filename_enabled: true,
+            content_enabled: true,
+            external_allowed: false,
+        };
+        service.set_battery_pause(true);
+        service.configure(vec![scope]).unwrap();
+        observed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("active scan reached its blocked completion notification");
+        let interrupted = service.inner.scan_cancel.lock().unwrap().clone();
+        let query = service.begin_search("main", "battery-query").unwrap();
+        battery.store(true, Ordering::Release);
+        wait_until("power observer cancels while scan is still blocked", || {
+            interrupted.load(Ordering::Acquire)
+        });
+        assert!(
+            !query.load(Ordering::Acquire),
+            "battery policy must not cancel a user's search"
+        );
+        assert_eq!(
+            service
+                .search("retainedbatterycanary", "", None, &query)
+                .unwrap()
+                .hits
+                .len(),
+            1
+        );
+        assert_eq!(
+            fs::read_to_string(&busy).unwrap(),
+            "resumedbatterycanary interrupted original"
+        );
+        release.send(()).unwrap();
+        wait_until(
+            "battery pause is published after the cancelled work returns",
+            || service.status().unwrap().pause_reason.as_deref() == Some("battery"),
+        );
+        assert_eq!(service.status().unwrap().phase, "paused");
+        assert_eq!(
+            service
+                .search("resumedbatterycanary", "", None, &query)
+                .unwrap()
+                .hits
+                .len(),
+            1,
+            "completed documents survive a battery interruption"
+        );
+        battery.store(false, Ordering::Release);
+        wait_until("AC resumes the complete scan", || {
+            let s = service.status().unwrap();
+            s.phase == "ready" && s.indexed == 2
+        });
+        assert!(!Arc::ptr_eq(
+            &interrupted,
+            &service.inner.scan_cancel.lock().unwrap()
+        ));
+        assert_eq!(
+            service
+                .search("resumedbatterycanary", "", None, &query)
+                .unwrap()
+                .hits
+                .len(),
+            1
+        );
+        assert_eq!(
+            service
+                .search("retainedbatterycanary", "", None, &query)
+                .unwrap()
+                .hits
+                .len(),
+            1
+        );
+        assert!(!query.load(Ordering::Acquire));
+        service.shutdown();
+    }
+
+    #[test]
+    fn manual_pause_survives_power_changes_and_disabling_battery_pause_releases_pending_work() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("sources");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("sample.md"), "batterysettingscanary").unwrap();
+        let battery = Arc::new(AtomicU64::new(1));
+        let sample = battery.clone();
+        let service = ContentService::open_with_power_reader(
+            &root.path().join("cache"),
+            Err("no model".into()),
+            |_| {},
+            Arc::new(move || match sample.load(Ordering::Acquire) {
+                0 => Some(false),
+                1 => Some(true),
+                _ => None,
+            }),
+            Duration::from_millis(20),
+        )
+        .unwrap();
+        let scope = SearchScope {
+            id: "docs".into(),
+            name: "docs".into(),
+            path: folder.to_string_lossy().into(),
+            filename_enabled: true,
+            content_enabled: true,
+            external_allowed: false,
+        };
+        service.set_battery_pause(true);
+        service.configure(vec![scope]).unwrap();
+        wait_until("queued work is held on battery", || {
+            service.status().unwrap().pause_reason.as_deref() == Some("battery")
+        });
+        service.refresh().unwrap();
+        wait_until("refresh while held must republish the paused phase", || {
+            service.status().unwrap().phase == "paused"
+        });
+        service.set_battery_pause(false);
+        wait_until("switching the preference off releases pending work", || {
+            let status = service.status().unwrap();
+            status.phase == "ready" && status.indexed == 1
+        });
+        assert_eq!(service.status().unwrap().indexed, 1);
+        service.set_battery_pause(true);
+        service.refresh().unwrap();
+        wait_until("battery hold returns", || {
+            service.status().unwrap().pause_reason.as_deref() == Some("battery")
+        });
+        service.cancel_index();
+        battery.store(0, Ordering::Release);
+        thread::sleep(Duration::from_millis(400));
+        assert_eq!(service.status().unwrap().phase, "cancelled");
+        assert_eq!(service.status().unwrap().pause_reason, None);
+        assert!(service.inner.paused.load(Ordering::Acquire));
+        battery.store(2, Ordering::Release);
+        service.refresh().unwrap();
+        wait_until(
+            "unknown power does not suspend explicit resumed work",
+            || {
+                let status = service.status().unwrap();
+                status.phase == "ready" && status.indexed == 1
+            },
+        );
+        assert_eq!(service.status().unwrap().indexed, 1);
+        service.shutdown();
+    }
+
     #[test]
     fn password_retry_preserves_pause_cache_and_current_authorization() {
         let root = tempfile::tempdir().unwrap();

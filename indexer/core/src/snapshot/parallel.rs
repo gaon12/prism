@@ -249,3 +249,7 @@ fn run(
         result.and(joined)
     })
 }
+
+#[cfg(test)]
+#[path = "parallel_tests.rs"]
+mod tests;

@@ -9,6 +9,9 @@ use std::collections::BTreeSet;
 #[cfg(feature = "cache")]
 pub mod codec;
 mod parallel;
+#[cfg(test)]
+#[path = "snapshot/parallel_snapshot_tests.rs"]
+mod parallel_snapshot_tests;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Progress {

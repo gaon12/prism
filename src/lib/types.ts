@@ -61,6 +61,7 @@ export interface ClientSettings {
   language: Language;
   fontSize: number;
   shortcut: string;
+  fileOpenShortcut: string;
   rememberSearch: boolean;
   keyboardCorrection: boolean;
   hybridSearch: boolean;
@@ -137,6 +138,7 @@ export const defaultSettings: ClientSettings = {
   language: 'ko',
   fontSize: 14,
   shortcut: 'Alt+Space',
+  fileOpenShortcut: 'Enter',
   rememberSearch: true,
   keyboardCorrection: true,
   hybridSearch: true,
@@ -189,6 +191,10 @@ export function normalizeSettings(input: unknown): ClientSettings {
       typeof value.shortcut === 'string' && value.shortcut.trim()
         ? value.shortcut.trim()
         : defaultSettings.shortcut,
+    fileOpenShortcut:
+      typeof value.fileOpenShortcut === 'string' && value.fileOpenShortcut.trim()
+        ? value.fileOpenShortcut.trim()
+        : defaultSettings.fileOpenShortcut,
     rememberSearch: typeof value.rememberSearch === 'boolean' ? value.rememberSearch : true,
     keyboardCorrection:
       typeof value.keyboardCorrection === 'boolean' ? value.keyboardCorrection : true,

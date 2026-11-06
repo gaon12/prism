@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fs, io::Write, path::Path};
 use tauri_plugin_global_shortcut::Shortcut;
 
+#[path = "file_shortcut.rs"]
+mod file_shortcut;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchScope {
@@ -25,6 +28,7 @@ pub struct ClientSettings {
     pub language: String,
     pub font_size: u8,
     pub shortcut: String,
+    pub file_open_shortcut: String,
     pub remember_search: bool,
     pub keyboard_correction: bool,
     pub hybrid_search: bool,
@@ -177,6 +181,7 @@ impl Default for ClientSettings {
             language: "ko".into(),
             font_size: 14,
             shortcut: "Alt+Space".into(),
+            file_open_shortcut: "Enter".into(),
             remember_search: true,
             keyboard_correction: true,
             hybrid_search: true,
@@ -238,9 +243,18 @@ impl ClientSettings {
         if !self.shortcut.contains('+') {
             return Err("The global shortcut must include a modifier key.".into());
         }
-        self.shortcut
+        let global_shortcut = self
+            .shortcut
             .parse::<Shortcut>()
             .map_err(|error| format!("Invalid shortcut: {error}"))?;
+        let file_shortcut =
+            file_shortcut::canonical(&self.file_open_shortcut, cfg!(target_os = "macos"))
+                .map_err(str::to_owned)?
+                .parse::<Shortcut>()
+                .map_err(|_| "fileShortcutInvalid".to_string())?;
+        if file_shortcut == global_shortcut {
+            return Err("fileShortcutConflict".into());
+        }
         let mut ids = HashSet::new();
         let mut paths = HashSet::new();
         for scope in &self.scopes {
@@ -461,6 +475,25 @@ mod tests {
             external_allowed: false,
         });
         assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn file_opening_key_migrates_round_trips_and_rejects_global_conflicts() {
+        let mut settings: ClientSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.file_open_shortcut, "Enter");
+        settings.file_open_shortcut = "Control+Shift+O".into();
+        settings.validate().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        write_json(&path, &settings).unwrap();
+        assert_eq!(
+            read_settings(&path).unwrap().file_open_shortcut,
+            "Control+Shift+O"
+        );
+        settings.shortcut = "Shift+Ctrl+KeyO".into();
+        assert_eq!(settings.validate(), Err("fileShortcutConflict".into()));
+        settings.file_open_shortcut = "Ctrl+Enter".into();
+        assert_eq!(settings.validate(), Err("fileShortcutReserved".into()));
     }
 
     #[test]

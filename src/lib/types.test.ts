@@ -11,6 +11,12 @@ import {
 } from './types';
 
 describe('persisted client data', () => {
+  it('keeps Enter for legacy profiles and persists an independent file opening key', () => {
+    expect(normalizeSettings(undefined).fileOpenShortcut).toBe('Enter');
+    expect(normalizeSettings({ shortcut: 'Ctrl+Space' }).fileOpenShortcut).toBe('Enter');
+    expect(normalizeSettings({ fileOpenShortcut: ' Ctrl+O ' }).fileOpenShortcut).toBe('Ctrl+O');
+    expect(normalizeSettings({ fileOpenShortcut: '' }).fileOpenShortcut).toBe('Enter');
+  });
   it('migrates OCR as opt-in and rejects malformed language settings', () => {
     expect(normalizeSettings({}).ocr).toEqual({ enabled: false, language: 'auto', engine: 'auto' });
     expect(normalizeSettings({ ocr: { enabled: 'yes', language: '../../private' } }).ocr).toEqual({

@@ -200,7 +200,10 @@ impl Work {
         let parent = crate::path_identity::canonical(parent).map_err(|_| error(Code::Integrity))?;
         let mut nonce = [0; 16];
         getrandom::fill(&mut nonce).map_err(|_| error(Code::Failed))?;
-        let path = parent.join(format!("request-{}", assets::digest(&nonce)));
+        // LibreOffice appends deep extension-registry paths to its profile.
+        // Retain 128 bits of randomness without spending MAX_PATH's budget on
+        // a redundant 64-character digest and long request prefix.
+        let path = parent.join(format!("r-{}", &assets::digest(&nonce)[..32]));
         fs::create_dir(&path).map_err(|_| error(Code::Failed))?;
         #[cfg(unix)]
         {
@@ -442,5 +445,21 @@ mod tests {
         assert_eq!(fs::read(path.join("worker.py")).unwrap(), assets::WORKER);
         drop(work);
         assert!(!path.exists());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn private_profile_paths_leave_room_for_the_engine_extension_registry() {
+        let root = tempfile::tempdir().unwrap();
+        let mut parent = root.path().join("profile");
+        while crate::path_identity::normal(&parent).as_os_str().len() < 81 {
+            parent.push("data");
+        }
+        let work = Work::new(&parent).unwrap();
+        let registry = crate::path_identity::normal(&work.path).join("user/user/extensions/bundled/registry/com.sun.star.comp.deployment.component.PackageRegistryBackend/unorc");
+        use std::os::windows::ffi::OsStrExt;
+        assert!(
+            registry.as_os_str().encode_wide().count() < 260,
+            "An engine profile registry must fit Win32 path APIs"
+        );
     }
 }

@@ -291,6 +291,7 @@ def run():
             key: value
             for key, value in os.environ.items()
             if not key.upper().startswith("PYTHON")
+            and key.upper() != "CRASH_DUMP_ENABLE"
         },
         TMP=str(temporary),
         TEMP=str(temporary),
@@ -312,6 +313,10 @@ def run():
             "--nodefault",
             "--nofirststartwizard",
             "--norestore",
+            # Bootstrap crashes otherwise create a memory dump in program/,
+            # before the normal private profile crash directory is available.
+            # Don't persist document-memory dumps or mutate the verified engine.
+            "-env:CrashDumpEnable=false",
             "-env:UserInstallation=" + (profile / "user").as_uri(),
             "--accept=pipe,name=" + pipe + ";urp;StarOffice.ComponentContext",
         ],

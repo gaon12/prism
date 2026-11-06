@@ -634,6 +634,14 @@ fn find_fields(chars: &[char], blanks: &mut usize) -> Vec<(usize, usize, String,
                     && key.chars().count() <= MAX_KEY_CHARS
                     && !key.contains(['{', '}', '\n']);
                 if valid {
+                    // User names and positional blanks share one values map.
+                    // Escape both reserved prefixes so {{blank:1}}, ___ and
+                    // {{field:blank:1}} can receive three independent values.
+                    let key = if key.starts_with("blank:") || key.starts_with("field:") {
+                        format!("field:{key}")
+                    } else {
+                        key
+                    };
                     found.push((i, close + 2, key, FieldKind::Placeholder));
                     i = close + 2;
                     continue;
@@ -1004,6 +1012,31 @@ mod tests {
             part(&filled, "word/styles.xml"),
             "<w:styles>keep</w:styles>"
         );
+    }
+
+    #[test]
+    fn placeholder_names_do_not_alias_positional_blank_keys() {
+        let form = docx(
+            "<w:p><w:r><w:t>{{blank:1}} / ___ / {{field:blank:1}} / {{plain}}</w:t></w:r></w:p>",
+        );
+        let (_, found) = fields(&form).unwrap();
+        let keys: Vec<_> = found.iter().map(|field| field.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["field:blank:1", "blank:1", "field:field:blank:1", "plain"]
+        );
+        let filled = fill(
+            &form,
+            &values(&[
+                ("field:blank:1", "named"),
+                ("blank:1", "positional"),
+                ("field:field:blank:1", "prefixed"),
+                ("plain", "ordinary"),
+            ]),
+        )
+        .unwrap();
+        assert!(part(&filled, "word/document.xml")
+            .contains(">named / positional / prefixed / ordinary</w:t>"));
     }
 
     #[test]

@@ -11,6 +11,8 @@ import { formFillText, type FormFillMessage } from './form-fill-messages';
 import './form-fill.css';
 
 type PreviousInput = { key: string; context: string; value: string };
+const inputValue = (values: Record<string, string>, key: string) =>
+  Object.hasOwn(values, key) ? values[key] : '';
 
 const errors: FormError[] = [
   'input',
@@ -50,7 +52,9 @@ export function FormFillPanel({
   const busy = operation !== null;
   const dirty = Boolean(
     previousInputs ||
-    form?.fields.some((field) => (values[field.key] ?? '') !== (savedValues[field.key] ?? '')),
+    form?.fields.some(
+      (field) => inputValue(values, field.key) !== inputValue(savedValues, field.key),
+    ),
   );
   useEffect(() => {
     onDirtyChange?.(dirty || busy);
@@ -100,14 +104,14 @@ export function FormFillPanel({
         const named = new Set(
           next.fields.filter((field) => field.kind === 'placeholder').map((field) => field.key),
         );
-        const kept: Record<string, string> = {};
+        const kept: [string, string][] = [];
         const review: PreviousInput[] = [];
         for (const field of form.fields) {
-          const value = values[field.key] ?? '';
-          if (field.kind === 'placeholder' && named.has(field.key)) kept[field.key] = value;
+          const value = inputValue(values, field.key);
+          if (field.kind === 'placeholder' && named.has(field.key)) kept.push([field.key, value]);
           else if (value) review.push({ key: field.key, context: field.context, value });
         }
-        setValues(kept);
+        setValues(Object.fromEntries(kept));
         setSavedValues({});
         setPreviousInputs(review.length ? review : null);
         setSaved(null);
@@ -139,7 +143,11 @@ export function FormFillPanel({
 
   // Shown as "Blank 3" rather than the internal key "blank:3".
   const label = (key: string) =>
-    key.startsWith('blank:') ? t('blank', { n: key.slice('blank:'.length) }) : key;
+    key.startsWith('field:')
+      ? key.slice('field:'.length)
+      : key.startsWith('blank:')
+        ? t('blank', { n: key.slice('blank:'.length) })
+        : key;
   const fileName = form?.path.split(/[\\/]/).pop();
 
   return (
@@ -218,7 +226,7 @@ export function FormFillPanel({
                   <textarea
                     rows={1}
                     maxLength={maxValueLength}
-                    value={values[field.key] ?? ''}
+                    value={inputValue(values, field.key)}
                     disabled={busy && operation !== 'save'}
                     onChange={(event) =>
                       setValues((current) => ({ ...current, [field.key]: event.target.value }))

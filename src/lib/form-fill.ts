@@ -10,7 +10,7 @@ import { native } from './bridge';
 export type FormFormat = 'docx' | 'hwpx';
 
 export interface FormField {
-  /** Placeholder name, or `blank:N` for the N-th underscore blank. */
+  /** Placeholder name, escaped with `field:` for reserved prefixes, or `blank:N` for an underscore blank. */
   key: string;
   kind: 'placeholder' | 'blank';
   /** Text around the field, to show where it is in the form. */

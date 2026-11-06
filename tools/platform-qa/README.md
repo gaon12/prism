@@ -7,6 +7,23 @@ identity files directly. It avoids the Tauri, WebView
 and Lance build requirements so these modules can also be checked in a Linux shell.
 It does not replace the full application tests or native desktop QA.
 
+Generated-document PDF checks compile the exact production Markdown converter,
+closed in-memory Typst World, export-admission registry and atomic file writer.
+They typeset actual multilingual/emoji text, tables, code, repeated footnotes and
+multiple pages, then parse the resulting PDF; no successful PDF response is
+fabricated. They also verify denied file access, literal HTML/code, omitted
+network images, early cancellation, retained worker admission and replacement of
+an actual temporary destination. Fonts are the application's pinned bundled
+assets. Run `cargo test --manifest-path tools/platform-qa/Cargo.toml --locked document_pdf`
+for these checks. They do not exercise the native save picker or prove desktop
+integration on an untested OS.
+
+For visual review, set `PRISM_TEST_DOCUMENT_PDF_CAPTURE_DIR` to a newly created
+empty directory before these tests. The actual single-page and five-page outputs
+are written as `multilingual.pdf` and `multipage.pdf` using create-new semantics;
+an existing artifact is never replaced. Inspect them with an independent PDF
+renderer as well as the text assertions.
+
 Collections checks include the actual EPUB container/package/spine parser,
 bounded local CSS/resource rewriting, unscripted HTML/SVG documents, font
 obfuscation metadata and current-source cache admission. They do not render

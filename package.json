@@ -47,6 +47,7 @@
     "test:index-service": "node tests/native/index-service.mjs",
     "test:dictionary": "node tests/native/dictionary.mjs",
     "test:rag": "node tests/native/rag.mjs",
+    "test:mcp": "node tests/native/mcp.mjs",
     "test:search-chat": "node tests/native/search-chat.mjs",
     "test:chat-entry": "node tests/native/search-chat-entry.mjs",
     "test:short-paths": "node tests/native/short-paths.mjs",

@@ -39,6 +39,7 @@ chrono = "0.4"
 typst = "=0.15.1"
 typst-pdf = "=0.15.1"
 typst-layout = "=0.15.1"
+msoffice-crypto = { version = "=0.1.0-rc.13", default-features = false, features = ["crypto-ops"] }
 pulldown-cmark = { version = "=0.13.6", default-features = false, features = ["html"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
@@ -70,6 +71,13 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 tempfile = "3"
 
 [workspace]
+
+[profile.dev.package.msoffice-crypto]
+opt-level = 3
+[profile.dev.package."sha2:0.11.1"]
+opt-level = 3
+[profile.dev.package."sha1:0.11.0"]
+opt-level = 3
 
 [patch.crates-io]
 pdf-extract = { path = "../../src-tauri/vendor/pdf-extract" }

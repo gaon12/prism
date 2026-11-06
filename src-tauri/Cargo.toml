@@ -59,6 +59,7 @@ hwpforge-smithy-md = "=0.19.1"
 hwpforge-smithy-hwpx = "=0.19.1"
 hwpforge-core = "=0.19.1"
 hwpforge-foundation = "=0.19.1"
+msoffice-crypto = { version = "=0.1.0-rc.13", default-features = false, features = ["crypto-ops"] }
 pulldown-cmark = { version = "=0.13.6", default-features = false, features = ["html"] }
 zeroize = "1"
 prism-ntfs-protocol = { path = "../indexer/protocol" }
@@ -94,6 +95,12 @@ opt-level = 3
 [profile.dev.package."digest:0.10.7"]
 opt-level = 3
 [profile.dev.package."zlib-rs:0.6.8"]
+opt-level = 3
+[profile.dev.package.msoffice-crypto]
+opt-level = 3
+[profile.dev.package."sha2:0.11.1"]
+opt-level = 3
+[profile.dev.package."sha1:0.11.0"]
 opt-level = 3
 
 [patch.crates-io]

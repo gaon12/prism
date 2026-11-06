@@ -2,7 +2,7 @@
 //! quoted string, including raw HTML and apparent Typst code. Images are visibly
 //! omitted and counted; exporting never fetches a URL or opens a local image.
 use super::{Code, Result};
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, Event, Options, Parser, Tag, TagEnd};
 use std::collections::{HashMap, HashSet};
 
 pub(super) struct Body {
@@ -108,7 +108,7 @@ fn render(events: &[Event<'_>], ctx: &mut Context<'_>, depth: usize) -> Result<S
         match &events[i] {
             Event::Start(Tag::Table(columns)) => {
                 let end = find_end(events, i, TagEnd::Table)?;
-                out.push_str(&table(&events[i + 1..end], columns.len(), ctx, depth + 1)?);
+                out.push_str(&table(&events[i + 1..end], columns, ctx, depth + 1)?);
                 i = end;
             }
             Event::Start(Tag::CodeBlock(_)) => {
@@ -290,10 +290,11 @@ fn label(kind: &str, language: &str) -> &'static str {
 }
 fn table(
     events: &[Event<'_>],
-    columns: usize,
+    alignments: &[Alignment],
     ctx: &mut Context<'_>,
     depth: usize,
 ) -> Result<String> {
+    let columns = alignments.len();
     if columns == 0 || columns > 32 {
         return Err(Code::Limit);
     }
@@ -325,8 +326,16 @@ fn table(
     if header.len() != columns || cells.len() % columns != 0 {
         return Err(Code::Input);
     }
+    let align = alignments
+        .iter()
+        .map(|value| match value {
+            Alignment::None | Alignment::Left => "left,",
+            Alignment::Center => "center,",
+            Alignment::Right => "right,",
+        })
+        .collect::<String>();
     let mut out = format!(
-        "#table(columns: ({}),\ntable.header(",
+        "#table(columns: ({}), align: ({align}),\ntable.header(",
         "1fr,".repeat(columns)
     );
     for value in header {

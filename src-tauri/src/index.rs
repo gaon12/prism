@@ -113,13 +113,17 @@ impl Entry {
         // Most system paths are ASCII. Avoid NFC iteration and allocating two
         // Hangul projections for every such path on a whole-drive scan.
         let ascii = raw.key.is_ascii();
-        let search = if ascii && !raw.key.bytes().any(|byte| byte.is_ascii_uppercase()) {
-            Cow::Borrowed(raw.key.as_str())
-        } else if ascii {
-            Cow::Owned(raw.key.to_ascii_lowercase())
-        } else {
-            Cow::Owned(normalized(&raw.key))
-        };
+        // Windows identity keys have already been lowercased by path_key_text.
+        // Avoid rescanning every ASCII byte on a multi-million-file drive.
+        // Unix identity is case-sensitive, so its display/search split remains.
+        let search =
+            if ascii && (cfg!(windows) || !raw.key.bytes().any(|byte| byte.is_ascii_uppercase())) {
+                Cow::Borrowed(raw.key.as_str())
+            } else if ascii {
+                Cow::Owned(raw.key.to_ascii_lowercase())
+            } else {
+                Cow::Owned(normalized(&raw.key))
+            };
         // Initial projection keeps UTF-8 byte lengths (3-byte syllable → 3-byte jamo), so the
         // name offset is valid for both strings.
         let name_start = if !raw.has_name {

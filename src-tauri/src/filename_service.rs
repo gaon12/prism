@@ -127,50 +127,114 @@ impl FileIndex {
         }
         // Derive Unicode projections and publish using the same bounded batches
         // as the walker. A truncated, rejected or cancelled stream inserts none.
+        let initial = self
+            .catalog
+            .read()
+            .is_ok_and(|catalog| catalog.entries.is_empty());
         let rows = Mutex::new(rows.into_iter().flatten());
         let threads = std::thread::available_parallelism()
             .map_or(2, usize::from)
             .clamp(1, 8);
         std::thread::scope(|scope| {
+            let mut workers = Vec::new();
             for _ in 0..threads {
                 let rows = &rows;
-                scope.spawn(move || loop {
-                    if !self.current(generation) {
-                        break;
+                workers.push(scope.spawn(move || -> io::Result<()> {
+                    loop {
+                        if !self.current(generation) {
+                            break;
+                        }
+                        let records: Vec<_> = rows
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .by_ref()
+                            .take(512)
+                            .collect();
+                        if records.is_empty() {
+                            break;
+                        }
+                        let mut batch: Vec<_> = records
+                            .into_iter()
+                            .map(|record| {
+                                // The wire path is already validated UTF-8. Keep
+                                // it directly rather than converting to UTF-16 and
+                                // back for every entry on a Windows volume.
+                                Raw {
+                                    key: path_key_text(&record.path),
+                                    has_name: record
+                                        .path
+                                        .rsplit(['\\', '/'])
+                                        .next()
+                                        .is_some_and(|name| !name.is_empty()),
+                                    path: record.path,
+                                    is_dir: record.is_dir,
+                                    size: record.size,
+                                    modified_ms: record.modified_ms,
+                                }
+                            })
+                            .collect();
+                        if initial {
+                            let entries = batch
+                                .into_iter()
+                                .map(|raw| Entry::new(raw, sweep))
+                                .collect();
+                            self.publish_first_batch(generation, entries)?;
+                        } else {
+                            self.publish(generation, sweep, &mut batch, 0, false);
+                        }
                     }
-                    let records: Vec<_> = rows
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .by_ref()
-                        .take(512)
-                        .collect();
-                    if records.is_empty() {
-                        break;
-                    }
-                    let mut batch = records
-                        .into_iter()
-                        .map(|record| {
-                            // The wire path is already validated UTF-8. Keep
-                            // it directly rather than converting to UTF-16 and
-                            // back for every entry on a Windows volume.
-                            Raw {
-                                key: path_key_text(&record.path),
-                                has_name: record
-                                    .path
-                                    .rsplit(['\\', '/'])
-                                    .next()
-                                    .is_some_and(|name| !name.is_empty()),
-                                path: record.path,
-                                is_dir: record.is_dir,
-                                size: record.size,
-                                modified_ms: record.modified_ms,
-                            }
-                        })
-                        .collect();
-                    self.publish(generation, sweep, &mut batch, 0, false);
-                });
+                    Ok(())
+                }));
             }
-        });
+            workers
+                .into_iter()
+                .try_for_each(|worker| worker.join().expect("Filename preparation worker"))
+        })
+    }
+
+    #[cfg(any(windows, test))]
+    fn publish_first_batch(&self, generation: u64, entries: Vec<Entry>) -> io::Result<()> {
+        use std::collections::btree_map::Entry as Slot;
+        let mut catalog = self
+            .catalog
+            .write()
+            .map_err(|_| io::Error::other("Filename catalog unavailable."))?;
+        if !self.current(generation) {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "Collection cancelled.",
+            ));
+        }
+        // The first scan has no prior metadata/projections to reuse. Prepare
+        // its bounded batch outside the lock, then use one tree lookup per row
+        // instead of a read lookup followed by a second insertion lookup.
+        let mut changed = false;
+        for entry in entries {
+            match catalog.entries.entry(entry.key.clone()) {
+                Slot::Vacant(slot) => {
+                    slot.insert(entry);
+                    changed = true;
+                }
+                Slot::Occupied(mut slot) => {
+                    let previous = slot.get_mut();
+                    if previous.path == entry.path
+                        && previous.is_dir == entry.is_dir
+                        && previous.size == entry.size
+                        && previous.modified_ms == entry.modified_ms
+                    {
+                        previous.seen = entry.seen;
+                    } else {
+                        slot.insert(entry);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        catalog.status.count = catalog.entries.len();
+        catalog.status.scanning = true;
+        if changed {
+            catalog.status.revision += 1;
+        }
         Ok(())
     }
 }
@@ -338,6 +402,81 @@ mod tests {
         assert_eq!(catalog.entries.len(), 8192);
         assert_eq!(catalog.status.count, 8192);
         assert!(catalog.entries.values().all(|entry| entry.seen == 9));
+    }
+
+    #[test]
+    fn first_batch_rechecks_revocation_and_preserves_existing_identity() {
+        fn prepared(row: FileRecord, sweep: u64) -> Vec<Entry> {
+            vec![Entry::new(
+                Raw {
+                    key: path_key_text(&row.path),
+                    has_name: true,
+                    path: row.path,
+                    is_dir: row.is_dir,
+                    size: row.size,
+                    modified_ms: row.modified_ms,
+                },
+                sweep,
+            )]
+        }
+        let (index, owner) = isolated();
+        let dir = tempfile::tempdir().unwrap();
+        let existing = record(dir.path(), "existing.md");
+        index
+            .collect_service_snapshot(1, dir.path(), 1, |_, receive| {
+                receive(Event::Records(vec![existing.clone()]))?;
+                Ok(1)
+            })
+            .unwrap();
+        let original_key = index
+            .catalog
+            .read()
+            .unwrap()
+            .entries
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        // A row may appear after the initial-empty check but before this batch
+        // obtains its write lock. Its allocation and revision must be preserved.
+        index.publish_first_batch(1, prepared(existing, 2)).unwrap();
+        {
+            let catalog = index.catalog.read().unwrap();
+            assert_eq!(catalog.status.revision, 1);
+            assert!(Arc::ptr_eq(
+                &original_key,
+                catalog.entries.keys().next().unwrap()
+            ));
+            assert_eq!(catalog.entries.values().next().unwrap().seen, 2);
+        }
+        index
+            .publish_first_batch(1, prepared(record(dir.path(), "new.md"), 3))
+            .unwrap();
+        assert_eq!(index.status().unwrap().count, 2);
+        index.generation.store(2, Ordering::Release);
+        assert_eq!(
+            index
+                .publish_first_batch(1, prepared(record(dir.path(), "revoked.md"), 4))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::ConnectionAborted
+        );
+        index.generation.store(1, Ordering::Release);
+        drop(owner);
+        assert_eq!(
+            index
+                .publish_first_batch(1, prepared(record(dir.path(), "owner-gone.md"), 5))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::ConnectionAborted
+        );
+        let catalog = index.catalog.read().unwrap();
+        assert_eq!(catalog.entries.len(), 2);
+        assert_eq!(catalog.status.revision, 2);
+        assert!(catalog
+            .entries
+            .values()
+            .all(|entry| !matches!(entry.name(), "revoked.md" | "owner-gone.md")));
     }
 
     #[test]

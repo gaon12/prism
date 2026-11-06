@@ -56,6 +56,7 @@
     "test:documents": "node tests/native/documents.mjs",
     "test:document-mcp": "node tests/native/document-mcp.mjs",
     "test:document-project": "node tests/native/document-project.mjs",
+    "test:form-input": "node tests/native/form-input.mjs",
     "test:document-pdf": "node tests/native/document-pdf.mjs",
     "test:document-hwpx": "node tests/native/document-hwpx.mjs",
     "test:collections": "node tests/native/collections.mjs",

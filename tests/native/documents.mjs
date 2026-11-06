@@ -420,6 +420,11 @@ try {
     await main.getByRole('button', { name: '기존 로컬 메모 열기', exact: true }).isDisabled(),
     true,
   );
+  assert.equal(
+    await main.getByRole('button', { name: '기존 양식 채우기', exact: true }).isDisabled(),
+    true,
+    'switching to form filling must not discard an unsaved generated-document edit',
+  );
   await main.getByRole('button', { name: '채팅', exact: true }).click();
   assert.equal(
     await blank.getByLabel('블록 Markdown', { exact: true }).inputValue(),

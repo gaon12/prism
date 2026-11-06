@@ -128,7 +128,7 @@ export async function launch(dataDir, options = {}) {
         command,
         args,
       });
-    return { child, browser, main, quick, errors, invoke };
+    return { child, browser, main, quick, errors, invoke, port };
   } catch (error) {
     await browser?.close();
     child.kill();

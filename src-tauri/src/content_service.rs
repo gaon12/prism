@@ -1447,13 +1447,13 @@ impl ContentService {
             .prepare(window)
             .map_err(|value| match value {
                 unlock_requests::StartError::Cancelled => {
-                    error("cancelled", "PDF retry cancelled.")
+                    error("cancelled", "document retry cancelled.")
                 }
                 unlock_requests::StartError::Busy => {
-                    error("busy", "A previous PDF retry is still finishing.")
+                    error("busy", "A previous document retry is still finishing.")
                 }
                 unlock_requests::StartError::Unavailable => {
-                    error("worker", "Could not prepare the PDF retry.")
+                    error("worker", "Could not prepare the document retry.")
                 }
             })
     }
@@ -1463,20 +1463,20 @@ impl ContentService {
         id: &str,
     ) -> Result<unlock_requests::UnlockPermit> {
         if id.is_empty() || id.len() > 80 {
-            return Err(error("input", "Invalid PDF retry identifier."));
+            return Err(error("input", "Invalid document retry identifier."));
         }
         self.inner
             .unlocks
             .start(window, id)
             .map_err(|value| match value {
                 unlock_requests::StartError::Cancelled => {
-                    error("cancelled", "PDF retry cancelled.")
+                    error("cancelled", "document retry cancelled.")
                 }
                 unlock_requests::StartError::Unavailable => {
-                    error("worker", "Could not prepare the PDF retry.")
+                    error("worker", "Could not prepare the document retry.")
                 }
                 unlock_requests::StartError::Busy => {
-                    error("busy", "A previous PDF retry is still finishing.")
+                    error("busy", "A previous document retry is still finishing.")
                 }
             })
     }
@@ -1488,24 +1488,29 @@ impl ContentService {
     fn unlock_path(&self, path: &Path, scopes: &[SearchScope]) -> Result<(PathBuf, Vec<PathBuf>)> {
         let roots = Self::roots(scopes, None);
         let canonical = crate::path_identity::canonical(path)
-            .map_err(|_| error("unsafePath", "The PDF path is missing or unsafe."))?;
+            .map_err(|_| error("unsafePath", "The document path is missing or unsafe."))?;
         if !canonical.is_file()
             || !roots.iter().any(|root| canonical.starts_with(root))
             || self.is_excluded(&canonical.to_string_lossy())
         {
             return Err(error(
                 "outsideScope",
-                "The PDF is outside current content folders.",
+                "The document is outside current content folders.",
             ));
         }
         if !canonical
             .extension()
             .and_then(|value| value.to_str())
-            .is_some_and(|value| value.eq_ignore_ascii_case("pdf"))
+            .is_some_and(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "pdf" | "docx" | "xlsx" | "pptx"
+                )
+            })
         {
             return Err(error(
                 "unsupportedFormat",
-                "Password retry currently supports PDF documents.",
+                "Password retry supports PDF and OOXML documents.",
             ));
         }
         Ok((canonical, roots))
@@ -1516,11 +1521,31 @@ impl ContentService {
         password: &str,
         cancel: &AtomicBool,
     ) -> Result<ContentDocumentSummary> {
+        self.unlock_document(path, password, cancel, &["pdf"])
+    }
+    pub(crate) fn unlock_office(
+        &self,
+        path: &Path,
+        password: &str,
+        cancel: &AtomicBool,
+    ) -> Result<ContentDocumentSummary> {
+        self.unlock_document(path, password, cancel, &["docx", "xlsx", "pptx"])
+    }
+    fn unlock_document(
+        &self,
+        path: &Path,
+        password: &str,
+        cancel: &AtomicBool,
+        formats: &[&str],
+    ) -> Result<ContentDocumentSummary> {
         if self.inner.closed.load(Ordering::Acquire) || cancel.load(Ordering::Acquire) {
-            return Err(error("cancelled", "PDF retry cancelled."));
+            return Err(error("cancelled", "Document retry cancelled."));
         }
         if password.len() > 1024 {
-            return Err(error("input", "PDF password exceeds the input budget."));
+            return Err(error(
+                "input",
+                "Document password exceeds the input budget.",
+            ));
         }
         let canonical = {
             let scopes = self
@@ -1530,6 +1555,16 @@ impl ContentService {
                 .map_err(|_| error("worker", "Content scopes unavailable."))?;
             self.unlock_path(path, &scopes)?.0
         };
+        if !canonical
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| formats.contains(&value.to_ascii_lowercase().as_str()))
+        {
+            return Err(error(
+                "unsupportedFormat",
+                "This password command does not support that document format.",
+            ));
+        }
         let ocr = self
             .inner
             .ocr
@@ -1582,37 +1617,46 @@ impl ContentService {
         if *current_ocr != *ocr {
             return Err(error(
                 "cancelled",
-                "OCR settings changed during the PDF retry.",
+                "OCR settings changed during the document retry.",
             ));
         }
         if path_key(&canonical) != path_key(Path::new(&extracted.file_path)) {
-            return Err(error("sourceChanged", "The PDF changed during the retry."));
+            return Err(error(
+                "sourceChanged",
+                "The document changed during the retry.",
+            ));
         }
         let mut file = fs::File::open(&canonical)
-            .map_err(|_| error("sourceChanged", "The PDF is unavailable."))?;
+            .map_err(|_| error("sourceChanged", "The document is unavailable."))?;
         let mut digest = Sha256::new();
         let mut buffer = [0u8; 32768];
         let mut size = 0u64;
         loop {
             if cancel.load(Ordering::Acquire) || self.inner.closed.load(Ordering::Acquire) {
-                return Err(error("cancelled", "PDF retry cancelled."));
+                return Err(error("cancelled", "document retry cancelled."));
             }
             let count = file
                 .read(&mut buffer)
-                .map_err(|_| error("sourceChanged", "The PDF changed during the retry."))?;
+                .map_err(|_| error("sourceChanged", "The document changed during the retry."))?;
             if count == 0 {
                 break;
             }
             size += count as u64;
             if size > extracted.fingerprint.size_bytes {
-                return Err(error("sourceChanged", "The PDF changed during the retry."));
+                return Err(error(
+                    "sourceChanged",
+                    "The document changed during the retry.",
+                ));
             }
             digest.update(&buffer[..count]);
         }
         if size != extracted.fingerprint.size_bytes
             || format!("{:x}", digest.finalize()) != extracted.fingerprint.sha256
         {
-            return Err(error("sourceChanged", "The PDF changed during the retry."));
+            return Err(error(
+                "sourceChanged",
+                "The document changed during the retry.",
+            ));
         }
         let already_indexed = self
             .inner

@@ -49,6 +49,7 @@ mod ocr_assets;
 mod ocr_commands;
 mod ocr_package;
 mod ocr_runtime;
+mod office_unlock;
 mod open_location;
 mod package_context;
 mod packaged_startup;
@@ -625,6 +626,7 @@ pub fn run() {
             content_commands::content_open_location,
             content_commands::content_prepare_unlock,
             content_commands::content_unlock_pdf,
+            content_commands::content_unlock_office,
             content_commands::content_cancel_unlock,
             rag_commands::rag_create,
             rag_commands::rag_create_from_search,

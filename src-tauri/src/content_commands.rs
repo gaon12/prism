@@ -248,6 +248,23 @@ pub async fn content_unlock_pdf(
     .map_err(|_| worker_error())?
 }
 #[tauri::command]
+pub async fn content_unlock_office(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    path: String,
+    password: String,
+    request_id: String,
+) -> Result<crate::content_store::ContentDocumentSummary, ContentError> {
+    let password = zeroize::Zeroizing::new(password);
+    let service = state.content.clone()?;
+    let permit = service.begin_unlock(window.label(), &request_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        service.unlock_office(&PathBuf::from(path), &password, permit.cancel())
+    })
+    .await
+    .map_err(|_| worker_error())?
+}
+#[tauri::command]
 pub fn content_cancel_unlock(
     window: WebviewWindow,
     state: State<'_, AppState>,

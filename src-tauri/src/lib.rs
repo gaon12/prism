@@ -35,8 +35,8 @@ mod index_service_commands;
 mod keyboard_pattern;
 mod model_commands;
 mod ocr;
-mod ocr_commands;
 mod ocr_assets;
+mod ocr_commands;
 mod ocr_package;
 mod ocr_runtime;
 mod open_location;
@@ -46,6 +46,8 @@ mod packaged_startup;
 mod paste_fixture;
 mod paste_target;
 mod path_identity;
+#[cfg(target_os = "linux")]
+mod pdf_renderer;
 mod power;
 mod process_job;
 mod rag_commands;
@@ -54,8 +56,6 @@ mod rag_sources;
 mod rag_store;
 mod runtime_process;
 mod runtime_supervisor;
-#[cfg(target_os = "linux")]
-mod pdf_renderer;
 mod secret_store;
 mod selection_set;
 mod settings;

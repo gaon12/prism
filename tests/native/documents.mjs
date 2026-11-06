@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { launch, shutdown, until } from './harness.mjs';
 import { inspectPdf } from './pdf-inspect.mjs';
+import { inspectHwpx } from './hwpx-inspect.mjs';
 
 const directory = await mkdtemp(join(tmpdir(), 'prism-documents-'));
 const evidence = join(tmpdir(), 'prism-ui-evidence');
@@ -296,6 +297,23 @@ try {
       'PDF source footnotes follow the saved-revision option',
     );
     assert.equal(inspected.text.replace(/\s+/g, '').includes('검증되지않음'), sources);
+    const hwpxPath = join(pdfDirectory, sources ? 'with-sources.hwpx' : 'without-sources.hwpx');
+    await invoke('doc_export_hwpx', {
+      id,
+      revision: restored.id,
+      path: hwpxPath,
+      request: crypto.randomUUID(),
+      includeSources: sources,
+      includeTypeMarkers: sources,
+    });
+    const hwpx = inspectHwpx(hwpxPath);
+    assert(hwpx.text.includes('120000원'));
+    assert.equal(
+      hwpx.text.includes('원본.md'),
+      sources,
+      'HWPX source footnotes follow the saved-revision option',
+    );
+    assert.equal(hwpx.text.replace(/\s+/g, '').includes('검증되지않음'), sources);
   }
   assert.equal(calls.length, beforePdf);
 

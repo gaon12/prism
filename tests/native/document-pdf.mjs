@@ -324,7 +324,7 @@ try {
   await main.screenshot({ path: join(directory, 'export-en-dark760.png') });
   assert.deepEqual((await invoke('get_settings')).scopes, settingsBefore.scopes);
   assert.equal((await invoke('content_status')).indexed, 0);
-  assert(!(await readdir(outputs)).some((name) => name.startsWith('.prism-pdf-')));
+  assert(!(await readdir(outputs)).some((name) => name.startsWith('.prism-export-')));
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({

@@ -158,5 +158,8 @@ Expensive or OS-dependent checks are opt-in:
   can use a private `dbus-run-session` with an isolated GNOME Keyring data directory.
 
 Run one opt-in test by its name, followed by `-- --ignored --nocapture`. These flags
-are deliberately absent from CI's regular platform checks. A passing compile or
-archive check alone does not establish actual macOS runtime/keychain behavior.
+are absent from CI's regular platform checks. The macOS matrix separately selects
+the native Quartz PDF and Korean Vision tests explicitly; other model/credential
+opt-ins still require their stated environment. Inspect those specific job steps
+before claiming native execution. A passing compile or archive check alone does
+not establish actual macOS runtime/keychain behavior.

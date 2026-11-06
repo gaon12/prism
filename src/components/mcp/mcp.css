@@ -1,0 +1,94 @@
+/* External sources (MCP) settings. Uses the shared setting tokens only. */
+.mcp-settings {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.mcp-settings h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+.mcp-settings > .text-button {
+  justify-self: start;
+}
+/* One registered server: fields, then its tools. */
+.mcp-server {
+  display: grid;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.mcp-row {
+  display: grid;
+  grid-template-columns: minmax(7rem, 1fr) minmax(10rem, 2fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+.mcp-server label,
+.mcp-mapping label {
+  display: grid;
+  gap: 4px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.mcp-server input,
+.mcp-server textarea,
+.mcp-server select {
+  font: inherit;
+  font-size: 0.85rem;
+  color: inherit;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.mcp-server textarea {
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.mcp-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+.mcp-tools small {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.mcp-tools .mcp-error {
+  color: var(--danger);
+}
+.mcp-mapping {
+  display: grid;
+  gap: 8px;
+}
+.mcp-tool-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+  font-size: 0.8rem;
+}
+.mcp-tool-list li {
+  display: flex;
+  gap: 10px;
+  overflow-wrap: anywhere;
+}
+.mcp-tool-list span {
+  color: var(--muted);
+}
+@media (max-width: 560px) {
+  .mcp-row {
+    grid-template-columns: 1fr;
+  }
+}
+/* Icon + label buttons in this section. */
+.mcp-settings .text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}

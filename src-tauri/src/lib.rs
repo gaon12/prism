@@ -38,6 +38,8 @@ mod index;
 mod index_service;
 mod index_service_commands;
 mod keyboard_pattern;
+mod mcp_client;
+mod mcp_commands;
 mod model_commands;
 mod ocr;
 mod ocr_assets;
@@ -662,6 +664,7 @@ pub fn run() {
             document_commands::doc_job,
             form_fill_commands::form_fields,
             form_fill_commands::form_fill,
+            mcp_commands::mcp_probe,
             commands::window_action,
             commands::quit_app,
             commands::write_markdown

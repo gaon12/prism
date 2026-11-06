@@ -1,5 +1,45 @@
 /** Documents tab start: a new document, or filling an existing DOCX/HWPX form. */
 export type DocumentMode = 'new' | 'fill';
+
+/** A local MCP server the user registered (program + arguments, no shell). */
+export interface McpServer {
+  /** Stable id (letters, digits, '-'); also identifies the server in saved sources. */
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+  /** Tools the user allowed even though the server did not mark them read-only. */
+  allowedTools: string[];
+  /** The tool that answers questions, and which text input receives the question. */
+  search: { tool: string; argument: string } | null;
+}
+
+/** Keeps only well-formed servers (at most 8), so a damaged file cannot break settings. */
+function normalizeMcp(input: unknown): { enabled: boolean; servers: McpServer[] } {
+  const value = (input ?? {}) as { enabled?: unknown; servers?: unknown };
+  const text = (item: unknown) => (typeof item === 'string' ? item : '');
+  const servers = (Array.isArray(value.servers) ? value.servers : [])
+    .map((raw): McpServer | null => {
+      const server = (raw ?? {}) as Record<string, unknown>;
+      const search = server.search as { tool?: unknown; argument?: unknown } | null | undefined;
+      const id = text(server.id);
+      if (!/^[A-Za-z0-9-]{1,64}$/.test(id) || !text(server.command)) return null;
+      return {
+        id,
+        name: text(server.name) || id,
+        command: text(server.command),
+        args: Array.isArray(server.args) ? server.args.map(text) : [],
+        allowedTools: Array.isArray(server.allowedTools) ? server.allowedTools.map(text) : [],
+        search:
+          search && text(search.tool) && text(search.argument)
+            ? { tool: text(search.tool), argument: text(search.argument) }
+            : null,
+      };
+    })
+    .filter((server): server is McpServer => server !== null)
+    .slice(0, 8);
+  return { enabled: value.enabled === true, servers };
+}
 import { defaultGeneration, normalizeGeneration } from './generation';
 import type { GenerationPreferences } from './generation';
 export type Language = 'ko' | 'en' | 'zh-CN' | 'zh-TW' | 'ja';
@@ -35,6 +75,8 @@ export interface ClientSettings {
   power: { pauseOnBattery: boolean };
   /** What the Documents tab opens with: write a new document (default) or fill a form. */
   documents: { defaultMode: DocumentMode };
+  /** External sources through MCP servers (Q45). Off by default. */
+  mcp: { enabled: boolean; servers: McpServer[] };
   calculator: { precision: number; angle: 'rad' | 'deg' };
   clipboard: {
     enabled: boolean;
@@ -107,6 +149,7 @@ export const defaultSettings: ClientSettings = {
   ocr: { enabled: false, language: 'auto', engine: 'auto' },
   power: { pauseOnBattery: false },
   documents: { defaultMode: 'new' },
+  mcp: { enabled: false, servers: [] },
   calculator: { precision: 12, angle: 'rad' },
   clipboard: {
     enabled: true,
@@ -161,6 +204,7 @@ export function normalizeSettings(input: unknown): ClientSettings {
     updates: { autoCheck: value.updates?.autoCheck !== false },
     power: { pauseOnBattery: value.power?.pauseOnBattery === true },
     documents: { defaultMode: value.documents?.defaultMode === 'fill' ? 'fill' : 'new' },
+    mcp: normalizeMcp(value.mcp),
     ocr: {
       enabled: value.ocr?.enabled === true,
       engine:

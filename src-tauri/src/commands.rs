@@ -105,6 +105,7 @@ pub fn save_settings(
     {
         return Err(error);
     }
+    settings.mcp.tidy();
     settings.validate()?;
     settings.normalize_scope_paths();
     settings.validate()?;

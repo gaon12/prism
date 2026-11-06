@@ -39,6 +39,75 @@ pub struct ClientSettings {
     pub ocr: crate::ocr::Preferences,
     pub power: PowerPreferences,
     pub documents: DocumentPreferences,
+    pub mcp: McpPreferences,
+}
+
+/// External sources through MCP servers (requirement Q45). Off by default.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct McpPreferences {
+    /// Master switch. Even when on, a question is only sent to a server under the same
+    /// external-sending permissions as RAG and after the user opts in for that question.
+    pub enabled: bool,
+    pub servers: Vec<crate::mcp_client::ServerConfig>,
+}
+
+impl McpPreferences {
+    /// Drops half-filled rows from the settings screen (no program yet) and names unnamed
+    /// servers after their program, so saving never fails because of an empty new row.
+    pub fn tidy(&mut self) {
+        self.servers
+            .retain(|server| !server.command.trim().is_empty());
+        for server in &mut self.servers {
+            server.args.retain(|arg| !arg.is_empty());
+            if server.name.trim().is_empty() {
+                server.name = std::path::Path::new(server.command.trim())
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().chars().take(80).collect())
+                    .unwrap_or_else(|| "MCP".into());
+            }
+        }
+    }
+
+    /// Rejects anything a hand-edited settings file could use to start unexpected programs
+    /// or to overload the settings screen.
+    pub fn validate(&self) -> Result<(), String> {
+        let fail = || Err("Invalid external source (MCP) settings.".to_string());
+        if self.servers.len() > crate::mcp_client::MAX_SERVERS {
+            return fail();
+        }
+        let mut ids = HashSet::new();
+        for server in &self.servers {
+            let id_ok = !server.id.is_empty()
+                && server.id.len() <= 64
+                && server
+                    .id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
+            let text_ok = |text: &str, max: usize| text.len() <= max && !text.contains('\0');
+            let mapping_ok = server.search.as_ref().is_none_or(|mapping| {
+                !mapping.tool.is_empty()
+                    && !mapping.argument.is_empty()
+                    && text_ok(&mapping.tool, 200)
+                    && text_ok(&mapping.argument, 200)
+            });
+            if !id_ok
+                || !ids.insert(server.id.as_str())
+                || server.name.trim().is_empty()
+                || !text_ok(&server.name, 80)
+                || server.command.trim().is_empty()
+                || !text_ok(&server.command, 1024)
+                || server.args.len() > 32
+                || !server.args.iter().all(|arg| text_ok(arg, 4096))
+                || server.allowed_tools.len() > 256
+                || !server.allowed_tools.iter().all(|tool| text_ok(tool, 200))
+                || !mapping_ok
+            {
+                return fail();
+            }
+        }
+        Ok(())
+    }
 }
 
 /// What the Documents tab opens with.
@@ -122,6 +191,7 @@ impl Default for ClientSettings {
             ocr: crate::ocr::Preferences::default(),
             power: PowerPreferences::default(),
             documents: DocumentPreferences::default(),
+            mcp: McpPreferences::default(),
         }
     }
 }
@@ -144,6 +214,7 @@ impl ClientSettings {
     pub fn validate(&self) -> Result<(), String> {
         self.ocr.validate().map_err(|value| value.message)?;
         self.clipboard.validate()?;
+        self.mcp.validate()?;
         self.generation.validate().map_err(|error| error.message)?;
         if !(6..=15).contains(&self.calculator.precision)
             || !["rad", "deg"].contains(&self.calculator.angle.as_str())
@@ -390,5 +461,41 @@ mod tests {
             external_allowed: false,
         });
         assert!(settings.validate().is_err());
+    }
+
+    #[test]
+    fn mcp_servers_are_tidied_then_strictly_validated() {
+        let server = |id: &str, command: &str| crate::mcp_client::ServerConfig {
+            id: id.into(),
+            name: String::new(),
+            command: command.into(),
+            args: vec!["--stdio".into(), String::new()],
+            allowed_tools: vec![],
+            search: None,
+        };
+        let mut mcp = McpPreferences {
+            enabled: true,
+            servers: vec![server("a-1", "C:/Tools/wiki-mcp.exe"), server("b-2", "  ")],
+        };
+        mcp.tidy();
+        assert_eq!(mcp.servers.len(), 1, "the empty new row is dropped");
+        assert_eq!(mcp.servers[0].name, "wiki-mcp");
+        assert_eq!(mcp.servers[0].args, ["--stdio"]);
+        assert!(mcp.validate().is_ok());
+
+        // Ids must be unique and simple; programs/arguments cannot carry NUL; at most 8.
+        let mut duplicate = mcp.clone();
+        duplicate.servers.push(duplicate.servers[0].clone());
+        assert!(duplicate.validate().is_err());
+        let mut bad_id = mcp.clone();
+        bad_id.servers[0].id = "../x".into();
+        assert!(bad_id.validate().is_err());
+        let mut nul = mcp.clone();
+        nul.servers[0].args = vec!["a\0b".into()];
+        assert!(nul.validate().is_err());
+        let mut many = mcp.clone();
+        many.servers = (0..9).map(|i| server(&format!("s{i}"), "x")).collect();
+        many.tidy();
+        assert!(many.validate().is_err());
     }
 }

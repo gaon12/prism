@@ -12,6 +12,7 @@ import { useClient, saveSettings, scopesFromPaths, showToast, errorMessage } fro
 import { languageNames, translate } from '../lib/i18n';
 import type { Language, Theme, DocumentMode } from '../lib/types';
 import './settings-dialog.css';
+import { McpSettings } from './mcp/McpSettings';
 export type SettingsTab = 'general' | 'scopes' | 'shortcuts' | 'ai';
 
 export function SettingsDialog({
@@ -138,6 +139,13 @@ export function SettingsDialog({
                   language={settings.language}
                   native={runtime.native}
                   credentials={generationCredentials}
+                />
+                <McpSettings
+                  value={draft.mcp}
+                  saved={settings.mcp}
+                  onChange={(mcp) => setDraft((current) => ({ ...current, mcp }))}
+                  language={settings.language}
+                  native={runtime.native}
                 />
               </>
             ) : null}

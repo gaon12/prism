@@ -1,7 +1,9 @@
 // Actual packaged binary, portable paths, WebView storage, DPAPI and real local
 // EmbeddingGemma 2/Lance retrieval. All files and clipboard access are isolated.
+// Browser plugin not available: repository Playwright/WebView2 harness.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   copyFile,
@@ -16,6 +18,22 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { launch, shutdown, until } from './harness.mjs';
+import {
+  loadPackageNotices,
+  noticeNames,
+  writePackageNotices,
+} from '../../scripts/package-notices.mjs';
+
+const candidate = resolve(process.env.PRISM_TEST_EXECUTABLE ?? 'src-tauri/target/debug/prism.exe');
+const profile = process.env.PRISM_TEST_EXPECT_RELEASE ?? '0';
+assert(['0', '1'].includes(profile), 'Expected profile must be 0 (debug) or 1 (release)');
+const hashFile = async (path) => {
+  const digest = createHash('sha256');
+  for await (const bytes of createReadStream(path)) digest.update(bytes);
+  return digest.digest('hex');
+};
+const candidateSha256 = await hashFile(candidate);
+const notices = loadPackageNotices(candidate);
 
 const directory = await mkdtemp(join(tmpdir(), 'prism-portable-'));
 const evidence = join(tmpdir(), 'prism-ui-evidence');
@@ -34,13 +52,7 @@ const invalid = spawnSync(
 assert.notEqual(invalid.status, 0);
 execFileSync(
   process.execPath,
-  [
-    'scripts/package-portable.mjs',
-    '--exe',
-    resolve('src-tauri/target/debug/prism.exe'),
-    '--out',
-    output,
-  ],
+  ['scripts/package-portable.mjs', '--exe', candidate, '--out', output],
   { windowsHide: true, stdio: 'pipe' },
 );
 assert.equal(
@@ -70,8 +82,12 @@ execFileSync(
 let appRoot = join(unpacked, name);
 assert.deepEqual(
   (await readdir(appRoot)).sort(),
-  ['README-portable.txt', 'prism.exe', 'prism.portable'].sort(),
+  ['README-portable.txt', 'prism.exe', 'prism.portable', 'notices'].sort(),
 );
+assert.equal(await hashFile(join(appRoot, 'prism.exe')), candidateSha256);
+assert.deepEqual((await readdir(join(appRoot, 'notices'))).sort(), [...noticeNames].sort());
+for (const notice of notices)
+  assert.deepEqual(await readFile(join(appRoot, 'notices', notice.name)), notice.bytes);
 let data = join(appRoot, 'PrismData');
 const source = join(directory, 'source');
 await mkdir(source);
@@ -88,6 +104,7 @@ const writeSettings = async (folder, shortcut) => {
       shortcut,
       startOnLogin: true,
       clipboard: { enabled: false, onboarded: true },
+      updates: { autoCheck: false },
       scopes: [
         {
           id: 'source',
@@ -145,7 +162,9 @@ const credential = { slot: 'external', endpoint: 'https://example.org/v1' };
 try {
   instance = await launch(data, { portable: true, executable: join(appRoot, 'prism.exe') });
   let { main, quick, invoke } = instance;
-  assert.equal((await invoke('runtime_info')).installKind, 'portable');
+  const runtime = await invoke('runtime_info');
+  assert.equal(runtime.installKind, 'portable');
+  assert.equal(runtime.development, profile === '0');
   assert.equal((await invoke('get_settings')).startOnLogin, false);
   await main.getByRole('button', { name: '설정', exact: true }).click();
   assert.equal(await main.getByLabel('로그인 시 자동 실행', { exact: true }).isDisabled(), true);
@@ -190,7 +209,7 @@ try {
   await invoke('generation_set_key', { ...credential, key: 'synthetic-portable-key' });
   await until(async () => {
     const state = await invoke('content_status');
-    return state.phase === 'ready' && state.indexed === 2;
+    return state.phase === 'ready' && state.indexed === 2 + noticeNames.length;
   }, 'portable sources exclude all managed data');
   const hidden = await invoke('search_content', {
     query: 'portableprivatecanary',
@@ -223,6 +242,7 @@ try {
   const otherRoot = join(directory, 'other-copy');
   await mkdir(otherRoot);
   await copyFile(join(appRoot, 'prism.exe'), join(otherRoot, 'prism.exe'));
+  writePackageNotices(otherRoot, notices);
   await writeFile(join(otherRoot, 'prism.portable'), '');
   await writeSettings(otherRoot, 'Ctrl+Alt+Shift+F1');
   other = await launch(join(otherRoot, 'PrismData'), {
@@ -325,60 +345,70 @@ try {
   await shutdown(instance);
   instance = null;
 
-  const override = join(directory, 'debug-override');
-  instance = await launch(override, { executable: join(appRoot, 'prism.exe') });
-  assert.equal((await instance.invoke('runtime_info')).installKind, 'isolated');
-  assert.equal((await instance.invoke('rag_list', { query: '', limit: 100 })).length, 0);
-  await shutdown(instance);
-  instance = null;
-  const badRoot = join(directory, 'unwritable-data');
-  await mkdir(badRoot);
-  await copyFile(join(appRoot, 'prism.exe'), join(badRoot, 'prism.exe'));
-  await writeFile(join(badRoot, 'prism.portable'), '');
-  await writeFile(join(badRoot, 'PrismData'), 'file blocks the data directory');
-  const failed = spawnSync(join(badRoot, 'prism.exe'), [], {
-    env: env(),
-    windowsHide: true,
-    encoding: 'utf8',
-    timeout: 25000,
-  });
-  assert.equal(
-    failed.error,
-    undefined,
-    'Startup errors must exit rather than wait for a test dialog',
-  );
-  assert.notEqual(failed.status, 0);
-  assert(failed.stderr.includes('Prism data location failed'));
-  assert.equal(
-    await readFile(join(badRoot, 'PrismData'), 'utf8'),
-    'file blocks the data directory',
-  );
-  assert.deepEqual(
-    (await readdir(badRoot)).sort(),
-    ['PrismData', 'prism.exe', 'prism.portable'].sort(),
-  );
-  const environmentRoot = join(directory, 'blocked-webview-override');
-  await mkdir(environmentRoot);
-  await copyFile(join(appRoot, 'prism.exe'), join(environmentRoot, 'prism.exe'));
-  await writeFile(join(environmentRoot, 'prism.portable'), '');
-  const externalProfile = join(directory, 'external-webview');
-  const refused = spawnSync(join(environmentRoot, 'prism.exe'), [], {
-    env: { ...env(), WEBVIEW2_USER_DATA_FOLDER: externalProfile },
-    windowsHide: true,
-    encoding: 'utf8',
-    timeout: 25000,
-  });
-  assert.equal(refused.error, undefined);
-  assert.notEqual(refused.status, 0);
-  assert(refused.stderr.includes('WEBVIEW2_USER_DATA_FOLDER'));
-  await assert.rejects(stat(externalProfile), { code: 'ENOENT' });
+  // These are debug-only harness behaviors. Production release ignores the
+  // data/test overrides and presents native dialogs for startup errors, so an
+  // unattended exit assertion would test the wrong contract there.
+  if (profile === '0') {
+    const override = join(directory, 'debug-override');
+    instance = await launch(override, { executable: join(appRoot, 'prism.exe') });
+    assert.equal((await instance.invoke('runtime_info')).installKind, 'isolated');
+    assert.equal((await instance.invoke('rag_list', { query: '', limit: 100 })).length, 0);
+    await shutdown(instance);
+    instance = null;
+    const badRoot = join(directory, 'unwritable-data');
+    await mkdir(badRoot);
+    await copyFile(join(appRoot, 'prism.exe'), join(badRoot, 'prism.exe'));
+    await writeFile(join(badRoot, 'prism.portable'), '');
+    await writeFile(join(badRoot, 'PrismData'), 'file blocks the data directory');
+    const failed = spawnSync(join(badRoot, 'prism.exe'), [], {
+      env: env(),
+      windowsHide: true,
+      encoding: 'utf8',
+      timeout: 25000,
+    });
+    assert.equal(
+      failed.error,
+      undefined,
+      'Startup errors must exit rather than wait for a test dialog',
+    );
+    assert.notEqual(failed.status, 0);
+    assert(failed.stderr.includes('Prism data location failed'));
+    assert.equal(
+      await readFile(join(badRoot, 'PrismData'), 'utf8'),
+      'file blocks the data directory',
+    );
+    assert.deepEqual(
+      (await readdir(badRoot)).sort(),
+      ['PrismData', 'prism.exe', 'prism.portable'].sort(),
+    );
+    const environmentRoot = join(directory, 'blocked-webview-override');
+    await mkdir(environmentRoot);
+    await copyFile(join(appRoot, 'prism.exe'), join(environmentRoot, 'prism.exe'));
+    await writeFile(join(environmentRoot, 'prism.portable'), '');
+    const externalProfile = join(directory, 'external-webview');
+    const refused = spawnSync(join(environmentRoot, 'prism.exe'), [], {
+      env: { ...env(), WEBVIEW2_USER_DATA_FOLDER: externalProfile },
+      windowsHide: true,
+      encoding: 'utf8',
+      timeout: 25000,
+    });
+    assert.equal(refused.error, undefined);
+    assert.notEqual(refused.status, 0);
+    assert(refused.stderr.includes('WEBVIEW2_USER_DATA_FOLDER'));
+    await assert.rejects(stat(externalProfile), { code: 'ENOENT' });
+  }
+  assert.equal(await hashFile(candidate), candidateSha256);
+  assert.equal(await hashFile(join(appRoot, 'prism.exe')), candidateSha256);
   console.log(
     JSON.stringify({
       passed: true,
       directory,
+      candidateSha256,
+      release: profile === '1',
       model: 'actual pinned EmbeddingGemma 2',
       movedData: true,
-      clipboard: 'memory',
+      clipboard: profile === '0' ? 'memory' : 'disabled with seeded local history',
+      debugStartupCases: profile === '0',
       externalAiRequests: 0,
     }),
   );

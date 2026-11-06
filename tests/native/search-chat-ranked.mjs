@@ -215,6 +215,14 @@ try {
       120000,
     );
     await main.locator('.chat-turn[data-role="assistant"][data-status="complete"]').waitFor();
+    await until(
+      async () =>
+        (await conversationPage(chat.id)).turns.some(
+          (turn) => turn.role === 'assistant' && turn.status === 'complete',
+        ) &&
+        (await main.getByRole('button', { name: '응답 생성 중지', exact: true }).count()) === 0,
+      `${name} answer is persisted and the composer has left its busy state`,
+    );
     const answered = await conversationPage(chat.id);
     const user = answered.turns.find((turn) => turn.role === 'user');
     assert(user.provenance.length > 0);
@@ -234,6 +242,7 @@ try {
       spotlight,
     });
     console.log(JSON.stringify({ phase: 'handoff-verified', ...results.at(-1) }));
+    await panel.locator('summary').click();
     await main.screenshot({
       path: join(directory, `${mode}-${hybridSearch ? 'hybrid' : 'cosine'}.png`),
       animations: 'disabled',

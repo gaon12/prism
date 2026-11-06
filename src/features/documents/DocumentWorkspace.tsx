@@ -1675,12 +1675,13 @@ export function DocumentWorkspace({
   // "New document" or "fill an existing form"; starts from the user's setting (Q46).
   const [mode, setMode] = useState(settings.documents.defaultMode);
   const [editorDirty, setEditorDirty] = useState(false);
+  const [formDirty, setFormDirty] = useState(false);
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState('');
   const [purpose, setPurpose] = useState('');
   const [template, setTemplate] = useState('');
   const navigationBlocked =
-    editorDirty || creating || (showCreate && Boolean(title || purpose || template));
+    editorDirty || formDirty || creating || (showCreate && Boolean(title || purpose || template));
   useEffect(() => {
     onDirtyChange?.(navigationBlocked);
     return () => onDirtyChange?.(false);
@@ -1838,7 +1839,10 @@ export function DocumentWorkspace({
             type="button"
             aria-pressed={mode === value}
             className={mode === value ? 'active' : undefined}
-            onClick={() => setMode(value)}
+            disabled={mode !== value && navigationBlocked}
+            onClick={() => {
+              if (!navigationBlocked || mode === value) setMode(value);
+            }}
           >
             {t(value === 'new' ? 'modeNew' : 'modeFill')}
           </button>
@@ -1854,7 +1858,7 @@ export function DocumentWorkspace({
           <p>{t('nativeOnly')}</p>
         </div>
       ) : mode === 'fill' ? (
-        <FormFillPanel language={language} />
+        <FormFillPanel language={language} onDirtyChange={setFormDirty} />
       ) : (
         <>
           <div className="doc-layout">

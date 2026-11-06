@@ -2,6 +2,41 @@
 import type { Language } from '../../lib/types';
 
 const messages = {
+  unsaved: [
+    '저장하지 않은 양식 입력이 있습니다. 이동하려면 새 파일로 저장하거나 입력 변경을 버리세요.',
+    'This form has unsaved input. Save a new file or discard changes before leaving.',
+    '表单有未保存的输入。离开前请另存新文件或放弃更改。',
+    '表單有未儲存的輸入。離開前請另存新檔案或放棄變更。',
+    '書式に未保存の入力があります。移動前に新しいファイルへ保存するか変更を破棄してください。',
+  ],
+  discard: [
+    '입력 변경 버리기',
+    'Discard input changes',
+    '放弃输入更改',
+    '放棄輸入變更',
+    '入力変更を破棄',
+  ],
+  previousInputs: [
+    '이전 양식의 입력',
+    'Input from the previous form',
+    '原表单输入',
+    '原表單輸入',
+    '変更前の書式の入力',
+  ],
+  previousHelp: [
+    '양식이 바뀌어 이 입력을 자동으로 연결하지 않았습니다. 이전 위치와 값을 확인해 현재 양식의 알맞은 칸에 옮긴 뒤 검토를 완료하세요. 검토 전에는 저장하거나 이동하지 않습니다.',
+    'The form changed, so these values were not assigned automatically. Review their previous context and copy them into the correct current fields, then finish the review. Saving and navigation stay blocked until review is complete.',
+    '表单已更改，这些值未自动关联。请核对原位置和值，复制到当前正确字段后完成检查。检查前无法保存或离开。',
+    '表單已變更，這些值未自動連結。請核對原位置和值，複製到目前正確欄位後完成檢查。檢查前無法儲存或離開。',
+    '書式が変わったため自動割り当てしていません。以前の場所と値を確認し、現在の正しい欄に転記してから確認を完了してください。確認前の保存や移動はできません。',
+  ],
+  reviewPrevious: [
+    '이전 입력 검토 완료',
+    'Finish reviewing previous input',
+    '完成原输入检查',
+    '完成原輸入檢查',
+    '以前の入力の確認を完了',
+  ],
   title: [
     '기존 양식 채우기',
     'Fill an existing form',

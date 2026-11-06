@@ -15,6 +15,26 @@ bundled Windows reader and WebP rendering using [independent EPUB fixtures](../.
 This is not evidence of Mac/Linux desktop EPUB rendering or complete reading-system
 conformance.
 
+On Linux, the exact production `pdf_renderer.rs` runs Hayro 0.9.0 in an owned
+pre-GUI subprocess. Ordinary tests verify actual crop/rotation colors, typed,
+scanned and blank pages, in-memory decrypted inputs with both public password
+roles, and collection import/first-page WebP/reader/cache/source-change behavior
+with OCR still disabled. Process checks retain a pidfd to prove that cancellation
+and actual parent SIGKILL terminate the owned worker while a sibling survives.
+An oversized pipe request is rejected before payload allocation. No Python,
+model, system PDF renderer or synthetic successful render response is used.
+
+```sh
+cargo test --manifest-path tools/platform-qa/Cargo.toml --locked --test pdf_renderer -- --nocapture
+```
+
+Set `PRISM_TEST_PDF_CAPTURE_DIR` to a new empty directory to retain the actual
+PNG/WebP outputs for visual review; files are created without overwriting.
+These are Linux library/owned-process checks, not a full Tauri desktop/AppImage
+test. ARM compilation/execution, missing custom-font substitution and complete
+PDF feature coverage remain unverified. The production launcher is always
+`current_exe`; the QA host implements the same dispatch before any other work.
+
 ```sh
 cargo test --manifest-path tools/platform-qa/Cargo.toml --locked
 cargo clippy --manifest-path tools/platform-qa/Cargo.toml --locked --all-targets -- -D warnings

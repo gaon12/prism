@@ -114,6 +114,16 @@ pub struct ExternalEvidence {
     #[serde(default)]
     pub revoked: bool,
 }
+
+/// A saved excerpt bound to the exact reference used by an immutable document.
+/// Program paths, process arguments and credentials never enter this DTO.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentExternalSource {
+    /// None for a server outcome which supplied no bound document evidence.
+    pub source: Option<SourceRef>,
+    pub evidence: ExternalEvidence,
+}
 impl fmt::Debug for ExternalEvidence {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExternalEvidence")

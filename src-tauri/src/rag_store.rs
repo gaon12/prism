@@ -499,6 +499,36 @@ impl RagStore {
         }
         Ok(result)
     }
+    /// Read only the assistant records that own a document's external refs.
+    /// Do not walk an arbitrarily long document-generation conversation.
+    pub(crate) fn external_turns(
+        &self,
+        id: &str,
+        request_ids: &std::collections::BTreeSet<String>,
+    ) -> RagResult<Vec<ConversationTurn>> {
+        if request_ids.len() > 257 {
+            return Err(RagError::new(RagErrorCode::Limit));
+        }
+        self.summary(id)?;
+        let db = self.connect()?;
+        let mut statement = db.prepare("SELECT payload FROM conversation_turns WHERE conversation_id=?1 AND request_id=?2 AND role='assistant' AND status='complete'").map_err(storage)?;
+        let mut result = Vec::new();
+        let mut bytes = 0usize;
+        for request in request_ids {
+            let payload: Option<String> = statement
+                .query_row(params![id, request], |row| row.get(0))
+                .optional()
+                .map_err(storage)?;
+            if let Some(payload) = payload {
+                bytes = bytes.saturating_add(payload.len());
+                if bytes > MAX_PAYLOAD {
+                    return Err(RagError::new(RagErrorCode::Limit));
+                }
+                result.push(decode(payload)?);
+            }
+        }
+        Ok(result)
+    }
 }
 fn read_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationSummary> {
     Ok(ConversationSummary {

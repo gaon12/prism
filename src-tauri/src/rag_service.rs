@@ -666,6 +666,9 @@ pub(crate) struct RagDocumentInput {
     pub provenance: Vec<SourceRef>,
     pub external_input_eligible: bool,
     pub retrieval_query: String,
+    /// Only this explicitly supplied sentence may go to an MCP search server.
+    /// `RagRequest.question` contains the document's private generation prompt.
+    pub external_query: Option<String>,
 }
 struct Prepared {
     config: GenerationConfig,
@@ -903,6 +906,85 @@ impl RagService {
     }
     pub(crate) fn document_snapshot(&self, scope_ids: &[String]) -> RagResult<ScopeSnapshot> {
         Ok(snapshot(&self.policy()?, scope_ids))
+    }
+    pub(crate) fn document_external_allowed(&self, sources: &[SourceRef]) -> RagResult<bool> {
+        let policy = self.policy()?;
+        Ok(sources.iter().all(|source| {
+            !crate::rag_external::is_external(source)
+                || crate::rag_external::allowed(&policy.mcp, source)
+        }))
+    }
+    pub(crate) fn document_external_sources(
+        &self,
+        conversation: &str,
+        sources: &[SourceRef],
+        current_request: Option<&str>,
+    ) -> RagResult<Vec<crate::rag_external::DocumentExternalSource>> {
+        use crate::rag_external as ext;
+        if sources.len() > 256 {
+            return Err(RagError::new(RagErrorCode::Limit));
+        }
+        let refs: Vec<_> = sources
+            .iter()
+            .filter(|source| ext::is_external(source))
+            .collect();
+        if refs.is_empty() && current_request.is_none() {
+            return Ok(vec![]);
+        }
+        let policy = self.policy()?;
+        if !refs.iter().all(|source| ext::allowed(&policy.mcp, source)) {
+            return Err(RagError::new(RagErrorCode::PolicyChanged));
+        }
+        let mut requests: std::collections::BTreeSet<_> = refs
+            .iter()
+            .filter_map(|source| {
+                source
+                    .chunk_id
+                    .split_once('-')
+                    .map(|(_, request)| request.to_owned())
+            })
+            .collect();
+        if let Some(request) = current_request {
+            requests.insert(request.to_owned());
+        }
+        let turns = self.inner.store.external_turns(conversation, &requests)?;
+        let mut result = Vec::new();
+        let mut room = ext::MAX_CHARS_TOTAL;
+        for turn in turns {
+            for mut evidence in turn.external {
+                let Some(server) = policy.mcp.iter().find(|server| {
+                    server.id == evidence.server_id
+                        && ext::fingerprint(server) == evidence.fingerprint
+                }) else {
+                    continue;
+                };
+                let source = evidence
+                    .label
+                    .as_deref()
+                    .map(|label| ext::source_ref(server, &turn.request_id, label));
+                let bound = source
+                    .as_ref()
+                    .filter(|source| refs.contains(source))
+                    .cloned();
+                if bound.is_none() && current_request != Some(turn.request_id.as_str()) {
+                    continue;
+                }
+                let (excerpt, cut) = ext::shorten(&evidence.text, room.min(1024));
+                room = room.saturating_sub(excerpt.chars().count());
+                evidence.text = excerpt;
+                evidence.truncated |= cut;
+                result.push(ext::DocumentExternalSource {
+                    source: bound,
+                    evidence,
+                });
+            }
+        }
+        if !self.document_external_allowed(sources)? {
+            return Err(RagError::new(RagErrorCode::PolicyChanged));
+        }
+        let current = self.policy()?;
+        result.retain(|entry| ext::evidence_allowed(&current.mcp, &entry.evidence));
+        Ok(result)
     }
     pub(crate) async fn document_citations(
         &self,
@@ -1160,6 +1242,10 @@ impl RagService {
             || input.retrieval_query.chars().any(char::is_control)
             || input.provenance.len() > 256
             || input.provenance.iter().any(|source| !valid_source(source))
+            || request.external != input.external_query.is_some()
+            || input.external_query.as_ref().is_some_and(|query| {
+                query.trim().is_empty() || query.len() > 4096 || query.chars().any(char::is_control)
+            })
         {
             return Err(RagError::new(RagErrorCode::Input));
         }
@@ -1284,7 +1370,10 @@ impl RagService {
         // External evidence is gathered once and shared by every provider attempt. It is
         // saved with the answer even when generation fails, so the user sees which server
         // answered or failed (text is hidden later if the server is revoked).
-        let (evidence, external) = self.gather_external(request, cancel).await?;
+        let query = input
+            .and_then(|input| input.external_query.as_deref())
+            .unwrap_or(&request.question);
+        let (evidence, external) = self.gather_external(request, query, cancel).await?;
         pair.assistant.external = evidence;
         for (index, slot) in initial.prefs.plan().into_iter().enumerate() {
             cancel.check()?;
@@ -1449,6 +1538,7 @@ impl RagService {
     async fn gather_external(
         &self,
         request: &RagRequest,
+        query: &str,
         cancel: &RequestCancel,
     ) -> RagResult<(Vec<crate::rag_external::ExternalEvidence>, Vec<RagSource>)> {
         use crate::rag_external::{self as ext, ExternalEvidence, ExternalOutcome};
@@ -1502,7 +1592,7 @@ impl RagService {
                     .lock()
                     .map_err(|_| RagError::new(RagErrorCode::Worker))?,
             );
-            let (config, question) = (server.clone(), request.question.clone());
+            let (config, question) = (server.clone(), query.to_owned());
             let flag = Arc::clone(&cancel.sources);
             let timeout = ext::PER_SERVER.min(left);
             // Cancelling the question stops the server (the client watches `flag`).
@@ -1538,7 +1628,7 @@ impl RagService {
         Ok((evidence, sources))
     }
     #[cfg(test)]
-    fn set_external_search(&self, search: Arc<dyn crate::rag_external::ExternalSearch>) {
+    pub(crate) fn set_external_search(&self, search: Arc<dyn crate::rag_external::ExternalSearch>) {
         *self.inner.external.lock().unwrap() = search;
     }
     async fn prepare(

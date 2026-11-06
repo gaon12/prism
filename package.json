@@ -24,6 +24,7 @@
     "test:setup-core": "cargo test --manifest-path installer/core/Cargo.toml",
     "build:setup": "cargo build --manifest-path installer/src-tauri/Cargo.toml --release",
     "test:setup": "node tests/native/setup.mjs",
+    "test:setup-data-choice": "node tests/native/setup-data-choice.mjs",
     "test:setup-recovery": "node tests/native/setup-recovery.mjs",
     "test:setup-previous": "node tests/native/setup-previous.mjs",
     "test": "vitest run",

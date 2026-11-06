@@ -204,6 +204,8 @@ Desktop builds link an `rlib` into the executable to keep intermediate disk usag
 
 `npm run test:setup-previous` checks the actual previous-version confirmation, stale-target rejection, restored bytes, user-file/data preservation and silent restoration through an installed uninstaller's temporary copy. Version labels and the old app bytes are synthetic; no old app is launched and no real HKCU registration is changed. Restoring files does not prove that an older released app can read a newer data schema.
 
+`npm run test:setup-data-choice` verifies both choices in the actual Windows uninstaller: retaining data by default, or selecting deletion of settings, clipboard history and indexes. Set `PRISM_SETUP_EXE` to the built setup and `PRISM_SETUP_EXPECTED_EXE` to the app embedded in its payload. The test creates private OS-temp installation and data fixtures, checks the installed app/notices, clicks the checkbox and removal controls, and verifies the completion message against files actually retained or deleted. User files and neighboring app folders must survive both choices, and the real Prism registration and filename service must stay unchanged. It never launches the installed app. This proves the sandboxed Windows flow, not normal-profile removal or other operating systems.
+
 The native LanceDB build also requires `protoc`. Install a compatible [official Protocol Buffers release](https://github.com/protocolbuffers/protobuf/releases) and put its executable on PATH, or set `PROTOC` for the build shell. The Windows vector tests were verified with protoc 34.1.
 
 ```powershell

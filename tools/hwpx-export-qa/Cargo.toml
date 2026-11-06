@@ -15,3 +15,4 @@ pulldown-cmark = { version = "=0.13.6", default-features = false }
 getrandom = "0.3"
 [dev-dependencies]
 roxmltree = "=0.21.1"
+tempfile = "3"

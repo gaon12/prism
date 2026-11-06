@@ -29,6 +29,11 @@ the export instead of silently publishing lost content. Short-lived opaque
 markers preserve code spans and table alignment through the typed model; all
 markers must be consumed and absent from the produced package.
 
+The crate also compiles the shared destination writer in its test target. Real
+temporary-directory checks cover interrupted writes and commit cancellation,
+hardlink preservation, staging-name collisions, invalid output paths and bounds.
+Unix additionally checks symlink rejection and owner-only staging permissions.
+
 The caller must retain its actual export admission while a codec call is still
 running after cancellation or timeout, and publish only through a cancellable
 atomic destination writer. This module returns bytes; it never reads source

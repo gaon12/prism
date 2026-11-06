@@ -28,3 +28,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     Ok(())
 }
+#[cfg(test)]
+#[path = "../../../src-tauri/src/document_export_file.rs"]
+mod document_export_file;

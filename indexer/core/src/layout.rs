@@ -589,6 +589,44 @@ impl MftLayout {
         check(offset / u64::from(self.geometry.record_size))?;
         Ok(())
     }
+
+    /// Transfer ownership of a bounded logical batch to the parser, taking
+    /// another reusable buffer back. This avoids copying the complete MFT a
+    /// second time merely to send it across a thread boundary. Physical I/O
+    /// and all checks stay here, on the source's original calling thread.
+    pub(crate) fn scan_owned_batches(
+        &self,
+        source: &mut impl Source,
+        block_bytes: usize,
+        mut visit: impl FnMut(u64, Vec<u8>) -> Result<Vec<u8>>,
+        mut check: impl FnMut(u64) -> Result<()>,
+    ) -> Result<()> {
+        let record_bytes = self.geometry.record_size as usize;
+        if !(record_bytes..=BLOCK_BYTES).contains(&block_bytes)
+            || !block_bytes.is_multiple_of(record_bytes)
+        {
+            return Err(Error::Limit);
+        }
+        let mut block = Vec::with_capacity(block_bytes);
+        let mut offset = 0u64;
+        while offset < self.geometry.mft_bytes {
+            let first = offset / record_bytes as u64;
+            check(first)?;
+            let length = (self.geometry.mft_bytes - offset).min(block_bytes as u64) as usize;
+            block.resize(length, 0);
+            read_mapped(source, self.geometry, &self.extents, offset, &mut block)?;
+            // Progress counts records read, not yet decoded. A parser may be
+            // finishing older batches; these checkpoints still poll the real
+            // coordinator's cancellation/deadline callback every256 records.
+            for index in (0..length / record_bytes).step_by(256) {
+                check(first + index as u64)?;
+            }
+            block = visit(first, block)?;
+            offset += length as u64;
+        }
+        check(offset / record_bytes as u64)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -751,6 +789,88 @@ mod tests {
             .unwrap();
         assert_eq!(seen, (0..64).collect::<Vec<_>>());
         assert_eq!(source.reads, [(100 * 512, 32768), (300 * 512, 32768)]);
+    }
+    #[test]
+    fn owned_batches_preserve_fragmented_offsets_and_reuse_the_same_buffer() {
+        let mut source = fragmented();
+        let layout = MftLayout::load(&mut source, geometry(), || Ok(())).unwrap();
+        let mut seen = Vec::new();
+        let mut buffers = HashSet::new();
+        layout
+            .scan_owned_batches(
+                &mut source,
+                8192,
+                |first, bytes| {
+                    assert_eq!(bytes.len(), 8192);
+                    buffers.insert(bytes.as_ptr() as usize);
+                    for (index, record) in bytes.as_chunks::<1024>().0.iter().enumerate() {
+                        let number = first + index as u64;
+                        assert!(record.iter().all(|byte| *byte == number as u8));
+                        seen.push(number);
+                    }
+                    Ok(bytes)
+                },
+                |_| Ok(()),
+            )
+            .unwrap();
+        assert_eq!(seen, (0..64).collect::<Vec<_>>());
+        assert_eq!(buffers.len(), 1);
+        assert_eq!(source.reads.len(), 8);
+        assert_eq!(
+            source.reads.iter().map(|(_, count)| count).sum::<usize>(),
+            65536
+        );
+        assert!(source.reads.iter().all(|(_, count)| *count <= 8192));
+    }
+    #[test]
+    fn owned_batches_reject_invalid_sizes_and_stop_on_cancel_or_failed_reads() {
+        use std::cell::Cell;
+        let mut source = fragmented();
+        let layout = MftLayout::load(&mut source, geometry(), || Ok(())).unwrap();
+        for size in [0, 1023, BLOCK_BYTES + 1024] {
+            assert_eq!(
+                layout.scan_owned_batches(
+                    &mut source,
+                    size,
+                    |_, _| panic!("invalid batch must not be delivered"),
+                    |_| Ok(())
+                ),
+                Err(Error::Limit)
+            );
+        }
+        assert!(source.reads.is_empty());
+        let cancelled = Cell::new(false);
+        let mut delivered = 0;
+        assert_eq!(
+            layout.scan_owned_batches(
+                &mut source,
+                8192,
+                |_, bytes| {
+                    delivered += 1;
+                    cancelled.set(true);
+                    Ok(bytes)
+                },
+                |_| if cancelled.get() {
+                    Err(Error::Cancelled)
+                } else {
+                    Ok(())
+                }
+            ),
+            Err(Error::Cancelled)
+        );
+        assert_eq!(delivered, 1);
+        assert_eq!(source.reads.len(), 1);
+        let mut source = fragmented();
+        source.bytes.truncate(100 * 512 + 4000);
+        assert_eq!(
+            layout.scan_owned_batches(
+                &mut source,
+                8192,
+                |_, _| panic!("a failed read cannot deliver a batch"),
+                |_| Ok(())
+            ),
+            Err(Error::Corrupt)
+        );
     }
     #[test]
     fn reject_missing_reused_gapped_and_overlapping_extensions() {

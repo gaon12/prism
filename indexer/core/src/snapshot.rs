@@ -8,6 +8,7 @@ use crate::{
 use std::collections::BTreeSet;
 #[cfg(feature = "cache")]
 pub mod codec;
+mod parallel;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Progress {
@@ -25,7 +26,29 @@ pub fn collect(
     source: &mut (impl layout::Source + journal::Source),
     geometry: Geometry,
     check: impl Fn() -> layout::Result<()>,
+    progress: impl FnMut(Progress),
+) -> layout::Result<Snapshot> {
+    // A small MFT cannot amortize a worker pool. Keep its existing sequential
+    // path; only pure decoding, never the volume/journal source, is parallel.
+    let workers = if geometry.mft_bytes >= 16 * 1024 * 1024 {
+        std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            // Four decoders matched or beat eight in the owned-buffer
+            // benchmark, without doubling the bounded raw working set.
+            .clamp(1, 4)
+    } else {
+        1
+    };
+    collect_using(source, geometry, check, progress, workers, 4 * 1024 * 1024)
+}
+
+fn collect_using(
+    source: &mut (impl layout::Source + journal::Source),
+    geometry: Geometry,
+    check: impl Fn() -> layout::Result<()>,
     mut progress: impl FnMut(Progress),
+    workers: usize,
+    batch_bytes: usize,
 ) -> layout::Result<Snapshot> {
     check()?;
     let start = source.checkpoint()?.validate()?;
@@ -33,30 +56,44 @@ pub fn collect(
     let mut builder = CatalogBuilder::default();
     let mut repair = BTreeSet::new();
     let total = geometry.mft_bytes / u64::from(geometry.record_size);
-    layout.scan(
-        source,
-        |number, bytes| {
-            match parse_record(number, geometry.sector_size as usize, bytes) {
-                Ok(Some(record)) => builder.insert(record)?,
-                Ok(None) => {}
-                Err(_) => {
-                    // A live volume can change a sector between reads. Re-read
-                    // damaged records through the driver after the bulk pass;
-                    // do not hide the problem or restart the entire scan per file.
-                    repair.insert(number);
-                    if repair.len() > 4096 {
-                        return Err(Error::Limit);
+    if workers > 1 {
+        parallel::scan(
+            &layout,
+            source,
+            geometry,
+            &mut builder,
+            &mut repair,
+            &check,
+            |processed| progress(Progress::Mft { processed, total }),
+            workers,
+            batch_bytes,
+        )?;
+    } else {
+        layout.scan(
+            source,
+            |number, bytes| {
+                match parse_record(number, geometry.sector_size as usize, bytes) {
+                    Ok(Some(record)) => builder.insert(record)?,
+                    Ok(None) => {}
+                    Err(_) => {
+                        // A live volume can change a sector between reads. Re-read
+                        // damaged records through the driver after the bulk pass;
+                        // do not hide the problem or restart the entire scan per file.
+                        repair.insert(number);
+                        if repair.len() > 4096 {
+                            return Err(Error::Limit);
+                        }
                     }
                 }
-            }
-            Ok(())
-        },
-        |processed| {
-            check()?;
-            progress(Progress::Mft { processed, total });
-            Ok(())
-        },
-    )?;
+                Ok(())
+            },
+            |processed| {
+                check()?;
+                progress(Progress::Mft { processed, total });
+                Ok(())
+            },
+        )?;
+    }
     let stop = source.checkpoint()?.validate()?;
     let changes = journal::collect(source, start, stop, &check)?;
     let replay_total = (changes.references.len() + repair.len()) as u64;

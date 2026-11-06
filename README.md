@@ -52,13 +52,33 @@ RAG chat connects a user-run OpenAI-compatible local server or an external HTTPS
 
 Each provider attempt rechecks current policy and source hashes. Both history roles retain hidden/uncited provenance, so revoked, changed, deleted or out-of-scope evidence is omitted rather than replayed. Document questions with no evidence do not silently become general chat. Source links and model citations are unverified references; unknown labels remain unlinked, and reported usage is never estimated. Conversations support search, rename/delete, paging, explicit cancellation and Markdown export. Tests exercise the actual native RAG/source/SQLite/DPAPI path with a synthetic loopback completion server; actual external generation is not verified by that fixture.
 
-Document creation does not call AI. Choose explicit content scopes, generate and review an outline, then generate the body through the same RAG policy and provider configuration. A concise purpose/topic drives retrieval independently of the larger draft; keyword fallback requires a topic matching indexed text. Markdown templates, tables, numbers, manual blocks, paragraph/Unicode selection rewrites, version restore and optional source footnotes are supported. Model-assigned fact/user-input/proposal/blank kinds do not verify claims; actual manual edits are marked separately. Derived text retains all inherited source permissions and hashes, so a forbidden or changed source blocks reuse of that draft. Malformed, cancelled and stale operations preserve the prior revision. Drafts stay outside automatic content indexing, and existing local Markdown notes remain separate. External research, original Office editing beyond form filling, remaining Paddle targets, Office/HWP password processing and HWP/HWPX export are not implemented. Native macOS OCR has an adapter awaiting actual Mac verification.
+Document creation does not call AI. Choose explicit content scopes, generate and review an outline, then generate the body through the same RAG policy and provider configuration. A concise purpose/topic drives retrieval independently of the larger draft; keyword fallback requires a topic matching indexed text. Markdown templates, tables, numbers, manual blocks, paragraph/Unicode selection rewrites, version restore and optional source footnotes are supported. Model-assigned fact/user-input/proposal/blank kinds do not verify claims; actual manual edits are marked separately. Derived text retains all inherited source permissions and hashes, so a forbidden or changed source blocks reuse of that draft. Malformed, cancelled and stale operations preserve the prior revision. Drafts stay outside automatic content indexing, and existing local Markdown notes remain separate. External research, original Office editing beyond form filling, remaining Paddle targets, Office/HWP password processing and binary HWP export are not implemented. Native macOS OCR has an adapter awaiting actual Mac verification.
 
 **Fill an existing form.** In the Documents tab, switch to _Fill an existing form_ (or make it the default under Settings → General). Open a DOCX or HWPX form and Prism lists its `{{name}}` placeholders (the same name is filled everywhere) and blanks of three or more underscores. Type values and save: Prism writes a new file and never modifies the original. Unchanged parts of the package, styles and formatting are copied as-is; a placeholder split across differently formatted runs keeps the formatting of its first run. If the form changes on disk after it was opened, saving is refused until it is reloaded, so a value cannot land in a different blank. Values, fields and the output size are limited, and values with control characters are rejected. HWPX output has not yet been opened in Hancom Office for verification; fields inside text that contains markup are skipped.
 
 In a saved document, expand **Export files** and choose **Export PDF**. The selected immutable version, source-footnote option and block-type option determine the output; save unsaved changes first. PDF export uses an embedded Typst engine with bundled Noto CJK, mono and monochrome emoji fonts, without a printer, separate program or font/model download. A4 pages support headings, paragraphs, lists, quotes, code, repeated table headers and footnotes. Markdown images become visible, counted placeholders; they are not embedded or fetched. Raw HTML is printed as text, and only HTTP(S)/mailto links become PDF links. This is a supported Markdown subset, not an Office-layout round trip.
 
 The renderer receives escaped structure from the backend's saved revision and cannot resolve document files, packages, network resources, environment values or system fonts. Export admits one actual compilation at a time, with bounded input/events/tables/pages/output and a 30-second deadline. Cancellation returns promptly; a compiler already running retains its admission until it finishes and cannot publish afterwards. A same-directory temporary file is atomically renamed only on success, preserving an existing chosen file after errors or cancellation. Once the final rename starts, its real result wins over cancellation. Pinned font provenance, hashes and OFL licenses are in [document-fonts](src-tauri/assets/document-fonts/sources.json); the bundled [PDF notice](src-tauri/notices/document-pdf.txt) includes the engine and Markdown-parser licenses.
+
+**Export HWPX** uses the same saved version and source/classification options. A
+pure Rust HwpForge adapter writes real typed paragraphs, tables, code and
+footnotes, including visible unverified classification labels. Images become
+descriptions, raw HTML becomes text, and resource files or URLs are never
+resolved. Unsupported codec diagnostics stop export instead of silently
+discarding content. The default template cannot be overridden by Markdown
+frontmatter. HWPX declares fonts for the reader to resolve; it does not embed the
+PDF engine's font files. Pagination and font substitution depend on the reader.
+
+PDF and HWPX share one actual export worker admission and the same cancellable
+atomic destination writer. HWPX additionally bounds nested Markdown and repeated
+footnote expansion before decoding. The [independent engine checks](tools/hwpx-export-qa/README.md)
+compile the production modules on Windows and Linux. Actual Windows app tests
+verify package structure, saved source/marker options, cancellation and reindexing
+through Prism's separate extractor. Native Hancom visual rendering and full
+Markdown/Office fidelity remain unverified. The bundled [HWPX notice](src-tauri/notices/document-hwpx.txt)
+contains the exact pinned codec provenance and MIT license.
+
+본 제품은 한컴의 HWP 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다.
 
 ## Search and quick tools
 
@@ -264,6 +284,18 @@ Set `PRISM_TEST_SEARCH_CHAT_MODEL=1` when running that command to exercise the s
 `npm run test:document-pdf` uses a private native profile and the real saved-revision/PDF/file/collection-rendering services. It checks old versus current versions, foreign-version rejection, dirty-edit export controls, early cancellation, multilingual text, page geometry and actual first-page WebP pixels. Only the save-picker response is supplied by the test; it also temporarily holds a real export IPC to exercise cancellation overtaking admission. `test:documents` additionally checks actual saved RAG-source footnotes and classification options in PDF output without another provider call. These two developer tests require Python with `pypdf` for independent PDF inspection (`PRISM_TEST_PYTHON` can select the interpreter); the application does not require Python for PDF export. They do not prove actual native save-dialog interaction or Mac/Linux desktop integration.
 
 The document fixture delays actual body/status/manual-save operations without replacing their data. A late active-status read cannot undo a locally completed generation; manual-save assertions wait for the persisted revision rather than an already-present local edit marker.
+
+`npm run test:document-hwpx` uses actual saved revisions, the HWPX encoder, atomic
+file replacement and a private content index. It checks old/current/foreign
+versions, main-window restrictions, dirty edits, shared PDF controls, early
+cancellation preserving an existing destination, literal code/HTML, no resource
+fetches and independent multilingual extraction without starting embeddings.
+Only the save-picker response is supplied and one real export IPC is held before
+admission. Its independent ZIP/XML reader needs Python's standard library only;
+Prism itself requires no Python or installed Hancom for HWPX export.
+`test:documents` checks both PDF and HWPX source/marker options against saved RAG
+citations without another provider call. These tests do not verify native
+Hancom layout or actual OS save-dialog interaction.
 
 `npm run test:onboarding` verifies actual bundled first-run completion, shortcut/settings persistence, clipboard opt-out, skip without applying draft choices and restart. Recommended user folders are explicitly unchecked, and the isolated profile uses MemoryClipboard. Existing profiles missing the new completion marker bypass setup; fresh profiles see the tour. Theme/language choices are saved only on completion.
 

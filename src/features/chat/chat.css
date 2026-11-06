@@ -750,3 +750,7 @@ dialog.chat-preview::backdrop {
 .chat-project > svg {
   color: var(--accent);
 }
+/* The project (library folder) a conversation belongs to, shown in the full list only. */
+.chat-conversation-list .chat-conversation-project {
+  color: var(--accent);
+}

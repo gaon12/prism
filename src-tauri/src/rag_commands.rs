@@ -16,9 +16,20 @@ async fn blocking<T: Send + 'static>(
 pub async fn rag_create(
     state: State<'_, AppState>,
     title: Option<String>,
+    project: Option<String>,
 ) -> RagResult<ConversationSummary> {
     let service = service(&state)?;
-    blocking(move || service.create_conversation(title.as_deref())).await
+    blocking(move || service.create_conversation(title.as_deref(), project.as_deref())).await
+}
+/// Files a project-less conversation under the open project (Q37).
+#[tauri::command]
+pub async fn rag_adopt_project(
+    state: State<'_, AppState>,
+    id: String,
+    project: String,
+) -> RagResult<()> {
+    let service = service(&state)?;
+    blocking(move || service.adopt_project(&id, &project)).await
 }
 #[tauri::command]
 pub async fn rag_create_filename_search(
@@ -171,9 +182,10 @@ pub async fn rag_list(
     state: State<'_, AppState>,
     query: String,
     limit: usize,
+    project: Option<String>,
 ) -> RagResult<Vec<ConversationSummary>> {
     let service = service(&state)?;
-    blocking(move || service.list_conversations(&query, limit)).await
+    blocking(move || service.list_conversations(&query, limit, project.as_deref())).await
 }
 #[tauri::command]
 pub async fn rag_rename(state: State<'_, AppState>, id: String, title: String) -> RagResult<()> {

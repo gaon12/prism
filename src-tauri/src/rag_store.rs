@@ -103,6 +103,25 @@ impl RagStore {
             )
             .map_err(storage)?;
         }
+        let has_project = {
+            let mut query = db
+                .prepare("PRAGMA table_info(conversations)")
+                .map_err(storage)?;
+            let columns = query
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(storage)?;
+            columns
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage)?
+                .iter()
+                .any(|name| name == "project")
+        };
+        if !has_project {
+            // Requirement Q37: the project (library folder) a conversation belongs to.
+            // NULL means "no project"; such conversations appear only in the full list.
+            db.execute("ALTER TABLE conversations ADD COLUMN project TEXT", [])
+                .map_err(storage)?;
+        }
         db.execute_batch("CREATE TABLE IF NOT EXISTS conversation_selection(conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,payload TEXT NOT NULL);").map_err(storage)?;
         crate::selection_set::initialize(&db)?;
         db.pragma_update(None, "user_version", 4).map_err(storage)?;
@@ -165,8 +184,24 @@ impl RagStore {
     pub fn profile_id(&self) -> &str {
         &self.profile_id
     }
-    pub fn create(&self, title: &str) -> RagResult<ConversationSummary> {
-        self.create_kind(title, "chat", None)
+    pub fn create(&self, title: &str, project: Option<&str>) -> RagResult<ConversationSummary> {
+        let mut summary = self.create_kind(title, "chat", None)?;
+        if let Some(project) = project {
+            self.adopt_project(&summary.id, project)?;
+            summary.project = Some(project.into());
+        }
+        Ok(summary)
+    }
+    /// Puts a conversation without a project into `project`. A conversation that already
+    /// belongs to a project keeps it, so opening it from another project never moves it.
+    pub fn adopt_project(&self, id: &str, project: &str) -> RagResult<()> {
+        self.connect()?
+            .execute(
+                "UPDATE conversations SET project=?1 WHERE id=?2 AND kind='chat' AND project IS NULL",
+                params![project, id],
+            )
+            .map_err(storage)?;
+        Ok(())
     }
     pub fn create_search(
         &self,
@@ -209,13 +244,21 @@ impl RagStore {
             created_ms: now,
             updated_ms: now,
             turn_count: 0,
+            project: None,
         })
     }
-    pub fn list(&self, query: &str, limit: usize) -> RagResult<Vec<ConversationSummary>> {
+    /// Chat conversations, newest first. With `project`, only that project's conversations;
+    /// without it, every conversation (each one shows its project, if any).
+    pub fn list(
+        &self,
+        query: &str,
+        limit: usize,
+        project: Option<&str>,
+    ) -> RagResult<Vec<ConversationSummary>> {
         let db = self.connect()?;
-        let mut statement=db.prepare("SELECT c.id,c.title,c.created_ms,c.updated_ms,(SELECT count(*) FROM conversation_turns t WHERE t.conversation_id=c.id) FROM conversations c WHERE c.kind='chat' AND (?1='' OR instr(lower(c.title),lower(?1))>0 OR EXISTS(SELECT 1 FROM conversation_turns t WHERE t.conversation_id=c.id AND instr(lower(t.text),lower(?1))>0)) ORDER BY c.updated_ms DESC,c.id LIMIT ?2").map_err(storage)?;
+        let mut statement=db.prepare("SELECT c.id,c.title,c.created_ms,c.updated_ms,(SELECT count(*) FROM conversation_turns t WHERE t.conversation_id=c.id),c.project FROM conversations c WHERE c.kind='chat' AND (?3 IS NULL OR c.project=?3) AND (?1='' OR instr(lower(c.title),lower(?1))>0 OR EXISTS(SELECT 1 FROM conversation_turns t WHERE t.conversation_id=c.id AND instr(lower(t.text),lower(?1))>0)) ORDER BY c.updated_ms DESC,c.id LIMIT ?2").map_err(storage)?;
         let rows = statement
-            .query_map(params![query, limit as u64], read_summary)
+            .query_map(params![query, limit as u64, project], read_summary)
             .map_err(storage)?;
         rows.collect::<Result<_, _>>().map_err(storage)
     }
@@ -262,7 +305,7 @@ impl RagStore {
         Ok(())
     }
     pub fn summary(&self, id: &str) -> RagResult<ConversationSummary> {
-        self.connect()?.query_row("SELECT c.id,c.title,c.created_ms,c.updated_ms,(SELECT count(*) FROM conversation_turns t WHERE t.conversation_id=c.id) FROM conversations c WHERE c.id=?1",[id],read_summary).optional().map_err(storage)?.ok_or_else(||RagError::new(RagErrorCode::Input))
+        self.connect()?.query_row("SELECT c.id,c.title,c.created_ms,c.updated_ms,(SELECT count(*) FROM conversation_turns t WHERE t.conversation_id=c.id),c.project FROM conversations c WHERE c.id=?1",[id],read_summary).optional().map_err(storage)?.ok_or_else(||RagError::new(RagErrorCode::Input))
     }
     pub fn rename(&self, id: &str, title: &str) -> RagResult<()> {
         let count = self
@@ -464,6 +507,7 @@ fn read_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationSummary
         created_ms: row.get(2)?,
         updated_ms: row.get(3)?,
         turn_count: row.get(4)?,
+        project: row.get(5)?,
     })
 }
 fn blank_turn(
@@ -508,7 +552,7 @@ mod selection_tests {
     fn version_two_conversations_migrate_and_damaged_selections_fail_closed() {
         let directory = tempfile::tempdir().unwrap();
         let store = RagStore::open(directory.path()).unwrap();
-        let conversation = store.create("legacy conversation").unwrap();
+        let conversation = store.create("legacy conversation", None).unwrap();
         let db = store.connect().unwrap();
         db.execute_batch("DROP TABLE conversation_selection; PRAGMA user_version=2;")
             .unwrap();
@@ -555,5 +599,41 @@ mod selection_tests {
             RagStore::open(directory.path()).err().unwrap().code,
             RagErrorCode::Storage
         );
+    }
+
+    #[test]
+    fn conversations_are_listed_per_project_and_keep_their_first_project() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = RagStore::open(directory.path()).unwrap();
+        let a = store.create("in A", Some("project-a")).unwrap();
+        assert_eq!(a.project.as_deref(), Some("project-a"));
+        let loose = store.create("no project", None).unwrap();
+
+        // A project shows only its own conversations; no project shows everything.
+        let ids = |project| -> Vec<String> {
+            store
+                .list("", 100, project)
+                .unwrap()
+                .into_iter()
+                .map(|item| item.id)
+                .collect()
+        };
+        assert_eq!(ids(Some("project-a")), [a.id.clone()]);
+        assert!(ids(Some("project-b")).is_empty());
+        assert_eq!(ids(None).len(), 2);
+
+        // A search handed over inside project B files the loose conversation there, but a
+        // conversation that already has a project is never moved.
+        store.adopt_project(&loose.id, "project-b").unwrap();
+        store.adopt_project(&a.id, "project-b").unwrap();
+        assert_eq!(ids(Some("project-b")), [loose.id.clone()]);
+        assert_eq!(
+            store.summary(&a.id).unwrap().project.as_deref(),
+            Some("project-a")
+        );
+
+        // Reopening keeps the column (the migration only adds it once).
+        let reopened = RagStore::open(directory.path()).unwrap();
+        assert_eq!(reopened.list("", 100, Some("project-a")).unwrap().len(), 1);
     }
 }

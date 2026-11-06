@@ -629,6 +629,7 @@ pub fn run() {
             content_commands::content_unlock_office,
             content_commands::content_cancel_unlock,
             rag_commands::rag_create,
+            rag_commands::rag_adopt_project,
             rag_commands::rag_create_from_search,
             rag_commands::rag_create_filename_search,
             rag_commands::rag_create_keyword_search,

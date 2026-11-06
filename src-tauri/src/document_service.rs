@@ -1498,7 +1498,7 @@ mod tests {
             assert!(!generated.claims_verified);
             assert!(!generated.blocks[0].claims_verified);
             assert!(!generated.blocks[0].user_edited);
-            assert!(f.rag.list_conversations("", 100).unwrap().is_empty());
+            assert!(f.rag.list_conversations("", 100, None).unwrap().is_empty());
         });
     }
     #[test]
@@ -2002,11 +2002,20 @@ mod tests {
     fn document_conversations_are_hidden_even_when_search_matches() {
         let f = fixture();
         let _page = create(&f);
-        let chat = f.rag.create_conversation(Some("Visible chat")).unwrap();
-        assert_eq!(f.rag.list_conversations("", 100).unwrap().len(), 1);
-        assert_eq!(f.rag.list_conversations("Synthetic", 100).unwrap().len(), 0);
+        let chat = f
+            .rag
+            .create_conversation(Some("Visible chat"), None)
+            .unwrap();
+        assert_eq!(f.rag.list_conversations("", 100, None).unwrap().len(), 1);
         assert_eq!(
-            f.rag.list_conversations("Visible", 100).unwrap()[0].id,
+            f.rag
+                .list_conversations("Synthetic", 100, None)
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            f.rag.list_conversations("Visible", 100, None).unwrap()[0].id,
             chat.id
         );
     }
@@ -2014,7 +2023,10 @@ mod tests {
     fn v1_chat_migration_preserves_turns_and_hidden_body_search_stays_hidden() {
         run(async {
             let f = fixture();
-            let chat = f.rag.create_conversation(Some("Legacy chat")).unwrap();
+            let chat = f
+                .rag
+                .create_conversation(Some("Legacy chat"), None)
+                .unwrap();
             f.transport.push("LEGACY_BODY_NEEDLE [S1]".into());
             f.rag
                 .ask(RagRequest {
@@ -2036,7 +2048,7 @@ mod tests {
                 .unwrap();
             drop(db);
             let store = crate::rag_store::RagStore::open(&f.directory.path().join("rag")).unwrap();
-            let visible = store.list("LEGACY_BODY_NEEDLE", 100).unwrap();
+            let visible = store.list("LEGACY_BODY_NEEDLE", 100, None).unwrap();
             assert_eq!(visible.len(), 1);
             assert_eq!(visible[0].id, chat.id);
             assert_eq!(visible[0].turn_count, 2);
@@ -2068,12 +2080,15 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert!(store.list("HIDDEN_BODY_NEEDLE", 100).unwrap().is_empty());
             assert!(store
-                .list("HIDDEN_QUESTION_NEEDLE", 100)
+                .list("HIDDEN_BODY_NEEDLE", 100, None)
                 .unwrap()
                 .is_empty());
-            assert_eq!(store.list("", 100).unwrap().len(), 1);
+            assert!(store
+                .list("HIDDEN_QUESTION_NEEDLE", 100, None)
+                .unwrap()
+                .is_empty());
+            assert_eq!(store.list("", 100, None).unwrap().len(), 1);
         });
     }
     #[test]

@@ -1157,8 +1157,24 @@ export function ChatView({
     selectionEpoch.current++;
     setSelectedId(initialConversationId);
     setQuery('');
-    setRefresh((value) => value + 1);
+    const refreshList = () => setRefresh((value) => value + 1);
+    if (native && project) {
+      void rag
+        .adoptProject(initialConversationId, project.id)
+        .catch(() => undefined)
+        .finally(() => alive.current && refreshList());
+    } else refreshList();
   }, [initialConversationId]);
+  // Switching projects shows that project's conversations; the open conversation is closed
+  // because it may belong to the previous project.
+  const listProject = useRef(project?.id ?? null);
+  useEffect(() => {
+    if (listProject.current === (project?.id ?? null)) return;
+    listProject.current = project?.id ?? null;
+    selectionEpoch.current++;
+    setSelectedId(null);
+    setRefresh((value) => value + 1);
+  }, [project?.id]);
   useEffect(() => {
     if (!native) return;
     const epoch = ++listEpoch.current;
@@ -1168,7 +1184,7 @@ export function ChatView({
     const timer = setTimeout(
       () => {
         void rag
-          .list(query, 100)
+          .list(query, 100, project?.id ?? null)
           .then((items) => {
             if (!disposed && alive.current && epoch === listEpoch.current)
               setList({ query, items: items.filter((item) => !deleted.current.has(item.id)) });
@@ -1195,7 +1211,7 @@ export function ChatView({
     setError(null);
     const selection = selectionEpoch.current;
     try {
-      const summary = await rag.create(t('newTitle'));
+      const summary = await rag.create(t('newTitle'), project?.id ?? null);
       if (alive.current) {
         if (selectionEpoch.current === selection) {
           selectionEpoch.current++;
@@ -1311,6 +1327,13 @@ export function ChatView({
                   >
                     <strong>{item.title || t('searchResultsTitle')}</strong>
                     <span>{chatText(language, 'turns', { count: item.turnCount })}</span>
+                    {!project && item.project ? (
+                      // In the full list, show which project a conversation belongs to.
+                      <span className="chat-conversation-project">
+                        {settings.scopes.find((scope) => scope.id === item.project)?.name ??
+                          t('projectRemoved')}
+                      </span>
+                    ) : null}
                     <time dateTime={new Date(item.updatedMs).toISOString()}>
                       {new Date(item.updatedMs).toLocaleDateString(language)}
                     </time>

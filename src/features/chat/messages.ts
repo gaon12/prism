@@ -521,6 +521,13 @@ const messages = {
     '已開啟「{name}」資料夾，但其內文索引已關閉，沒有可用文件。',
     '「{name}」フォルダーを開いていますが、本文インデックスがオフのため使える文書がありません。',
   ],
+  projectRemoved: [
+    '삭제된 폴더',
+    'Removed folder',
+    '已删除的文件夹',
+    '已刪除的資料夾',
+    '削除したフォルダー',
+  ],
   projectLeave: [
     '모든 폴더 사용',
     'Use all folders',

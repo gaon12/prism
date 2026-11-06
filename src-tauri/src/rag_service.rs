@@ -510,6 +510,8 @@ pub struct ConversationSummary {
     pub created_ms: u64,
     pub updated_ms: u64,
     pub turn_count: u64,
+    /// The project (library folder / scope id) this conversation belongs to (Q37).
+    pub project: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -740,10 +742,22 @@ impl RagService {
         };
         Ok(CredentialStatus { has_key, support })
     }
-    pub fn create_conversation(&self, title: Option<&str>) -> RagResult<ConversationSummary> {
+    pub fn create_conversation(
+        &self,
+        title: Option<&str>,
+        project: Option<&str>,
+    ) -> RagResult<ConversationSummary> {
         let title = title.unwrap_or("");
         valid_title(title, true)?;
-        self.inner.store.create(title)
+        project.map(valid_project).transpose()?;
+        self.inner.store.create(title, project)
+    }
+    /// Files a conversation without a project under `project` (used when a search inside a
+    /// project hands its results to chat).
+    pub fn adopt_project(&self, id: &str, project: &str) -> RagResult<()> {
+        valid_id(id)?;
+        valid_project(project)?;
+        self.inner.store.adopt_project(id, project)
     }
     pub(crate) fn check_conversation(&self, id: &str) -> RagResult<()> {
         valid_id(id)?;
@@ -896,6 +910,7 @@ impl RagService {
         &self,
         query: &str,
         limit: usize,
+        project: Option<&str>,
     ) -> RagResult<Vec<ConversationSummary>> {
         if query.chars().count() > 256
             || query.chars().any(char::is_control)
@@ -903,7 +918,8 @@ impl RagService {
         {
             return Err(RagError::new(RagErrorCode::Input));
         }
-        self.inner.store.list(query, limit)
+        project.map(valid_project).transpose()?;
+        self.inner.store.list(query, limit, project)
     }
     pub fn rename_conversation(&self, id: &str, title: &str) -> RagResult<()> {
         valid_id(id)?;
@@ -1760,6 +1776,13 @@ fn snapshot(policy: &RagPolicy, selection: &[String]) -> ScopeSnapshot {
 fn policy_stamp(policy: &RagPolicy) -> RagResult<Vec<u8>> {
     serde_json::to_vec(policy).map_err(|_| RagError::new(RagErrorCode::Input))
 }
+/// A project is a library folder's scope id: any short, printable, non-empty text.
+fn valid_project(value: &str) -> RagResult<()> {
+    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+        return Err(RagError::new(RagErrorCode::Input));
+    }
+    Ok(())
+}
 fn valid_id(value: &str) -> RagResult<()> {
     if value.is_empty()
         || value.len() > 128
@@ -2475,7 +2498,7 @@ mod tests {
     fn external_receives_only_allowed_subset_and_no_full_paths() {
         let f = fixture();
         external(&f);
-        let conversation = f.service.create_conversation(None).unwrap();
+        let conversation = f.service.create_conversation(None, None).unwrap();
         let answer = runtime()
             .block_on(f.service.ask(request(
                 &f.service,
@@ -2507,7 +2530,7 @@ mod tests {
             let mut policy = f.policy.write().unwrap();
             policy.prefs.mode = GenerationMode::External;
         }
-        let conversation = f.service.create_conversation(None).unwrap();
+        let conversation = f.service.create_conversation(None, None).unwrap();
         assert_eq!(
             runtime()
                 .block_on(f.service.ask(request(
@@ -2696,7 +2719,7 @@ mod tests {
             .lock()
             .unwrap()
             .push_back(Ok(reply(&format!("{PRIVATE} [S1]"))));
-        let conversation = f.service.create_conversation(None).unwrap();
+        let conversation = f.service.create_conversation(None, None).unwrap();
         let first = runtime()
             .block_on(f.service.ask(request(
                 &f.service,
@@ -2775,7 +2798,7 @@ mod tests {
                     .for_each(|scope| scope.external_allowed = false);
             }
         }));
-        let conversation = f.service.create_conversation(None).unwrap();
+        let conversation = f.service.create_conversation(None, None).unwrap();
         let failure = runtime()
             .block_on(f.service.ask(request(
                 &f.service,
@@ -2808,7 +2831,7 @@ mod tests {
                 code: GenerationErrorCode::Network,
                 message: "not exposed".into(),
             }));
-        let conversation = f.service.create_conversation(None).unwrap();
+        let conversation = f.service.create_conversation(None, None).unwrap();
         let answer = runtime()
             .block_on(f.service.ask(request(
                 &f.service,
@@ -2838,7 +2861,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push_back(Ok(reply(&format!("{PRIVATE} [S1]"))));
-            let conversation = f.service.create_conversation(None).unwrap();
+            let conversation = f.service.create_conversation(None, None).unwrap();
             runtime()
                 .block_on(f.service.ask(request(
                     &f.service,
@@ -2901,7 +2924,7 @@ mod tests {
             policy.prefs.external.as_mut().unwrap().endpoint =
                 "https://different.example/v1".into();
         }
-        let conversation = f.service.create_conversation(None).unwrap();
+        let conversation = f.service.create_conversation(None, None).unwrap();
         assert_eq!(
             runtime()
                 .block_on(f.service.ask(request(
@@ -2934,7 +2957,7 @@ mod tests {
         let mut child = source("child", PUBLIC);
         child.source.file_path = "C:\\approved\\child\\note.md".into();
         *f.sources.items.lock().unwrap() = vec![child];
-        let conversation = f.service.create_conversation(None).unwrap();
+        let conversation = f.service.create_conversation(None, None).unwrap();
         let mut question = request(&f.service, &conversation.id, "child_scope", "Question");
         question.scope_ids = vec!["parent".into()];
         let answer = runtime().block_on(f.service.ask(question)).unwrap();
@@ -2952,7 +2975,7 @@ mod tests {
         f.transport.replies.lock().unwrap().push_back(Ok(reply(
             "A claimed verified fact [S1] and an invented source [S999].",
         )));
-        let conversation = f.service.create_conversation(None).unwrap();
+        let conversation = f.service.create_conversation(None, None).unwrap();
         let answer = runtime()
             .block_on(
                 f.service
@@ -3005,7 +3028,7 @@ mod tests {
             .lock()
             .unwrap()
             .push_back(Ok(reply(PRIVATE)));
-        let conversation = f.service.create_conversation(None).unwrap();
+        let conversation = f.service.create_conversation(None, None).unwrap();
         let mut first = request(&f.service, &conversation.id, "general_local", PRIVATE);
         first.mode = QuestionMode::General;
         runtime().block_on(f.service.ask(first)).unwrap();
@@ -3035,7 +3058,7 @@ mod tests {
             .lock()
             .unwrap()
             .push_back(Ok(reply(&format!("{PRIVATE} [S1]"))));
-        let conversation = f.service.create_conversation(None).unwrap();
+        let conversation = f.service.create_conversation(None, None).unwrap();
         runtime()
             .block_on(
                 f.service
@@ -3076,7 +3099,7 @@ mod tests {
                     .for_each(|scope| scope.external_allowed = false);
             }
         }));
-        let conversation = f.service.create_conversation(None).unwrap();
+        let conversation = f.service.create_conversation(None, None).unwrap();
         let error = runtime()
             .block_on(f.service.ask(request(
                 &f.service,
@@ -3092,7 +3115,7 @@ mod tests {
     fn cancellation_during_blocking_retrieval_returns_without_waiting_for_resolver() {
         let f = fixture();
         f.sources.delay_ms.store(500, Ordering::Release);
-        let conversation = f.service.create_conversation(None).unwrap();
+        let conversation = f.service.create_conversation(None, None).unwrap();
         let service = f.service.clone();
         let question = request(&service, &conversation.id, "cancel_retrieval", "Question");
         let handle = runtime().spawn(async move { service.ask(question).await });
@@ -3114,7 +3137,7 @@ mod tests {
     fn interrupted_pending_turns_and_endpoint_bound_keys_survive_reopen() {
         let f = fixture();
         external(&f);
-        let conversation = f.service.create_conversation(None).unwrap();
+        let conversation = f.service.create_conversation(None, None).unwrap();
         let pending = request(&f.service, &conversation.id, "interrupted", "Question");
         let policy = f.policy.read().unwrap().clone();
         f.service
@@ -3150,7 +3173,7 @@ mod tests {
     #[test]
     fn cancellation_duplicate_guard_and_persistence_survive_restart() {
         let f = fixture();
-        let conversation = f.service.create_conversation(Some("First")).unwrap();
+        let conversation = f.service.create_conversation(Some("First"), None).unwrap();
         f.transport.pending.store(true, Ordering::Release);
         let service = f.service.clone();
         let question = request(&service, &conversation.id, "cancel_me", "Question");
@@ -3194,7 +3217,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             f.service
-                .list_conversations("Persisted answer", 20)
+                .list_conversations("Persisted answer", 20, None)
                 .unwrap()
                 .len(),
             1
@@ -3234,6 +3257,9 @@ mod tests {
             .unwrap()
             .contains("SHA-256"));
         reopened.delete_conversation(&conversation.id).unwrap();
-        assert!(reopened.list_conversations("", 20).unwrap().is_empty());
+        assert!(reopened
+            .list_conversations("", 20, None)
+            .unwrap()
+            .is_empty());
     }
 }

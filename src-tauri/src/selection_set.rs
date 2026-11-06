@@ -174,6 +174,7 @@ impl RagStore {
             created_ms: now,
             updated_ms: now,
             turn_count: 0,
+            project: None,
         })
     }
     pub(crate) fn saved_selection(&self, id: &str) -> RagResult<Option<SavedSelection>> {
@@ -337,14 +338,14 @@ mod tests {
             1
         );
         assert!(store.clear_file_set(&chat.id, 1).is_err());
-        let count = store.list("", 100).unwrap().len();
+        let count = store.list("", 100, None).unwrap().len();
         assert!(store
             .create_file_set("cancelled", |emit| {
                 emit("/fixture/partial.md")?;
                 Err(RagError::new(RagErrorCode::Cancelled))
             })
             .is_err());
-        assert_eq!(store.list("", 100).unwrap().len(), count);
+        assert_eq!(store.list("", 100, None).unwrap().len(), count);
         let reopened = RagStore::open(dir.path()).unwrap();
         assert_eq!(
             reopened

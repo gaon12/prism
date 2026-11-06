@@ -11,6 +11,8 @@ export interface ConversationSummary {
   createdMs: number;
   updatedMs: number;
   turnCount: number;
+  /** The project (library folder / scope id) the conversation belongs to, if any. */
+  project: string | null;
 }
 export interface SourceRef {
   chunkId: string;
@@ -167,8 +169,14 @@ export const rag = {
     invoke<ConversationSummary>('rag_create_from_search', { selection }),
   setSelection: (id: string, selection: ChatSelection | null) =>
     invoke<void>('rag_set_selection', { id, selection }),
-  create: (title: string | null = null) => invoke<ConversationSummary>('rag_create', { title }),
-  list: (query = '', limit = 100) => invoke<ConversationSummary[]>('rag_list', { query, limit }),
+  /** New conversation, filed under `project` when a library folder is open. */
+  create: (title: string | null = null, project: string | null = null) =>
+    invoke<ConversationSummary>('rag_create', { title, project }),
+  /** With `project`, only that project's conversations; otherwise all of them. */
+  list: (query = '', limit = 100, project: string | null = null) =>
+    invoke<ConversationSummary[]>('rag_list', { query, limit, project }),
+  /** Files a conversation that has no project yet under `project` (never moves one). */
+  adoptProject: (id: string, project: string) => invoke<void>('rag_adopt_project', { id, project }),
   rename: (id: string, title: string) => invoke<void>('rag_rename', { id, title }),
   remove: (id: string) => invoke<void>('rag_delete', { id }),
   conversation: (id: string, beforeSequence: number | null = null, limit = 100) =>

@@ -1,5 +1,33 @@
 import type { Language } from '../../lib/types';
 const messages = {
+  rendererFailed: [
+    'Office 원본 페이지 작업을 완료하지 못했습니다.',
+    'The Office page operation could not be completed.',
+    '无法完成 Office 原始页面操作。',
+    '無法完成 Office 原始頁面作業。',
+    'Officeページの処理を完了できませんでした。',
+  ],
+  rendererUnavailable: [
+    'Office 원본 페이지 엔진을 준비한 후 다시 시도하세요.',
+    'Prepare the Office page engine and try again.',
+    '请准备 Office 原始页面引擎后重试。',
+    '請準備 Office 原始頁面引擎後再試。',
+    'Officeページエンジンを準備して再試行してください。',
+  ],
+  rendererIntegrity: [
+    'Office 엔진 파일의 무결성을 확인하지 못했습니다.',
+    'The Office engine files could not be verified.',
+    '无法验证 Office 引擎文件。',
+    '無法驗證 Office 引擎檔案。',
+    'Officeエンジンのファイルを検証できませんでした。',
+  ],
+  timedOut: [
+    'Office 페이지 준비 시간이 초과됐습니다. 다시 시도하세요.',
+    'Preparing the Office pages timed out. Try again.',
+    '准备 Office 页面超时。请重试。',
+    '準備 Office 頁面逾時。請重試。',
+    'Officeページの準備がタイムアウトしました。再試行してください。',
+  ],
   contents: ['목차', 'Contents', '目录', '目錄', '目次'],
   closeContents: ['목차 닫기', 'Close contents', '关闭目录', '關閉目錄', '目次を閉じる'],
   findContents: ['목차에서 찾기', 'Find in contents', '搜索目录', '搜尋目錄', '目次を検索'],

@@ -22,12 +22,42 @@ pub enum ErrorCode {
     UnsafePath,
     Busy,
     Encrypted,
+    RendererUnavailable,
+    RendererIntegrity,
+    RendererFailed,
+    TimedOut,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+    #[test]
+    fn legacy_page_locations_keep_their_identity_and_office_pages_pin_a_renderer() {
+        let raw = r#"{"kind":"pdf","entry":null,"number":1}"#;
+        let legacy: PageLocation = serde_json::from_str(raw).unwrap();
+        legacy.validate().unwrap();
+        assert_eq!(serde_json::to_string(&legacy).unwrap(), raw);
+        let mut office = PageLocation {
+            kind: PageKind::Office,
+            entry: None,
+            number: 1,
+            renderer: None,
+        };
+        assert!(office.validate().is_err());
+        for fingerprint in [
+            "x".repeat(129),
+            format!("{}:{}", "A".repeat(64), "b".repeat(64)),
+            "a".repeat(129),
+        ] {
+            office.renderer = Some(fingerprint);
+            assert!(office.validate().is_err());
+        }
+        office.renderer = Some(format!("{}:{}", "a".repeat(64), "b".repeat(64)));
+        office.validate().unwrap();
+        office.entry = Some("outside.docx".into());
+        assert!(office.validate().is_err());
+    }
 
     fn setup() -> (tempfile::TempDir, CollectionStore, Collection, Work, Unit) {
         let directory = tempfile::tempdir().unwrap();
@@ -60,6 +90,7 @@ mod tests {
                 kind: PageKind::Image,
                 entry: None,
                 number: n,
+                renderer: None,
             },
             source_hash: "a".repeat(64),
         }
@@ -315,7 +346,8 @@ mod tests {
                 PageLocation {
                     kind: PageKind::Image,
                     entry: Some(entry.into()),
-                    number: 1
+                    number: 1,
+                    renderer: None,
                 }
                 .validate()
                 .unwrap_err()
@@ -376,6 +408,10 @@ pub fn error(code: ErrorCode) -> LibraryError {
         ErrorCode::UnsafePath => "The referenced source path is not allowed.",
         ErrorCode::Busy => "A collection operation is already running.",
         ErrorCode::Encrypted => "The referenced document is password protected.",
+        ErrorCode::RendererUnavailable => "The Office page engine is unavailable.",
+        ErrorCode::RendererIntegrity => "The Office page engine files could not be verified.",
+        ErrorCode::RendererFailed => "The Office page operation could not be completed.",
+        ErrorCode::TimedOut => "The Office page operation timed out.",
     };
     LibraryError {
         code,
@@ -483,6 +519,7 @@ pub enum PageKind {
     Pdf,
     Text,
     Epub,
+    Office,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -582,9 +619,28 @@ pub struct PageLocation {
     pub entry: Option<String>,
     /// One-based frame, PDF page or text-section number in the original source.
     pub number: u32,
+    /// Only original Office pages carry this inventory/worker identity. Skip
+    /// absent values so existing image/PDF/text/EPUB page IDs remain unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renderer: Option<String>,
 }
 impl PageLocation {
     pub fn validate(&self) -> Result<()> {
+        if self.kind == PageKind::Office {
+            let valid = self.renderer.as_deref().is_some_and(|value| {
+                value.len() == 129
+                    && value.as_bytes()[64] == b':'
+                    && value
+                        .bytes()
+                        .enumerate()
+                        .all(|(i, b)| i == 64 || b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            });
+            if !valid || self.entry.is_some() {
+                return Err(error(ErrorCode::Input));
+            }
+        } else if self.renderer.is_some() {
+            return Err(error(ErrorCode::Input));
+        }
         if self.number == 0
             || self.entry.as_ref().is_some_and(|s| {
                 s.is_empty()

@@ -192,7 +192,16 @@ fn page(
         kind,
         entry,
         number,
+        renderer: None,
     };
+    page_location(source, location, title, source_hash)
+}
+pub(crate) fn page_location(
+    source: &Source,
+    location: PageLocation,
+    title: String,
+    source_hash: &str,
+) -> Page {
     let identity =
         serde_json::to_vec(&(&source.id, &location)).expect("serializable page identity");
     Page {
@@ -290,6 +299,7 @@ pub(crate) fn manifest(
                         kind: PageKind::Image,
                         entry: Some(relative.clone()),
                         number: 1,
+                        renderer: None,
                     }
                     .validate()?;
                     path_bytes = path_bytes.saturating_add(relative.len());
@@ -344,6 +354,7 @@ pub(crate) fn manifest(
                     kind: PageKind::Image,
                     entry: Some(name.clone()),
                     number: 1,
+                    renderer: None,
                 }
                 .validate()?;
                 if !seen.insert(name.clone()) {

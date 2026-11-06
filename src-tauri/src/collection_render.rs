@@ -76,7 +76,7 @@ pub(crate) fn webp(bytes: &[u8], edge: u32, cancel: &AtomicBool) -> Result<Vec<u
 pub(crate) fn render(page: &Page, bytes: &[u8], edge: u32, cancel: &AtomicBool) -> Result<Vec<u8>> {
     match page.location.kind {
         PageKind::Image => webp(bytes, edge, cancel),
-        PageKind::Pdf => {
+        PageKind::Pdf | PageKind::Office => {
             let png = crate::ocr::render_pdf_page(bytes, page.location.number, edge, cancel)
                 .map_err(|e| {
                     error(match e.code {

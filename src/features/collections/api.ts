@@ -52,7 +52,12 @@ export interface Page {
   unitId: string;
   sourceId: string;
   position: number;
-  location: { kind: 'image' | 'pdf' | 'text' | 'epub'; entry: string | null; number: number };
+  location: {
+    kind: 'image' | 'pdf' | 'text' | 'epub' | 'office';
+    entry: string | null;
+    number: number;
+    renderer?: string;
+  };
   title: string;
   sourceHash: string;
 }

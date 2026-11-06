@@ -147,6 +147,7 @@ fn member(value: &str) -> Result<()> {
         kind: PageKind::Epub,
         entry: Some(value.into()),
         number: 1,
+        renderer: None,
     }
     .validate()
 }

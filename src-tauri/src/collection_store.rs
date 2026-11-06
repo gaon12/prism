@@ -1098,6 +1098,30 @@ impl CollectionStore {
         let items=tx.prepare("SELECT id,unit_id,source_id,position,location,title,source_hash FROM pages WHERE unit_id=?1 ORDER BY position,id LIMIT ?2 OFFSET ?3").map_err(storage)?.query_map(params![unit_id,count,start],read_page).map_err(storage)?.collect::<rusqlite::Result<Vec<_>>>().map_err(storage)?;
         Ok(listing(items, total, offset))
     }
+    /// Resolve a source's chapters against the current unit ordering in one
+    /// snapshot. Rank the whole unit first so mixed sources and moved pages
+    /// retain their actual reader offsets without one COUNT query per chapter.
+    pub(crate) fn source_page_offsets(
+        &self,
+        unit_id: &str,
+        expected: u64,
+        source_id: &str,
+    ) -> Result<Vec<(Page, u64)>> {
+        identifier(unit_id)?;
+        identifier(source_id)?;
+        let mut db = self.connect()?;
+        let tx = db.transaction().map_err(storage)?;
+        changed(&tx, "units", unit_id, expected)?;
+        let mut statement = tx.prepare("SELECT id,unit_id,source_id,position,location,title,source_hash,offset FROM (SELECT *,ROW_NUMBER() OVER(ORDER BY position,id)-1 AS offset FROM pages WHERE unit_id=?1) WHERE source_id=?2 ORDER BY offset").map_err(storage)?;
+        let pages = statement
+            .query_map(params![unit_id, source_id], |row| {
+                Ok((read_page(row)?, row.get(7)?))
+            })
+            .map_err(storage)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage)?;
+        Ok(pages)
+    }
     pub fn page(&self, id: &str) -> Result<Page> {
         if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(error(ErrorCode::Input));

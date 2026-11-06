@@ -187,6 +187,15 @@ pub async fn collection_media(
     blocking(move || service.media(&page_id, thumbnail)).await
 }
 #[tauri::command]
+pub async fn collection_navigation(
+    state: State<'_, AppState>,
+    page_id: String,
+    expected: u64,
+) -> Result<crate::collection_service::Navigation> {
+    let service = service(&state)?;
+    blocking(move || service.navigation(&page_id, expected)).await
+}
+#[tauri::command]
 pub async fn collection_cover(state: State<'_, AppState>, work_id: String) -> Result<Media> {
     let service = service(&state)?;
     blocking(move || service.cover(&work_id)).await

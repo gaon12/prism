@@ -578,6 +578,7 @@ pub fn run() {
             collection_commands::collection_pages,
             collection_commands::collection_page_address,
             collection_commands::collection_media,
+            collection_commands::collection_navigation,
             collection_commands::collection_cache_epub,
             collection_commands::collection_cache_text,
             collection_commands::collection_cover,

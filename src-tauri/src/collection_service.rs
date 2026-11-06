@@ -15,6 +15,24 @@ use std::{
     time::UNIX_EPOCH,
 };
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NavigationItem {
+    title: String,
+    depth: u32,
+    page_id: Option<String>,
+    offset: Option<u64>,
+    fragment: Option<String>,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Navigation {
+    unit_id: String,
+    unit_revision: u64,
+    source_hash: String,
+    items: Vec<NavigationItem>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportProgress {
@@ -27,6 +45,75 @@ pub struct ImportProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn epub_navigation_authenticates_source_and_projects_current_mixed_page_order() {
+        let (dir, service, _, _, unit) = fixture();
+        let bytes = include_bytes!("../../tests/fixtures/epub/navigation.epub");
+        let path = dir.path().join("원본 목차.epub");
+        let image = dir.path().join("그림.png");
+        png(&image, [40, 100, 140, 255]);
+        fs::write(&path, bytes).unwrap();
+        let unit = service
+            .import(&unit.id, unit.revision, vec![image, path.clone()])
+            .unwrap();
+        let pages = service
+            .store
+            .pages(&unit.id, unit.revision, 0, 10)
+            .unwrap()
+            .items;
+        let first = &pages[1];
+        let second = &pages[2];
+        let navigation = service.navigation(&first.id, unit.revision).unwrap();
+        assert_eq!(
+            navigation.items[1].page_id.as_deref(),
+            Some(first.id.as_str())
+        );
+        assert_eq!(navigation.items[2].offset, Some(2));
+        let unit2 = service
+            .store
+            .move_page_before(&unit.id, unit.revision, &second.id, Some(&pages[0].id))
+            .unwrap();
+        assert_eq!(
+            service
+                .navigation(&first.id, unit.revision)
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        let navigation = service.navigation(&first.id, unit2.revision).unwrap();
+        assert_eq!(navigation.items[1].offset, Some(2));
+        assert_eq!(navigation.items[2].offset, Some(0));
+        assert!(navigation.items[5..]
+            .iter()
+            .all(|item| item.page_id.is_none()));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::write(&path, b"source changed").unwrap();
+        assert_eq!(
+            service
+                .navigation(&first.id, unit2.revision)
+                .unwrap_err()
+                .code,
+            ErrorCode::SourceChanged
+        );
+        let source = service
+            .store
+            .sources(&unit.id)
+            .unwrap()
+            .into_iter()
+            .find(|s| matches!(s.kind, SourceKind::Epub))
+            .unwrap();
+        service
+            .store
+            .remove_source(&source.id, source.revision)
+            .unwrap();
+        assert_eq!(
+            service
+                .navigation(&first.id, unit2.revision)
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
+    }
     fn fixture() -> (tempfile::TempDir, CollectionService, Collection, Work, Unit) {
         let dir = tempfile::tempdir().unwrap();
         let app = dir.path().join("app");
@@ -767,6 +854,60 @@ impl CollectionService {
                 let _ = fs::remove_file(entry.path());
             }
         }
+    }
+    pub fn navigation(&self, page_id: &str, expected: u64) -> Result<Navigation> {
+        // Share the media queue: opening contents must not allocate another
+        // full archive concurrently with an in-flight thumbnail/reader decode.
+        let _guard = self
+            .inner
+            .render
+            .lock()
+            .map_err(|_| error(ErrorCode::Storage))?;
+        let page = self.store.page(page_id)?;
+        if page.location.kind != PageKind::Epub {
+            return Err(error(ErrorCode::Unsupported));
+        }
+        let source = self.store.source(&page.source_id)?;
+        let bytes =
+            import::image_bytes(&source, &page, &self.inner.excluded, &self.inner.shutdown)?;
+        let points =
+            crate::collection_epub::Book::open(&bytes, &self.inner.shutdown)?.navigation()?;
+        let pages = self
+            .store
+            .source_page_offsets(&page.unit_id, expected, &source.id)?;
+        let mut by_entry = HashMap::new();
+        for (p, offset) in &pages {
+            if p.location.kind == PageKind::Epub && p.source_hash == page.source_hash {
+                if let Some(entry) = p.location.entry.as_deref() {
+                    // Repeated spine entries resolve to the first current occurrence.
+                    by_entry.entry(entry).or_insert((&p.id, *offset));
+                }
+            }
+        }
+        let items = points
+            .into_iter()
+            .map(|point| {
+                let address = point.entry.as_deref().and_then(|entry| by_entry.get(entry));
+                NavigationItem {
+                    title: point.title,
+                    depth: point.depth,
+                    page_id: address.map(|(id, _)| (*id).clone()),
+                    offset: address.map(|(_, offset)| *offset),
+                    fragment: point.fragment,
+                }
+            })
+            .collect();
+        self.check_current(&page, &source)?;
+        // A concurrent reorder/import/removal invalidates the projected offsets.
+        if self.store.unit(&page.unit_id)?.revision != expected {
+            return Err(error(ErrorCode::Conflict));
+        }
+        Ok(Navigation {
+            unit_id: page.unit_id,
+            unit_revision: expected,
+            source_hash: page.source_hash,
+            items,
+        })
     }
     pub fn media(&self, page_id: &str, thumbnail: bool) -> Result<Media> {
         let _guard = self

@@ -11,7 +11,7 @@ use std::{
     io::{Cursor, Read},
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
-    time::UNIX_EPOCH,
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -75,6 +75,7 @@ pub enum ExtractErrorCode {
     UnsupportedFormat,
     Encrypted,
     PasswordRejected,
+    PasswordTimedOut,
     CorruptDocument,
     OcrRequired,
     OcrUnavailable,
@@ -310,7 +311,7 @@ pub fn extract_document(
 }
 
 /// Explicit user retry. The caller owns the transient password and must not
-/// persist it; neither the original PDF nor a decrypted copy is written here.
+/// persist it; neither the original nor a decrypted copy is written here.
 pub fn extract_document_with_password(
     path: &Path,
     options: &ExtractOptions,
@@ -320,20 +321,95 @@ pub fn extract_document_with_password(
     if password.len() > 1024 {
         return Err(err(
             ExtractErrorCode::LimitExceeded,
-            "PDF password exceeds the input budget",
+            "Document password exceeds the input budget",
         ));
     }
     if !path
         .extension()
         .and_then(|value| value.to_str())
-        .is_some_and(|value| value.eq_ignore_ascii_case("pdf"))
+        .is_some_and(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "pdf" | "docx" | "xlsx" | "pptx"
+            )
+        })
     {
         return Err(err(
             ExtractErrorCode::UnsupportedFormat,
-            "Password retry currently supports PDF documents",
+            "Password retry supports PDF and OOXML documents",
         ));
     }
     extract_document_inner(path, options, cancel, Some(password))
+}
+
+#[cfg(test)]
+#[test]
+fn protected_office_extraction_keeps_encrypted_fingerprints_and_never_writes_plain_packages() {
+    let folder = tempfile::tempdir().unwrap();
+    let cancel = AtomicBool::new(false);
+    let options = ExtractOptions::default();
+    let cases: [(&str, &[u8], &str, &str); 5] = [
+        (
+            "agile.docx",
+            include_bytes!("../../tests/fixtures/encrypted-office/example_password.docx"),
+            "Password1234_",
+            "Lorem",
+        ),
+        (
+            "standard.docx",
+            include_bytes!("../../tests/fixtures/encrypted-office/ecma376standard_password.docx"),
+            "Password1234_",
+            "lorem",
+        ),
+        (
+            "agile.xlsx",
+            include_bytes!("../../tests/fixtures/encrypted-office/example_password.xlsx"),
+            "Password1234_",
+            "lorem",
+        ),
+        (
+            "sha1.xlsx",
+            include_bytes!("../../tests/fixtures/encrypted-office/ecma376agile_sha1_password.xlsx"),
+            "Password1234_",
+            "ipsum",
+        ),
+        (
+            "unicode.pptx",
+            include_bytes!("../../tests/fixtures/encrypted-office/agile-unicode-slides.pptx"),
+            "암호-fixture-密碼🔐",
+            "Test text",
+        ),
+    ];
+    for (name, encrypted_bytes, password, expected) in cases {
+        let path = folder.path().join(name);
+        fs::write(&path, encrypted_bytes).unwrap();
+        assert_eq!(
+            extract_document(&path, &options, &cancel).unwrap_err().code,
+            ExtractErrorCode::Encrypted
+        );
+        assert_eq!(
+            extract_document_with_password(&path, &options, &cancel, "wrong-office-password")
+                .unwrap_err()
+                .code,
+            ExtractErrorCode::PasswordRejected
+        );
+        let result = extract_document_with_password(&path, &options, &cancel, password).unwrap();
+        assert!(
+            result
+                .sections
+                .iter()
+                .any(|section| section.text.contains(expected)),
+            "Missing extracted content for {name}"
+        );
+        assert_eq!(
+            result.fingerprint.sha256,
+            format!("{:x}", Sha256::digest(encrypted_bytes))
+        );
+        assert_eq!(result.fingerprint.size_bytes, encrypted_bytes.len() as u64);
+        assert_eq!(fs::read(&path).unwrap(), encrypted_bytes);
+        assert_eq!(result.format, path.extension().unwrap().to_str().unwrap());
+    }
+    assert_eq!(fs::read_dir(folder.path()).unwrap().count(), cases.len());
 }
 
 fn extract_document_inner(
@@ -379,10 +455,72 @@ fn extract_document_inner(
         return Err(limit());
     }
     let bytes = bounded_read(&file, options.max_file_bytes, cancel)?;
+    let plaintext = if matches!(extension.as_str(), "docx" | "xlsx" | "pptx")
+        && bytes.starts_with(&[0xd0, 0xcf, 0x11, 0xe0])
+        && password.is_some()
+    {
+        let opened = crate::office_unlock::decrypt(
+            &bytes,
+            password.unwrap_or_default(),
+            crate::office_unlock::Limits {
+                input_bytes: options.max_file_bytes.min(128 << 20) as usize,
+                plaintext_bytes: options.max_expanded_bytes.min(128 << 20) as usize,
+                ..Default::default()
+            },
+            &crate::office_unlock::Control {
+                cancel,
+                deadline: Instant::now() + Duration::from_secs(30),
+            },
+        )
+        .map_err(|code| {
+            use crate::office_unlock::Code;
+            let (code, message) = match code {
+                Code::PasswordRejected => (
+                    ExtractErrorCode::PasswordRejected,
+                    "The Office password was not accepted",
+                ),
+                Code::Corrupt => (
+                    ExtractErrorCode::CorruptDocument,
+                    "The protected Office document is damaged or failed its integrity check",
+                ),
+                Code::Unsupported => (
+                    ExtractErrorCode::UnsupportedFormat,
+                    "This Office encryption method is not supported",
+                ),
+                Code::Limit => (
+                    ExtractErrorCode::LimitExceeded,
+                    "The protected Office document exceeds its resource budget",
+                ),
+                Code::Cancelled => (
+                    ExtractErrorCode::Cancelled,
+                    "Office password processing cancelled",
+                ),
+                Code::TimedOut => (
+                    ExtractErrorCode::PasswordTimedOut,
+                    "Office password processing exceeded its deadline",
+                ),
+            };
+            err(code, message)
+        })?;
+        // These are byte-integrity facts, not verification of document claims.
+        // Keep this exhaustive: a future skipped-integrity mode cannot silently
+        // enter extraction. Standard simply has no HMAC by format definition.
+        Some(match opened.integrity {
+            crate::office_unlock::Integrity::Verified
+            | crate::office_unlock::Integrity::NotDefined => opened.package,
+        })
+    } else {
+        None
+    };
+    let payload = plaintext
+        .as_ref()
+        .map_or(bytes.as_slice(), |value| value.as_slice());
     let mut output = Collector::new(options, cancel);
     match extension.as_str() {
-        "docx" | "hwpx" => extract_zip(&bytes, &extension, &mut output)?,
-        "pptx" | "xlsx" | "odt" | "ods" | "odp" => extract_office(&bytes, &extension, &mut output)?,
+        "docx" | "hwpx" => extract_zip(payload, &extension, &mut output)?,
+        "pptx" | "xlsx" | "odt" | "ods" | "odp" => {
+            extract_office(payload, &extension, &mut output)?
+        }
         "hwp" => extract_hwp(&bytes, &mut output)?,
         "pdf" => extract_pdf(&bytes, password, &mut output)?,
         extension if is_image_extension(extension) => extract_image(&bytes, &mut output)?,

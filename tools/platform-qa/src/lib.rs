@@ -25,6 +25,8 @@ pub mod ocr_assets;
 pub mod ocr_package;
 #[path = "../../../src-tauri/src/ocr_runtime.rs"]
 pub mod ocr_runtime;
+#[path = "../../../src-tauri/src/office_unlock.rs"]
+pub mod office_unlock;
 #[cfg(target_os = "linux")]
 #[path = "../../../src-tauri/src/pdf_renderer.rs"]
 pub mod pdf_renderer;

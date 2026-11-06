@@ -1,5 +1,19 @@
 import type { Language } from '../../lib/types';
 const messages = {
+  externalRevoked: [
+    '이 버전에서 사용한 외부 자료의 권한이 변경되어 내용을 숨겼습니다. 원래 MCP 서버 설정을 복구하면 다시 열 수 있습니다. 현재 편집은 유지합니다.',
+    'This revision is hidden because its external sources are no longer allowed. Restore the original MCP settings to reopen it. Current edits are retained.',
+    '此版本使用的外部资料权限已更改，内容已隐藏。恢复原MCP设置后可重新打开，当前编辑已保留。',
+    '此版本使用的外部資料權限已變更，內容已隱藏。恢復原MCP設定後可重新開啟，目前編輯已保留。',
+    'この版の外部資料の権限が変更されたため内容を非表示にしました。元のMCP設定を復元すると再び開けます。現在の編集は保持しています。',
+  ],
+  validatingAccess: [
+    '자료 권한을 확인하고 있습니다.',
+    'Checking source permissions.',
+    '正在检查资料权限。',
+    '正在檢查資料權限。',
+    '資料の権限を確認しています。',
+  ],
   title: ['문서 작성', 'Document workspace', '文档编写', '文件撰寫', '文書作成'],
   subtitle: [
     '자료 선택 → 개요 생성·검토 → 본문 편집 → Markdown·PDF·HWPX 내보내기',

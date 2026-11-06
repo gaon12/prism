@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Citation, RagFailure, RagJob, SourceRef } from './rag';
+import type { Citation, ExternalEvidence, RagFailure, RagJob, SourceRef } from './rag';
 import type { GenerationSlot } from './generation';
 export type DocumentBlockKind = 'fact' | 'userInput' | 'aiProposal' | 'blank';
 export type DocumentOperation =
@@ -100,6 +100,11 @@ export interface DocumentGenerateRequest {
   requestId: string;
   instruction: string;
   scopeIds: string[];
+  researchQuery?: string | null;
+}
+export interface DocumentExternalSource {
+  source: SourceRef | null;
+  evidence: ExternalEvidence;
 }
 export interface DocumentSelection {
   blockId: string;
@@ -115,6 +120,10 @@ export const documents = {
   list: (query = '', limit = 100) => invoke<DocumentSummary[]>('doc_list', { query, limit }),
   get: (id: string, revisionId: string | null = null) =>
     invoke<DocumentPage>('doc_get', { id, revisionId }),
+  validateAccess: (id: string, revisionId: string) =>
+    invoke<void>('doc_validate_access', { id, revisionId }),
+  externalSources: (id: string, revisionId: string) =>
+    invoke<DocumentExternalSource[]>('doc_external_sources', { id, revisionId }),
   revisions: (id: string, before: number | null = null, limit = 100) =>
     invoke<DocumentRevisionSummary[]>('doc_revisions', { id, before, limit }),
   rename: (id: string, value: string) => invoke<void>('doc_rename', { id, value }),

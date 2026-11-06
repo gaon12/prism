@@ -22,6 +22,12 @@ import { documentText } from './messages';
 import type { DocumentMessage } from './messages';
 import './documents.css';
 import { FormFillPanel } from './FormFillPanel';
+import {
+  DocumentResearchSources,
+  ExternalResearchInput,
+  validResearchQuery,
+} from './ExternalResearch';
+import { researchText } from './research-messages';
 const bytes = (value: string) => new TextEncoder().encode(value).length;
 const titleValid = (value: string) =>
   Boolean(value.trim() && Array.from(value).length <= 200 && !/[\u0000-\u001f\u007f]/u.test(value));
@@ -53,6 +59,7 @@ const docCodes = new Set([
   'hwpx',
   'unsupported',
   'timedOut',
+  'externalRevoked',
 ]);
 const ragCodes = new Set([
   'input',
@@ -102,30 +109,33 @@ function Failure({
     error.rag && ['notConfigured', 'auth', 'endpoint', 'unsupported'].includes(error.rag.code),
   );
   const blocked = Boolean(
-    error.rag && ['scopeBlocked', 'policyChanged', 'sourceChanged'].includes(error.rag.code),
+    error.code === 'externalRevoked' ||
+    (error.rag && ['scopeBlocked', 'policyChanged', 'sourceChanged'].includes(error.rag.code)),
   );
   const key: DocumentMessage =
-    error.code === 'pdf'
-      ? 'pdfError'
-      : error.code === 'hwpx'
-        ? 'hwpxError'
-        : error.code === 'unsupported'
-          ? 'hwpxUnsupported'
-          : error.code === 'timedOut'
-            ? 'exportTimedOut'
-            : config
-              ? 'settingsError'
-              : blocked
-                ? 'blocked'
-                : error.code === 'conflict'
-                  ? 'conflict'
-                  : error.code === 'outlineReviewRequired'
-                    ? 'reviewRequired'
-                    : error.code === 'cancelled'
-                      ? 'cancelled'
-                      : error.code === 'input' || error.code === 'limit'
-                        ? 'invalid'
-                        : 'error';
+    error.code === 'externalRevoked'
+      ? 'externalRevoked'
+      : error.code === 'pdf'
+        ? 'pdfError'
+        : error.code === 'hwpx'
+          ? 'hwpxError'
+          : error.code === 'unsupported'
+            ? 'hwpxUnsupported'
+            : error.code === 'timedOut'
+              ? 'exportTimedOut'
+              : config
+                ? 'settingsError'
+                : blocked
+                  ? 'blocked'
+                  : error.code === 'conflict'
+                    ? 'conflict'
+                    : error.code === 'outlineReviewRequired'
+                      ? 'reviewRequired'
+                      : error.code === 'cancelled'
+                        ? 'cancelled'
+                        : error.code === 'input' || error.code === 'limit'
+                          ? 'invalid'
+                          : 'error';
   return (
     <div className="doc-error" role="alert">
       <p>
@@ -308,7 +318,12 @@ function SourceRecords({
                     <details>
                       <summary>{t('sourceDetails')}</summary>
                       <code>{citation.source.filePath}</code>
-                      <code>SHA-256 {citation.source.sha256}</code>
+                      <code>
+                        {citation.source.scopeId.startsWith('mcp_')
+                          ? researchText(language, 'fingerprint')
+                          : 'SHA-256'}{' '}
+                        {citation.source.sha256}
+                      </code>
                     </details>
                     <small>
                       {citation.source.page !== null
@@ -329,6 +344,7 @@ function SourceRecords({
               {documentText(language, 'unknownCitation', { value: label })}
             </p>
           ))}
+          <DocumentResearchSources revision={revision} policyKey={policyKey} language={language} />
         </>
       ) : null}
     </details>
@@ -342,6 +358,7 @@ interface EditorProps {
   onScopeIds: (ids: string[]) => void;
   policyKey: string;
   externalQuestions: boolean;
+  researchAvailable: boolean;
   onModels: () => void;
   onScopes: () => void;
   onChanged: () => void;
@@ -356,6 +373,7 @@ function DocumentEditor({
   onScopeIds,
   policyKey,
   externalQuestions,
+  researchAvailable,
   onModels,
   onScopes,
   onChanged,
@@ -382,6 +400,35 @@ function DocumentEditor({
   const current = useRef<DocumentPage | null>(null);
   const dirtyRef = useRef(false);
   const [page, setPage] = useState<DocumentPage | null>(null);
+  const [researchChoice, setResearchChoice] = useState({ policyKey, enabled: false });
+  const researchEnabled = researchChoice.policyKey === policyKey && researchChoice.enabled;
+  const setResearchEnabled = (enabled: boolean) => setResearchChoice({ policyKey, enabled });
+  const [researchQuery, setResearchQuery] = useState('');
+  const [access, setAccess] = useState<{ key: string; error: DocumentFailure | null } | null>(null);
+  const [accessRefresh, setAccessRefresh] = useState(0);
+  const hasExternal = Boolean(
+    page?.revision.provenance.some((source) => source.scopeId.startsWith('mcp_')),
+  );
+  const accessKey = JSON.stringify([id, page?.revision.id, policyKey]);
+  const accessReady = !hasExternal || (access?.key === accessKey && !access.error);
+  useEffect(() => {
+    if (!page || !hasExternal) return;
+    let active = true;
+    void documents
+      .validateAccess(id, page.revision.id)
+      .then(() => {
+        if (active) {
+          setAccess({ key: accessKey, error: null });
+          setError((previous) => (previous?.code === 'externalRevoked' ? null : previous));
+        }
+      })
+      .catch((cause) => {
+        if (active) setAccess({ key: accessKey, error: failure(cause) });
+      });
+    return () => {
+      active = false;
+    };
+  }, [accessKey, hasExternal, id, page?.revision.id, accessRefresh]);
   current.current = page;
   const [plan, setPlan] = useState<DocumentPlan>({ title: '', sections: [] });
   const [blocks, setBlocks] = useState<DocumentBlock[]>([]);
@@ -421,6 +468,8 @@ function DocumentEditor({
   const busy = generating || aiActive(job);
   const editable = Boolean(page && !historical);
   const canAI =
+    accessReady &&
+    (!researchEnabled || (researchAvailable && validResearchQuery(researchQuery))) &&
     editable &&
     !dirty &&
     !incoming &&
@@ -505,6 +554,9 @@ function DocumentEditor({
       if (alive.current && token === epoch.current) setLoading(false);
     }
   };
+  useEffect(() => {
+    if (!current.current && error?.code === 'externalRevoked') void fetchCurrent();
+  }, [policyKey]);
   const fetchHistory = async (older = false) => {
     if (older && historyPending.current) return;
     historyPending.current = true;
@@ -657,12 +709,14 @@ function DocumentEditor({
     const version = editVersion.current;
     const expected = page.revision.id;
     const request: DocumentGenerateRequest = {
+      researchQuery: researchEnabled && researchAvailable ? researchQuery : null,
       documentId: id,
       expectedRevisionId: expected,
       requestId,
       instruction,
       scopeIds: [...validScopes],
     };
+    setResearchEnabled(false);
     try {
       const revision =
         kind === 'outline'
@@ -804,6 +858,28 @@ function DocumentEditor({
         >
           {t('refresh')}
         </button>
+      </div>
+    );
+  if (!accessReady)
+    return (
+      <div className="doc-editor doc-access-check">
+        {access?.key === accessKey && access.error ? (
+          <Failure error={access.error} language={language} onModels={onModels} />
+        ) : (
+          <p role="status">{t('validatingAccess')}</p>
+        )}
+        <button
+          type="button"
+          className="button"
+          onClick={() => setAccessRefresh((value) => value + 1)}
+        >
+          {t('refresh')}
+        </button>
+        {busy ? (
+          <button type="button" className="button" onClick={() => void stop()}>
+            {t('stop')}
+          </button>
+        ) : null}
       </div>
     );
   const unknownLabels = (block: DocumentBlock) =>
@@ -1106,6 +1182,15 @@ function DocumentEditor({
             onChange={(event) => setInstruction(event.target.value)}
           />
           {!textValid(instruction, 8192) ? <p className="doc-warning">{t('invalid')}</p> : null}
+          <ExternalResearchInput
+            language={language}
+            available={researchAvailable}
+            busy={busy || Boolean(action)}
+            enabled={researchEnabled}
+            query={researchQuery}
+            onEnabled={setResearchEnabled}
+            onQuery={setResearchQuery}
+          />
         </details>
         <section
           className="doc-outline"
@@ -1899,6 +1984,10 @@ export function DocumentWorkspace({
                   onScopeIds={setScopeIds}
                   policyKey={policyKey}
                   externalQuestions={settings.generation.allowExternalQuestions}
+                  researchAvailable={
+                    settings.mcp.enabled &&
+                    settings.mcp.servers.some((server) => Boolean(server.search))
+                  }
                   onModels={onModels}
                   onScopes={onScopes}
                   onChanged={() => setRefresh((value) => value + 1)}

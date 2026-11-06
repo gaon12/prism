@@ -31,6 +31,15 @@ function executable(directory) {
   return { bin, path, bytes };
 }
 
+test('custom packagers cover every notice destination declared by the app', () => {
+  const resources = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8')).bundle.resources;
+  const destinations = Array.isArray(resources) ? resources : Object.values(resources);
+  const declared = destinations
+    .filter((path) => path.startsWith('notices/'))
+    .map((path) => path.slice('notices/'.length));
+  assert.deepEqual([...noticeNames].sort(), declared.sort());
+});
+
 test('copies all built-adjacent notice bytes and rejects missing/empty component assets', (t) => {
   const root = packagingDirectory(t, 'portable-notice-bytes');
   const source = executable(root);

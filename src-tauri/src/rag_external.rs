@@ -155,6 +155,10 @@ impl ExternalSearch for McpSearch {
     ) -> Result<SearchText, McpError> {
         let mapping = server.search.as_ref().ok_or(McpError::NotAllowed)?;
         let mut client = Client::connect(server, timeout, cancel)?;
+        // A fresh chat request owns a fresh connection. Discover its current
+        // tools before validating the saved mapping and read-only permission;
+        // a previous settings probe belongs to a different, closed connection.
+        client.list_tools()?;
         let result = client.search(mapping, question)?;
         Ok(SearchText {
             text: result.text,
@@ -267,5 +271,78 @@ mod tests {
     fn shorten_counts_characters_not_bytes() {
         assert_eq!(shorten("  가나다라  ", 2), ("가나".into(), true));
         assert_eq!(shorten("abc", 3), ("abc".into(), false));
+    }
+
+    #[test]
+    fn real_adapter_discovers_tools_before_sending_only_the_question() {
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("mcp-fixture.mjs");
+        let trace = directory.path().join("trace.jsonl");
+        let control = directory.path().join("control.json");
+        std::fs::write(
+            &script,
+            include_str!("../../tests/native/fixtures/mcp-server.mjs"),
+        )
+        .unwrap();
+        std::fs::write(
+            &control,
+            r#"{"mode":"normal","text":"실제 stdio 검색 결과"}"#,
+        )
+        .unwrap();
+        let mut config = server();
+        config.args = [&script, &trace, &control]
+            .map(|path| path.to_string_lossy().into_owned())
+            .to_vec();
+        let found = McpSearch
+            .search(
+                &config,
+                "보낼 질문만",
+                Duration::from_secs(5),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .expect("the actual adapter must discover and call the fixture's read-only tool");
+        assert_eq!(found.text, "실제 stdio 검색 결과");
+        let events: Vec<serde_json::Value> = std::fs::read_to_string(trace)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let methods: Vec<_> = events
+            .iter()
+            .filter_map(|event| event.pointer("/message/method").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(
+            methods,
+            [
+                "initialize",
+                "notifications/initialized",
+                "tools/list",
+                "tools/call"
+            ]
+        );
+        let call = events
+            .iter()
+            .find_map(|event| {
+                let message = event.get("message")?;
+                (message["method"] == "tools/call").then_some(message)
+            })
+            .unwrap();
+        assert_eq!(
+            call["params"]["arguments"],
+            serde_json::json!({"query": "보낼 질문만"})
+        );
+        // A discovered tool is still refused when it is not read-only/allowed.
+        config.search.as_mut().unwrap().tool = "delete".into();
+        assert_eq!(
+            McpSearch
+                .search(
+                    &config,
+                    "보낼 질문만",
+                    Duration::from_secs(5),
+                    Arc::new(AtomicBool::new(false))
+                )
+                .err(),
+            Some(McpError::NotAllowed)
+        );
     }
 }

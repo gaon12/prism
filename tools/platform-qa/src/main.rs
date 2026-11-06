@@ -1,5 +1,9 @@
 //! Pre-GUI supervisor host and inert, opt-in command fixtures for owned tests.
 fn main() {
+    #[cfg(target_os = "linux")]
+    if let Some(code) = prism_platform_qa::pdf_renderer::dispatch() {
+        std::process::exit(code);
+    }
     if let Some(code) = prism_platform_qa::runtime_supervisor::dispatch() {
         std::process::exit(code);
     }
@@ -21,6 +25,116 @@ fn fixture() -> Option<i32> {
         time::Duration,
     };
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    #[cfg(target_os = "linux")]
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--fixture-pdf-parent")
+        && args.len() == 2
+    {
+        use std::io::Read;
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg(prism_platform_qa::pdf_renderer::FLAG)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut ready = [0; 9];
+        if child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_exact(&mut ready)
+            .is_err()
+            || &ready != b"PRISMPDF0"
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Some(70);
+        }
+        fs::write(
+            &args[1],
+            serde_json::to_vec(&serde_json::json!({"pid":child.id()})).unwrap(),
+        )
+        .unwrap();
+        // Retain stdin while waiting: this is the real guarded renderer before
+        // a request, not a replacement parser or a fake render response.
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                return Some(70);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--fixture-pdf-collection")
+        && args.len() == 2
+    {
+        use base64::Engine;
+        use prism_platform_qa::{
+            collection_service::CollectionService,
+            collection_store::{ErrorCode, UnitKind, WorkMetadata},
+            ocr,
+        };
+        let directory = PathBuf::from(&args[1]);
+        let app = directory.join("app");
+        fs::create_dir_all(&app).unwrap();
+        let source = directory.join("original.pdf");
+        let original = include_bytes!("../../../tests/fixtures/ocr/crop-clockwise.pdf");
+        fs::write(&source, original).unwrap();
+        assert!(!ocr::Preferences::default().enabled);
+        let service = CollectionService::open(&app, |_| {}).unwrap();
+        let collection = service.store.create_collection("Actual PDF", "").unwrap();
+        let work = service
+            .store
+            .create_work(&collection.id, "Original page", WorkMetadata::default())
+            .unwrap();
+        let unit = service
+            .store
+            .create_unit(&work.id, "Pages", UnitKind::Volume)
+            .unwrap();
+        let unit = service
+            .import(&unit.id, unit.revision, vec![source.clone()])
+            .unwrap();
+        assert_eq!(unit.page_count, 1);
+        let cover = service.cover(&work.id).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(
+                cover
+                    .data_url
+                    .unwrap()
+                    .strip_prefix("data:image/webp;base64,")
+                    .unwrap(),
+            )
+            .unwrap();
+        fs::write(directory.join("actual-cover.webp"), &bytes).unwrap();
+        let page = service
+            .store
+            .pages(&unit.id, unit.revision, 0, 1)
+            .unwrap()
+            .items
+            .remove(0);
+        let media = service.media(&page.id, false).unwrap();
+        assert!(media
+            .data_url
+            .unwrap()
+            .starts_with("data:image/webp;base64,"));
+        assert_eq!(fs::read(&source).unwrap(), original);
+        drop(service);
+        let service = CollectionService::open(&app, |_| {}).unwrap();
+        assert!(service.cover(&work.id).unwrap().data_url.is_some());
+        assert!(!app.join("ocr").exists());
+        assert!(!app.join("content").exists());
+        fs::write(&source, b"changed own fixture").unwrap();
+        assert_eq!(
+            service.cover(&work.id).unwrap_err().code,
+            ErrorCode::SourceChanged
+        );
+        println!("Actual Linux PDF collection import, WebP cover, reader, cache reopen and stale-source checks passed; OCR remains disabled");
+        return Some(0);
+    }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     if args
         .first()

@@ -1,4 +1,7 @@
 //! Compile the exact production platform modules without Tauri, WebView or Lance.
+#[cfg(target_os = "linux")]
+#[path = "../../../src-tauri/src/pdf_renderer.rs"]
+pub mod pdf_renderer;
 #[path = "../../../src-tauri/src/collection_epub.rs"]
 pub mod collection_epub;
 #[path = "../../../src-tauri/src/collection_import.rs"]

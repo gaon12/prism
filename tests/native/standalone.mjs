@@ -43,7 +43,7 @@ const reservation = createServer();
 await new Promise((done) => reservation.listen(0, '127.0.0.1', done));
 const port = reservation.address().port;
 await new Promise((done) => reservation.close(done));
-const executable = resolve('src-tauri/target/debug/prism.exe');
+const executable = resolve(process.env.PRISM_TEST_EXECUTABLE ?? 'src-tauri/target/debug/prism.exe');
 const child = spawn(executable, [], {
   windowsHide: true,
   stdio: ['ignore', 'pipe', 'pipe'],

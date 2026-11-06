@@ -2,6 +2,7 @@
 // Playwright/WebView2. No media, document, navigation or model responses mocked.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
 import { copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -43,6 +44,7 @@ for (const [fixture, title] of [
   ['navigation-ncx', 'NCX 소설'],
   ['navigation-spine', '장 목록 소설'],
   ['navigation-many', '긴 목차 소설'],
+  ['navigation-ncx-external', '외부 DTD 선언 소설'],
 ]) {
   const original = await readFile(`tests/fixtures/epub/${fixture}.epub`);
   const path = join(root, `${title}.epub`);
@@ -51,6 +53,16 @@ for (const [fixture, title] of [
 }
 const errors = [],
   network = [];
+const dtdRequests = [];
+const dtdServer = createServer((request, response) => {
+  dtdRequests.push(request.url);
+  response.writeHead(200, { 'Content-Type': 'application/xml' });
+  response.end('<!ENTITY remote "REMOTE_DTD_MUST_NOT_BE_READ_28179">');
+});
+await new Promise((resolve, reject) => {
+  dtdServer.once('error', reject);
+  dtdServer.listen(38492, '127.0.0.1', resolve);
+});
 let expectedSandboxDenials = 0,
   instance;
 const collectErrors = () => {
@@ -129,6 +141,13 @@ try {
     assert.equal(book.pages.length, 2);
   }
   const book = books[0];
+  for (const item of [books[1], books[4]]) {
+    const nav = await invoke('collection_navigation', {
+      pageId: item.pages[0].id,
+      expected: item.unit.revision,
+    });
+    assert.equal(nav.items[1].title, 'NCX 후반');
+  }
   const navigation = await invoke('collection_navigation', {
     pageId: book.pages[0].id,
     expected: book.unit.revision,
@@ -242,6 +261,7 @@ try {
   for (const [other, label] of [
     [books[1], 'NCX 후반'],
     [books[2], 'second.xhtml'],
+    [books[4], 'NCX 후반'],
   ]) {
     await reader.getByRole('button', { name: '닫기', exact: true }).click();
     await openBook(other);
@@ -250,7 +270,7 @@ try {
       () => frame.evaluate((node) => !!node.contentDocument?.getElementById('후반:위치')),
       'legacy/fallback chapter content is real',
     );
-    if (other.fixture === 'navigation-ncx')
+    if (other.fixture.startsWith('navigation-ncx'))
       await until(async () => (await anchorPosition())?.scrollY > 1000, 'NCX fragment scroll');
   }
   await reader.getByRole('button', { name: '닫기', exact: true }).click();
@@ -283,6 +303,7 @@ try {
     (e) => e.code === 'notFound',
   );
   collectErrors();
+  assert.deepEqual(dtdRequests, [], 'external declarations never fetch or apply a DTD');
   assert.deepEqual(network, []);
   assert.deepEqual(errors, []);
   const result = {
@@ -293,6 +314,7 @@ try {
     actualFragment: firstJump,
     declaredNav: true,
     legacyNcx: true,
+    externalDtdRequests: dtdRequests.length,
     spineFallback: true,
     reorderedOffsets: true,
     narrow,
@@ -310,4 +332,6 @@ try {
   throw error;
 } finally {
   if (instance) await shutdown(instance);
+  dtdServer.closeAllConnections();
+  await new Promise((resolve) => dtdServer.close(resolve));
 }

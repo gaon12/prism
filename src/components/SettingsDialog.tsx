@@ -4,6 +4,7 @@ import { EmbeddingPanel } from '../features/models/EmbeddingPanel';
 import { GenerationPanel } from '../features/generation/GenerationPanel';
 import { UpdatePanel } from '../features/updates/UpdatePanel';
 import { DiagnosticPanel } from '../features/diagnostics/DiagnosticPanel';
+import { OfficeEnginePanel } from '../features/collections/OfficeEnginePanel';
 import { OcrSettings } from '../features/content/OcrSettings';
 import { IndexServicePanel } from '../features/index-service/IndexServicePanel';
 import { IndexResetPanel } from '../features/index-reset/IndexResetPanel';
@@ -304,6 +305,7 @@ export function SettingsDialog({
                 ) : runtime.development ? (
                   <p className="setting-footnote">{t('developmentStartup')}</p>
                 ) : null}
+                <OfficeEnginePanel language={settings.language} />
                 <UpdatePanel
                   autoCheck={draft.updates.autoCheck}
                   onAutoCheck={(autoCheck) => setDraft({ ...draft, updates: { autoCheck } })}

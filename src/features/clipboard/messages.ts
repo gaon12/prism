@@ -12,6 +12,13 @@ const messages = {
   disable: ['기록 끄기', 'Turn off history', '关闭记录', '關閉記錄', '履歴を無効にする'],
   pause: ['일시정지', 'Pause', '暂停', '暫停', '一時停止'],
   resume: ['기록 재개', 'Resume', '恢复记录', '恢復記錄', '再開'],
+  preparing: [
+    '기록 준비 중…',
+    'Preparing history…',
+    '正在准备记录…',
+    '正在準備記錄…',
+    '履歴を準備中…',
+  ],
   paused: [
     '기록이 일시정지되었습니다.',
     'History is paused.',

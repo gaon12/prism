@@ -240,6 +240,11 @@ export function ClipboardPanel({
       <header className="clipboard-heading">
         <Clipboard size={19} />
         <strong>{t('title')}</strong>
+        {data?.status.preparing ? (
+          <small className="clipboard-preparing" role="status" aria-live="polite">
+            {t('preparing')}
+          </small>
+        ) : null}
         <span className="muted">{data?.status.count ?? '—'}</span>
         <button
           className="icon-button small"

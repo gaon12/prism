@@ -22,6 +22,8 @@ export interface ClipItem {
 export interface ClipStatus {
   enabled: boolean;
   paused: boolean;
+  /** Native resume is waiting for a baseline; absent on older/test adapters. */
+  preparing?: boolean;
   count: number;
   unpinnedCount: number;
   bytes: number;

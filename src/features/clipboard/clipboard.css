@@ -15,6 +15,10 @@
 .clipboard-heading > strong {
   flex: 1;
 }
+.clipboard-preparing {
+  color: var(--muted);
+  white-space: nowrap;
+}
 .clipboard-filters {
   margin: 14px 0;
 }

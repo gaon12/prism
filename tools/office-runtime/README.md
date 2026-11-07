@@ -330,12 +330,26 @@ still verifies every engine file. Its result says
 or cancellation test. Screenshots stay outside the repository. The default
 archive-install test remains mandatory and still fails if installation fails.
 
-Latest local Windows fresh-ZIP checks reached full extraction/verification but
-failed at final directory promotion with native access-denied code 5. The
-current implementation reproduced it on C: and D:, and the pre-Linux
-installation implementation reproduced it on D: too.
-Longer retries and a non-replacing rename experiment did not solve it and were
-not applied. A separate 20,000-small-file rename succeeded. The blocker remains
-unidentified; no other process, ACL or security setting was changed. The
-current Windows prepared-engine reader passed, but fresh package installation
-is not requalified by that result. Linux core/service qualification is separate.
+Windows can temporarily deny final directory promotion after a valid archive
+has been extracted and verified. A real tree became movable 37 seconds after
+the old short retry window, with its installer process still alive. Actual app
+finalization also exceeded a one-minute window under heavier I/O. Promotion now
+retries only native errors 5/32/33 for at most two minutes, while checking the
+request deadline and cancellation. It never changes ACLs, closes another
+process, replaces an existing destination or retries other failures. The
+blocking actor has not been identified; this is no universal Windows latency
+or clean-machine guarantee.
+
+Progress counts engine members only, independently of inventory.json's ZIP
+position. After extraction, settings shows **Finishing installation** and keeps
+the same progress element indeterminate until verification/promotion completes.
+Optional status `failureDetails` retains only a fixed operation token and native
+error number; it contains no paths, document text or native error messages.
+
+Current Windows fresh-ZIP settings and the full default archive-to-reader native
+flows pass, including cancel/remount recovery, stable finalization controls,
+completion while settings is closed, Korean pages, WebP, bookmarks and
+source-change rejection. Both fresh trees were fully rehashed after execution.
+This supersedes the earlier local fresh-install failure qualification; failed
+attempts and the rejected one-minute candidate remain recorded separately.
+Linux's shared installer/service regression and actual Office pages also pass.

@@ -66,7 +66,7 @@ export const formFill = {
   async fill(form: FormInfo, values: Record<string, string>): Promise<string | null> {
     if (!native) throw 'unavailable' satisfies FormError;
     const destination = await save({
-      defaultPath: filledName(form.path),
+      defaultPath: filledPath(form.path),
       filters: [{ name: form.format.toUpperCase(), extensions: [form.format] }],
     });
     if (!destination) return null;
@@ -84,9 +84,17 @@ export const formFill = {
   },
 };
 
-/** "C:\Forms\form.hwpx" → "form (filled).hwpx": a default name that never overwrites the original. */
-export function filledName(path: string) {
-  const file = path.split(/[\\/]/).pop() ?? 'form.docx';
+/** Suggest a new copy beside the source, rather than in the app's working directory. */
+export function filledPath(path: string) {
+  // Native paths are absolute. A backslash in a Unix filename is a literal
+  // character, while Windows paths can contain either directory separator.
+  const separator = path.startsWith('/')
+    ? path.lastIndexOf('/')
+    : Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  const directory = path.slice(0, separator + 1);
+  const file = path.slice(separator + 1) || 'form.docx';
   const dot = file.lastIndexOf('.');
-  return dot > 0 ? `${file.slice(0, dot)} (filled)${file.slice(dot)}` : `${file} (filled)`;
+  return (
+    directory + (dot > 0 ? `${file.slice(0, dot)} (filled)${file.slice(dot)}` : `${file} (filled)`)
+  );
 }

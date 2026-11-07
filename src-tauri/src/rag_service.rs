@@ -812,50 +812,14 @@ impl RagService {
             .collect();
         self.inner.store.create_search(&title, &selection)
     }
-    pub(crate) fn create_filename_search(
+    /// Persist the producer's complete, locked search snapshot atomically.
+    /// Engine-specific types and errors are handled by rag_search_snapshot.
+    pub(crate) fn create_search_snapshot(
         &self,
-        index: &crate::index::FileIndex,
-        search: &crate::index::FilenameSearch,
-        keyboard: bool,
-        cancel: &AtomicBool,
+        query: &str,
+        produce: impl FnOnce(&mut dyn FnMut(&str) -> RagResult<()>) -> RagResult<bool>,
     ) -> RagResult<ConversationSummary> {
-        self.inner.store.create_file_set(&search.query, |visit| {
-            index
-                .snapshot_files(search, keyboard, cancel, visit)
-                .map_err(|error| match error {
-                    crate::index::SnapshotError::Visitor(error) => error,
-                    crate::index::SnapshotError::Index(_) if cancel.load(Ordering::Acquire) => {
-                        RagError::new(RagErrorCode::Cancelled)
-                    }
-                    crate::index::SnapshotError::Index(reason) => {
-                        drop(reason);
-                        RagError::new(RagErrorCode::SourceChanged)
-                    }
-                })
-        })
-    }
-    pub(crate) fn create_keyword_search(
-        &self,
-        content: &crate::content_service::ContentService,
-        search: &crate::content_service::KeywordSearch,
-        cancel: &AtomicBool,
-    ) -> RagResult<ConversationSummary> {
-        self.inner.store.create_file_set(&search.query, |visit| {
-            content
-                .snapshot_keyword_files(search, cancel, visit)
-                .map_err(|failure| match failure {
-                    crate::content_store::SnapshotError::Visitor(value) => value,
-                    crate::content_store::SnapshotError::Source(value) => {
-                        RagError::new(if value.code == "cancelled" {
-                            RagErrorCode::Cancelled
-                        } else if value.code == "input" {
-                            RagErrorCode::Input
-                        } else {
-                            RagErrorCode::SourceChanged
-                        })
-                    }
-                })
-        })
+        self.inner.store.create_file_set(query, produce)
     }
     pub(crate) fn file_set_page(
         &self,
@@ -3014,6 +2978,49 @@ mod tests {
             .unwrap();
         // No document operation means no schema, even after opt-in.
         assert!(f.transport.calls.lock().unwrap()[0].schema.is_none());
+    }
+    #[test]
+    fn streamed_search_snapshot_rolls_back_and_retains_order_and_partial_state() {
+        let f = fixture();
+        let error = f
+            .service
+            .create_search_snapshot("search", |visit| {
+                visit(r"C:\approved\a.md")?;
+                Err(RagError::new(RagErrorCode::Cancelled))
+            })
+            .unwrap_err();
+        assert_eq!(error.code, RagErrorCode::Cancelled);
+        assert!(f
+            .service
+            .list_conversations("", 100, None)
+            .unwrap()
+            .is_empty());
+        let conversation = f
+            .service
+            .create_search_snapshot("search", |visit| {
+                visit(r"C:\approved\b.md")?;
+                visit(r"C:\approved\a.md")?;
+                visit(r"C:\APPROVED\b.md")?;
+                Ok(true)
+            })
+            .unwrap();
+        let page = f
+            .service
+            .file_set_page(&conversation.id, 0)
+            .unwrap()
+            .unwrap();
+        assert!(page.partial);
+        assert_eq!((page.total, page.selected_count), (2, 2));
+        assert_eq!(
+            page.files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![r"C:\approved\b.md", r"C:\approved\a.md"]
+        );
+        // Creating a snapshot selects files; it neither reads their text nor
+        // sends a generation request.
+        assert!(f.transport.calls.lock().unwrap().is_empty());
     }
     fn request(service: &RagService, conversation: &str, id: &str, question: &str) -> RagRequest {
         let _ = service;

@@ -68,6 +68,7 @@ mod power;
 mod process_job;
 mod rag_commands;
 mod rag_external;
+mod rag_search_snapshot;
 mod rag_service;
 mod rag_sources;
 mod rag_store;

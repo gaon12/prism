@@ -3021,13 +3021,24 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(page.partial);
-        assert_eq!((page.total, page.selected_count), (2, 2));
+        // Paths are case-insensitive only on Windows (chat_selection::path_key), so a
+        // differently cased path is the same file there and a different file elsewhere.
+        #[cfg(windows)]
+        let expected = vec![r"C:\approved\b.md", r"C:\approved\a.md"];
+        #[cfg(not(windows))]
+        let expected = vec![
+            r"C:\approved\b.md",
+            r"C:\approved\a.md",
+            r"C:\APPROVED\b.md",
+        ];
+        let count = expected.len() as u64;
+        assert_eq!((page.total, page.selected_count), (count, count));
         assert_eq!(
             page.files
                 .iter()
                 .map(|file| file.path.as_str())
                 .collect::<Vec<_>>(),
-            vec![r"C:\approved\b.md", r"C:\approved\a.md"]
+            expected
         );
         // Creating a snapshot selects files; it neither reads their text nor
         // sends a generation request.

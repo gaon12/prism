@@ -230,6 +230,20 @@ Browser preview does not have native filesystem, global-shortcut or tray access.
 
 ## Checks
 
+On Linux, login startup follows an absolute `XDG_CONFIG_HOME`, with
+`HOME/.config` as the fallback for unset, empty or relative values. The
+[local dependency patch](src-tauri/vendor/auto-launch/PRISM_PATCH.md) records the
+release reproduction and isolated regression. Run it with the app's dependency
+versions; its subprocess fixtures never change the user's login settings:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --locked -p auto-launch --lib --test xdg_autostart
+```
+
+The previous release AppImage reproduced the wrong configuration path. The source
+fix passes the isolated dependency checks; a corrected release AppImage still
+needs native qualification.
+
 The [independent platform checks](tools/platform-qa/README.md) compile the exact runtime, credential, extraction, text repository and path modules without Tauri/Lance and document opt-in real archive, model, and OS-store tests. `npm run test:platform-ui` verifies the bundled Windows settings UI with synthetic platform responses. `npm run test:ocr-platform-ui` checks Mac OCR labels, language-tag aliases and capability refresh using the same isolated Windows WebView with synthetic capabilities. Neither establishes macOS/Linux native behavior.
 
 ```sh

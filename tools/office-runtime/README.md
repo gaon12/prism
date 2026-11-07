@@ -5,7 +5,7 @@ bytes using a real LibreOffice layout engine. It is the first part of the
 collection original-page preview work. The collection service now calls it when
 the pinned managed engine is installed at the application's `office` data path.
 There is no renderer download UI or published runtime package yet. A pinned
-Windows x64 package and Rust transport are tested independently of the app.
+Windows x64 package, Rust transport and collection reader have actual tests.
 Native Linux/macOS execution remains pending.
 
 The private QA engine is LibreOffice 26.8.2 from the official Windows x64 MSI,
@@ -104,7 +104,17 @@ an interaction handler that selects only abort. These use the
 [official document properties](https://api.libreoffice.org/docs/idl/ref/servicecom_1_1sun_1_1star_1_1document_1_1MediaDescriptor.html).
 The engine uses a separate profile as documented in
 [LibreOffice startup options](https://help.libreoffice.org/latest/en-US/text/shared/guide/start_parameters.html).
-They do not replace process/resource containment or verification with actual
+The local Python/UNO connection is isolated **before importing `uno`**, because
+that import immediately initializes its own component context. Both local UNO
+and the renderer use the same request-owned `UserInstallation`. Configuration
+layers contain only the verified engine's schema/defaults/resources and the
+request's private overrides, excluding the host LibreOffice profile, extension
+configuration and Windows HKCU/HKLM configuration layers. This follows the
+pinned [bootstrap variable lookup](https://raw.githubusercontent.com/LibreOffice/core/libreoffice-26.8.2.2/sal/rtl/bootstrap.cxx)
+and [local context initialization](https://raw.githubusercontent.com/LibreOffice/core/libreoffice-26.8.2.2/pyuno/source/module/pyuno_module.cxx).
+It does not block every operating-system configuration source: OS fonts and
+other normal platform services still exist, and this is not a network sandbox.
+These settings do not replace process/resource containment or verification with actual
 documents, external-reference canaries and cancellation tests.
 
 ## Developer verification
@@ -125,9 +135,18 @@ and Pillow packages. They are not application dependencies:
 ```powershell
 $env:PRISM_OFFICE_QA_RUNTIME = 'D:\path\to\private\extracted-runtime'
 python -B tools/office-runtime/test_actual.py
+python -B tools/office-runtime/test_bootstrap.py
 python -B tools/office-runtime/test_external.py
 python -B tools/office-runtime/test_crash_guard.py
 ```
+
+`test_bootstrap.py` verifies the pinned engine files, redirects `SYSUSERCONFIG`
+to an owned canary, and gives that canary an invalid extension service registry.
+The control must fail while reading that exact negative fixture. The production
+bootstrap must initialize successfully, resolve its own extension cache and
+read an explicitly seeded private locale, without a `winreg:` or canary layer.
+The canary's files must stay unchanged. No normal user profile is initialized
+or modified, and no UNO/renderer response is mocked.
 
 The first test verifies the repository's independently sourced public DOCX,
 PPTX and XLSX fixtures against their pinned hashes, renders their actual PDFs

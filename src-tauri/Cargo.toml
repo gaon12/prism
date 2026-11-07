@@ -84,8 +84,8 @@ apple-native-keyring-store = { version = "=1.0.2", default-features = false, fea
 
 [target.'cfg(target_os = "linux")'.dependencies]
 hayro = "=0.9.0"
-# Read current X11 key state without releasing keys the user is still holding.
-x11rb = { version = "=0.13.2", default-features = false }
+# Native desktop queries and XTest paste without shell tools or keymap rewrites.
+x11rb = { version = "=0.13.2", default-features = false, features = ["xtest"] }
 zbus-secret-service-keyring-store = { version = "=1.0.1", default-features = false, features = ["rt-async-io-crypto-rust"] }
 
 [dev-dependencies]

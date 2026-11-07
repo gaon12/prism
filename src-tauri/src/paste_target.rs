@@ -54,6 +54,8 @@ pub type WindowId = isize;
 /// OS access, injected so tests never touch the real clipboard, windows or keyboard.
 pub trait InputBackend {
     fn supported(&self) -> bool;
+    /// Reject pending input when the application is definitely exiting.
+    fn shutdown(&self) {}
     fn current_pid(&self) -> u32;
     fn event_tick(&self) -> Option<u32> {
         None
@@ -434,11 +436,11 @@ mod win {
     };
 }
 
-/// macOS and Linux (X11) use small system tools for foreground and paste operations:
+/// Native desktop adapters:
 /// - macOS: `lsappinfo` reads the front app (no permission needed); `osascript` with System
 ///   Events activates it and presses Cmd+V. That needs the Accessibility permission for
 ///   Prism; without it the tool fails and the paste reports `InputBlocked` (copy is kept).
-/// - Linux: `xdotool` on an X11 session. Pure Wayland sessions are reported as unsupported.
+/// - Linux: native X11/XTest requests. Pure Wayland is reported as unsupported.
 ///
 /// "Window" here is the app's process id on macOS and the X11 window id on Linux.
 /// Every tool runs without a shell, with fixed arguments and a short timeout.
@@ -446,6 +448,10 @@ mod win {
 impl InputBackend for SystemBackend {
     fn supported(&self) -> bool {
         unix_desktop::supported()
+    }
+    #[cfg(target_os = "linux")]
+    fn shutdown(&self) {
+        unix_desktop::shutdown();
     }
     fn current_pid(&self) -> u32 {
         std::process::id()
@@ -464,48 +470,27 @@ impl InputBackend for SystemBackend {
         unix_desktop::keys_released()
     }
     fn send_ctrl_v(&self, window: WindowId, pid: u32) -> bool {
-        // Recheck right before the keystroke: the same target must still be in front.
-        unix_desktop::foreground() == Some(window)
-            && unix_desktop::window_pid(window) == Some(pid)
-            && self.keys_released()
-            && unix_desktop::paste()
+        #[cfg(target_os = "linux")]
+        {
+            unix_desktop::paste(window, pid)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // Recheck right before the keystroke: the same target must still be in front.
+            unix_desktop::foreground() == Some(window)
+                && unix_desktop::window_pid(window) == Some(pid)
+                && self.keys_released()
+                && unix_desktop::paste()
+        }
     }
     fn sleep(&self, duration: Duration) {
         std::thread::sleep(duration);
     }
 }
 
-/// One request-driven reader bounds the caller's wait even if the X server stops
-/// answering. Each request has its own reply channel: a late snapshot cannot satisfy
-/// a later request. A full queue fails closed instead of spawning more readers.
-#[cfg(any(target_os = "linux", test))]
-struct KeyStateProbe {
-    requests: std::sync::mpsc::SyncSender<std::sync::mpsc::SyncSender<bool>>,
-}
-#[cfg(any(target_os = "linux", test))]
-impl KeyStateProbe {
-    fn start(mut query: impl FnMut() -> bool + Send + 'static) -> Option<Self> {
-        let (requests, pending) =
-            std::sync::mpsc::sync_channel::<std::sync::mpsc::SyncSender<bool>>(1);
-        std::thread::Builder::new()
-            .name("prism-paste-keys".into())
-            .spawn(move || {
-                for response in pending {
-                    let _ = response.send(query());
-                }
-            })
-            .ok()?;
-        Some(Self { requests })
-    }
-    fn keys_released(&self, timeout: Duration) -> bool {
-        let (response, result) = std::sync::mpsc::sync_channel(1);
-        self.requests.try_send(response).is_ok() && result.recv_timeout(timeout).unwrap_or(false)
-    }
-}
-
 /// Runs a system tool with fixed arguments and returns its stdout when it exits successfully
 /// within `timeout`. A tool that hangs is killed, so it can never freeze Prism.
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 fn run_tool(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
     use std::process::{Command, Stdio};
     let mut child = Command::new(program)
@@ -587,71 +572,13 @@ mod unix_desktop {
     }
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
-mod unix_desktop {
-    use super::{run_tool, WindowId};
-    use std::time::Duration;
+#[cfg(target_os = "linux")]
+#[path = "paste_x11.rs"]
+mod native_x11;
+#[cfg(target_os = "linux")]
+use native_x11 as unix_desktop;
 
-    const TOOL_TIMEOUT: Duration = Duration::from_secs(2);
-
-    /// X11 with xdotool installed. Wayland-only sessions cannot be driven this way.
-    pub fn supported() -> bool {
-        // Checked once per run: the session type and installed tools do not change.
-        static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *SUPPORTED.get_or_init(|| {
-            std::env::var_os("DISPLAY").is_some_and(|value| !value.is_empty())
-                && run_tool("xdotool", &["version"], TOOL_TIMEOUT).is_some()
-        })
-    }
-    pub fn foreground() -> Option<WindowId> {
-        let text = run_tool("xdotool", &["getactivewindow"], TOOL_TIMEOUT)?;
-        super::parse_number(&text)
-            .and_then(|id| WindowId::try_from(id).ok())
-            .filter(|id| *id > 0)
-    }
-    pub fn window_pid(window: WindowId) -> Option<u32> {
-        let id = window.to_string();
-        let text = run_tool("xdotool", &["getwindowpid", &id], TOOL_TIMEOUT)?;
-        super::parse_number(&text).and_then(|pid| u32::try_from(pid).ok())
-    }
-    pub fn focus(window: WindowId) -> bool {
-        let id = window.to_string();
-        run_tool("xdotool", &["windowactivate", &id], TOOL_TIMEOUT).is_some()
-    }
-    #[cfg(target_os = "linux")]
-    pub fn keys_released() -> bool {
-        use x11rb::{protocol::xproto::ConnectionExt, rust_connection::RustConnection};
-        static PROBE: std::sync::OnceLock<Option<super::KeyStateProbe>> =
-            std::sync::OnceLock::new();
-        PROBE
-            .get_or_init(|| {
-                let mut connection: Option<RustConnection> = None;
-                super::KeyStateProbe::start(move || {
-                    let released = (|| {
-                        if connection.is_none() {
-                            connection = Some(x11rb::connect(None).ok()?.0);
-                        }
-                        let reply = connection.as_ref()?.query_keymap().ok()?.reply().ok()?;
-                        // A momentary key bitmap only; no events, key identities or text
-                        // are retained. Waiting for all keys also covers the launcher key.
-                        Some(reply.keys.iter().all(|byte| *byte == 0))
-                    })();
-                    if released.is_none() {
-                        connection = None;
-                    }
-                    released.unwrap_or(false)
-                })
-            })
-            .as_ref()
-            .is_some_and(|probe| probe.keys_released(Duration::from_millis(100)))
-    }
-    pub fn paste() -> bool {
-        // Never clear/reapply physical modifiers to force a paste through.
-        run_tool("xdotool", &["key", "ctrl+v"], TOOL_TIMEOUT).is_some()
-    }
-}
-
-#[cfg(all(not(windows), not(unix)))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 mod unix_desktop {
     use super::WindowId;
     pub fn supported() -> bool {
@@ -678,12 +605,6 @@ fn parse_lsappinfo_pid(text: &str) -> Option<u32> {
     value.parse().ok().filter(|pid| *pid > 0)
 }
 
-/// xdotool prints one decimal number and a newline.
-#[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
-fn parse_number(text: &str) -> Option<u64> {
-    text.trim().parse().ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -692,52 +613,11 @@ mod tests {
     const PRISM: u32 = 100;
 
     #[test]
-    fn key_state_queries_are_bounded_and_late_replies_cannot_unlock_a_later_paste() {
-        use std::sync::{atomic::AtomicUsize, mpsc, Arc};
-        let (release, blocked) = mpsc::sync_channel(0);
-        let (entered, first_query) = mpsc::sync_channel(1);
-        let calls = Arc::new(AtomicUsize::new(0));
-        let count = calls.clone();
-        let released = Arc::new(AtomicBool::new(false));
-        let current = released.clone();
-        let probe = KeyStateProbe::start(move || {
-            if count.fetch_add(1, Ordering::SeqCst) == 0 {
-                entered.send(()).unwrap();
-                blocked.recv().unwrap();
-                true // This old "released" result must never unlock a later paste.
-            } else {
-                current.load(Ordering::SeqCst)
-            }
-        })
-        .unwrap();
-        let start = Instant::now();
-        assert!(!probe.keys_released(Duration::from_millis(25)));
-        first_query.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(!probe.keys_released(Duration::from_millis(25)));
-        assert!(
-            !probe.keys_released(Duration::from_millis(25)),
-            "full queue"
-        );
-        assert!(start.elapsed() < Duration::from_secs(2));
-        release.send(()).unwrap();
-        let start = Instant::now();
-        while calls.load(Ordering::SeqCst) < 2 {
-            assert!(start.elapsed() < Duration::from_secs(2));
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert!(!probe.keys_released(Duration::from_secs(2)));
-        released.store(true, Ordering::SeqCst);
-        assert!(probe.keys_released(Duration::from_secs(2)));
-    }
-
-    #[test]
     fn unix_tool_output_parsers() {
         // Tool output as printed, including the trailing newline.
         assert_eq!(parse_lsappinfo_pid("\"pid\"=4321\n"), Some(4321));
         assert_eq!(parse_lsappinfo_pid(""), None);
         assert_eq!(parse_lsappinfo_pid("\"pid\"=0"), None);
-        assert_eq!(parse_number("77594625\n"), Some(77_594_625));
-        assert_eq!(parse_number("Error: no window"), None);
     }
 
     /// Fake window manager: no real windows, keyboard or clipboard are touched.

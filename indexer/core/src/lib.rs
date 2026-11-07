@@ -621,11 +621,17 @@ impl Catalog {
     }
 }
 fn join_path(parent: &str, name: &str) -> String {
-    if parent.ends_with('\\') {
-        format!("{parent}{name}")
-    } else {
-        format!("{parent}\\{name}")
+    let separator = !parent.ends_with('\\');
+    // Both pieces are already available. Reserve their exact UTF-8 byte size
+    // once, including the separator, rather than growing while formatting.
+    // Windows' separate UTF-16 path bound is still checked by the caller.
+    let mut path = String::with_capacity(parent.len() + name.len() + usize::from(separator));
+    path.push_str(parent);
+    if separator {
+        path.push('\\');
     }
+    path.push_str(name);
+    path
 }
 
 #[cfg(test)]
@@ -786,6 +792,51 @@ mod tests {
         moved.modified_ms = Some(-5);
         catalog.replace_family(vec![moved]).unwrap();
         assert_eq!(collect(&mut catalog, b'D'), expected('D', "새 폴더", -5));
+    }
+
+    #[test]
+    fn long_multibyte_paths_preserve_utf16_limits_and_drive_rebinding() {
+        // Each component fits NTFS' 255-unit bound, but UTF-8 needs three
+        // times as many bytes. The final emoji filename reaches exactly the
+        // Windows path limit; its one-character-longer sibling must be absent.
+        let segment = "한".repeat(255);
+        let name = format!("{}가나", "😀".repeat(125));
+        let mut records = vec![record(5, 5, ".", true)];
+        for depth in 0..127 {
+            let number = 16 + depth;
+            let parent = if depth == 0 { 5 } else { number - 1 };
+            records.push(record(number, parent, &segment, true));
+        }
+        records.push(record(1000, 142, &name, false));
+        records.push(record(1001, 142, &format!("{name}다"), false));
+        records.push(record(1002, 5, "日本語-나😀.md", false));
+        let mut catalog = catalog(records);
+        let nested = vec![segment.as_str(); 127].join("\\");
+        for drive in *b"CD" {
+            let drive_letter = DriveLetter::new(drive).unwrap();
+            let expected = format!("{}:\\{nested}\\{name}", drive as char);
+            assert_eq!(expected.encode_utf16().count(), 32767);
+            assert!(expected.len() > 32767);
+            let mut rows = Vec::new();
+            catalog
+                .visit(drive_letter, |row| {
+                    rows.push(row);
+                    Ok::<_, ()>(())
+                })
+                .unwrap();
+            assert_eq!(rows.len(), 130);
+            assert_eq!(rows[0].path, drive_letter.root());
+            assert!(rows[..128].iter().all(|row| row.is_dir && row.size == 0));
+            assert_eq!(rows[128].path, expected);
+            assert!(!rows[128].is_dir);
+            assert_eq!(rows[128].size, 123);
+            assert_eq!(rows[128].modified_ms, Some(42));
+            assert_eq!(
+                rows[129].path,
+                format!("{}:\\日本語-나😀.md", drive as char)
+            );
+            assert!(rows.iter().all(|row| drive_letter.contains(&row.path)));
+        }
     }
 
     #[test]

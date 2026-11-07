@@ -690,6 +690,9 @@ pub struct ClipboardService {
     /// Content this app wrote itself; the monitor must not count it as a new copy.
     suppressed: Arc<Mutex<Option<OwnWrite>>>,
     writer: Arc<Mutex<Option<Box<dyn ClipboardSource>>>>,
+    /// Shutdown drains plugin access before Tauri destroys its native clipboard.
+    io: Arc<std::sync::RwLock<()>>,
+    stopped: Arc<AtomicBool>,
     listener: Listener,
     lifetime: Arc<()>,
 }
@@ -705,6 +708,8 @@ impl ClipboardService {
             paused: Arc::new(AtomicBool::new(false)),
             suppressed: Arc::new(Mutex::new(None)),
             writer: Arc::new(Mutex::new(None)),
+            io: Arc::new(std::sync::RwLock::new(())),
+            stopped: Arc::new(AtomicBool::new(false)),
             listener: Arc::new(listener),
             lifetime: Arc::new(()),
         }
@@ -721,6 +726,16 @@ impl ClipboardService {
     }
     pub fn status(&self) -> Result<ClipStatus, String> {
         Ok(self.lock()?.status(self.paused.load(Ordering::SeqCst)))
+    }
+    /// Must run before the clipboard plugin's Exit hook. New I/O is refused;
+    /// the exclusive barrier waits for already-entered reads/writes to finish.
+    pub fn shutdown(&self) {
+        self.stopped.store(true, Ordering::Release);
+        let _drained = self.io.write().unwrap_or_else(|error| error.into_inner());
+        self.writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
     }
     pub fn apply_settings(&self, settings: ClipboardSettings) -> Result<(), String> {
         settings.validate()?;
@@ -878,6 +893,13 @@ impl ClipboardService {
 
     /// All Prism writes share the injected writer, including calculator copies in isolated tests.
     pub fn write_content(&self, content: ClipContent) -> Result<(), String> {
+        let _access = self
+            .io
+            .read()
+            .map_err(|_| "Clipboard history is unavailable.")?;
+        if self.stopped.load(Ordering::Acquire) {
+            return Err("Clipboard history is shutting down.".into());
+        }
         let hash = content_hash(&content);
         // Set before writing so a monitor tick racing the write still recognizes it by hash.
         *self
@@ -904,6 +926,12 @@ impl ClipboardService {
 
     /// Starts the background monitor. `writer` is a second source handle used for restore writes.
     pub fn start(&self, source: Box<dyn ClipboardSource>, writer: Box<dyn ClipboardSource>) {
+        let Ok(_access) = self.io.read() else {
+            return;
+        };
+        if self.stopped.load(Ordering::Acquire) {
+            return;
+        }
         if let Ok(mut slot) = self.writer.lock() {
             *slot = Some(writer);
         }
@@ -915,7 +943,7 @@ impl ClipboardService {
         let mut last_prune = now_ms();
         loop {
             std::thread::sleep(POLL_INTERVAL);
-            if Arc::strong_count(&self.lifetime) == 1 {
+            if self.stopped.load(Ordering::Acquire) || Arc::strong_count(&self.lifetime) == 1 {
                 return;
             }
             if self.poll_once(&mut *source, &mut state) {
@@ -933,6 +961,9 @@ impl ClipboardService {
     }
     /// One monitor tick. Returns true when history or diagnostic status changed.
     fn poll_once(&self, source: &mut dyn ClipboardSource, state: &mut PollState) -> bool {
+        if self.stopped.load(Ordering::Acquire) {
+            return false;
+        }
         let PollState {
             marker,
             last_hash,
@@ -976,6 +1007,12 @@ impl ClipboardService {
         let result = if excluded {
             Ok(None)
         } else {
+            let Ok(_access) = self.io.read() else {
+                return false;
+            };
+            if self.stopped.load(Ordering::Acquire) {
+                return false;
+            }
             source.read(images)
         };
         let mut store = match self.store.lock() {
@@ -984,7 +1021,8 @@ impl ClipboardService {
         };
         // A stop/resume during that transfer invalidates both its data and errors.
         // This lock is shared with setters, so a stale read cannot commit after them.
-        if store.capture_epoch != policy_epoch
+        if self.stopped.load(Ordering::Acquire)
+            || store.capture_epoch != policy_epoch
             || !store.settings.enabled
             || self.paused.load(Ordering::SeqCst)
         {
@@ -1768,6 +1806,66 @@ mod tests {
     #[test]
     fn disable_reenable_during_a_read_discards_the_old_snapshot() {
         transition_during_read(CaptureTransition::Disable);
+    }
+
+    #[test]
+    fn shutdown_drains_plugin_io_and_refuses_reads_and_writes_after_cleanup() {
+        use std::{sync::mpsc, time::Instant};
+        let mut h = Harness::new(ClipboardSettings::default());
+        assert!(h.copy_text("saved before exit"));
+        h.clipboard
+            .copy(ClipContent::Text("in-flight at exit".into()));
+        let (entered, reading) = mpsc::sync_channel(1);
+        let (release, blocked) = mpsc::sync_channel(0);
+        let mut source: Box<dyn ClipboardSource> = Box::new(TransitionDuringRead {
+            clipboard: h.clipboard.clone(),
+            after_read: Some(Box::new(move || {
+                entered.send(()).unwrap();
+                blocked.recv().unwrap();
+            })),
+        });
+        let mut state = std::mem::replace(&mut h.state, PollState::new(&mut *source));
+        let service = h.service.clone();
+        let reader = std::thread::spawn(move || service.poll_once(&mut *source, &mut state));
+        reading.recv_timeout(Duration::from_secs(2)).unwrap();
+        let service = h.service.clone();
+        let (done, drained) = mpsc::sync_channel(1);
+        let shutdown = std::thread::spawn(move || {
+            service.shutdown();
+            done.send(()).unwrap();
+        });
+        let start = Instant::now();
+        while !h.service.stopped.load(Ordering::Acquire) {
+            assert!(start.elapsed() < Duration::from_secs(2));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            drained.try_recv().is_err(),
+            "cleanup must wait for active I/O"
+        );
+        release.send(()).unwrap();
+        assert!(
+            !reader.join().unwrap(),
+            "exit discards the in-flight snapshot"
+        );
+        drained.recv_timeout(Duration::from_secs(2)).unwrap();
+        shutdown.join().unwrap();
+        h.source = Box::new(TransitionDuringRead {
+            clipboard: h.clipboard.clone(),
+            after_read: Some(Box::new(|| panic!("plugin already cleaned up"))),
+        });
+        assert!(!h.tick());
+        assert!(h
+            .service
+            .write_content(ClipContent::Text("late write".into()))
+            .is_err());
+        assert!(h.service.writer.lock().unwrap().is_none());
+        assert_eq!(h.previews(""), ["saved before exit"]);
+        assert_eq!(
+            h.clipboard.content(),
+            Some(ClipContent::Text("in-flight at exit".into()))
+        );
+        h.service.shutdown(); // Repeated cleanup is safe.
     }
 
     #[test]

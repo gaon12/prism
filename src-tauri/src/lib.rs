@@ -194,6 +194,16 @@ pub fn run() {
     };
     builder
         .plugin(tauri_plugin_dialog::init())
+        // Plugin events run in registration order, before the app run callback.
+        // Drain history I/O before clipboard-manager takes its native state on Exit.
+        .plugin(tauri::plugin::Builder::<_, ()>::new("clipboard-history-lifecycle")
+            .on_event(|app, event| {
+                if matches!(event, tauri::RunEvent::Exit) {
+                    if let Some(state) = app.try_state::<AppState>() {
+                        state.clipboard.shutdown();
+                    }
+                }
+            }).build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(
@@ -297,14 +307,6 @@ pub fn run() {
             );
             let memory_clipboard = (isolated_test || test_mode)
                 .then(clipboard_history::MemoryClipboard::default);
-            if let Some(source) = &memory_clipboard {
-                clipboard.start(source.boxed(), source.boxed());
-            } else {
-                clipboard.start(
-                    clipboard_history::system_source(app.handle().clone()),
-                    clipboard_history::system_source(app.handle().clone()),
-                );
-            }
             // Keep large local caches out of the roaming settings profile. Tests always use
             // their explicit isolated directory for every service and model asset.
             let asset_dir = if location.kind != app_paths::InstallKind::Installed {
@@ -473,7 +475,7 @@ pub fn run() {
                 #[cfg(debug_assertions)]
                 input_fixture,
                 #[cfg(debug_assertions)]
-                clipboard_fixture: memory_clipboard,
+                clipboard_fixture: memory_clipboard.clone(),
                 dictionary,
                 embedding,
                 content,
@@ -483,6 +485,19 @@ pub fn run() {
                 ocr_runtime,
                 updates,
             });
+            // Publish the service before starting its monitor so the Exit hook can
+            // also stop it if later window/setup initialization fails.
+            {
+                let state = app.state::<AppState>();
+                if let Some(source) = &memory_clipboard {
+                    state.clipboard.start(source.boxed(), source.boxed());
+                } else {
+                    state.clipboard.start(
+                        clipboard_history::system_source(app.handle().clone()),
+                        clipboard_history::system_source(app.handle().clone()),
+                    );
+                }
+            }
             if !isolated_test && !test_mode {
                 let state = app.state::<AppState>();
                 if let Err(error) = foreground_tracker::start(&state.paste_targets) {

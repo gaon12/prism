@@ -62,6 +62,7 @@
     "test:document-pdf": "node tests/native/document-pdf.mjs",
     "test:document-hwpx": "node tests/native/document-hwpx.mjs",
     "test:collections": "node tests/native/collections.mjs",
+    "test:collections-office": "node tests/native/collections-office.mjs",
     "test:collections-epub": "node tests/native/collections-epub.mjs",
     "test:collections-text": "node tests/native/collections-text.mjs",
     "test:collections-navigation": "node tests/native/collections-navigation.mjs",

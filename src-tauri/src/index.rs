@@ -263,8 +263,8 @@ struct Catalog {
     status: IndexStatus,
 }
 
-/// Bound queued *paths*, not notifications: a downloading file can emit tens
-/// of thousands of writes without requiring another walk of the whole drive.
+/// Bound queued recursive subtrees, not notifications: one busy file or an
+/// already queued parent covers repeated writes throughout that subtree.
 #[derive(Default)]
 struct PendingPaths {
     paths: BTreeMap<String, PathBuf>,
@@ -274,10 +274,38 @@ impl PendingPaths {
     fn push(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
         for path in paths {
             let key = path_key(&path);
-            if self.paths.contains_key(&key) {
+            let mut ancestor = key.as_str();
+            let covered = loop {
+                if self.paths.contains_key(ancestor) {
+                    break true;
+                }
+                match ancestor.rsplit_once('/') {
+                    Some((parent, _)) => ancestor = parent,
+                    None => break false,
+                }
+            };
+            if covered {
                 continue;
             }
+            // This path will be scanned recursively. Replace its descendants
+            // before testing the bound, even when the queue is already full.
+            // The trailing separator keeps sibling prefixes independent.
+            let prefix = format!("{key}/");
+            let descendants: Vec<_> = self
+                .paths
+                .range::<str, _>((
+                    std::ops::Bound::Included(prefix.as_str()),
+                    std::ops::Bound::Unbounded,
+                ))
+                .take_while(|(candidate, _)| candidate.starts_with(&prefix))
+                .map(|(key, _)| key.clone())
+                .collect();
+            for descendant in descendants {
+                self.paths.remove(&descendant);
+            }
             if self.paths.len() == 4096 {
+                // Once a path was lost, later coalescing cannot establish that
+                // it was covered. Keep overflow set until the consumer takes it.
                 self.overflow = true;
                 break;
             }
@@ -286,7 +314,10 @@ impl PendingPaths {
     }
     fn take(&mut self) -> (bool, Vec<PathBuf>) {
         let overflow = std::mem::take(&mut self.overflow);
-        (overflow, minimal_paths(std::mem::take(&mut self.paths)))
+        (
+            overflow,
+            std::mem::take(&mut self.paths).into_values().collect(),
+        )
     }
 }
 
@@ -1541,6 +1572,46 @@ mod performance_tests {
         );
         queue.push(["C:/", "C:/a", "D:/b"].map(PathBuf::from));
         assert_eq!(queue.take().1, ["C:/", "D:/b"].map(PathBuf::from));
+    }
+    #[test]
+    fn a_queued_subtree_covers_bulk_changes_without_requesting_a_full_reconcile() {
+        let mut queue = PendingPaths::default();
+        queue.push([PathBuf::from("C:/downloads/패키지")]);
+        queue.push(
+            (0..20_000)
+                .map(|n| PathBuf::from(format!("C:/downloads/패키지/part-{n}/document.txt"))),
+        );
+        let (overflow, paths) = queue.take();
+        assert!(
+            !overflow,
+            "the queued recursive subtree covers every change"
+        );
+        assert_eq!(paths, [PathBuf::from("C:/downloads/패키지")]);
+
+        // A parent arriving at the limit must replace covered children before
+        // capacity is checked. Similar sibling prefixes remain independent.
+        queue.push((0..4096).map(|n| PathBuf::from(format!("C:/downloads/part-{n}"))));
+        queue.push(["C:/downloads", "C:/downloads-old/keep.txt"].map(PathBuf::from));
+        let (overflow, paths) = queue.take();
+        assert!(!overflow);
+        assert_eq!(
+            paths,
+            ["C:/downloads", "C:/downloads-old/keep.txt"].map(PathBuf::from)
+        );
+    }
+    #[test]
+    fn coalescing_after_actual_event_loss_keeps_the_reconcile_required() {
+        let mut queue = PendingPaths::default();
+        queue.push((0..4096).map(|n| PathBuf::from(format!("C:/downloads/part-{n}"))));
+        queue.push([PathBuf::from("D:/lost-outside-the-subtree.txt")]);
+        queue.push([PathBuf::from("C:/downloads")]);
+        let (overflow, paths) = queue.take();
+        assert!(
+            overflow,
+            "a later parent cannot recover an unrelated lost event"
+        );
+        assert_eq!(paths, [PathBuf::from("C:/downloads")]);
+        assert!(!queue.take().0, "only consuming the overflow clears it");
     }
     #[test]
     fn parallel_walk_keeps_every_nested_file_and_cancels_revoked_scopes() {

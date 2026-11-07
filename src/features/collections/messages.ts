@@ -1,5 +1,19 @@
 import type { Language } from '../../lib/types';
 const messages = {
+  updatingPreview: [
+    'Office 미리보기를 업데이트하고 있습니다.',
+    'Updating Office previews.',
+    '正在更新 Office 预览。',
+    '正在更新 Office 預覽。',
+    'Officeプレビューを更新しています。',
+  ],
+  rendererChanged: [
+    '미리보기 버전이 바뀌었습니다. 새로고침해 업데이트하세요.',
+    'The preview version changed. Refresh to update it.',
+    '预览版本已更改，请刷新以更新。',
+    '預覽版本已變更，請重新整理以更新。',
+    'プレビューのバージョンが変わりました。更新してください。',
+  ],
   rendererFailed: [
     'Office 원본 페이지 작업을 완료하지 못했습니다.',
     'The Office page operation could not be completed.',

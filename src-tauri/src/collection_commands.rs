@@ -179,6 +179,11 @@ pub async fn collection_sources(
     blocking(move || store.sources(&unit_id)).await
 }
 #[tauri::command]
+pub async fn collection_unit_prepare(state: State<'_, AppState>, unit_id: String) -> Result<Unit> {
+    let service = service(&state)?;
+    blocking(move || service.prepare_unit(&unit_id)).await
+}
+#[tauri::command]
 pub async fn collection_import(
     state: State<'_, AppState>,
     unit_id: String,

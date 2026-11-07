@@ -309,7 +309,7 @@ function WorkDetail({
   );
   const [offset, setOffset] = useState(0);
   const pages = useRemote(`${unitId}:${unit.data?.revision ?? 0}:${offset}`, revision, () =>
-    unit.data
+    unit.data && !unit.data.prepareError
       ? library.pages(unit.data, offset)
       : Promise.resolve({ items: [], total: 0, nextOffset: null }),
   );
@@ -347,7 +347,7 @@ function WorkDetail({
         else delete next[progress.unitId];
         return next;
       });
-      if (progress.phase !== 'reading') reload();
+      if (progress.phase !== 'reading' && progress.phase !== 'prepareFailed') reload();
     })
       .then(async (unlisten) => {
         if (disposed) {
@@ -416,7 +416,13 @@ function WorkDetail({
     return library.moveUnit(item, target.items[0]?.id ?? null);
   };
   if (selected && !unitChoices.some((item) => item.id === selected.id)) unitChoices.push(selected);
-  const issue = error ?? units.error ?? unit.error ?? pages.error ?? sources.error;
+  const issue =
+    error ??
+    units.error ??
+    unit.error ??
+    pages.error ??
+    sources.error ??
+    (importing ? null : selected?.prepareError);
   const openReader = (selectedUnit: Unit, index: number) =>
     setReader({ unit: selectedUnit, offset: index });
   return (
@@ -560,7 +566,7 @@ function WorkDetail({
           {selected.pageCount > 0 ? (
             <button
               className="button"
-              disabled={busy || importing}
+              disabled={busy || importing || Boolean(selected.prepareError)}
               onClick={() => openReader(selected, 0)}
             >
               <BookOpen size={16} />
@@ -590,6 +596,23 @@ function WorkDetail({
               <ArrowDown size={15} />
             </button>
           </div>
+        </div>
+      ) : null}
+      {unit.loading && jobs[unitId] ? (
+        <div className="collection-import-progress" role="status">
+          <div
+            role="progressbar"
+            aria-label={t('updatingPreview')}
+            className="collection-progress-track"
+          />
+          <span>{t('updatingPreview')}</span>
+          <button
+            className="text-button"
+            onClick={() => void library.cancel(unitId).catch(setError)}
+          >
+            <Square size={12} />
+            {t('stop')}
+          </button>
         </div>
       ) : null}
       {importing && selected ? (
@@ -624,7 +647,7 @@ function WorkDetail({
           </button>
         </div>
       ) : null}
-      {selected && pages.data?.total === 0 && !importing ? (
+      {selected && !selected.prepareError && pages.data?.total === 0 && !importing ? (
         <div className="collection-empty">
           <FileText size={34} />
           <p>{t('emptyPage')}</p>

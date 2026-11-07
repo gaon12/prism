@@ -577,6 +577,7 @@ pub fn run() {
             collection_commands::collection_unit_update,
             collection_commands::collection_sources,
             collection_commands::collection_import,
+            collection_commands::collection_unit_prepare,
             collection_commands::collection_cancel,
             collection_commands::collection_jobs,
             collection_commands::collection_pages,

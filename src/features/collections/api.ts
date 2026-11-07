@@ -38,6 +38,8 @@ export interface Unit {
   revision: number;
   state: string;
   pageCount: number;
+  /** Keeps reference-management actions available after preparation fails. */
+  prepareError?: unknown;
 }
 export interface Source {
   id: string;
@@ -115,7 +117,16 @@ export const defaults: Metadata = {
 export const library = {
   get: (id: string) => invoke<Collection>('collection_get', { id }),
   work: (id: string) => invoke<Work>('collection_work_get', { id }),
-  unit: (id: string) => invoke<Unit>('collection_unit_get', { id }),
+  unit: async (id: string): Promise<Unit> => {
+    try {
+      return await invoke<Unit>('collection_unit_prepare', { unitId: id });
+    } catch (prepareError) {
+      // A failed preparation must not hide the unit's explicit reimport,
+      // relink or remove actions. It never authorizes rendering old pages.
+      const unit = await invoke<Unit>('collection_unit_get', { id });
+      return { ...unit, prepareError };
+    }
+  },
   list: (offset = 0) => invoke<Listing<Collection>>('collection_list', { offset, limit: 100 }),
   create: (title: string, description: string) =>
     invoke<Collection>('collection_create', { title, description }),

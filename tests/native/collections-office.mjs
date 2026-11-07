@@ -2,7 +2,7 @@
 // SQLite, native PDF rasterizer and WebP encoder. No renderer/API replacement.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { expect } from '@playwright/test';
@@ -23,7 +23,15 @@ assert.equal(
   sha(await readFile(twoPage)),
   'a21f9105ef5d1bc8a9eeaa3688e6d8b91dc385193df5f0c1d4320ee344a7f855',
 );
-const directory = await mkdtemp(join(tmpdir(), 'prism-collection-office-'));
+// Reader-only qualification can use a real, already prepared private runtime.
+// This explicit mode never counts as installation/cancellation verification.
+const preparedRuntime = process.env.PRISM_OFFICE_QA_PREPARED_RUNTIME;
+const directory = await mkdtemp(
+  join(preparedRuntime ? resolve('.dev/office-preview-qa') : tmpdir(), 'prism-collection-office-'),
+);
+const screenshotDirectory = preparedRuntime
+  ? await mkdtemp(join(tmpdir(), 'prism-office-prepared-reader-'))
+  : directory;
 const profile = join(directory, 'profile');
 const originals = join(directory, 'originals');
 await mkdir(profile);
@@ -47,7 +55,12 @@ await copyFile('tests/fixtures/encrypted-office/example.docx', docx);
 await copyFile(twoPage, korean);
 const originalHashes = [sha(await readFile(docx)), sha(await readFile(korean))];
 let instance;
-const result = { directory, screenshots: [], phase: 'launch' };
+const result = {
+  directory,
+  screenshots: [],
+  phase: 'launch',
+  installationTest: preparedRuntime ? 'notRunPreparedRuntime' : 'archive',
+};
 try {
   instance = await launch(
     profile,
@@ -95,43 +108,67 @@ try {
     invoke('collection_pages', { unitId: unit.id, expected: unit.revision, offset: 0, limit: 10 });
   assert((await pageList()).items.every((page) => page.location.kind === 'text'));
 
-  // Cancel a real archive installation, then verify only its private stage was
-  // removed. Do not touch an installed system engine or a normal app profile.
-  result.phase = 'cancel-install';
-  await main.evaluate((path) => {
-    window.__officeInstall = window.__TAURI_INTERNALS__
-      .invoke('collection_office_install', { path })
-      .then(
-        () => ({ ok: true }),
-        (error) => ({ error }),
-      );
-  }, archive);
-  await until(
-    async () => (await invoke('collection_office_status')).installing,
-    'real runtime installation starts',
-  );
-  await invoke('collection_office_cancel');
-  assert.equal((await main.evaluate(() => window.__officeInstall)).error.code, 'cancelled');
-  assert.equal((await invoke('collection_office_status')).installed, false);
-  const stages = await readdir(join(profile, 'office')).catch((error) => {
-    if (error.code === 'ENOENT') return [];
-    throw error;
-  });
-  assert.deepEqual(stages, []);
-  result.installCancelled = true;
-  result.phase = 'install';
-  // Tauri rejects with a plain DTO. Return it across the WebView boundary so
-  // Playwright cannot reduce the real installation failure to "Object".
-  result.installOutcome = await main.evaluate(
-    (path) =>
-      window.__TAURI_INTERNALS__.invoke('collection_office_install', { path }).then(
-        () => ({ ok: true }),
-        (error) => ({ error }),
-      ),
-    archive,
-  );
-  result.installStatus = await invoke('collection_office_status');
-  assert.deepEqual(result.installOutcome, { ok: true });
+  if (preparedRuntime) {
+    result.phase = 'copy-prepared-runtime-fixture';
+    const catalog = JSON.parse(
+      await readFile('tools/office-runtime/windows-x64.lock.json', 'utf8'),
+    );
+    const source = resolve(preparedRuntime);
+    assert.equal(sha(await readFile(join(source, 'inventory.json'))), catalog.inventorySha256);
+    assert.equal(
+      await readFile(join(source, '.prism-office-runtime'), 'utf8'),
+      catalog.inventorySha256,
+    );
+    await mkdir(join(profile, 'office'), { recursive: true });
+    await cp(
+      source,
+      join(profile, 'office', `libreoffice-windows-x64-${catalog.inventorySha256.slice(0, 16)}`),
+      {
+        recursive: true,
+        errorOnExist: true,
+        force: false,
+      },
+    );
+    result.preparedInventorySha256 = catalog.inventorySha256;
+  } else {
+    // Cancel a real archive installation, then verify only its private stage was
+    // removed. Do not touch an installed system engine or a normal app profile.
+    result.phase = 'cancel-install';
+    await main.evaluate((path) => {
+      window.__officeInstall = window.__TAURI_INTERNALS__
+        .invoke('collection_office_install', { path })
+        .then(
+          () => ({ ok: true }),
+          (error) => ({ error }),
+        );
+    }, archive);
+    await until(
+      async () => (await invoke('collection_office_status')).installing,
+      'real runtime installation starts',
+    );
+    await invoke('collection_office_cancel');
+    assert.equal((await main.evaluate(() => window.__officeInstall)).error.code, 'cancelled');
+    assert.equal((await invoke('collection_office_status')).installed, false);
+    const stages = await readdir(join(profile, 'office')).catch((error) => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    assert.deepEqual(stages, []);
+    result.installCancelled = true;
+    result.phase = 'install';
+    // Tauri rejects with a plain DTO. Return it across the WebView boundary so
+    // Playwright cannot reduce the real installation failure to "Object".
+    result.installOutcome = await main.evaluate(
+      (path) =>
+        window.__TAURI_INTERNALS__.invoke('collection_office_install', { path }).then(
+          () => ({ ok: true }),
+          (error) => ({ error }),
+        ),
+      archive,
+    );
+    result.installStatus = await invoke('collection_office_status');
+    assert.deepEqual(result.installOutcome, { ok: true });
+  }
   assert.equal((await invoke('collection_office_status')).installed, true);
   assert.equal((await invoke('collection_office_status')).installing, false);
   result.installed = true;
@@ -191,7 +228,7 @@ try {
   await expect(region.locator('.collection-page-card')).toHaveCount(2);
   await expect(region.locator('.collection-page-card').first().locator('img')).toBeVisible();
   const screenshot = async (name) => {
-    const path = join(directory, name);
+    const path = join(screenshotDirectory, name);
     await main.screenshot({ path });
     result.screenshots.push(path);
   };
@@ -263,7 +300,9 @@ try {
   result.error = error instanceof Error ? error.message : error;
   if (instance) {
     result.consoleErrors = instance.errors;
-    await instance.main.screenshot({ path: join(directory, 'failure.png') }).catch(() => {});
+    await instance.main
+      .screenshot({ path: join(screenshotDirectory, 'failure.png') })
+      .catch(() => {});
   }
   throw error;
 } finally {

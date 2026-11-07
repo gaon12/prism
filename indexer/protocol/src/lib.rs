@@ -35,8 +35,10 @@ impl DriveLetter {
             || bytes.contains(&0)
             || bytes[3..].contains(&b':')
             || bytes.contains(&b'/')
-            || (path.is_ascii() && bytes.len() > 32767)
-            || (!path.is_ascii() && path.encode_utf16().count() > 32767)
+            // A valid UTF-8 string has at most one UTF-16 unit per byte.
+            // Ordinary short paths already satisfy the Windows unit bound;
+            // count units only for long multibyte paths that may still fit.
+            || (bytes.len() > 32767 && path.encode_utf16().count() > 32767)
         {
             return false;
         }
@@ -399,6 +401,18 @@ mod tests {
     fn drive() -> DriveLetter {
         DriveLetter::new(b'c').unwrap()
     }
+    #[test]
+    fn path_length_uses_utf16_units_without_rejecting_long_multibyte_paths() {
+        for tail in ["a".repeat(32764), "가".repeat(32764), "😀".repeat(16382)] {
+            let path = format!("C:\\{tail}");
+            assert_eq!(path.encode_utf16().count(), 32767);
+            assert!(drive().contains(&path));
+            assert!(!drive().contains(&(path + "a")));
+        }
+        assert!(drive().contains("C:\\문서\\가 😀.txt"));
+        assert!(!drive().contains("C:\\문서\\..\\escape.txt"));
+    }
+
     #[test]
     fn requests_only_identify_local_drive_letters_and_revisions() {
         for request in [

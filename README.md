@@ -240,6 +240,14 @@ versions; its subprocess fixtures never change the user's login settings:
 cargo test --manifest-path src-tauri/Cargo.toml --locked -p auto-launch --lib --test xdg_autostart
 ```
 
+On Linux with `gio` and `dbus-run-session`, the explicit launcher check verifies
+actual executable and argument bytes from Korean/spaced and reserved-character
+paths, using only its own recorder and private session:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --locked -p auto-launch --test xdg_exec -- real_gio_preserves_executable_and_arguments --ignored --exact
+```
+
 The previous release AppImage reproduced the wrong configuration path. The source
 fix passes the isolated dependency checks; a corrected release AppImage still
 needs native qualification.

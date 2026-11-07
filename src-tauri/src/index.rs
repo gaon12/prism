@@ -202,6 +202,10 @@ struct WalkJobs {
     paths: VecDeque<(PathBuf, bool)>,
     outstanding: usize,
 }
+struct WalkBatch {
+    rows: Vec<Raw>,
+    skipped: usize,
+}
 /// Entries at `root` and below it, using the sorted key order ('0' follows '/').
 fn subtree<'a>(
     entries: &'a BTreeMap<Arc<str>, Entry>,
@@ -318,6 +322,55 @@ impl PendingPaths {
             overflow,
             std::mem::take(&mut self.paths).into_values().collect(),
         )
+    }
+}
+
+/// A failed directory read says nothing about whether its cached children
+/// still exist. Keep this bounded like watch events; overflow preserves all
+/// unseen entries for this sweep rather than guessing which failures were lost.
+struct UncertainPaths {
+    all: bool,
+    roots: BTreeMap<String, PathBuf>,
+    descendants: Vec<(String, String)>,
+}
+impl From<PendingPaths> for UncertainPaths {
+    fn from(pending: PendingPaths) -> Self {
+        let mut descendants: Vec<_> = if pending.overflow {
+            vec![]
+        } else {
+            pending
+                .paths
+                .keys()
+                .map(|key| (format!("{key}/"), format!("{key}0")))
+                .collect()
+        };
+        // Root-key ordering differs from descendant-range ordering for sibling
+        // prefixes such as /a-b and /a/. The queued subtrees never overlap.
+        descendants.sort_unstable();
+        Self {
+            all: pending.overflow,
+            roots: pending.paths,
+            descendants,
+        }
+    }
+}
+impl UncertainPaths {
+    fn contains(&self, key: &str) -> bool {
+        if self.all || self.roots.contains_key(key) {
+            return true;
+        }
+        let position = self
+            .descendants
+            .partition_point(|(low, _)| low.as_str() <= key);
+        position > 0 && key < self.descendants[position - 1].1.as_str()
+    }
+}
+fn note_unreadable(paths: &Mutex<PendingPaths>, path: &Path, kind: Option<std::io::ErrorKind>) {
+    if kind != Some(std::io::ErrorKind::NotFound) {
+        paths
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push([path.to_path_buf()]);
     }
 }
 
@@ -577,27 +630,6 @@ impl FileIndex {
                 // those subtrees that the walk no longer saw (deleted or renamed away).
                 sweep += 1;
                 self.scan(generation, &unique, sweep, false);
-                if let Ok(mut catalog) = self.catalog.write() {
-                    if !self.current(generation) {
-                        continue;
-                    }
-                    let stale: Vec<Arc<str>> = unique
-                        .iter()
-                        .flat_map(|path| {
-                            subtree(&catalog.entries, &path_key(path))
-                                .filter(|entry| entry.seen != sweep)
-                                .map(|entry| entry.key.clone())
-                                .collect::<Vec<_>>()
-                        })
-                        .collect();
-                    for key in &stale {
-                        catalog.entries.remove(key);
-                    }
-                    if !stale.is_empty() {
-                        catalog.status.revision += 1;
-                        catalog.status.count = catalog.entries.len();
-                    }
-                }
             }
         }
     }
@@ -635,6 +667,7 @@ impl FileIndex {
             outstanding: walk_paths.len(),
         });
         let wake = Condvar::new();
+        let unreadable = Mutex::new(PendingPaths::default());
         let threads = std::thread::available_parallelism()
             .map_or(2, usize::from)
             .clamp(1, 8);
@@ -642,9 +675,12 @@ impl FileIndex {
             for _ in 0..threads {
                 let jobs = &jobs;
                 let wake = &wake;
+                let unreadable = &unreadable;
                 scope.spawn(move || {
-                    let mut batch = Vec::with_capacity(512);
-                    let mut skipped = 0;
+                    let mut batch = WalkBatch {
+                        rows: Vec::with_capacity(512),
+                        skipped: 0,
+                    };
                     loop {
                         let work = {
                             let mut jobs = jobs.lock().unwrap_or_else(|error| error.into_inner());
@@ -670,7 +706,7 @@ impl FileIndex {
                             include_root,
                             sweep,
                             &mut batch,
-                            &mut skipped,
+                            unreadable,
                         );
                         let mut jobs = jobs.lock().unwrap_or_else(|error| error.into_inner());
                         jobs.outstanding += children.len();
@@ -679,25 +715,46 @@ impl FileIndex {
                             .extend(children.into_iter().map(|path| (path, false)));
                         wake.notify_all();
                     }
-                    self.publish(generation, sweep, &mut batch, skipped, false);
+                    self.publish(generation, sweep, &mut batch.rows, batch.skipped, false);
                 });
             }
         });
-        self.publish(generation, sweep, &mut vec![], 0, !reconcile);
-        if reconcile {
-            if let Ok(mut catalog) = self.catalog.write() {
-                if !self.current(generation) {
-                    return;
-                }
-                let before = catalog.entries.len();
-                catalog.entries.retain(|_, entry| entry.seen == sweep);
-                if catalog.entries.len() != before {
-                    catalog.status.revision += 1;
-                }
-                catalog.status.count = catalog.entries.len();
-                catalog.status.scanning = false;
-                catalog.status.initial_scan_complete = true;
+        let uncertain = UncertainPaths::from(unreadable.into_inner().unwrap_or_else(|error| {
+            let mut paths = error.into_inner();
+            paths.overflow = true;
+            paths
+        }));
+        if let Ok(mut catalog) = self.catalog.write() {
+            if !self.current(generation) {
+                return;
             }
+            let before = catalog.entries.len();
+            if reconcile {
+                catalog
+                    .entries
+                    .retain(|key, entry| entry.seen == sweep || uncertain.contains(key));
+                catalog.status.initial_scan_complete = true;
+            } else {
+                // Keep watch updates limited to their own subtrees, without
+                // re-scanning the whole catalog or erasing failed subtrees.
+                let stale: Vec<Arc<str>> = paths
+                    .iter()
+                    .flat_map(|path| {
+                        subtree(&catalog.entries, &path_key(path))
+                            .filter(|entry| entry.seen != sweep && !uncertain.contains(&entry.key))
+                            .map(|entry| entry.key.clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+                for key in stale {
+                    catalog.entries.remove(&key);
+                }
+            }
+            if catalog.entries.len() != before {
+                catalog.status.revision += 1;
+            }
+            catalog.status.count = catalog.entries.len();
+            catalog.status.scanning = false;
         }
     }
     fn walk_directory(
@@ -706,8 +763,8 @@ impl FileIndex {
         path: &Path,
         include_root: bool,
         sweep: u64,
-        batch: &mut Vec<Raw>,
-        skipped: &mut usize,
+        batch: &mut WalkBatch,
+        unreadable: &Mutex<PendingPaths>,
     ) -> Vec<PathBuf> {
         let mut children = vec![];
         // Depth one makes directory ownership explicit. Keep WalkDir's cached
@@ -752,15 +809,20 @@ impl FileIndex {
                     }
                     let metadata = match entry.metadata() {
                         Ok(metadata) => metadata,
-                        Err(_) => {
-                            *skipped += 1;
+                        Err(error) => {
+                            batch.skipped += 1;
+                            note_unreadable(
+                                unreadable,
+                                entry.path(),
+                                error.io_error().map(std::io::Error::kind),
+                            );
                             continue;
                         }
                     };
                     if entry.depth() > 0 && metadata.is_dir() {
                         children.push(entry.path().to_owned());
                     }
-                    batch.push(Raw {
+                    batch.rows.push(Raw {
                         key: path_key(entry.path()),
                         has_name: !entry.file_name().is_empty(),
                         is_dir: metadata.is_dir(),
@@ -772,12 +834,19 @@ impl FileIndex {
                             .map(|duration| duration.as_millis() as i64),
                         path: display_path(entry.path()),
                     });
-                    if batch.len() >= 512 {
-                        self.publish(generation, sweep, batch, *skipped, false);
-                        *skipped = 0;
+                    if batch.rows.len() >= 512 {
+                        self.publish(generation, sweep, &mut batch.rows, batch.skipped, false);
+                        batch.skipped = 0;
                     }
                 }
-                Err(_) => *skipped += 1,
+                Err(error) => {
+                    batch.skipped += 1;
+                    note_unreadable(
+                        unreadable,
+                        error.path().unwrap_or(path),
+                        error.io_error().map(std::io::Error::kind),
+                    );
+                }
             }
         }
         children
@@ -1254,6 +1323,10 @@ fn date_range(input: &str) -> Result<(i64, i64), String> {
         _ => (start, end),
     })
 }
+
+#[cfg(test)]
+#[path = "filename_scan_tests.rs"]
+mod scan_tests;
 
 #[cfg(test)]
 mod tests {

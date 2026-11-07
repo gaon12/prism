@@ -339,6 +339,8 @@ function ProviderSettings({
   language,
   native,
   credentials,
+  withoutApiKey = false,
+  onWithoutApiKey,
 }: {
   slot: GenerationSlot;
   config: GenerationConfig | null;
@@ -346,6 +348,8 @@ function ProviderSettings({
   language: Language;
   native: boolean;
   credentials: GenerationCredentials;
+  withoutApiKey?: boolean;
+  onWithoutApiKey?: (value: boolean) => void;
 }) {
   const id = useId();
   const t = (key: Parameters<typeof generationText>[1]) => generationText(language, key);
@@ -476,8 +480,24 @@ function ProviderSettings({
             </select>
             <small className="generation-note">{t('tokenHelp')}</small>
           </div>
-          <p className="generation-note">{t('disabledHelp')}</p>
-          {endpointValid ? (
+          {!(slot === 'local' && withoutApiKey) ? (
+            <p className="generation-note">{t('disabledHelp')}</p>
+          ) : null}
+          {slot === 'local' ? (
+            <>
+              <label className="generation-check" htmlFor={`${id}-without-key`}>
+                <input
+                  id={`${id}-without-key`}
+                  type="checkbox"
+                  checked={withoutApiKey}
+                  onChange={(event) => onWithoutApiKey?.(event.target.checked)}
+                />
+                <span>{t('withoutApiKey')}</span>
+              </label>
+              <p className="generation-note">{t('withoutApiKeyHelp')}</p>
+            </>
+          ) : null}
+          {endpointValid && !(slot === 'local' && withoutApiKey) ? (
             <CredentialEditor
               key={`${slot}:${config.endpoint}`}
               slot={slot}
@@ -612,6 +632,8 @@ export function GenerationPanel({
         slot="local"
         config={preferences.local}
         onChange={(local) => update({ local })}
+        withoutApiKey={preferences.localWithoutApiKey}
+        onWithoutApiKey={(localWithoutApiKey) => update({ localWithoutApiKey })}
         language={language}
         native={native}
         credentials={credentials}

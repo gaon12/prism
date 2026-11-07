@@ -220,6 +220,11 @@ test('saves generation connection preferences without contacting a provider or s
   await local.getByLabel('이 서버 연결 설정', { exact: true }).check();
   await local.getByRole('button', { name: 'LM Studio', exact: true }).click();
   await local.getByLabel('모델 이름', { exact: true }).fill('synthetic-local-model');
+  const withoutKey = local.getByLabel('로컬 서버에 API 키 없이 연결', { exact: true });
+  await expect(withoutKey).not.toBeChecked();
+  await withoutKey.check();
+  await expect(local.locator('.generation-credentials')).toHaveCount(0);
+  await expect(local.getByText(/키는 아래 삭제 버튼/)).toHaveCount(0);
   await expect(local.getByLabel('서버 URL', { exact: true })).toHaveValue(
     'http://127.0.0.1:1234/v1',
   );
@@ -240,6 +245,7 @@ test('saves generation connection preferences without contacting a provider or s
     mode: 'local',
     fallback: false,
     allowExternalQuestions: false,
+    localWithoutApiKey: true,
     maxContextChars: 12000,
     external: null,
     local: { temperature: null, tokenParameter: 'maxTokens' },
@@ -247,6 +253,11 @@ test('saves generation connection preferences without contacting a provider or s
   expect(JSON.stringify(saved)).not.toMatch(/apiKey|secret|Bearer/);
   expect(providerRequests).toEqual([]);
   await settings();
+  await expect(withoutKey).toBeChecked();
+  await withoutKey.uncheck();
+  await expect(local.locator('.generation-credentials')).toHaveCount(1);
+  await expect(local.getByText(/키는 아래 삭제 버튼/)).toBeVisible();
+  await withoutKey.check();
   await panel.scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(evidence, 'generation-settings.png') });
 });

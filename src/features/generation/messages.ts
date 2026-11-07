@@ -25,6 +25,20 @@ const messages = {
     'ハイブリッドはキーワードと意味の順位を統合します。意味検索には起動中のローカル埋め込みモデルが必要で、未起動ならキーワードを使います。長い質問がキーワードの上限を超える場合は意味検索のみを使います。モデルの自動起動やファイル権限の拡張は行いません。',
   ],
   title: ['생성 AI 설정', 'Generation AI', '生成式AI设置', '生成式AI設定', '生成AI設定'],
+  withoutApiKey: [
+    '로컬 서버에 API 키 없이 연결',
+    'Connect to the local server without an API key',
+    '无需API密钥连接本地服务器',
+    '不使用API金鑰連接本機伺服器',
+    'APIキーなしでローカルサーバーに接続',
+  ],
+  withoutApiKeyHelp: [
+    '인증이 필요 없는 로컬 서버에서 선택하세요. 시스템 키 저장소를 조회하지 않으며, 저장된 키는 삭제하지 않습니다. 외부 서버에는 적용되지 않습니다.',
+    'Choose this for a local server that requires no authentication. The system keychain is not queried, and saved keys are preserved. External servers are unaffected.',
+    '适用于无需认证的本地服务器。不查询系统密钥库，也不删除已保存的密钥。不适用于外部服务器。',
+    '適用於無須驗證的本機伺服器。不查詢系統金鑰庫，也不刪除已儲存的金鑰。不適用於外部伺服器。',
+    '認証が不要なローカルサーバーで選択してください。システムのキーストアにはアクセスせず、保存済みのキーは削除しません。外部サーバーには適用されません。',
+  ],
   description: [
     '사용자가 실행한 로컬 OpenAI 호환 서버 또는 외부 HTTPS 서버를 연결합니다. 이 설정은 생성 모델을 다운로드하거나 자동 실행하지 않습니다.',
     'Connect your running local OpenAI-compatible server or an external HTTPS endpoint. These settings do not download or start a generation model.',

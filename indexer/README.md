@@ -25,6 +25,8 @@ Implemented:
   another hash lookup per row. The temporary order table adds one pointer per
   stored record (about 15 MiB for 2 million records on 64-bit systems); it keeps
   no catalog clone and is released on success or callback failure.
+  Derived paths reserve their complete UTF-8 byte size before appending the
+  parent, separator and name; the separate Windows UTF-16 limit still applies.
 - An independent public mkntfs image exercises 581 records, file sizes, and
   all 512 subdirectories. Adversarial unit tests cover bounds, torn sectors,
   cycles, cancellation, protocol lengths and path escapes.
@@ -258,6 +260,16 @@ Remaining integration:
    catalogs used identical logical inputs and the same protocol dependency.
    This service-side code has not been deployed to the installed host, so the
    result does not establish a live C-drive or whole-app improvement.
+   A later, separate comparison retained that lookup optimization and reserved
+   the exact output string size for each derived path. With the same 2,001,756
+   paths and complete metadata/order, its final-source three-pair median was
+   2.443 seconds before and 2.234 seconds afterward. One pair was slightly
+   slower; the earlier independent candidate comparison was faster in all
+   three pairs (2.458 to 2.271 seconds at the median). These are synthetic
+   visitation-and-hashing measurements, not cumulative savings to subtract
+   from live app timings. Cache-read buffering and short-name validation
+   experiments showed no consistent gain and were excluded; the snapshot codec
+   and its digest/allocation limits remain unchanged.
    Delta requests currently return `JournalGap`, requiring
    a new snapshot rather than claiming an unchanged catalog.
 3. Verify the newer deferred/per-drive persistence through actual deployment,

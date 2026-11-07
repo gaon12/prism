@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Cpu, Download, ExternalLink, FolderInput, Play, RefreshCw, Square, X } from 'lucide-react';
 import { native } from '../../lib/bridge';
 import { embeddingAssets, model } from '../../lib/model';
@@ -37,6 +37,7 @@ export function EmbeddingPanel() {
   const [operation, setOperation] = useState<Operation | null>(null);
   const [cancelRequested, setCancelRequested] = useState(false);
   const [refresh, setRefresh] = useState(0);
+  const statusEpoch = useRef(0);
   // Poll local state only. Downloading, importing and starting require a click.
   useEffect(() => {
     if (!native) return;
@@ -45,14 +46,15 @@ export function EmbeddingPanel() {
     const poll = async () => {
       if (pending) return;
       pending = true;
+      const before = statusEpoch.current;
       try {
         const next = await model.status();
-        if (mounted) {
+        if (mounted && before === statusEpoch.current) {
           setStatus(next);
           setStatusError(null);
         }
       } catch (cause) {
-        if (mounted) setStatusError(errorMessage(cause));
+        if (mounted && before === statusEpoch.current) setStatusError(errorMessage(cause));
       } finally {
         pending = false;
       }
@@ -71,15 +73,22 @@ export function EmbeddingPanel() {
   const error = actionError ?? statusError ?? (!operation ? status?.lastError : null);
   const run = async (kind: Operation, work: () => Promise<EmbeddingStatus | null>) => {
     if (busy) return;
+    statusEpoch.current++;
     setOperation(kind);
     setActionError(null);
     setCancelRequested(false);
     try {
       const next = await work();
-      if (next) setStatus(next);
+      if (next) {
+        setStatus(next);
+        setStatusError(null);
+      }
     } catch (cause) {
       setActionError(errorMessage(cause));
     } finally {
+      // A poll can settle after this action but before its effect cleanup.
+      // Reject those older reads, including errors, before refreshing status.
+      statusEpoch.current++;
       setOperation(null);
       setRefresh((value) => value + 1);
     }

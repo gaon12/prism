@@ -21,6 +21,10 @@ Implemented:
   resident/nonresident data sizes, and parent-sequence checks. Junctions and
   symlinks are excluded; cloud placeholders can contribute names. Deleted,
   corrupt, orphaned, and reused references cannot invent live paths.
+  Deterministic visitation sorts numbers alongside borrowed records, avoiding
+  another hash lookup per row. The temporary order table adds one pointer per
+  stored record (about 15 MiB for 2 million records on 64-bit systems); it keeps
+  no catalog clone and is released on success or callback failure.
 - An independent public mkntfs image exercises 581 records, file sizes, and
   all 512 subdirectories. Adversarial unit tests cover bounds, torn sectors,
   cycles, cancellation, protocol lengths and path escapes.
@@ -194,6 +198,13 @@ variant order between rounds and consumes every decoded filename and metadata
 field. It verifies counts and metadata checksums. It does not contact the service
 or measure disk access, app-catalog publication or UI readiness.
 
+Windows also has an explicit ignored `pipe::frame_bench::native_frame_write_comparison`
+test in `prism-ntfs-windows`. It compares four-part, header/body and copied
+whole-frame writes through real private fixture pipes with identical synthetic
+bytes and decoded metadata. A 2-million-row run did not show a consistent timing
+benefit from coalescing; the production framing remains unchanged. This test
+never connects to an installed service or opens a volume.
+
 Remaining integration:
 
 1. Continue live churn/recovery coverage. The C-volume collector completed four
@@ -240,6 +251,13 @@ Remaining integration:
    directory flags, sizes and timestamps matched the received metadata. This
    ordinary-client check used the unchanged installed service and excluded
    WebView/UI startup and subsequent query latency.
+   Separately, a final-source synthetic catalog comparison emitted 2,001,756
+   paths, preserving full metadata, hard links and MFT-number order. Across
+   three paired visits, median path visitation plus metadata hashing fell from
+   2.795 to 2.418 seconds after eliminating the second record lookup. The two
+   catalogs used identical logical inputs and the same protocol dependency.
+   This service-side code has not been deployed to the installed host, so the
+   result does not establish a live C-drive or whole-app improvement.
    Delta requests currently return `JournalGap`, requiring
    a new snapshot rather than claiming an unchanged catalog.
 3. Verify the newer deferred/per-drive persistence through actual deployment,

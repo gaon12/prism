@@ -168,6 +168,50 @@ Linux collection service also rendered the four real Office inputs into five
 native WebP pages with source rechecks. These are local Windows/WSL results;
 they do not qualify macOS Office, Linux desktop/AppImage or a clean machine.
 
+## Existing Office previews after an update
+
+Stored original-page manifests carry the engine inventory and worker identity.
+`collection_unit_prepare` and cover loading rebuild outdated Office sources
+through a cancellable job. The matching engine must already be installed.
+Source hashes, current references, excluded paths and unit revisions are checked
+before publication. A changed original is not silently adopted by this process.
+All replacements publish in one SQLite transaction; failure leaves the previous
+manifest and reading state intact.
+
+Surviving physical pages retain the user's ordering, including interleaved
+sources. New pages follow the last old page of that source. The transaction
+remaps an Office bookmark only within the same unchanged original, preserving
+its completed flag. It chooses the same physical page number or the nearest
+remaining number when pagination shrinks. This does not establish an equivalent
+text position after reflow. New renderer identities use new page/cache IDs;
+old cached pixels never bypass the renderer or source checks.
+
+The client retains unit metadata and explicit recovery actions if preparation
+fails, while blocking old-page rendering. `prepareFailed` clears the active job
+without triggering the view's automatic terminal reload, avoiding a retry loop.
+Explicit refresh/reimport remains a user action and may adopt a changed original.
+
+The Windows version-transition regression uses a qualified old app with worker
+`0edc896a…` and a new app with worker `1822d414…`, both using the same pinned
+LibreOffice inventory. The old app creates a real two-page Korean manifest,
+reorders it to 2→1, saves a completed bookmark and generates a real cached cover.
+The pre-change BE38 app reproduces the incorrect original-changed error. The
+new app migrates that same library, preserves order/bookmark/completion and
+renders the original pages. A changed second source is rejected without an
+automatic retry loop; restoring the test-owned original and explicitly
+reimporting it succeeds. This checks an actual worker-version transition, not
+two different LibreOffice versions or native macOS/Linux desktop integration.
+
+Run `npm run test:office-upgrade` with `PRISM_TEST_EXECUTABLE`,
+`PRISM_OFFICE_UPGRADE_OLD_EXE` (the exact qualified 68B0EE app),
+`PRISM_OFFICE_QA_PREPARED_RUNTIME` and the pinned `PRISM_OFFICE_QA_TWO_PAGE`
+fixture. `PRISM_OFFICE_UPGRADE_EXPECT_BLOCKED=1` is the separate pre-change
+negative control. New runs use fresh isolated data; a maintainer can explicitly
+resume a marked, seeded fixture with `PRISM_OFFICE_UPGRADE_ROOT`. An already
+migrated fixture is not a fresh transition test. The harness records actual
+native events rather than replacing IPC or renderer responses. It uses a
+prepared private runtime and is not ZIP-installation qualification.
+
 ## Linux maintainer package
 
 `linux-source.lock.json` pins the official 26.8.2 DEB tar and private

@@ -257,10 +257,15 @@ fn build_systemd_service_data(app_name: &str, app_path: &str, args: &[String]) -
 
 /// Get the XDG autostart directory
 fn get_xdg_autostart_dir() -> Result<PathBuf> {
-    let home_dir = dirs::home_dir().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "Failed to find home directory")
+    // Use the same user config root as the desktop session. dirs ignores empty
+    // or relative XDG_CONFIG_HOME values and falls back to HOME/.config.
+    let config_dir = dirs::config_dir().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Failed to find config directory",
+        )
     })?;
-    Ok(home_dir.join(".config").join("autostart"))
+    Ok(config_dir.join("autostart"))
 }
 
 /// Get the systemd user service directory

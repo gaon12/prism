@@ -108,6 +108,8 @@ opt-level = 3
 opt-level = 3
 
 [patch.crates-io]
+# Honor the desktop session's XDG_CONFIG_HOME for Linux login startup.
+auto-launch = { path = "vendor/auto-launch" }
 # Windows long-path handling for Lance's atomic local transaction persistence.
 tempfile = { path = "vendor/tempfile" }
 # Native desktop builds do not need the upstream Wasm getrandom feature.

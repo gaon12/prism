@@ -41,6 +41,10 @@ path = "src/lib.rs"
 name = "test"
 path = "tests/test.rs"
 
+[[test]]
+name = "xdg_autostart"
+path = "tests/xdg_autostart.rs"
+
 [dependencies.os_info]
 version = "3"
 default-features = false

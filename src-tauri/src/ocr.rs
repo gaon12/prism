@@ -322,6 +322,13 @@ pub(crate) fn render_pdf_page(
     #[cfg(target_os = "linux")]
     {
         let launcher = std::env::current_exe().map_err(|_| error(Code::Unavailable))?;
+        // A lib-test executable has no pre-GUI dispatch. Opt-in native tests
+        // supply the exact-source platform QA host; release code cannot read
+        // this override and always launches its own authenticated executable.
+        #[cfg(test)]
+        let launcher = std::env::var_os("PRISM_TEST_PDF_LAUNCHER")
+            .map(std::path::PathBuf::from)
+            .unwrap_or(launcher);
         crate::pdf_renderer::render(bytes, page, dimension, &launcher, cancel, control.deadline)
     }
     #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]

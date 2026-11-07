@@ -89,7 +89,7 @@ impl Office {
             .lock()
             .map_err(|_| error(ErrorCode::Storage))?;
         Ok(Status {
-            supported: cfg!(all(windows, target_arch = "x86_64")),
+            supported: office_preview::supported(),
             installed: self.runtime.installed().map_err(map)?,
             installing: installation.cancel.is_some(),
             archive_bytes: catalog.archive.bytes,
@@ -114,7 +114,7 @@ impl Office {
         }
     }
     pub fn install(&self, path: &Path, progress: &dyn Fn(office_preview::Progress)) -> Result<()> {
-        if !cfg!(all(windows, target_arch = "x86_64")) {
+        if !office_preview::supported() {
             return Err(error(ErrorCode::Unsupported));
         }
         let cancel = Arc::new(AtomicBool::new(false));

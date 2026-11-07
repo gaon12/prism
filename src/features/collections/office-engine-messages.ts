@@ -90,11 +90,11 @@ const messages = {
     'エンジンのインストールが完了しました。',
   ],
   unsupported: [
-    '현재 원본 페이지 엔진은 Windows x64에서 지원합니다.',
-    'The page engine currently supports Windows x64.',
-    '原始页面引擎目前支持 Windows x64。',
-    '原始頁面引擎目前支援 Windows x64。',
-    '元のページ用エンジンは現在Windows x64に対応しています。',
+    '현재 원본 페이지 엔진은 Windows x64·Linux x64에서 지원합니다.',
+    'The page engine currently supports Windows x64 and Linux x64.',
+    '原始页面引擎目前支持 Windows x64 和 Linux x64。',
+    '原始頁面引擎目前支援 Windows x64 與 Linux x64。',
+    '元のページ用エンジンは現在Windows x64・Linux x64に対応しています。',
   ],
   desktop: [
     '엔진은 데스크톱 앱에서 준비할 수 있습니다.',

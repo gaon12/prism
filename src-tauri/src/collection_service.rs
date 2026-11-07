@@ -45,7 +45,7 @@ pub struct ImportProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(all(windows, target_arch = "x86_64"))]
+    #[cfg(all(any(windows, target_os = "linux"), target_arch = "x86_64"))]
     #[test]
     #[ignore = "opt-in real verified Office archive installation and native page rendering"]
     fn real_office_pages_are_reference_only_and_cached_pixels_recheck_the_source() {
@@ -89,7 +89,7 @@ mod tests {
                 .start_file(&name, zip::write::SimpleFileOptions::default())
                 .unwrap();
             if name == "word/document.xml" {
-                output.write_all(br#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Prism FIRST PAGE</w:t></w:r></w:p><w:p><w:r><w:br w:type="page"/></w:r></w:p><w:p><w:r><w:t>Prism SECOND PAGE</w:t></w:r></w:p></w:body></w:document>"#).unwrap();
+                output.write_all(r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:rPr><w:rFonts w:ascii="Noto Sans CJK KR" w:eastAsia="Noto Sans CJK KR"/><w:sz w:val="40"/></w:rPr><w:t>프리즘 FIRST PAGE</w:t></w:r></w:p><w:p><w:r><w:br w:type="page"/></w:r></w:p><w:p><w:r><w:rPr><w:rFonts w:ascii="Noto Sans CJK KR" w:eastAsia="Noto Sans CJK KR"/><w:sz w:val="40"/></w:rPr><w:t>두 번째 SECOND PAGE</w:t></w:r></w:p></w:body></w:document>"#.as_bytes()).unwrap();
             } else {
                 std::io::copy(&mut entry, &mut output).unwrap();
             }
@@ -124,7 +124,12 @@ mod tests {
         let first = service.media(&pair[0].id, true).unwrap();
         let second = service.media(&pair[1].id, true).unwrap();
         assert_ne!(first.data_url, second.data_url);
-        for page in &pages {
+        let media_output = std::env::var_os("PRISM_OFFICE_QA_MEDIA_DIR").map(PathBuf::from);
+        if let Some(path) = &media_output {
+            assert!(path.is_absolute());
+            fs::create_dir(path).expect("Use a fresh directory for opt-in image evidence");
+        }
+        for (index, page) in pages.iter().enumerate() {
             let media = service.media(&page.id, true).unwrap();
             assert!(media.text.is_none() && media.document.is_none());
             let bytes = base64::engine::general_purpose::STANDARD
@@ -139,6 +144,14 @@ mod tests {
             let image = image::load_from_memory(&bytes).unwrap().to_rgb8();
             assert!(image.width() <= 480 && image.height() <= 480);
             assert!(image.pixels().any(|p| p.0.iter().any(|v| *v < 200)));
+            if let Some(directory) = &media_output {
+                let mut file = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(directory.join(format!("page-{}.webp", index + 1)))
+                    .unwrap();
+                file.write_all(&bytes).unwrap();
+            }
         }
         for (path, hash) in paths.iter().zip(before) {
             assert_eq!(import::hash(&fs::read(path).unwrap()), hash);

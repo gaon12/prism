@@ -33,7 +33,6 @@ fn uncertain_paths_preserve_only_covered_subtrees_and_handle_bounded_overflow() 
     assert!(uncertain.contains(&path_key(Path::new("/cached/unknown"))));
 }
 
-#[cfg(windows)]
 fn isolated(root: &Path) -> (FileIndex, FileIndex) {
     let (tx, _) = mpsc::channel();
     let index = FileIndex {
@@ -43,6 +42,7 @@ fn isolated(root: &Path) -> (FileIndex, FileIndex) {
                 key: path_key(root),
                 path: root.to_path_buf(),
                 source: root.to_string_lossy().into_owned(),
+                available: true,
             }],
             ..Default::default()
         })),
@@ -51,6 +51,177 @@ fn isolated(root: &Path) -> (FileIndex, FileIndex) {
         lifetime: Arc::new(()),
     };
     (index.clone(), index)
+}
+
+fn scope(id: &str, path: &Path) -> SearchScope {
+    SearchScope {
+        id: id.into(),
+        name: id.into(),
+        path: path.to_string_lossy().into_owned(),
+        filename_enabled: true,
+        content_enabled: false,
+        external_allowed: false,
+    }
+}
+
+fn wait_for(index: &FileIndex, ready: impl Fn(&IndexStatus) -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = index.status().unwrap();
+        if ready(&status) {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "index did not settle");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn unavailable_scope_refresh_preserves_cache_recovers_and_can_be_disabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    let parked = temp.path().join("parked");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("cached.md"), "fixture").unwrap();
+    let index = FileIndex::new();
+    let scopes = vec![scope("folder", &root)];
+    index.configure(scopes.clone());
+    wait_for(&index, |s| s.initial_scan_complete && !s.scanning);
+    assert_eq!(
+        index
+            .search("cached.md", "", Some("folder"), 10)
+            .unwrap()
+            .total,
+        1
+    );
+
+    fs::rename(&root, &parked).unwrap();
+    index.refresh(scopes.clone());
+    wait_for(&index, |s| {
+        s.initial_scan_complete && !s.scanning && !s.warnings.is_empty()
+    });
+    assert_eq!(
+        index
+            .search("cached.md", "", Some("folder"), 10)
+            .unwrap()
+            .total,
+        1
+    );
+    assert!(!index.status().unwrap().watching);
+
+    fs::rename(&parked, &root).unwrap();
+    fs::remove_file(root.join("cached.md")).unwrap();
+    fs::write(root.join("recovered.md"), "new fixture").unwrap();
+    index.refresh(scopes.clone());
+    wait_for(&index, |s| {
+        s.initial_scan_complete && !s.scanning && s.warnings.is_empty()
+    });
+    assert_eq!(index.search("cached.md", "", None, 10).unwrap().total, 0);
+    assert_eq!(
+        index
+            .search("recovered.md", "", Some("folder"), 10)
+            .unwrap()
+            .total,
+        1
+    );
+
+    fs::rename(&root, &parked).unwrap();
+    index.refresh(scopes.clone());
+    wait_for(&index, |s| {
+        s.initial_scan_complete && !s.scanning && !s.warnings.is_empty()
+    });
+    assert_eq!(index.search("recovered.md", "", None, 10).unwrap().total, 1);
+    let mut disabled = scopes;
+    disabled[0].filename_enabled = false;
+    index.configure(disabled);
+    assert_eq!(
+        index.status().unwrap().count,
+        0,
+        "disabling revokes cached names immediately"
+    );
+    wait_for(&index, |s| s.initial_scan_complete && !s.scanning);
+    assert_eq!(index.status().unwrap().count, 0);
+}
+
+#[test]
+fn unavailable_parent_does_not_mask_changes_in_an_available_child_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(temp.path()).unwrap();
+    let child = root.join("child");
+    fs::create_dir(&child).unwrap();
+    fs::write(root.join("outside-cached.md"), "old").unwrap();
+    fs::write(child.join("deleted.md"), "remove later").unwrap();
+    let (index, _owner) = isolated(&root);
+    index.scan(1, std::slice::from_ref(&root), 1, true);
+    // Represent a previously resolved root whose configured alias disappeared.
+    // The old canonical target still exists; it must not be enumerated through
+    // that unavailable scope. The real child is independently configured.
+    let missing_alias = root.join("missing-alias");
+    index.catalog.write().unwrap().roots[0].source = missing_alias.to_string_lossy().into_owned();
+    fs::write(root.join("outside-cached.md"), "changed while unavailable").unwrap();
+    fs::write(root.join("outside-new.md"), "must not discover").unwrap();
+    fs::remove_file(child.join("deleted.md")).unwrap();
+    fs::write(child.join("new-child.md"), "discover").unwrap();
+    let (roots, warnings) =
+        index.resolve_roots(&[scope("fixture", &missing_alias), scope("child", &child)]);
+    assert!(!roots[0].available && roots[1].available);
+    assert!(!warnings.is_empty());
+    let paths = root_paths(&roots);
+    assert_eq!(paths, [child]);
+    index.catalog.write().unwrap().roots = roots;
+    index.scan(1, &paths, 2, true);
+    assert_eq!(
+        index
+            .search("outside-cached.md", "", None, 10)
+            .unwrap()
+            .results[0]
+            .size,
+        3
+    );
+    assert_eq!(
+        index.search("outside-new.md", "", None, 10).unwrap().total,
+        0
+    );
+    assert_eq!(index.search("deleted.md", "", None, 10).unwrap().total, 0);
+    assert_eq!(
+        index
+            .search("new-child.md", "", Some("child"), 10)
+            .unwrap()
+            .total,
+        1
+    );
+    assert!(index
+        .resolve_result(root.join("outside-new.md").to_str().unwrap())
+        .is_err());
+    // Neither a new scope id nor a different source inherits the old identity.
+    for changed in [
+        scope("other", &missing_alias),
+        scope("fixture", &root.join("different-alias")),
+    ] {
+        assert!(index.resolve_roots(&[changed]).0.is_empty());
+    }
+}
+
+#[test]
+fn missing_configured_root_keeps_known_names_until_scope_revocation() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("source");
+    let parked = temp.path().join("parked");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("cached.md"), "fixture").unwrap();
+    let (index, _owner) = isolated(&root);
+    index.scan(1, std::slice::from_ref(&root), 1, true);
+    fs::rename(&root, &parked).unwrap();
+    index.scan(1, std::slice::from_ref(&root), 2, false);
+    assert_eq!(
+        index.search("cached.md", "", None, 10).unwrap().total,
+        1,
+        "a configured root becoming unavailable does not revoke its cached names"
+    );
+    assert!(!index.status().unwrap().warnings.is_empty());
+    index.configure(vec![]);
+    index.scan(1, &[root], 3, true);
+    assert_eq!(index.status().unwrap().count, 0);
 }
 
 #[cfg(windows)]

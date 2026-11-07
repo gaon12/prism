@@ -259,6 +259,9 @@ struct Root {
     path: PathBuf,
     /// The scope path as configured, used to tell whether a reconfigured scope is unchanged.
     source: String,
+    /// An unchanged unavailable scope keeps its known identity for cached
+    /// filename filtering, but must not automatically enumerate its old target.
+    available: bool,
 }
 #[derive(Default)]
 struct Catalog {
@@ -397,6 +400,7 @@ fn root_paths(roots: &[Root]) -> Vec<PathBuf> {
     minimal_paths(
         roots
             .iter()
+            .filter(|root| root.available)
             .map(|root| (root.key.clone(), root.path.clone()))
             .collect(),
     )
@@ -498,6 +502,76 @@ impl FileIndex {
         Arc::strong_count(&self.lifetime) > 1
             && self.generation.load(Ordering::SeqCst) == generation
     }
+    fn resolve_roots(&self, scopes: &[SearchScope]) -> (Vec<Root>, Vec<String>) {
+        let previous = self
+            .catalog
+            .read()
+            .map(|catalog| catalog.roots.clone())
+            .unwrap_or_default();
+        let mut roots = vec![];
+        let mut warnings = vec![];
+        for scope in scopes.iter().filter(|scope| scope.filename_enabled) {
+            match fs::canonicalize(&scope.path) {
+                Ok(path) if path.is_dir() => roots.push(Root {
+                    id: scope.id.clone(),
+                    key: path_key(&path),
+                    path,
+                    source: scope.path.clone(),
+                    available: true,
+                }),
+                _ => {
+                    warnings.push(format!("Folder unavailable: {}", scope.path));
+                    if let Some(root) = previous
+                        .iter()
+                        .find(|root| root.id == scope.id && root.source == scope.path)
+                    {
+                        let mut root = root.clone();
+                        root.available = false;
+                        roots.push(root);
+                    }
+                }
+            }
+        }
+        (roots, warnings)
+    }
+    fn note_walk_failure(
+        &self,
+        generation: u64,
+        unreadable: &Mutex<PendingPaths>,
+        path: &Path,
+        kind: Option<std::io::ErrorKind>,
+    ) {
+        let key = path_key(path);
+        let configured_root = self.catalog.write().is_ok_and(|mut catalog| {
+            if !self.current(generation) {
+                return false;
+            }
+            let sources: Vec<_> = catalog
+                .roots
+                .iter_mut()
+                .filter(|root| root.key == key)
+                .map(|root| {
+                    root.available = false;
+                    root.source.clone()
+                })
+                .collect();
+            if sources.is_empty() {
+                return false;
+            }
+            catalog.status.watching = false;
+            for source in sources {
+                let warning = format!("Folder unavailable: {source}");
+                if catalog.status.warnings.len() < 5 && !catalog.status.warnings.contains(&warning)
+                {
+                    catalog.status.warnings.push(warning);
+                }
+            }
+            true
+        });
+        // A missing configured root is an unavailable scope. A missing child
+        // is still a real deletion; do not extend cached identities to new paths.
+        note_unreadable(unreadable, path, if configured_root { None } else { kind });
+    }
     fn run(&self, rx: mpsc::Receiver<(u64, Vec<SearchScope>)>) {
         let pending = Arc::new(Mutex::new(PendingPaths::default()));
         let overflow = Arc::new(AtomicBool::new(false));
@@ -526,18 +600,9 @@ impl FileIndex {
                         .map(|mut paths| *paths = PendingPaths::default())
                         .ok();
                     overflow.store(false, Ordering::SeqCst);
-                    let mut roots = vec![];
-                    let mut warnings = vec![];
-                    for scope in scopes.iter().filter(|scope| scope.filename_enabled) {
-                        match fs::canonicalize(&scope.path) {
-                            Ok(path) if path.is_dir() => roots.push(Root {
-                                id: scope.id.clone(),
-                                key: path_key(&path),
-                                path,
-                                source: scope.path.clone(),
-                            }),
-                            _ => warnings.push(format!("Folder unavailable: {}", scope.path)),
-                        }
+                    let (roots, mut warnings) = self.resolve_roots(&scopes);
+                    if !self.current(generation) {
+                        continue;
                     }
                     let queue = pending.clone();
                     let dropped = overflow.clone();
@@ -623,7 +688,11 @@ impl FileIndex {
             };
             let unique: Vec<_> = paths
                 .into_iter()
-                .filter(|path| roots.iter().any(|root| under(&path_key(path), &root.key)))
+                .filter(|path| {
+                    roots
+                        .iter()
+                        .any(|root| root.available && under(&path_key(path), &root.key))
+                })
                 .collect();
             if !unique.is_empty() {
                 // Re-walk only the changed subtrees under a fresh sweep id, then drop entries in
@@ -730,9 +799,21 @@ impl FileIndex {
             }
             let before = catalog.entries.len();
             if reconcile {
-                catalog
-                    .entries
-                    .retain(|key, entry| entry.seen == sweep || uncertain.contains(key));
+                let unavailable: Vec<_> = catalog
+                    .roots
+                    .iter()
+                    .filter(|root| !root.available)
+                    .map(|root| root.key.clone())
+                    .collect();
+                let visited: Vec<_> = paths.iter().map(|path| path_key(path)).collect();
+                catalog.entries.retain(|key, entry| {
+                    entry.seen == sweep
+                        || uncertain.contains(key)
+                        // A still-configured offline parent must not hide a
+                        // confirmed deletion in an available, visited child scope.
+                        || (unavailable.iter().any(|root| under(key, root))
+                            && !visited.iter().any(|root| under(key, root)))
+                });
                 catalog.status.initial_scan_complete = true;
             } else {
                 // Keep watch updates limited to their own subtrees, without
@@ -811,7 +892,8 @@ impl FileIndex {
                         Ok(metadata) => metadata,
                         Err(error) => {
                             batch.skipped += 1;
-                            note_unreadable(
+                            self.note_walk_failure(
+                                generation,
                                 unreadable,
                                 entry.path(),
                                 error.io_error().map(std::io::Error::kind),
@@ -841,7 +923,8 @@ impl FileIndex {
                 }
                 Err(error) => {
                     batch.skipped += 1;
-                    note_unreadable(
+                    self.note_walk_failure(
+                        generation,
                         unreadable,
                         error.path().unwrap_or(path),
                         error.io_error().map(std::io::Error::kind),

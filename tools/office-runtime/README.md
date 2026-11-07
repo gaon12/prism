@@ -4,9 +4,10 @@ This internal worker converts authenticated DOCX, PPTX and XLSX bytes into PDF
 bytes using a real LibreOffice layout engine. It is the first part of the
 collection original-page preview work. The collection service now calls it when
 the pinned managed engine is installed at the application's `office` data path.
-There is no renderer download UI or published runtime package yet. A pinned
-Windows x64 package, Rust transport and collection reader have actual tests.
-Native Linux/macOS execution remains pending.
+There is no renderer download UI or published runtime package yet. Pinned
+Windows x64 and Linux x64 packages, the Rust transport and collection page services
+have actual tests. Linux execution was checked under WSL; Linux desktop/AppImage
+and native macOS engine execution remain pending.
 
 The private QA engine is LibreOffice 26.8.2 from the official Windows x64 MSI,
 375,934,976 bytes, SHA-256
@@ -69,7 +70,11 @@ These switches follow the
 Integrity verification continues to reject every extra file.
 
 The parent must verify the runtime and worker before executing the bundled
-Python interpreter directly, in isolated mode (`-I -S -B`). Do not launch its
+Python interpreter directly. Windows uses isolated mode (`-I -S -B`). Linux's
+bundled interpreter has a relocatable, flat standard library, so it uses
+`-P -S -B` with a cleared environment and explicit private `PYTHONHOME` and
+standard-library-only `PYTHONPATH`. User startup/site/search paths are not
+inherited. Do not launch its
 Python wrapper: the actual interpreter must be the owned process. Supply the
 runtime directory and a fresh private work directory containing `owner.txt`
 with the exact bytes `Prism Office preview worker v1\n`. No document path or
@@ -97,6 +102,68 @@ This is not a claim that LibreOffice never uses internal temporary files, nor
 that a Job Object is a file/network sandbox. Any such internal files must stay
 under the private work directory; the Rust parent cleans its owned directory
 after normal completion or cancellation.
+
+On Linux, `unix_owner.py` watches a worker-owned pipe in a separate supervisor
+session and owns the engine's private process group. It resets inherited
+`SIGCHLD` ignore, observes exit with `waitid(..., WNOWAIT)`, signals the group
+while the exact leader remains unreaped, then reaps it and adopted descendants.
+The Linux [subreaper](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html)
+attribute applies only to this supervisor. An exec helper sets per-process
+limits before starting the engine: 2 GiB virtual address space, 64 MiB per
+output file, 90 CPU seconds, 256 descriptors, and no normal core file. Existing
+lower inherited limits stay lower. These are not aggregate Job Object limits
+or a replacement for the Rust request deadline. Engine restart is bounded to
+three attempts, only for the official
+[normal-restart code 81](https://raw.githubusercontent.com/LibreOffice/core/libreoffice-26.8.2.2/include/desktop/exithelper.h).
+Closing the worker pipe, worker death, or app death ends the owned group;
+unrelated processes are never found or killed by name. A hard app death can
+leave its marked private work directory: stale-directory recovery is pending.
+
+## Linux maintainer package
+
+`linux-source.lock.json` pins the official 26.8.2 DEB tar and private
+NSS/NSPR/SQLite dependency archives. The dependency index was checked against
+the signed Ubuntu Jammy-updates InRelease and its Packages SHA-256; the tool
+does not install packages or run maintainer scripts. The supplied extracted
+trees are trusted maintainer inputs, with the same caveat as the Windows tool.
+`package_linux.py` materializes contained links, checks every ELF is x86-64,
+and includes licensed fonts, source notices and dependency copyright files.
+Its schema-2 inventory pins file bytes and 0444/0555 permissions. Installation
+restores these modes and execution verifies them; writable, missing-execute or
+setuid variants are rejected. The Windows schema-1 catalog remains unchanged.
+
+```sh
+python3 -B tools/office-runtime/package_linux.py \
+  --upstream /private/LibreOffice_26.8.2_Linux_x86-64_deb.tar.gz \
+  --runtime /private/extracted/opt/libreoffice26.8 \
+  --dependencies /private/extracted-dependencies \
+  --dependency-archives /private/verified-debs \
+  --output /private/office-linux-x64.zip --lock /private/linux-x64.lock.json
+```
+
+The pinned private archive contains 13,983 files, 775,021,206 expanded bytes
+and 341,071,196 compressed bytes. Both runtime catalog URLs remain null.
+The dependency packages require glibc 2.34 or later; actual older-host and
+clean-machine compatibility is not established by WSL execution.
+
+Linux verification uses the exact-source Rust Office QA binary and an isolated
+installed runtime. It covers DOCX/PPTX/XLSX and a Korean two-page DOCX, original
+hashes, actual active-engine cancellation and parent SIGKILL with a surviving
+unrelated canary. Independent PDF text/page/pixel inspection is separate.
+
+```sh
+python3 -B -m unittest discover -s tools/office-runtime -p test_unix_owner.py -v
+python3 -B -m unittest discover -s tools/office-runtime -p test_package_linux.py -v
+PRISM_OFFICE_QA_EXE=/private/target/debug/prism-office-qa \
+PRISM_OFFICE_QA_DATA=/private/installed-qa \
+  python3 -B tools/office-runtime/test_linux.py
+```
+
+The collection service opt-in test additionally uses the actual Linux CPU PDF
+renderer to produce WebP, including Korean text, and rejects cached media after
+source changes. A lib-test has no pre-GUI dispatch, so test-only
+`PRISM_TEST_PDF_LAUNCHER` points to the exact-source platform QA host. Release
+code cannot read this override and always uses its own executable.
 
 Each load explicitly sets `MacroExecutionMode` to `NEVER_EXECUTE`, `UpdateDocMode`
 to `NO_UPDATE`, read-only/hidden/silent operation, no recent-document entry and
@@ -230,8 +297,9 @@ retained for the app session, rather than persisted across process restarts.
 Every ZIP must match the compiled catalog; an arbitrary LibreOffice ZIP is not
 accepted. Reimport an original to replace its existing text-preview manifest.
 There is no public package URL or automatic download. Package delivery,
-native Linux/macOS lifetimes, clean-machine dependency coverage, stale-work
-recovery and broader document/layout coverage remain pending.
+native macOS lifetimes, Linux desktop/AppImage integration, clean-machine
+dependency coverage, stale-work recovery and broader document/layout coverage
+remain pending.
 
 Opt-in collection verification uses only private data and the authenticated
 archive. The native test accepts the synthetic two-page DOCX generated by
@@ -251,3 +319,23 @@ The service also has an ignored opt-in real-engine regression test:
 These commands must be run against the current compiled code; the standalone
 worker qualification alone does not prove the desktop collection path or
 Word/Excel/PowerPoint pixel-equivalence.
+
+To isolate reader verification from package installation, the native test also
+accepts `PRISM_OFFICE_QA_PREPARED_RUNTIME` pointing to an already authenticated
+private runtime. This explicit mode copies it into a fresh isolated profile,
+checks its inventory identity and runs actual text-to-Office reimport, pages,
+WebP, navigation and source-change rejection. The production execution path
+still verifies every engine file. Its result says
+`installationTest: "notRunPreparedRuntime"`; it never counts as a ZIP install
+or cancellation test. Screenshots stay outside the repository. The default
+archive-install test remains mandatory and still fails if installation fails.
+
+Latest local Windows fresh-ZIP checks reached full extraction/verification but
+failed at final directory promotion with native access-denied code 5. The
+current implementation reproduced it on C: and D:, and the pre-Linux
+installation implementation reproduced it on D: too.
+Longer retries and a non-replacing rename experiment did not solve it and were
+not applied. A separate 20,000-small-file rename succeeded. The blocker remains
+unidentified; no other process, ACL or security setting was changed. The
+current Windows prepared-engine reader passed, but fresh package installation
+is not requalified by that result. Linux core/service qualification is separate.

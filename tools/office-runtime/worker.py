@@ -5,6 +5,7 @@ README.md for the deadline, byte-budget and cancellation requirements.
 """
 
 import ctypes
+import importlib.util
 import io
 import json
 import os
@@ -18,6 +19,7 @@ from pathlib import Path
 
 MAX_BYTES = 64 << 20
 OWNER = b"Prism Office preview worker v1\n"
+_unix_engine = None
 FILTERS = {
     "docx": ("Office Open XML Text", "writer_pdf_Export"),
     "xlsx": ("Calc MS Excel 2007 XML", "calc_pdf_Export"),
@@ -104,7 +106,11 @@ def configure_bootstrap(runtime, profile):
     user = (profile / "user").as_uri()
     registry = (runtime / "share" / "registry").as_uri()
     os.environ.update(
-        URE_BOOTSTRAP=(runtime / "program" / "fundamental.ini").as_uri(),
+        URE_BOOTSTRAP=(
+            runtime
+            / "program"
+            / ("fundamental.ini" if sys.platform == "win32" else "fundamentalrc")
+        ).as_uri(),
         UNO_PATH=str(runtime / "program"),
         UserInstallation=user,
         # Use the verified engine's defaults/resources and this request's own
@@ -125,7 +131,11 @@ def parent_lifeline(stream):
     try:
         stream.read(1)
     finally:
-        os._exit(72)
+        try:
+            if _unix_engine is not None:
+                _unix_engine.wait(timeout=5)
+        finally:
+            os._exit(72)
 
 
 def contain_windows_worker():
@@ -201,9 +211,8 @@ def contain_windows_worker():
 
 
 def run():
-    if sys.platform != "win32":
-        # Unix needs the application-owned group supervisor before integration;
-        # do not silently run without that lifetime boundary.
+    global _unix_engine
+    if sys.platform not in {"win32", "linux"}:
         raise WorkerError("unsupported")
     if len(sys.argv) != 3:
         raise WorkerError("input")
@@ -214,9 +223,13 @@ def run():
     size = len(source)
     if source.startswith(bytes.fromhex("d0cf11e0a1b11ae1")):
         raise WorkerError("encrypted")
-    _job = contain_windows_worker()
+    _job = contain_windows_worker() if sys.platform == "win32" else None
     threading.Thread(target=parent_lifeline, args=(stream,), daemon=True).start()
-    _dll_directory = os.add_dll_directory(str(runtime / "program"))
+    _dll_directory = (
+        os.add_dll_directory(str(runtime / "program"))
+        if sys.platform == "win32"
+        else None
+    )
     sys.dont_write_bytecode = True
     user_profile = configure_bootstrap(runtime, profile)
     sys.path.insert(0, str(runtime / "program"))
@@ -322,29 +335,52 @@ def run():
         PYTHONSAFEPATH="1",
         PYTHONPYCACHEPREFIX=str(profile / "python-cache"),
     )
+    if sys.platform == "linux":
+        home = runtime / "program/python-core-3.13.17"
+        environment.update(
+            PYTHONHOME=str(home),
+            PYTHONPATH=os.pathsep.join(
+                map(str, [home / "lib", home / "lib/lib-dynload"])
+            ),
+        )
+        for key, name in [
+            ("HOME", "home"),
+            ("XDG_CONFIG_HOME", "config"),
+            ("XDG_DATA_HOME", "data"),
+            ("XDG_CACHE_HOME", "cache"),
+        ]:
+            directory = profile / name
+            directory.mkdir(exist_ok=True)
+            environment[key] = str(directory)
     pipe = "prism-office-" + uuid.uuid4().hex
     started = time.monotonic()
-    engine = subprocess.Popen(
-        [
-            str(runtime / "program" / "soffice.com"),
-            "--headless",
-            "--nologo",
-            "--nodefault",
-            "--nofirststartwizard",
-            "--norestore",
-            # Bootstrap crashes otherwise create a memory dump in program/,
-            # before the normal private profile crash directory is available.
-            # Don't persist document-memory dumps or mutate the verified engine.
-            "-env:CrashDumpEnable=false",
-            "-env:UserInstallation=" + user_profile,
-            "--accept=pipe,name=" + pipe + ";urp;StarOffice.ComponentContext",
-        ],
-        env=environment,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=0x08000000 if os.name == "nt" else 0,
+    engine = (
+        subprocess.Popen(
+            [
+                str(runtime / "program" / "soffice.com"),
+                "--headless",
+                "--nologo",
+                "--nodefault",
+                "--nofirststartwizard",
+                "--norestore",
+                # Bootstrap crashes otherwise create a memory dump in program/,
+                # before the normal private profile crash directory is available.
+                # Don't persist document-memory dumps or mutate the verified engine.
+                "-env:CrashDumpEnable=false",
+                "-env:UserInstallation=" + user_profile,
+                "--accept=pipe,name=" + pipe + ";urp;StarOffice.ComponentContext",
+            ],
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=0x08000000 if os.name == "nt" else 0,
+        )
+        if sys.platform == "win32"
+        else start_unix_engine(runtime, profile, pipe, environment)
     )
+    if sys.platform == "linux":
+        _unix_engine = engine
     desktop, document = None, None
     try:
         local = uno.getComponentContext()
@@ -418,6 +454,14 @@ def run():
         except subprocess.TimeoutExpired:
             engine.kill()
             engine.wait()
+
+
+def start_unix_engine(runtime, profile, pipe, environment):
+    path = Path(__file__).with_name("unix_owner.py")
+    spec = importlib.util.spec_from_file_location("prism_office_unix_owner", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.UnixEngine(runtime, profile, pipe, environment)
 
 
 if __name__ == "__main__":

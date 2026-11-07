@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -96,7 +97,15 @@ class WorkerProtocol(unittest.TestCase):
                 self.assertEqual(os.environ["UNO_PATH"], str(runtime / "program"))
                 self.assertEqual(
                     os.environ["URE_BOOTSTRAP"],
-                    (runtime / "program/fundamental.ini").as_uri(),
+                    (
+                        runtime
+                        / "program"
+                        / (
+                            "fundamental.ini"
+                            if sys.platform == "win32"
+                            else "fundamentalrc"
+                        )
+                    ).as_uri(),
                 )
                 layers = os.environ["CONFIGURATION_LAYERS"]
                 self.assertNotIn("winreg:", layers)

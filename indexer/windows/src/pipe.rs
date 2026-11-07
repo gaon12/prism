@@ -372,6 +372,10 @@ impl Server {
 }
 
 #[cfg(test)]
+#[path = "pipe_frame_bench.rs"]
+mod frame_bench;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::scm;

@@ -197,8 +197,8 @@ impl Connection {
         let mut receiver = Receiver::new(request, expected_serial, expected_device);
         loop {
             self.set_frame_timeout(Duration::from_secs(20));
-            let response = Response::read(self, drive)?;
-            match receiver.accept(response) {
+            let response = Response::read_validated(self, drive)?;
+            match receiver.accept_validated(response) {
                 Ok(Some(Event::Finished { revision })) => {
                     self.set_frame_timeout(Duration::from_secs(2));
                     Acknowledgement::Complete { revision }.write(self)?;

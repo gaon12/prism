@@ -88,6 +88,18 @@ pub enum Response {
     Failure(FailureCode),
 }
 
+/// A decoded frame whose paths were checked against one drive by this codec.
+/// Private fields prevent callers from marking constructed or changed paths as
+/// validated. Stream ordering, volume identity and total budgets remain the
+/// receiver's responsibility.
+#[derive(Debug)]
+pub struct ValidatedResponse {
+    drive: DriveLetter,
+    response: Response,
+    path_count: u64,
+    path_bytes: u64,
+}
+
 /// The server disconnects only after the client confirms consuming the final
 /// frame. This avoids dropping unread named-pipe data or using an unbounded
 /// FlushFileBuffers call when a client stops reading.
@@ -273,6 +285,34 @@ impl Request {
 }
 
 impl Response {
+    /// Decode with all ordinary frame/path checks, retaining that validation
+    /// for a stream receiver without scanning the same paths a second time.
+    pub fn read_validated(
+        reader: &mut impl Read,
+        drive: DriveLetter,
+    ) -> io::Result<ValidatedResponse> {
+        let response = Self::read(reader, drive)?;
+        let (path_count, path_bytes) = match &response {
+            Self::Records(records) => (
+                records.len() as u64,
+                records.iter().map(|row| row.path.len() as u64).sum(),
+            ),
+            Self::Removed(paths) => (
+                paths.len() as u64,
+                paths.iter().map(|path| path.len() as u64).sum(),
+            ),
+            _ => (0, 0),
+        };
+        // These sums cannot overflow: a decoded frame is at most 2 MiB and
+        // contains at most MAX_BATCH_RECORDS paths.
+        Ok(ValidatedResponse {
+            drive,
+            response,
+            path_count,
+            path_bytes,
+        })
+    }
+
     pub fn write(&self, writer: &mut impl Write, drive: DriveLetter) -> io::Result<()> {
         let mut payload = vec![];
         match self {
@@ -413,6 +453,36 @@ mod tests {
         assert!(!drive().contains("C:\\문서\\..\\escape.txt"));
     }
 
+    #[test]
+    fn validated_decode_still_rejects_forged_paths_bad_utf8_and_oversized_frames() {
+        let mut valid = Vec::new();
+        Response::Records(vec![FileRecord {
+            path: "C:\\문서.txt".into(),
+            is_dir: false,
+            size: 42,
+            modified_ms: Some(-1),
+        }])
+        .write(&mut valid, drive())
+        .unwrap();
+        assert!(Response::read_validated(&mut Cursor::new(&valid), drive()).is_ok());
+        // Ten frame-header bytes, type, record count and the path length.
+        let mut wrong_drive = valid.clone();
+        wrong_drive[19] = b'D';
+        let mut bad_utf8 = valid.clone();
+        bad_utf8[22] = 0xff;
+        let mut oversized = valid.clone();
+        oversized[6..10].copy_from_slice(&((MAX_FRAME_BYTES + 1) as u32).to_le_bytes());
+        for bytes in [wrong_drive, bad_utf8, oversized] {
+            assert_eq!(
+                Response::read_validated(&mut Cursor::new(bytes), drive())
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        valid.pop();
+        assert!(Response::read_validated(&mut Cursor::new(valid), drive()).is_err());
+    }
     #[test]
     fn requests_only_identify_local_drive_letters_and_revisions() {
         for request in [

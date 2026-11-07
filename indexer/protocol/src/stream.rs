@@ -1,7 +1,7 @@
 //! Validate an entire reply, not just individual frames. A local drive letter
 //! can refer to a per-user mapping: paths are accepted only after the service's
 //! physical volume serial and kernel device match the caller's already-authorized root.
-use crate::{DriveLetter, FailureCode, FileRecord, Request, Response};
+use crate::{DriveLetter, FailureCode, FileRecord, Request, Response, ValidatedResponse};
 
 const MAX_RECORDS: u64 = 10_000_000;
 const MAX_PATH_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -57,7 +57,19 @@ impl Receiver {
             path_bytes: 0,
         }
     }
-    fn account(&mut self, paths: impl Iterator<Item = impl AsRef<str>>) -> Result<(), Error> {
+    fn account(
+        &mut self,
+        paths: impl Iterator<Item = impl AsRef<str>>,
+        validated: Option<(u64, u64)>,
+    ) -> Result<(), Error> {
+        if let Some((records, bytes)) = validated {
+            self.records = self.records.checked_add(records).ok_or(Error::Limit)?;
+            self.path_bytes = self.path_bytes.checked_add(bytes).ok_or(Error::Limit)?;
+            if self.records > MAX_RECORDS || self.path_bytes > MAX_PATH_BYTES {
+                return Err(Error::Limit);
+            }
+            return Ok(());
+        }
         for path in paths {
             let path = path.as_ref();
             if !self.drive.contains(path) {
@@ -75,6 +87,28 @@ impl Receiver {
         Ok(())
     }
     pub fn accept(&mut self, response: Response) -> Result<Option<Event>, Error> {
+        self.accept_response(response, None)
+    }
+    /// Accept only this codec's owned validation proof for the requested drive.
+    /// Constructed responses still use `accept`, including its path checks.
+    pub fn accept_validated(
+        &mut self,
+        response: ValidatedResponse,
+    ) -> Result<Option<Event>, Error> {
+        if response.drive != self.drive {
+            self.terminal = true;
+            return Err(Error::Order);
+        }
+        self.accept_response(
+            response.response,
+            Some((response.path_count, response.path_bytes)),
+        )
+    }
+    fn accept_response(
+        &mut self,
+        response: Response,
+        validated: Option<(u64, u64)>,
+    ) -> Result<Option<Event>, Error> {
         if self.terminal {
             return Err(Error::Order);
         }
@@ -96,7 +130,7 @@ impl Receiver {
                 if !self.announced {
                     Err(Error::Order)
                 } else {
-                    self.account(records.iter().map(|record| record.path.as_str()))?;
+                    self.account(records.iter().map(|record| record.path.as_str()), validated)?;
                     Ok(Some(Event::Records(records)))
                 }
             }
@@ -104,7 +138,7 @@ impl Receiver {
                 if !self.announced || !self.changes {
                     Err(Error::Order)
                 } else {
-                    self.account(paths.iter())?;
+                    self.account(paths.iter(), validated)?;
                     Ok(Some(Event::Removed(paths)))
                 }
             }
@@ -150,6 +184,130 @@ mod tests {
             is_dir: false,
             size: 42,
             modified_ms: Some(17),
+        }
+    }
+    fn decoded(response: &Response, drive: DriveLetter) -> ValidatedResponse {
+        let mut bytes = Vec::new();
+        response.write(&mut bytes, drive).unwrap();
+        Response::read_validated(&mut std::io::Cursor::new(bytes), drive).unwrap()
+    }
+    #[test]
+    fn codec_validated_and_constructed_streams_preserve_the_same_events_and_metadata() {
+        for request in [
+            request(),
+            Request::Changes {
+                drive: DriveLetter::new(b'C').unwrap(),
+                after: 1,
+            },
+        ] {
+            let mut ordinary = Receiver::new(request, 7, DEVICE);
+            let mut validated = Receiver::new(request, 7, DEVICE);
+            let mut events = vec![
+                Response::Progress { completed: 8 },
+                volume(7),
+                Response::Records(vec![
+                    record(),
+                    FileRecord {
+                        path: "C:\\문서\\가 😀.txt".into(),
+                        is_dir: true,
+                        size: u64::MAX,
+                        modified_ms: None,
+                    },
+                ]),
+            ];
+            if matches!(request, Request::Changes { .. }) {
+                events.push(Response::Removed(vec!["C:\\old.md".into()]));
+            }
+            events.push(Response::Finished { revision: 2 });
+            for response in events {
+                let checked = decoded(&response, ordinary.drive);
+                assert_eq!(
+                    ordinary.accept(response),
+                    validated.accept_validated(checked)
+                );
+                assert_eq!(ordinary.finished(), validated.finished());
+                assert_eq!(ordinary.records, validated.records);
+                assert_eq!(ordinary.path_bytes, validated.path_bytes);
+            }
+            assert!(validated.finished());
+        }
+    }
+
+    #[test]
+    fn codec_validation_cannot_replace_drive_volume_or_order_checks() {
+        let drive = DriveLetter::new(b'C').unwrap();
+        let mut receiver = Receiver::new(request(), 7, DEVICE);
+        assert_eq!(
+            receiver.accept_validated(decoded(&Response::Records(vec![record()]), drive)),
+            Err(Error::Order)
+        );
+        assert_eq!(
+            receiver.accept_validated(decoded(&volume(7), drive)),
+            Err(Error::Order)
+        );
+
+        let mut receiver = Receiver::new(request(), 7, DEVICE);
+        assert_eq!(
+            receiver.accept_validated(decoded(&volume(8), drive)),
+            Err(Error::VolumeMismatch)
+        );
+        assert!(!receiver.finished());
+
+        let mut receiver = Receiver::new(request(), 7, DEVICE);
+        receiver.accept(volume(7)).unwrap();
+        let other = DriveLetter::new(b'D').unwrap();
+        let wrong_drive = Response::Records(vec![FileRecord {
+            path: "D:\\same-volume-mapping.md".into(),
+            ..record()
+        }]);
+        assert_eq!(
+            receiver.accept_validated(decoded(&wrong_drive, other)),
+            Err(Error::Order)
+        );
+        assert!(!receiver.finished());
+
+        // The public constructed-response API must still validate every path.
+        let mut receiver = Receiver::new(request(), 7, DEVICE);
+        receiver.accept(volume(7)).unwrap();
+        assert_eq!(receiver.accept(wrong_drive), Err(Error::Order));
+    }
+
+    #[test]
+    fn validated_batches_keep_exact_global_budgets_and_terminal_failure() {
+        let drive = DriveLetter::new(b'C').unwrap();
+        let response = Response::Records(vec![record()]);
+        let bytes = record().path.len() as u64;
+        for (records, path_bytes, expected) in [
+            (MAX_RECORDS - 1, MAX_PATH_BYTES - bytes, true),
+            (MAX_RECORDS, 0, false),
+            (0, MAX_PATH_BYTES - bytes + 1, false),
+            (u64::MAX, 0, false),
+            (0, u64::MAX, false),
+        ] {
+            for fast in [false, true] {
+                let mut receiver = Receiver::new(request(), 7, DEVICE);
+                receiver.accept(volume(7)).unwrap();
+                receiver.records = records;
+                receiver.path_bytes = path_bytes;
+                let result = if fast {
+                    receiver.accept_validated(decoded(&response, drive))
+                } else {
+                    receiver.accept(response.clone())
+                };
+                if expected {
+                    assert!(matches!(result, Ok(Some(Event::Records(_)))));
+                    assert_eq!(receiver.records, MAX_RECORDS);
+                    assert_eq!(receiver.path_bytes, MAX_PATH_BYTES);
+                    assert!(receiver.accept(Response::Finished { revision: 1 }).is_ok());
+                } else {
+                    assert_eq!(result, Err(Error::Limit));
+                    assert_eq!(
+                        receiver.accept(Response::Finished { revision: 1 }),
+                        Err(Error::Order)
+                    );
+                    assert!(!receiver.finished());
+                }
+            }
         }
     }
     #[test]

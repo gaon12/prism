@@ -6,6 +6,7 @@ mod clipboard_history;
 mod collection_commands;
 mod collection_epub;
 mod collection_import;
+mod collection_office;
 mod collection_render;
 mod collection_service;
 mod collection_store;
@@ -51,6 +52,8 @@ mod ocr_commands;
 mod ocr_package;
 mod ocr_runtime;
 mod office_unlock;
+mod office_assets;
+mod office_preview;
 mod open_location;
 mod package_context;
 mod packaged_startup;
@@ -349,6 +352,7 @@ pub fn run() {
                     asset_dir.join("documents"),
                     asset_dir.join("collections"),
                     asset_dir.join("ocr"),
+                    asset_dir.join("office"),
                     asset_dir.join("updates"),
                     asset_dir.join("EBWebView"),
                     asset_dir.join("WebView2"),
@@ -578,6 +582,9 @@ pub fn run() {
             collection_commands::collection_pages,
             collection_commands::collection_page_address,
             collection_commands::collection_media,
+            collection_commands::collection_office_status,
+            collection_commands::collection_office_install,
+            collection_commands::collection_office_cancel,
             collection_commands::collection_navigation,
             collection_commands::collection_cache_epub,
             collection_commands::collection_cache_text,

@@ -42,6 +42,33 @@ async fn blocking<T: Send + 'static>(
         .map_err(|_| error(ErrorCode::Storage))?
 }
 #[tauri::command]
+pub async fn collection_office_status(
+    state: State<'_, AppState>,
+) -> Result<crate::collection_office::Status> {
+    let service = service(&state)?;
+    blocking(move || service.office_status()).await
+}
+#[tauri::command]
+pub async fn collection_office_install(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<()> {
+    use tauri::Emitter;
+    let service = service(&state)?;
+    blocking(move || {
+        service.install_office(&PathBuf::from(path), &|progress| {
+            let _ = app.emit("prism:office-runtime", progress);
+        })
+    })
+    .await
+}
+#[tauri::command]
+pub async fn collection_office_cancel(state: State<'_, AppState>) -> Result<()> {
+    service(&state)?.cancel_office_install();
+    Ok(())
+}
+#[tauri::command]
 pub async fn collection_list(
     state: State<'_, AppState>,
     offset: u64,

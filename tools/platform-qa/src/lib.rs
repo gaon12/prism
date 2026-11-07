@@ -3,6 +3,8 @@
 pub mod collection_epub;
 #[path = "../../../src-tauri/src/collection_import.rs"]
 pub mod collection_import;
+#[path = "../../../src-tauri/src/collection_office.rs"]
+pub mod collection_office;
 #[path = "../../../src-tauri/src/collection_render.rs"]
 pub mod collection_render;
 #[path = "../../../src-tauri/src/collection_service.rs"]
@@ -27,6 +29,10 @@ pub mod ocr_assets;
 pub mod ocr_package;
 #[path = "../../../src-tauri/src/ocr_runtime.rs"]
 pub mod ocr_runtime;
+#[path = "../../../src-tauri/src/office_assets.rs"]
+pub mod office_assets;
+#[path = "../../../src-tauri/src/office_preview.rs"]
+pub mod office_preview;
 #[path = "../../../src-tauri/src/office_unlock.rs"]
 pub mod office_unlock;
 #[cfg(target_os = "linux")]

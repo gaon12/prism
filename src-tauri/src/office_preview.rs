@@ -49,6 +49,18 @@ impl Runtime {
             assets::digest(assets::WORKER)
         )
     }
+    /// Presence only, not a verification result. Every execution still checks
+    /// the full sealed inventory, and a damaged installed tree is an error.
+    pub fn installed(&self) -> Result<bool> {
+        if !cfg!(all(windows, target_arch = "x86_64")) {
+            return Ok(false);
+        }
+        self.0
+            .parent
+            .join(self.0.catalog.directory())
+            .try_exists()
+            .map_err(|_| error(Code::Integrity))
+    }
     pub fn install_archive(
         &self,
         path: &Path,

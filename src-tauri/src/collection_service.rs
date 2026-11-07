@@ -45,6 +45,117 @@ pub struct ImportProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    #[test]
+    #[ignore = "opt-in real verified Office archive installation and native page rendering"]
+    fn real_office_pages_are_reference_only_and_cached_pixels_recheck_the_source() {
+        let archive = PathBuf::from(
+            std::env::var_os("PRISM_OFFICE_QA_ARCHIVE")
+                .expect("Supply the pinned private QA archive"),
+        );
+        let (dir, service, _, work, unit) = fixture();
+        service.install_office(&archive, &|_| {}).unwrap();
+        assert!(service.office_status().unwrap().installed);
+        let mut paths = Vec::new();
+        for (name, bytes) in [
+            (
+                "original.docx",
+                include_bytes!("../../tests/fixtures/encrypted-office/example.docx").as_slice(),
+            ),
+            (
+                "slides.pptx",
+                include_bytes!("../../tests/fixtures/encrypted-office/reference-slides.pptx")
+                    .as_slice(),
+            ),
+            (
+                "sheet.xlsx",
+                include_bytes!("../../tests/fixtures/encrypted-office/example.xlsx").as_slice(),
+            ),
+        ] {
+            let path = dir.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            paths.push(path);
+        }
+        // Only this input is synthetic; all layout, PDF and pixels are produced
+        // by the real installed engine and the native platform PDF renderer.
+        let two = dir.path().join("two-pages.docx");
+        let mut original =
+            zip::ZipArchive::new(std::io::Cursor::new(fs::read(&paths[0]).unwrap())).unwrap();
+        let mut output = zip::ZipWriter::new(fs::File::create(&two).unwrap());
+        for index in 0..original.len() {
+            let mut entry = original.by_index(index).unwrap();
+            let name = entry.name().unwrap().into_owned();
+            output
+                .start_file(&name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            if name == "word/document.xml" {
+                output.write_all(br#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Prism FIRST PAGE</w:t></w:r></w:p><w:p><w:r><w:br w:type="page"/></w:r></w:p><w:p><w:r><w:t>Prism SECOND PAGE</w:t></w:r></w:p></w:body></w:document>"#).unwrap();
+            } else {
+                std::io::copy(&mut entry, &mut output).unwrap();
+            }
+        }
+        output.finish().unwrap();
+        paths.push(two.clone());
+        let before: Vec<_> = paths
+            .iter()
+            .map(|path| import::hash(&fs::read(path).unwrap()))
+            .collect();
+        let unit = service
+            .import(&unit.id, unit.revision, paths.clone())
+            .unwrap();
+        assert_eq!(unit.page_count, 5);
+        let pages = service
+            .store
+            .pages(&unit.id, unit.revision, 0, 10)
+            .unwrap()
+            .items;
+        assert!(pages
+            .iter()
+            .all(|p| p.location.kind == PageKind::Office && p.location.renderer.is_some()));
+        let pair: Vec<_> = pages
+            .iter()
+            .filter(|p| p.source_hash == before[3])
+            .collect();
+        assert_eq!(pair.len(), 2);
+        assert_eq!((pair[0].location.number, pair[1].location.number), (1, 2));
+        assert_ne!(pair[0].id, pair[1].id);
+        let cover = service.cover(&work.id).unwrap();
+        assert_eq!(cover.page_id, pages[0].id);
+        let first = service.media(&pair[0].id, true).unwrap();
+        let second = service.media(&pair[1].id, true).unwrap();
+        assert_ne!(first.data_url, second.data_url);
+        for page in &pages {
+            let media = service.media(&page.id, true).unwrap();
+            assert!(media.text.is_none() && media.document.is_none());
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(
+                    media
+                        .data_url
+                        .unwrap()
+                        .strip_prefix("data:image/webp;base64,")
+                        .unwrap(),
+                )
+                .unwrap();
+            let image = image::load_from_memory(&bytes).unwrap().to_rgb8();
+            assert!(image.width() <= 480 && image.height() <= 480);
+            assert!(image.pixels().any(|p| p.0.iter().any(|v| *v < 200)));
+        }
+        for (path, hash) in paths.iter().zip(before) {
+            assert_eq!(import::hash(&fs::read(path).unwrap()), hash);
+        }
+        fs::write(&two, b"changed original").unwrap();
+        assert_eq!(
+            service.media(&pair[0].id, true).unwrap_err().code,
+            ErrorCode::SourceChanged
+        );
+        assert_eq!(
+            service.media(&pair[0].id, false).unwrap_err().code,
+            ErrorCode::SourceChanged
+        );
+        println!(
+            "Real Office collection: 4 originals, 5 pages, native WebP, source recheck passed"
+        );
+    }
     #[test]
     fn epub_navigation_authenticates_source_and_projects_current_mixed_page_order() {
         let (dir, service, _, _, unit) = fixture();
@@ -435,6 +546,7 @@ struct Inner {
     // Large decoders are bounded independently of import jobs. This lock also
     // serializes generated-cache writes/eviction across both app windows.
     render: Mutex<()>,
+    office: crate::collection_office::Office,
     cache: Option<PathBuf>,
     excluded: PathBuf,
     shutdown: AtomicBool,
@@ -553,6 +665,7 @@ impl CollectionService {
             inner: Arc::new(Inner {
                 jobs: Mutex::new(HashMap::new()),
                 render: Mutex::new(()),
+                office: crate::collection_office::Office::open(excluded.join("office"))?,
                 cache,
                 excluded,
                 shutdown: AtomicBool::new(false),
@@ -629,17 +742,29 @@ impl CollectionService {
             for source in sources {
                 let base = pages.len() as u64;
                 let mut last = std::time::Instant::now();
-                let next = import::manifest(
+                let office = self.inner.office.manifest(
                     &source,
                     &self.inner.excluded,
                     &job.cancel,
-                    &mut |processed| {
-                        if last.elapsed().as_millis() >= 150 {
-                            self.notify(unit_id, "reading", base + processed, None);
-                            last = std::time::Instant::now();
-                        }
+                    &|_| {
+                        self.notify(unit_id, "reading", base, None);
                     },
                 )?;
+                let next = if let Some(pages) = office {
+                    pages
+                } else {
+                    import::manifest(
+                        &source,
+                        &self.inner.excluded,
+                        &job.cancel,
+                        &mut |processed| {
+                            if last.elapsed().as_millis() >= 150 {
+                                self.notify(unit_id, "reading", base + processed, None);
+                                last = std::time::Instant::now();
+                            }
+                        },
+                    )?
+                };
                 if pages.len().saturating_add(next.len()) > 250_000 {
                     return Err(error(ErrorCode::Limit));
                 }
@@ -672,6 +797,7 @@ impl CollectionService {
     }
     pub fn cancel_all(&self) {
         self.inner.shutdown.store(true, Ordering::Release);
+        self.inner.office.shutdown();
         if let Ok(jobs) = self.inner.jobs.lock() {
             for job in jobs.values() {
                 job.cancel.store(true, Ordering::Release);
@@ -693,6 +819,20 @@ impl CollectionService {
                     .collect()
             })
             .unwrap_or_default()
+    }
+    pub fn office_status(&self) -> Result<crate::collection_office::Status> {
+        self.inner.office.status()
+    }
+    pub fn install_office(
+        &self,
+        path: &Path,
+        progress: &dyn Fn(crate::office_preview::Progress),
+    ) -> Result<()> {
+        import::check(&self.inner.shutdown)?;
+        self.inner.office.install(path, progress)
+    }
+    pub fn cancel_office_install(&self) {
+        self.inner.office.cancel_install();
     }
     pub fn relink(&self, id: &str, expected: u64, path: &Path) -> Result<Source> {
         let path = import::canonical(path, &self.inner.excluded)?;
@@ -987,16 +1127,43 @@ impl CollectionService {
         }
         // A cached image never bypasses validation of the current reference.
         let validated = import::image_bytes(&source, &page, &self.inner.excluded, cancel)?;
+        if page.location.kind == PageKind::Office {
+            self.inner.office.check_page(&page)?;
+        }
         let edge = if thumbnail { 480 } else { 1600 };
-        let bytes = match self.cache_read(&page, edge) {
+        let cached = self.cache_read(&page, edge);
+        let from_cache = cached.is_some();
+        let bytes = match cached {
             Some(bytes) => bytes,
             None => {
-                let bytes = collection_render::render(&page, &validated, edge, cancel)?;
+                let pdf = if page.location.kind == PageKind::Office {
+                    Some(self.inner.office.pdf(
+                        &validated,
+                        &crate::collection_office::extension(&source),
+                        cancel,
+                        &|_| {},
+                    )?)
+                } else {
+                    None
+                };
+                let bytes = collection_render::render(
+                    &page,
+                    pdf.as_deref()
+                        .map_or(validated.as_slice(), |data| data.as_slice()),
+                    edge,
+                    cancel,
+                )?;
+                if page.location.kind == PageKind::Office {
+                    import::image_bytes(&source, &page, &self.inner.excluded, cancel)?;
+                }
                 self.check_current(&page, &source)?;
                 self.cache_write(&page, edge, &bytes);
                 bytes
             }
         };
+        if page.location.kind == PageKind::Office && from_cache {
+            import::image_bytes(&source, &page, &self.inner.excluded, cancel)?;
+        }
         self.check_current(&page, &source)?;
         Ok(Media {
             page_id: page.id,

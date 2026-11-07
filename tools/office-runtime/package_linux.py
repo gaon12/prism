@@ -81,6 +81,11 @@ def mapping(runtime, dependencies, fonts):
     for name in ["LICENSE", "LICENSE.html", "NOTICE", "CREDITS.fodt"]:
         if name not in files:
             raise ValueError("Missing source notice")
+    for path in files.values():
+        with path.open("rb") as binary:
+            is_elf = binary.read(4) == b"\x7fELF"
+        if is_elf and elf_machine(path) != 62:
+            raise ValueError("Unexpected dependency/interpreter ELF architecture")
     return dict(sorted(files.items()))
 
 

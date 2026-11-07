@@ -101,6 +101,14 @@ class LinuxPackage(unittest.TestCase):
             with self.assertRaises(ValueError):
                 package.mapping(runtime, dependencies, fonts)
 
+    @unittest.skipUnless(os.name == "posix", "Native Unix mode fixture")
+    def test_wrong_dependency_architecture_cannot_enter_the_package(self):
+        with tempfile.TemporaryDirectory(prefix="prism-linux-package-") as name:
+            runtime, dependencies, fonts = self.fixture(Path(name))
+            self.elf(dependencies / "usr/lib/x86_64-linux-gnu/libnss3.so", 183)
+            with self.assertRaises(ValueError):
+                package.mapping(runtime, dependencies, fonts)
+
 
 if __name__ == "__main__":
     unittest.main()

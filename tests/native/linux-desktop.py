@@ -280,11 +280,23 @@ def element(selector):
     ]
 
 
+def wait_for_paint():
+    # React can replace a gallery/detail view before WebKit has painted the
+    # new hit-test geometry. Wait for real animation frames before native input.
+    painted = async_js("""const done=arguments[arguments.length-1];let finished=false;
+        const finish=value=>{if(!finished){finished=true;done(value)}};
+        setTimeout(()=>finish(false),2000);
+        requestAnimationFrame(()=>requestAnimationFrame(()=>finish(document.visibilityState==='visible')));""")
+    assert painted is True, "Native input target was not painted"
+
+
 def click(selector):
+    wait_for_paint()
     command("POST", "/element/" + element(selector) + "/click", {})
 
 
 def button(text):
+    wait_for_paint()
     found = js(
         "return [...document.querySelectorAll('button')].filter(n=>n.getClientRects().length&&(n.getAttribute('aria-label')===arguments[0]||(!n.hasAttribute('aria-label')&&n.textContent.trim()===arguments[0]))).map(n=>n)",
         text,
@@ -611,6 +623,131 @@ try:
         epub_cases.append(
             (epub_work, epub_pages, epub_source, epub_bytes, width, height)
         )
+    stage = "real PDF pages through the packaged helper, without OCR"
+    pdf_cases = []
+    records["pdf"] = []
+
+    def pdf_pixels(url):
+        return async_js(
+            """const [url,done]=arguments;const image=new Image();
+            image.onload=()=>{const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;
+            const context=canvas.getContext('2d');context.drawImage(image,0,0);
+            const rgba=context.getImageData(0,0,image.width,image.height).data;let ink=0,green=0;
+            for(let n=0;n<rgba.length;n+=4){if(Math.min(rgba[n],rgba[n+1],rgba[n+2])<180)ink++;
+                if(rgba[n]<30&&rgba[n+1]>200&&rgba[n+2]<30)green++}
+            done({width:image.width,height:image.height,ink,green,
+                top:[...context.getImageData(Math.floor(image.width/2),Math.floor(image.height/8),1,1).data],
+                bottom:[...context.getImageData(Math.floor(image.width/2),Math.floor(7*image.height/8),1,1).data]})};
+            image.onerror=()=>done({error:'decode'});image.src=url;""",
+            url,
+        )
+
+    for filename, title, count in [
+        ("crop-clockwise.pdf", "PDF 잘림과 회전", 1),
+        ("mixed.pdf", "PDF 원본 네 페이지", 4),
+    ]:
+        pdf_source = files / filename
+        pdf_original = (repo / "tests/fixtures/ocr" / filename).read_bytes()
+        pdf_source.write_bytes(pdf_original)
+        pdf_work = invoke(
+            "collection_work_create",
+            {
+                "collectionId": collection["id"],
+                "title": title,
+                "metadata": {
+                    "kind": "document",
+                    "direction": "leftToRight",
+                    "authors": [],
+                    "tags": [],
+                    "description": "",
+                    "externalId": None,
+                },
+            },
+        )
+        pdf_unit = invoke(
+            "collection_unit_create",
+            {"workId": pdf_work["id"], "title": "PDF 원문", "kind": "document"},
+        )
+        pdf_unit = invoke(
+            "collection_import",
+            {
+                "unitId": pdf_unit["id"],
+                "expected": pdf_unit["revision"],
+                "paths": [str(pdf_source)],
+            },
+        )
+        pdf_pages = invoke(
+            "collection_pages",
+            {
+                "unitId": pdf_unit["id"],
+                "expected": pdf_unit["revision"],
+                "offset": 0,
+                "limit": 10,
+            },
+        )["items"]
+        assert len(pdf_pages) == count and [
+            page["location"]["number"] for page in pdf_pages
+        ] == list(range(1, count + 1))
+        assert all(page["location"]["kind"] == "pdf" for page in pdf_pages)
+        stats = []
+        media_hashes = []
+        for page in pdf_pages:
+            media = invoke(
+                "collection_media", {"pageId": page["id"], "thumbnail": True}
+            )
+            assert (
+                media["pageId"] == page["id"]
+                and media["sourceHash"] == hashlib.sha256(pdf_original).hexdigest()
+            )
+            assert (
+                media["dataUrl"].startswith("data:image/webp;base64,")
+                and media["text"] is None
+                and not media.get("document")
+            )
+            actual = base64.b64decode(media["dataUrl"].split(",", 1)[1])
+            assert actual[:4] == b"RIFF" and actual[8:12] == b"WEBP"
+            stats.append(pdf_pixels(media["dataUrl"]))
+            media_hashes.append(hashlib.sha256(actual).hexdigest())
+        if filename == "crop-clockwise.pdf":
+            assert (stats[0]["width"], stats[0]["height"]) == (100, 200), stats
+            assert (
+                stats[0]["top"] == [255, 0, 0, 255]
+                and stats[0]["bottom"] == [0, 0, 255, 255]
+                and stats[0]["green"] == 0
+            ), stats
+        else:
+            assert (
+                stats[0]["ink"] > 10
+                and stats[1]["ink"] > 1000
+                and stats[2]["ink"] > 10
+                and stats[3]["ink"] == 0
+            ), stats
+            assert media_hashes[0] != media_hashes[2]
+        pdf_cover = invoke("collection_cover", {"workId": pdf_work["id"]})
+        assert (
+            pdf_cover["pageId"] == pdf_pages[0]["id"]
+            and pdf_cover["sourceHash"] == hashlib.sha256(pdf_original).hexdigest()
+        )
+        assert pdf_source.read_bytes() == pdf_original
+        pdf_cases.append(
+            {
+                "work": pdf_work,
+                "pages": pdf_pages,
+                "source": pdf_source,
+                "original": pdf_original,
+            }
+        )
+        records["pdf"].append(
+            {
+                "fixture": filename,
+                "sourceSha256": hashlib.sha256(pdf_original).hexdigest(),
+                "pageNumbers": [page["location"]["number"] for page in pdf_pages],
+                "pixels": stats,
+                "webpSha256": media_hashes,
+                "originalUnchanged": True,
+            }
+        )
+    assert invoke("content_status")["indexed"] == 0
     button("컬렉션")
     until(
         lambda: js(
@@ -681,6 +818,92 @@ try:
             }
         )
     screenshot("linux-collection.png")
+    stage = "actual PDF reader and physical page bookmark"
+    button("PDF 잘림과 회전")
+    until(
+        lambda: js(
+            "return document.querySelectorAll('.collection-page-card').length===1"
+        ),
+        "crop PDF page grid",
+    )
+    click(".collection-page-card > button")
+    until(
+        lambda: js(
+            "return document.querySelector('.collection-reader img')?.naturalWidth>0"
+        ),
+        "native PDF crop reader",
+    )
+    assert not js(
+        "return !!document.querySelector('.collection-reader iframe,.collection-reader .collection-text-label')"
+    )
+    crop_pixels = pdf_pixels(
+        js("return document.querySelector('.collection-reader img').src")
+    )
+    assert (crop_pixels["width"], crop_pixels["height"]) == (100, 200)
+    assert (
+        crop_pixels["top"] == [255, 0, 0, 255]
+        and crop_pixels["bottom"] == [0, 0, 255, 255]
+        and crop_pixels["green"] == 0
+    )
+    screenshot("linux-pdf-crop-reader.png")
+    button("닫기")
+    click(".collection-back")
+    button("PDF 원본 네 페이지")
+    until(
+        lambda: js(
+            "return document.querySelectorAll('.collection-page-card').length===4"
+        ),
+        "four original PDF pages",
+    )
+    click(".collection-page-card > button")
+    until(
+        lambda: js(
+            "return document.querySelector('.collection-reader img')?.naturalWidth>0"
+        ),
+        "mixed PDF first physical page",
+    )
+    first_pdf_src = js("return document.querySelector('.collection-reader img').src")
+    click(".collection-reader-nav button:last-child")
+    until(
+        lambda: js(
+            "const image=document.querySelector('.collection-reader img');return image?.complete&&image.naturalWidth>0&&image.src!==arguments[0]",
+            first_pdf_src,
+        ),
+        "mixed PDF second physical page",
+    )
+    assert js(
+        "return document.querySelector('.collection-reader-nav span').textContent.includes('2 / 4')"
+    )
+    scan_pixels = pdf_pixels(
+        js("return document.querySelector('.collection-reader img').src")
+    )
+    assert scan_pixels["ink"] > 1000, scan_pixels
+    screenshot("linux-pdf-scan-reader.png")
+    button("닫기")
+    until(
+        lambda: (
+            invoke("collection_reading", {"workId": pdf_cases[1]["work"]["id"]}).get(
+                "pageId"
+            )
+            == pdf_cases[1]["pages"][1]["id"]
+        ),
+        "physical PDF page bookmark",
+    )
+    records["pdf"][1]["physicalSecondPageBookmark"] = True
+    click(".collection-back")
+    target = pdf_cases[0]
+    target["source"].write_bytes(target["original"] + b"changed owned PDF")
+    try:
+        invoke(
+            "collection_media", {"pageId": target["pages"][0]["id"], "thumbnail": False}
+        )
+        raise AssertionError("Changed PDF accepted")
+    except RuntimeError as error:
+        assert json.loads(str(error))["code"] == "sourceChanged", str(error)
+    finally:
+        target["source"].write_bytes(target["original"])
+    records["pdf"][0]["changedOriginalRejected"] = True
+    assert all(case["source"].read_bytes() == case["original"] for case in pdf_cases)
     stage = "real literal text reader"
     button("한글 첫 페이지")
     until(

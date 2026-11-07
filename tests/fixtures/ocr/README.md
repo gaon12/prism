@@ -41,6 +41,9 @@ cargo test --manifest-path tools/platform-qa/Cargo.toml --locked macos_native_oc
 cargo test --manifest-path tools/platform-qa/Cargo.toml --locked macos_quartz_preserves_pdf_crop_rotation_and_preview_without_ocr -- --ignored --nocapture --test-threads=1
 ```
 
-These native Mac checks remain unexecuted. SDK binding checks and independent
-PDFium fixture rendering do not establish Vision/Quartz behavior. The default
-test suite does not require a machine-specific OCR installation.
+The release workflow selects these native Mac adapter checks explicitly; inspect
+their individual job steps rather than inferring execution from the default
+suite. A successful adapter check does not establish WKWebView desktop reader
+integration, and an SDK binding check or independent PDFium render does not
+establish Vision/Quartz behavior. The default test suite does not require a
+machine-specific OCR installation.

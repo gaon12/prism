@@ -148,6 +148,9 @@ pub struct GenerationPreferences {
     pub priority: ProviderPriority,
     pub fallback: bool,
     pub allow_external_questions: bool,
+    /// Explicitly connect to the validated loopback provider without consulting
+    /// the OS keychain. Existing profiles keep their stored-key behavior.
+    pub local_without_api_key: bool,
     pub max_context_chars: Option<usize>,
     pub top_k: Option<usize>,
     pub local: Option<GenerationConfig>,
@@ -161,6 +164,7 @@ impl Default for GenerationPreferences {
             priority: ProviderPriority::LocalFirst,
             fallback: false,
             allow_external_questions: false,
+            local_without_api_key: false,
             max_context_chars: None,
             top_k: None,
             local: None,
@@ -1803,10 +1807,17 @@ impl RagService {
                 }
             }
             let stamp = policy_stamp(&policy)?;
+            // Keyless local servers must also work on desktops without a keychain.
+            // This is an explicit choice, never an error-triggered credential downgrade.
+            // Local endpoint validation and the final policy check still apply.
+            let without_key = slot == ProviderSlot::Local && policy.prefs.local_without_api_key;
             // Blocking, user-bound secret lookup precedes the final policy check.
             let key_id = self.credential_id(slot, &config.endpoint)?;
             let secrets = self.inner.secrets.clone();
             let key = blocking(move || {
+                if without_key {
+                    return Ok(None);
+                }
                 if !secrets.support().supported {
                     if remote {
                         return Err(RagError::new(RagErrorCode::Unsupported));
@@ -2801,13 +2812,15 @@ mod tests {
         }
     }
     fn fixture() -> Fixture {
+        fixture_with_keys(SecretStore::with_provider(Arc::new(MemoryKeys::default())))
+    }
+    fn fixture_with_keys(keys: SecretStore) -> Fixture {
         let directory = tempfile::tempdir().unwrap();
         let policy = Arc::new(RwLock::new(policy()));
         let owned = Arc::clone(&policy);
         let getter: PolicyGetter = Arc::new(move || Ok(owned.read().unwrap().clone()));
         let sources = Arc::new(FakeSources::new());
         let transport = Arc::new(FakeTransport::new());
-        let keys = SecretStore::with_provider(Arc::new(MemoryKeys::default()));
         let service = RagService::with_transport(
             directory.path(),
             getter,
@@ -2824,6 +2837,138 @@ mod tests {
             transport,
             keys,
         }
+    }
+    #[test]
+    fn explicit_keyless_local_generation_never_reads_an_unavailable_keychain() {
+        struct UnavailableKeys(Arc<AtomicUsize>);
+        impl SecretProvider for UnavailableKeys {
+            fn support(&self) -> SecretSupport {
+                SecretSupport {
+                    supported: true,
+                    provider: "unavailable-fixture".into(),
+                    user_bound: true,
+                }
+            }
+            fn get(&self, _: &str) -> Result<Option<SecretValue>, SecretError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Err(SecretError {
+                    code: crate::secret_store::SecretErrorCode::Storage,
+                    message: "Synthetic locked or missing keychain".into(),
+                })
+            }
+            fn set(&self, _: &str, _: &SecretValue) -> Result<(), SecretError> {
+                panic!("A generation request must not store a credential")
+            }
+            fn remove(&self, _: &str) -> Result<(), SecretError> {
+                panic!("A generation request must not remove a credential")
+            }
+        }
+        let reads = Arc::new(AtomicUsize::new(0));
+        let f = fixture_with_keys(SecretStore::with_provider(Arc::new(UnavailableKeys(
+            reads.clone(),
+        ))));
+        f.policy.write().unwrap().prefs.local_without_api_key = true;
+        let conversation = f.service.create_conversation(None, None).unwrap();
+        runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &conversation.id,
+                "keyless",
+                "Summarize evidence",
+            )))
+            .unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        assert!(!f.transport.calls.lock().unwrap()[0].key_present);
+        // Existing authenticated connections still fail closed. An unavailable
+        // keychain must never silently turn into a keyless retry.
+        f.policy.write().unwrap().prefs.local_without_api_key = false;
+        let error = runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &conversation.id,
+                "keychain_required",
+                "Another question",
+            )))
+            .unwrap_err();
+        assert_eq!(error.code, RagErrorCode::Storage);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert_eq!(f.transport.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn keyless_local_choice_preserves_saved_keys_and_never_authorizes_external_calls() {
+        let f = fixture();
+        let endpoint = "http://localhost:1234/v1";
+        f.service
+            .set_api_key(
+                ProviderSlot::Local,
+                endpoint,
+                &SecretValue::new("SYNTHETIC-PRESERVED-LOCAL-KEY".into()).unwrap(),
+            )
+            .unwrap();
+        let conversation = f.service.create_conversation(None, None).unwrap();
+        for (id, without_key) in [("without_key", true), ("with_key", false)] {
+            f.policy.write().unwrap().prefs.local_without_api_key = without_key;
+            runtime()
+                .block_on(f.service.ask(request(
+                    &f.service,
+                    &conversation.id,
+                    id,
+                    "Summarize evidence",
+                )))
+                .unwrap();
+        }
+        let calls = f.transport.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(!calls[0].key_present && calls[1].key_present);
+        drop(calls);
+        let key_id = f
+            .service
+            .credential_id(ProviderSlot::Local, endpoint)
+            .unwrap();
+        assert_eq!(
+            f.keys.get(&key_id).unwrap().unwrap().expose(),
+            "SYNTHETIC-PRESERVED-LOCAL-KEY"
+        );
+        {
+            let mut policy = f.policy.write().unwrap();
+            policy.prefs.local_without_api_key = true;
+            policy.prefs.mode = GenerationMode::External;
+            policy.prefs.allow_external_questions = true;
+        }
+        let error = runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &conversation.id,
+                "external_still_requires_key",
+                "Question",
+            )))
+            .unwrap_err();
+        assert_eq!(error.code, RagErrorCode::Auth);
+        assert_eq!(f.transport.calls.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn legacy_preferences_keep_key_lookup_and_keyless_local_still_requires_loopback() {
+        let legacy: GenerationPreferences = serde_json::from_str("{}").unwrap();
+        assert!(!legacy.local_without_api_key);
+        let explicit: GenerationPreferences =
+            serde_json::from_str(r#"{"localWithoutApiKey":true}"#).unwrap();
+        assert!(explicit.local_without_api_key);
+        let before = policy();
+        let mut after = before.clone();
+        after.prefs.local_without_api_key = true;
+        assert_ne!(
+            policy_stamp(&before).unwrap(),
+            policy_stamp(&after).unwrap()
+        );
+        let mut preferences = policy().prefs;
+        preferences.local_without_api_key = true;
+        preferences.local = Some(config("https://remote.example/v1"));
+        assert_eq!(
+            preferences.validate().unwrap_err().code,
+            RagErrorCode::Endpoint
+        );
     }
     fn request(service: &RagService, conversation: &str, id: &str, question: &str) -> RagRequest {
         let _ = service;

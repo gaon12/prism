@@ -372,7 +372,17 @@ fn recover_workspace(
 ) -> Result<bool> {
     let attempt = || -> Result<bool> {
         let marker = path.join("owner.txt");
-        crate::path_identity::no_links(&marker).map_err(|_| error(Code::Integrity))?;
+        // Legacy workers do not participate in this lock protocol. Identify
+        // v2 with a read-only handle before opening for write/locking, so even
+        // a very old live v1 request cannot have its marker read interrupted.
+        let mut owner = Vec::new();
+        assets::regular(&marker)?
+            .take(128)
+            .read_to_end(&mut owner)
+            .map_err(|_| error(Code::Integrity))?;
+        if owner != WORK_OWNER {
+            return Ok(false);
+        }
         let mut options = OpenOptions::new();
         options.read(true).write(true);
         #[cfg(windows)]

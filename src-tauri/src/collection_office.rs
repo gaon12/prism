@@ -215,12 +215,15 @@ impl Office {
         self.stopping.store(true, Ordering::Release);
         self.cancel_install();
     }
+    pub fn fingerprint(&self) -> String {
+        self.runtime.fingerprint()
+    }
     pub fn check_page(&self, page: &Page) -> Result<()> {
         page.location.validate()?;
         if page.location.kind != PageKind::Office
             || page.location.renderer.as_deref() != Some(self.runtime.fingerprint().as_str())
         {
-            return Err(error(ErrorCode::SourceChanged));
+            return Err(error(ErrorCode::RendererChanged));
         }
         Ok(())
     }

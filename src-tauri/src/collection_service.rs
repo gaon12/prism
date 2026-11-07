@@ -4,7 +4,7 @@ use crate::{collection_import as import, collection_render, collection_store::*}
 use base64::Engine;
 use serde::Serialize;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -14,6 +14,10 @@ use std::{
     },
     time::UNIX_EPOCH,
 };
+
+#[cfg(test)]
+#[path = "collection_upgrade_tests.rs"]
+mod upgrade_tests;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -559,6 +563,7 @@ struct Inner {
     // Large decoders are bounded independently of import jobs. This lock also
     // serializes generated-cache writes/eviction across both app windows.
     render: Mutex<()>,
+    prepare: Mutex<()>,
     office: crate::collection_office::Office,
     cache: Option<PathBuf>,
     excluded: PathBuf,
@@ -644,6 +649,41 @@ fn marked(directory: &Path) -> bool {
 fn cache_name(page: &Page, edge: u32) -> String {
     format!("{}-{}-{edge}.webp", page.id, page.source_hash)
 }
+
+/// Keep the user's interleaving and order for surviving physical pages. New
+/// pages follow that source's last old page; unrelated sources are untouched.
+fn refreshed_order(
+    old: Vec<Page>,
+    mut replacements: HashMap<String, BTreeMap<u32, Page>>,
+) -> Vec<Page> {
+    let last: HashMap<_, _> = old
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| {
+            p.location.kind == PageKind::Office && replacements.contains_key(&p.source_id)
+        })
+        .map(|(i, p)| (p.source_id.clone(), i))
+        .collect();
+    let mut result = Vec::new();
+    for (index, old) in old.into_iter().enumerate() {
+        if old.location.kind == PageKind::Office {
+            if let Some(pages) = replacements.get_mut(&old.source_id) {
+                if let Some(mut next) = pages.remove(&old.location.number) {
+                    next.title = old.title;
+                    result.push(next);
+                }
+                if last.get(&old.source_id) == Some(&index) {
+                    while let Some((_, next)) = pages.pop_first() {
+                        result.push(next);
+                    }
+                }
+                continue;
+            }
+        }
+        result.push(old);
+    }
+    result
+}
 fn owned_cache(name: &str) -> Option<(&str, &str)> {
     let stem = name.strip_suffix(".webp")?;
     let mut parts = stem.split('-');
@@ -678,6 +718,7 @@ impl CollectionService {
             inner: Arc::new(Inner {
                 jobs: Mutex::new(HashMap::new()),
                 render: Mutex::new(()),
+                prepare: Mutex::new(()),
                 office: crate::collection_office::Office::open(excluded.join("office"))?,
                 cache,
                 excluded,
@@ -798,6 +839,88 @@ impl CollectionService {
         match &result {
             Ok(unit) => self.notify(unit_id, "ready", unit.page_count, None),
             Err(issue) => self.notify(unit_id, "failed", 0, Some(issue.code.clone())),
+        }
+        result
+    }
+    /// Idempotent loading operation. Only outdated Office manifests require a
+    /// job; all replacement pages are staged before one revisioned transaction.
+    pub fn prepare_unit(&self, unit_id: &str) -> Result<Unit> {
+        let renderer = self.inner.office.fingerprint();
+        let unit = self.store.unit(unit_id)?;
+        if !self.store.outdated_office(unit_id, &renderer)? {
+            return Ok(unit);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let _lease = loop {
+            import::check(&self.inner.shutdown)?;
+            match self.inner.prepare.try_lock() {
+                Ok(lease) => break lease,
+                Err(std::sync::TryLockError::Poisoned(_)) => return Err(error(ErrorCode::Storage)),
+                Err(_) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(error(ErrorCode::Busy));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        };
+        let unit = self.store.unit(unit_id)?;
+        if !self.store.outdated_office(unit_id, &renderer)? {
+            return Ok(unit);
+        }
+        let job = self.begin(unit_id, unit.revision)?;
+        self.notify(unit_id, "reading", 0, None);
+        let result = (|| {
+            let old = self.store.manifest_pages(unit_id, unit.revision)?;
+            let mut replacements = HashMap::new();
+            let mut originals = Vec::new();
+            for source in self.store.sources(unit_id)? {
+                let Some(first) = old.iter().find(|p| {
+                    p.source_id == source.id
+                        && p.location.kind == PageKind::Office
+                        && p.location.renderer.as_deref() != Some(renderer.as_str())
+                }) else {
+                    continue;
+                };
+                if old.iter().any(|p| {
+                    p.source_id == source.id
+                        && p.location.kind == PageKind::Office
+                        && p.source_hash != first.source_hash
+                }) {
+                    return Err(error(ErrorCode::SourceChanged));
+                }
+                import::image_bytes(&source, first, &self.inner.excluded, &job.cancel)?;
+                let next = self
+                    .inner
+                    .office
+                    .manifest(&source, &self.inner.excluded, &job.cancel, &|_| {
+                        self.notify(unit_id, "reading", 0, None)
+                    })?
+                    .ok_or_else(|| error(ErrorCode::RendererUnavailable))?;
+                if next.iter().any(|p| p.source_hash != first.source_hash) {
+                    return Err(error(ErrorCode::SourceChanged));
+                }
+                originals.push((source.clone(), first.clone()));
+                replacements.insert(
+                    source.id,
+                    next.into_iter().map(|p| (p.location.number, p)).collect(),
+                );
+            }
+            for (source, page) in originals {
+                import::image_bytes(&source, &page, &self.inner.excluded, &job.cancel)?;
+                self.check_current(&page, &source)?;
+            }
+            let next = refreshed_order(old, replacements);
+            import::check(&job.cancel)?;
+            self.store
+                .replace_pages(unit_id, unit.revision, next, &job.cancel)
+        })();
+        drop(job);
+        match &result {
+            Ok(unit) => self.notify(unit_id, "ready", unit.page_count, None),
+            // A load-triggered failure must clear job UI without causing the
+            // view to reload and automatically retry the same failed work.
+            Err(issue) => self.notify(unit_id, "prepareFailed", 0, Some(issue.code.clone())),
         }
         result
     }
@@ -1262,6 +1385,11 @@ impl CollectionService {
         Ok(())
     }
     pub fn cover(&self, work: &str) -> Result<Media> {
+        let page = self
+            .store
+            .first_page(work)?
+            .ok_or_else(|| error(ErrorCode::NotFound))?;
+        self.prepare_unit(&page.unit_id)?;
         let page = self
             .store
             .first_page(work)?

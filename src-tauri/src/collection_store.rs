@@ -24,6 +24,7 @@ pub enum ErrorCode {
     Encrypted,
     RendererUnavailable,
     RendererIntegrity,
+    RendererChanged,
     RendererFailed,
     TimedOut,
 }
@@ -412,6 +413,7 @@ pub fn error(code: ErrorCode) -> LibraryError {
         ErrorCode::RendererIntegrity => "The Office page engine files could not be verified.",
         ErrorCode::RendererFailed => "The Office page operation could not be completed.",
         ErrorCode::TimedOut => "The Office page operation timed out.",
+        ErrorCode::RendererChanged => "The Office preview needs to be updated.",
     };
     LibraryError {
         code,
@@ -1074,6 +1076,10 @@ impl CollectionStore {
         changed(&tx, "units", unit_id, expected)?;
         tx.execute_batch("CREATE TEMP TABLE incoming_pages(id TEXT PRIMARY KEY);")
             .map_err(storage)?;
+        let bookmarked = tx.query_row(
+            "SELECT p.id,p.unit_id,p.source_id,p.position,p.location,p.title,p.source_hash FROM reading r JOIN pages p ON p.id=r.page_id WHERE p.unit_id=?1",
+            [unit_id], read_page).optional().map_err(storage)?;
+        let mut replacement_bookmark: Option<(u32, String)> = None;
         for (position, page) in pages.into_iter().enumerate() {
             if cancel.load(Ordering::Acquire) {
                 return Err(error(ErrorCode::Cancelled));
@@ -1092,6 +1098,25 @@ impl CollectionStore {
                 return Err(error(ErrorCode::Input));
             }
             page.location.validate()?;
+            // Renderer revisions change page IDs even when original bytes are
+            // unchanged. Retain the physical page number, or the nearest page
+            // if a new layout has fewer pages. Never transfer reading state to
+            // a changed original, another source, or another document kind.
+            if let Some(old) = bookmarked.as_ref().filter(|old| {
+                old.location.kind == PageKind::Office
+                    && page.location.kind == PageKind::Office
+                    && old.source_id == page.source_id
+                    && old.source_hash == page.source_hash
+                    && old.location.renderer != page.location.renderer
+            }) {
+                let distance = old.location.number.abs_diff(page.location.number);
+                if replacement_bookmark
+                    .as_ref()
+                    .is_none_or(|(best, _)| distance < *best)
+                {
+                    replacement_bookmark = Some((distance, page.id.clone()));
+                }
+            }
             let belongs: bool = tx
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM sources WHERE id=?1 AND unit_id=?2)",
@@ -1119,6 +1144,9 @@ impl CollectionStore {
         if cancel.load(Ordering::Acquire) {
             return Err(error(ErrorCode::Cancelled));
         }
+        if let (Some(old), Some((_, next))) = (bookmarked, replacement_bookmark) {
+            tx.execute("UPDATE reading SET page_id=?1 WHERE page_id=?2 AND work_id=(SELECT work_id FROM units WHERE id=?3) AND NOT EXISTS(SELECT 1 FROM incoming_pages WHERE id=?2)", params![next, old.id, unit_id]).map_err(storage)?;
+        }
         tx.execute(
             "DELETE FROM pages WHERE unit_id=?1 AND id NOT IN (SELECT id FROM incoming_pages)",
             [unit_id],
@@ -1131,6 +1159,22 @@ impl CollectionStore {
         .map_err(storage)?;
         tx.commit().map_err(storage)?;
         self.unit(unit_id)
+    }
+    pub(crate) fn outdated_office(&self, unit: &str, renderer: &str) -> Result<bool> {
+        identifier(unit)?;
+        self.connect()?.query_row("SELECT EXISTS(SELECT 1 FROM pages WHERE unit_id=?1 AND json_extract(location,'$.kind')='office' AND COALESCE(json_extract(location,'$.renderer'),'')<>?2)", params![unit,renderer], |row| row.get(0)).map_err(storage)
+    }
+    pub(crate) fn manifest_pages(&self, unit: &str, expected: u64) -> Result<Vec<Page>> {
+        let mut db = self.connect()?;
+        let tx = db.transaction().map_err(storage)?;
+        changed(&tx, "units", unit, expected)?;
+        let pages = tx.prepare("SELECT id,unit_id,source_id,position,location,title,source_hash FROM pages WHERE unit_id=?1 ORDER BY position,id LIMIT 250001")
+            .map_err(storage)?.query_map([unit],read_page).map_err(storage)?
+            .collect::<rusqlite::Result<Vec<_>>>().map_err(storage)?;
+        if pages.len() > 250_000 {
+            return Err(error(ErrorCode::Limit));
+        }
+        Ok(pages)
     }
     pub fn pages(
         &self,

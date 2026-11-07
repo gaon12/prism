@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "platform": "linux-x86_64",
+  "product": "LibreOffice",
+  "version": "26.8.2",
+  "buildId": "9dea406ab7695df6325b11b0e19fdca8db4b7276",
+  "source": {
+    "url": "https://download.documentfoundation.org/libreoffice/stable/26.8.2/deb/x86_64/LibreOffice_26.8.2_Linux_x86-64_deb.tar.gz",
+    "metadataUrl": "https://download.documentfoundation.org/libreoffice/stable/26.8.2/deb/x86_64/LibreOffice_26.8.2_Linux_x86-64_deb.tar.gz.mirrorlist",
+    "bytes": 221006208,
+    "sha256": "8290c8f46cb33d6df8f681cb796e0697461ea070f86ec55b63c94d7eb9d9a476"
+  },
+  "interpreter": "program/python.bin",
+  "pythonHome": "program/python-core-3.13.17",
+  "engine": "program/soffice.bin",
+  "dependencies": [
+    {
+      "package": "libnspr4",
+      "version": "2:4.35-0ubuntu0.22.04.1",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/n/nspr/libnspr4_4.35-0ubuntu0.22.04.1_amd64.deb",
+      "bytes": 119208,
+      "sha256": "b3c96e4a61675c87f8d9655109346748847d859abc95f20493159d06b5aa30ef"
+    },
+    {
+      "package": "libnss3",
+      "version": "2:3.98-0ubuntu0.22.04.5",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/n/nss/libnss3_3.98-0ubuntu0.22.04.5_amd64.deb",
+      "bytes": 1345528,
+      "sha256": "75f3879ab9969a930b5bf4b9229345d57e2ebe310ad8ce58c9d91393d823b236"
+    },
+    {
+      "package": "libsqlite3-0",
+      "version": "3.37.2-2ubuntu0.8",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/s/sqlite3/libsqlite3-0_3.37.2-2ubuntu0.8_amd64.deb",
+      "bytes": 641792,
+      "sha256": "6e22b1e8d375fed6a1d52cad5887e762b6cdeaba137595e726c95486968dfab5"
+    }
+  ],
+  "dependencyMetadata": {
+    "suite": "jammy-updates",
+    "indexUrl": "https://archive.ubuntu.com/ubuntu/dists/jammy-updates/InRelease",
+    "packagesSha256": "5a4135dfc9815b708af67f6f8bb9f2cb49087f1076d0d6dae101f443b54f460f",
+    "signingKey": "F6ECB3762474EDA9D21B7022871920D1991BC93C"
+  },
+  "status": "development-qa-only",
+  "notes": "Upstream inputs only. No system install; source tar and dependency debs are extracted into owned private data. This is not an inventory, published package or qualification of desktop/AppImage/other architectures. Dependencies target glibc >=2.34; actual older-host compatibility remains unverified."
+}

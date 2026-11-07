@@ -47,7 +47,7 @@ The Rust modules `office_assets.rs` and `office_preview.rs` verify the compiled
 catalog and every engine file,
 reject additional modules, install through an owned staging directory, and
 exchange bounded document/PDF bytes with the worker. A short Windows rename
-retry handles transient sharing violations without replacing a destination or
+retry (at most two minutes) handles observed transient sharing violations without replacing a destination or
 changing permissions. A final promotion error retains the verified stage;
 other installation failures and cancellation clean only the owned stage.
 
@@ -56,7 +56,7 @@ directory. Cancellation/deadlines close the owned worker, wait for its pipe
 threads and clean that directory. The engine's separate embedded Python also
 receives no-user-site/no-bytecode settings and a private cache location. Merely
 passing `-I -S -B` to the worker does not configure that second interpreter.
-There is no crash-recovery sweep of stale request directories yet.
+Crash recovery for new, leased request directories is described below.
 
 Private request names retain 128 bits of randomness while leaving space for
 LibreOffice's deep extension-registry paths. The real app previously reached
@@ -77,7 +77,9 @@ standard-library-only `PYTHONPATH`. User startup/site/search paths are not
 inherited. Do not launch its
 Python wrapper: the actual interpreter must be the owned process. Supply the
 runtime directory and a fresh private work directory containing `owner.txt`
-with the exact bytes `Prism Office preview worker v1\n`. No document path or
+with the exact bytes `Prism Office preview worker v2\n`. The worker holds a
+shared lease on this marker. Explicit maintainer fixtures may still use v1,
+which is never eligible for automatic recovery. No document path or
 password belongs in the command line.
 
 Input is one UTF-8 JSON line (at most 4096 bytes) with exactly `version: 1`,
@@ -117,7 +119,54 @@ three attempts, only for the official
 [normal-restart code 81](https://raw.githubusercontent.com/LibreOffice/core/libreoffice-26.8.2.2/include/desktop/exithelper.h).
 Closing the worker pipe, worker death, or app death ends the owned group;
 unrelated processes are never found or killed by name. A hard app death can
-leave its marked private work directory: stale-directory recovery is pending.
+leave its marked private work directory until a later recovery pass.
+
+## Request crash recovery
+
+New request directories use a v2 ownership marker. Rust and the Python worker
+hold independent shared file locks; the Linux supervisor retains another until
+its engine descendants have been killed and reaped. Recovery needs an exclusive,
+nonblocking lock on that same marker. An old timestamp cannot authorize removal
+of a live or suspended request. Rust's standard file locks interoperate with
+the worker's native `flock`/`LockFileEx` locks; see the
+[Rust file lock contract](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock)
+and [Windows shared locks](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfileex).
+
+Before creating the next original-page rendering workspace, Prism considers
+inactive v2 requests whose marker is at least 24 hours old. A cached-page read
+does not start this pass. Candidates must have the exact `r-` plus 32 lowercase
+hexadecimal name, resolve directly inside this runtime's private `work` root,
+and contain the exact regular ownership marker. Legacy v1, unknown, future-dated,
+linked or inaccessible directories are retained. Engine installation stages and
+user originals are outside this sweep.
+
+The pass checks cancellation and the caller's deadline, examines at most 512
+root entries, and budgets 250 ms between filesystem operations. It validates
+each tree before deleting anything, rejecting symlinks/junctions, and bounds
+inspection to 4,096 entries and 64 levels. Oversized or blocked trees remain;
+this does not promise unconditional reclamation of every stale directory.
+Deletion keeps the marker until the last step, so an interrupted partial cleanup
+can resume. Normal request cleanup also obtains the exclusive lease and uses a
+five-second budget between operations. An individual OS filesystem call can
+outlast these budgets. No process is discovered or terminated by cleanup.
+
+`test_recovery.py` runs an actual managed conversion, kills only its held Rust
+parent, and observes owned engine termination while an unrelated canary stays
+alive. A subsequent real conversion must retain the recent leftover. The test
+then ages only that newly observed marker, and a further real conversion must
+remove it while preserving all previously retained work directories. This
+simulates expiry; it does not wait 24 real hours. Run it with explicit
+`PRISM_OFFICE_QA_EXE`, `PRISM_OFFICE_QA_DATA` and a new
+`PRISM_OFFICE_QA_OUTPUT` directory. The data directory must contain the exact
+maintainer QA marker used by `test_managed.py`/`test_linux.py`.
+
+The actual Windows x64 and Linux x64 CLI checks passed this sequence, including
+owned-process termination, recent retention, aged recovery and preservation of
+the two pre-existing Linux v1 directories. Independent PDF parsing confirmed
+the expected page and text in both follow-up conversions on each OS. The
+Linux collection service also rendered the four real Office inputs into five
+native WebP pages with source rechecks. These are local Windows/WSL results;
+they do not qualify macOS Office, Linux desktop/AppImage or a clean machine.
 
 ## Linux maintainer package
 
@@ -298,7 +347,7 @@ Every ZIP must match the compiled catalog; an arbitrary LibreOffice ZIP is not
 accepted. Reimport an original to replace its existing text-preview manifest.
 There is no public package URL or automatic download. Package delivery,
 native macOS lifetimes, Linux desktop/AppImage integration, clean-machine
-dependency coverage, stale-work recovery and broader document/layout coverage
+dependency coverage, recovery of legacy/oversized work directories and broader document/layout coverage
 remain pending.
 
 Opt-in collection verification uses only private data and the authenticated

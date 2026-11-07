@@ -1,0 +1,25 @@
+[package]
+name = "auto-launch"
+version = "0.6.0"
+edition = "2021"
+authors = ["zzzgydi"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/zzzgydi/auto-launch.git"
+keywords = ["launch", "auto-launch", "startup", "login", "login-items"]
+description = "Auto launch any application or executable at startup. Supports Windows, macOS, and Linux."
+exclude = ["/test-exe"]
+
+[dependencies]
+thiserror = "^2"
+os_info = { version = "3", default-features = false }
+
+[target."cfg(not(target_os = \"windows\"))".dependencies]
+dirs = "^6"
+
+[target.'cfg(windows)'.dependencies]
+windows-registry = "^0.6"
+windows-result = "^0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+smappservice-rs = "0.1"

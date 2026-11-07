@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 OWNER = b"Prism Office preview worker v1\n"
+LEASED_OWNER = b"Prism Office preview worker v2\n"
 READY = b"PRISMOFFICE1\n"
 
 
@@ -25,12 +26,28 @@ def private_paths(runtime, profile, pipe):
     for path in [runtime, profile]:
         if any(part.is_symlink() for part in [path, *path.parents]):
             raise ValueError("link")
-    if (profile / "owner.txt").read_bytes() != OWNER:
+    if (profile / "owner.txt").read_bytes() not in {OWNER, LEASED_OWNER}:
         raise ValueError("owner")
     token = pipe.removeprefix("prism-office-")
     if len(token) != 32 or any(value not in "0123456789abcdef" for value in token):
         raise ValueError("pipe")
     return runtime, profile
+
+
+def request_lease(profile):
+    # Retain this in the supervisor until all engine descendants have been
+    # killed and reaped, even if Rust and the worker both died earlier.
+    if (profile / "owner.txt").read_bytes() != LEASED_OWNER:
+        return None
+    import fcntl
+
+    lease = (profile / "owner.txt").open("rb")
+    try:
+        fcntl.flock(lease.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BaseException:
+        lease.close()
+        raise
+    return lease
 
 
 def command(runtime, profile, pipe):
@@ -206,6 +223,7 @@ def main():
     role, runtime, profile, pipe = sys.argv[1:]
     runtime, profile = private_paths(runtime, profile, pipe)
     if role == "--supervise":
+        _lease = request_lease(profile)
         supervise(runtime, profile, pipe)
     elif role == "--engine":
         bounded_engine(runtime, profile, pipe)

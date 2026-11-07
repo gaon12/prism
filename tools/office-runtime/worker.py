@@ -19,6 +19,7 @@ from pathlib import Path
 
 MAX_BYTES = 64 << 20
 OWNER = b"Prism Office preview worker v1\n"
+LEASED_OWNER = b"Prism Office preview worker v2\n"
 _unix_engine = None
 FILTERS = {
     "docx": ("Office Open XML Text", "writer_pdf_Export"),
@@ -93,10 +94,61 @@ def work_directory(path):
         or marker.is_symlink()
         or not marker.is_file()
         or marker.stat().st_size != len(OWNER)
-        or marker.read_bytes() != OWNER
+        or marker.read_bytes() not in {OWNER, LEASED_OWNER}
     ):
         raise WorkerError("input")
     return path.resolve(strict=True)
+
+
+def request_lease(profile):
+    # v1 remains accepted for explicit maintainer fixtures, but Rust recovery
+    # only considers v2. Never upgrade an old directory merely by reading it.
+    if (profile / "owner.txt").read_bytes() != LEASED_OWNER:
+        return None
+    lease = (profile / "owner.txt").open("rb")
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            from ctypes import wintypes as w
+
+            class Overlapped(ctypes.Structure):
+                _fields_ = [
+                    ("internal", ctypes.c_size_t),
+                    ("internal_high", ctypes.c_size_t),
+                    ("offset", w.DWORD),
+                    ("offset_high", w.DWORD),
+                    ("event", w.HANDLE),
+                ]
+
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.LockFileEx.argtypes = [
+                w.HANDLE,
+                w.DWORD,
+                w.DWORD,
+                w.DWORD,
+                w.DWORD,
+                ctypes.POINTER(Overlapped),
+            ]
+            kernel.LockFileEx.restype = w.BOOL
+            # A nonblocking SHARED lock on byte zero intersects Rust's whole-
+            # file exclusive recovery lock. File close/process exit releases it.
+            if not kernel.LockFileEx(
+                msvcrt.get_osfhandle(lease.fileno()),
+                1,
+                0,
+                1,
+                0,
+                ctypes.byref(Overlapped()),
+            ):
+                raise WorkerError("input")
+        else:
+            import fcntl
+
+            fcntl.flock(lease.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BaseException:
+        lease.close()
+        raise
+    return lease
 
 
 def configure_bootstrap(runtime, profile):
@@ -218,6 +270,7 @@ def run():
         raise WorkerError("input")
     runtime = Path(sys.argv[1]).resolve(strict=True)
     profile = work_directory(sys.argv[2])
+    _lease = request_lease(profile)
     stream = sys.stdin.buffer.raw
     extension, source = read_request(stream)
     size = len(source)

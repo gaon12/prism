@@ -3,7 +3,7 @@
 use crate::office_assets::{self as assets, error, Catalog, Code, Result};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -12,10 +12,11 @@ use std::{
         mpsc, Arc, Mutex,
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
-const WORK_OWNER: &[u8] = b"Prism Office preview worker v1\n";
+const WORK_OWNER: &[u8] = b"Prism Office preview worker v2\n";
+const RECOVERY_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Progress {
@@ -133,7 +134,7 @@ impl Runtime {
                 });
             }
         })?;
-        let work = Work::new(&self.0.parent.join("work"))?;
+        let work = Work::new(&self.0.parent.join("work"), &|| check(cancel, deadline))?;
         let runtime = crate::path_identity::normal(&root);
         let directory = crate::path_identity::normal(&work.path);
         let interpreter = runtime.join(assets::relative(&self.0.catalog.executable)?);
@@ -252,11 +253,13 @@ fn check(cancel: &AtomicBool, deadline: Instant) -> Result<()> {
 struct Work {
     parent: PathBuf,
     path: PathBuf,
+    lease: Option<File>,
 }
 impl Work {
-    fn new(parent: &Path) -> Result<Self> {
+    fn new(parent: &Path, check: assets::Check<'_>) -> Result<Self> {
         assets::mkdir(parent)?;
         let parent = crate::path_identity::canonical(parent).map_err(|_| error(Code::Integrity))?;
+        recover_workspaces(&parent, check)?;
         let mut nonce = [0; 16];
         getrandom::fill(&mut nonce).map_err(|_| error(Code::Failed))?;
         // LibreOffice appends deep extension-registry paths to its profile.
@@ -270,15 +273,31 @@ impl Work {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
                 .map_err(|_| error(Code::Failed))?;
         }
-        let work = Self { parent, path };
-        for (name, bytes) in [("owner.txt", WORK_OWNER), ("worker.py", assets::WORKER)] {
-            OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(work.path.join(name))
-                .and_then(|mut file| file.write_all(bytes))
-                .map_err(|_| error(Code::Failed))?;
-        }
+        let mut work = Self {
+            parent,
+            path,
+            lease: None,
+        };
+        let mut lease = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(work.path.join("owner.txt"))
+            .map_err(|_| error(Code::Failed))?;
+        lease
+            .write_all(WORK_OWNER)
+            .map_err(|_| error(Code::Failed))?;
+        // Independent shared leases in the parent, worker and Unix supervisor
+        // overlap across startup/teardown. Recovery must obtain an exclusive
+        // lease; a timestamp alone can never authorize deleting a live request.
+        lease.try_lock_shared().map_err(|_| error(Code::Failed))?;
+        work.lease = Some(lease);
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(work.path.join("worker.py"))
+            .and_then(|mut file| file.write_all(assets::WORKER))
+            .map_err(|_| error(Code::Failed))?;
         #[cfg(target_os = "linux")]
         OpenOptions::new()
             .write(true)
@@ -291,22 +310,148 @@ impl Work {
 }
 impl Drop for Work {
     fn drop(&mut self) {
-        // This freshly created directory contains app code/private engine
-        // temporaries, never a user-selected original. Confirm its resolved
-        // parent and exact ownership marker before any recursive cleanup.
-        let safe = || -> Result<bool> {
-            let path =
-                crate::path_identity::canonical(&self.path).map_err(|_| error(Code::Integrity))?;
-            let mut marker = Vec::new();
-            assets::regular(&path.join("owner.txt"))?
-                .take(128)
-                .read_to_end(&mut marker)
-                .map_err(|_| error(Code::Integrity))?;
-            Ok(path.parent() == Some(self.parent.as_path()) && marker == WORK_OWNER)
-        };
-        if safe().unwrap_or(false) {
-            let _ = fs::remove_dir_all(&self.path);
+        self.lease.take();
+        // A supervisor can still be reaping descendants after a forced worker
+        // stop. Normal cleanup obeys the same exclusive lease as crash recovery.
+        let same_parent = crate::path_identity::canonical(&self.path)
+            .is_ok_and(|path| path.parent() == Some(self.parent.as_path()));
+        if same_parent {
+            let _ = recover_workspace(
+                &self.path,
+                Instant::now() + Duration::from_secs(5),
+                Duration::ZERO,
+                &|| Ok(()),
+            );
         }
+    }
+}
+/// Best-effort crash recovery, only on the next original-page render. Old v1
+/// directories have no cross-process lease contract and are never swept. A
+/// day-long grace also leaves failed requests available for diagnosis and lets
+/// kill-on-close OS teardown finish before a later process reclaims them.
+fn recover_workspaces(parent: &Path, check: assets::Check<'_>) -> Result<usize> {
+    let until = Instant::now() + Duration::from_millis(250);
+    let mut removed = 0;
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(0),
+    };
+    for entry in entries.take(512) {
+        check()?;
+        if Instant::now() >= until {
+            break;
+        }
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name();
+        let Some(token) = name.to_str().and_then(|s| s.strip_prefix("r-")) else {
+            continue;
+        };
+        if token.len() != 32
+            || !token
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            continue;
+        }
+        let path = entry.path();
+        if crate::path_identity::canonical(&path).ok().as_deref() != Some(path.as_path()) {
+            continue;
+        }
+        if recover_workspace(&path, until, RECOVERY_AGE, check)? {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+fn recover_workspace(
+    path: &Path,
+    until: Instant,
+    min_age: Duration,
+    check: assets::Check<'_>,
+) -> Result<bool> {
+    let attempt = || -> Result<bool> {
+        let marker = path.join("owner.txt");
+        crate::path_identity::no_links(&marker).map_err(|_| error(Code::Integrity))?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(0x00200000);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        let mut lease = options.open(&marker).map_err(|_| error(Code::Integrity))?;
+        // This nonblocking lock is shared with Python's flock/LockFileEx. A
+        // suspended or long-running request remains protected even when old.
+        lease.try_lock().map_err(|_| error(Code::Busy))?;
+        let metadata = lease.metadata().map_err(|_| error(Code::Integrity))?;
+        if !metadata.is_file()
+            || metadata.len() != WORK_OWNER.len() as u64
+            || SystemTime::now()
+                .duration_since(metadata.modified().map_err(|_| error(Code::Integrity))?)
+                .map_or(true, |age| age < min_age)
+        {
+            return Ok(false);
+        }
+        let mut owner = Vec::new();
+        (&mut lease)
+            .take(128)
+            .read_to_end(&mut owner)
+            .map_err(|_| error(Code::Integrity))?;
+        if owner != WORK_OWNER {
+            return Ok(false);
+        }
+        // Validate a bounded tree before removing anything. Never traverse a
+        // symlink/junction; originals, engine stages and unknown directories
+        // cannot be candidates. Keep the ownership marker until the last step
+        // so an interrupted partial cleanup can be resumed on a later render.
+        let mut paths = Vec::new();
+        for entry in walkdir::WalkDir::new(path)
+            .follow_links(false)
+            .max_depth(64)
+        {
+            check()?;
+            if Instant::now() >= until || paths.len() >= 4096 {
+                return Ok(false);
+            }
+            let entry = entry.map_err(|_| error(Code::Integrity))?;
+            // WalkDir truncates traversal at max_depth. A directory there may
+            // hide more children, so reject it before deleting any sibling.
+            if entry.depth() == 64 && entry.file_type().is_dir() {
+                return Ok(false);
+            }
+            crate::path_identity::no_links(entry.path()).map_err(|_| error(Code::Integrity))?;
+            if entry.path() != path && entry.path() != marker {
+                paths.push((entry.path().to_owned(), entry.file_type().is_dir()));
+            }
+        }
+        for (child, directory) in paths.into_iter().rev() {
+            check()?;
+            if Instant::now() >= until {
+                return Ok(false);
+            }
+            crate::path_identity::no_links(&child).map_err(|_| error(Code::Integrity))?;
+            if directory {
+                fs::remove_dir(&child)
+            } else {
+                fs::remove_file(&child)
+            }
+            .map_err(|_| error(Code::Failed))?;
+        }
+        check()?;
+        fs::remove_file(marker).map_err(|_| error(Code::Failed))?;
+        drop(lease);
+        fs::remove_dir(path).map_err(|_| error(Code::Failed))?;
+        Ok(true)
+    };
+    match attempt() {
+        Err(error) if matches!(error.code, Code::Cancelled | Code::TimedOut) => Err(error),
+        result => Ok(result.unwrap_or(false)),
     }
 }
 struct OwnedChild(Child);
@@ -494,6 +639,206 @@ fn transact(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn recovery_fixture(parent: &Path, index: usize, owner: &[u8], old: bool) -> PathBuf {
+        let path = parent.join(format!("r-{index:032x}"));
+        fs::create_dir_all(path.join("user/nested")).unwrap();
+        fs::write(path.join("user/nested/private-temp"), b"owned fixture").unwrap();
+        let marker = path.join("owner.txt");
+        fs::write(&marker, owner).unwrap();
+        if old {
+            File::options()
+                .read(true)
+                .write(true)
+                .open(&marker)
+                .unwrap()
+                .set_modified(SystemTime::now() - RECOVERY_AGE - Duration::from_secs(60))
+                .unwrap();
+        }
+        path
+    }
+
+    #[test]
+    fn recovery_only_removes_old_inactive_v2_requests() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = crate::path_identity::canonical(root.path()).unwrap();
+        let old = recovery_fixture(&parent, 1, WORK_OWNER, true);
+        let recent = recovery_fixture(&parent, 2, WORK_OWNER, false);
+        let legacy = recovery_fixture(&parent, 3, b"Prism Office preview worker v1\n", true);
+        let foreign = recovery_fixture(&parent, 4, b"another application", true);
+        let wrong_name = recovery_fixture(&parent, 5, WORK_OWNER, true);
+        fs::rename(&wrong_name, parent.join("not-a-request")).unwrap();
+        let future = recovery_fixture(&parent, 6, WORK_OWNER, false);
+        File::options()
+            .write(true)
+            .open(future.join("owner.txt"))
+            .unwrap()
+            .set_modified(SystemTime::now() + RECOVERY_AGE)
+            .unwrap();
+        assert_eq!(recover_workspaces(&parent, &|| Ok(())).unwrap(), 1);
+        assert!(!old.exists());
+        for path in [
+            recent,
+            legacy,
+            foreign,
+            parent.join("not-a-request"),
+            future,
+        ] {
+            assert!(path.join("user/nested/private-temp").exists());
+        }
+        assert_eq!(recover_workspaces(&parent, &|| Ok(())).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_live_parent_lease_protects_even_an_old_request() {
+        let root = tempfile::tempdir().unwrap();
+        let work = Work::new(root.path(), &|| Ok(())).unwrap();
+        work.lease
+            .as_ref()
+            .unwrap()
+            .set_modified(SystemTime::now() - RECOVERY_AGE - Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(recover_workspaces(&work.parent, &|| Ok(())).unwrap(), 0);
+        assert!(work.path.join("worker.py").exists());
+        let path = work.path.clone();
+        drop(work);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn cancelled_recovery_keeps_its_marker_and_can_resume() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = crate::path_identity::canonical(root.path()).unwrap();
+        let path = recovery_fixture(&parent, 1, WORK_OWNER, true);
+        let calls = std::cell::Cell::new(0);
+        let result = recover_workspace(
+            &path,
+            Instant::now() + Duration::from_secs(5),
+            RECOVERY_AGE,
+            &|| {
+                calls.set(calls.get() + 1);
+                if calls.get() >= 7 {
+                    Err(error(Code::Cancelled))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert_eq!(result.unwrap_err().code, Code::Cancelled);
+        assert_eq!(fs::read(path.join("owner.txt")).unwrap(), WORK_OWNER);
+        assert!(!path.join("user/nested/private-temp").exists());
+        assert_eq!(recover_workspaces(&parent, &|| Ok(())).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_depth_limit_does_not_authorize_partial_deletion_of_an_uninspected_tree() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = crate::path_identity::canonical(root.path()).unwrap();
+        let path = recovery_fixture(&parent, 1, WORK_OWNER, true);
+        let mut deep = path.clone();
+        for _ in 0..65 {
+            deep.push("x");
+        }
+        fs::create_dir_all(&deep).unwrap();
+        assert!(!recover_workspace(
+            &path,
+            Instant::now() + Duration::from_secs(5),
+            RECOVERY_AGE,
+            &|| Ok(())
+        )
+        .unwrap());
+        assert!(path.join("user/nested/private-temp").exists());
+        assert!(deep.is_dir());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn recovery_does_not_follow_external_directory_links() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = crate::path_identity::canonical(root.path()).unwrap();
+        let outside = parent.join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("original"), b"must survive").unwrap();
+        let path = recovery_fixture(&parent, 1, WORK_OWNER, true);
+        let link = path.join("external");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        {
+            let staging = parent.join("fixture-junction");
+            crate::path_identity::junction(&staging, &outside);
+            fs::rename(staging, &link).unwrap();
+        }
+        assert_eq!(recover_workspaces(&parent, &|| Ok(())).unwrap(), 0);
+        assert_eq!(fs::read(outside.join("original")).unwrap(), b"must survive");
+        assert!(path.join("user/nested/private-temp").exists());
+        fs::remove_dir(&link)
+            .or_else(|_| fs::remove_file(&link))
+            .unwrap();
+    }
+
+    #[test]
+    fn normal_cleanup_also_preserves_another_live_lease() {
+        let root = tempfile::tempdir().unwrap();
+        let work = Work::new(root.path(), &|| Ok(())).unwrap();
+        let path = work.path.clone();
+        let other = File::open(path.join("owner.txt")).unwrap();
+        other.try_lock_shared().unwrap();
+        drop(work);
+        assert!(path.join("worker.py").exists());
+        drop(other);
+        assert!(recover_workspace(
+            &path,
+            Instant::now() + Duration::from_secs(5),
+            Duration::ZERO,
+            &|| Ok(())
+        )
+        .unwrap());
+    }
+
+    #[test]
+    #[ignore = "opt-in actual Python/Rust cross-process lock interoperability"]
+    fn python_worker_lease_blocks_recovery_until_process_exit() {
+        let python =
+            std::env::var_os("PRISM_OFFICE_QA_PYTHON").expect("explicit Python executable");
+        let root = tempfile::tempdir().unwrap();
+        let parent = crate::path_identity::canonical(root.path()).unwrap();
+        let path = recovery_fixture(&parent, 1, WORK_OWNER, true);
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let worker = [
+            "../worker.py",
+            "../office-runtime/worker.py",
+            "../tools/office-runtime/worker.py",
+        ]
+        .into_iter()
+        .map(|path| manifest.join(path))
+        .find(|path| path.is_file())
+        .unwrap();
+        let script = "import importlib.util,sys; from pathlib import Path; s=importlib.util.spec_from_file_location('w',sys.argv[1]); w=importlib.util.module_from_spec(s); s.loader.exec_module(w); lease=w.request_lease(Path(sys.argv[2])); print('ready',flush=True); sys.stdin.buffer.read(1)";
+        let parent_lease = File::open(path.join("owner.txt")).unwrap();
+        parent_lease.try_lock_shared().unwrap();
+        let mut child = OwnedChild(
+            Command::new(python)
+                .args(["-B", "-c", script])
+                .arg(worker)
+                .arg(&path)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let mut ready = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready.trim(), "ready");
+        drop(parent_lease);
+        assert_eq!(recover_workspaces(&parent, &|| Ok(())).unwrap(), 0);
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        assert_eq!(recover_workspaces(&parent, &|| Ok(())).unwrap(), 1);
+    }
+
     #[test]
     fn response_framing_never_accepts_partial_or_extra_pdf_bytes() {
         let pdf = b"%PDF-test";
@@ -518,7 +863,7 @@ mod tests {
     #[test]
     fn workspaces_have_app_code_only_and_clean_their_owned_child() {
         let root = tempfile::tempdir().unwrap();
-        let work = Work::new(&root.path().join("work")).unwrap();
+        let work = Work::new(&root.path().join("work"), &|| Ok(())).unwrap();
         let path = work.path.clone();
         assert_eq!(fs::read(path.join("worker.py")).unwrap(), assets::WORKER);
         drop(work);
@@ -532,7 +877,7 @@ mod tests {
         while crate::path_identity::normal(&parent).as_os_str().len() < 81 {
             parent.push("data");
         }
-        let work = Work::new(&parent).unwrap();
+        let work = Work::new(&parent, &|| Ok(())).unwrap();
         let registry = crate::path_identity::normal(&work.path).join("user/user/extensions/bundled/registry/com.sun.star.comp.deployment.component.PackageRegistryBackend/unorc");
         use std::os::windows::ffi::OsStrExt;
         assert!(

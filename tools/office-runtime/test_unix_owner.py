@@ -39,7 +39,7 @@ class UnixOwner(unittest.TestCase):
         self.profile = self.root / "work"
         (self.runtime / "program").mkdir(parents=True)
         self.profile.mkdir()
-        (self.profile / "owner.txt").write_bytes(owner.OWNER)
+        (self.profile / "owner.txt").write_bytes(owner.LEASED_OWNER)
         self.pipe = "prism-office-" + uuid.uuid4().hex
         self.canary = subprocess.Popen(
             [sys.executable, "-B", "-c", "import time; time.sleep(120)"]
@@ -94,11 +94,20 @@ pid=__import__("os").getpid()
         )
         try:
             pids = self.pids()
+            import fcntl
+
+            with (
+                (self.profile / "owner.txt").open("rb") as lease,
+                self.assertRaises(BlockingIOError),
+            ):
+                fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         finally:
             self.assertEqual(engine.wait(timeout=5), 0)
         self.assertEqual(engine.wait(timeout=5), 0)
         self.assert_ended(pids)
         self.assertTrue(all(identity(pid) is None for pid, _ in pids))
+        with (self.profile / "owner.txt").open("rb") as lease:
+            fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         limits = json.loads((self.runtime / "limits.json").read_text())
         self.assertEqual(limits["sigchld"], 0)
         self.assertEqual(limits["core"], 0)

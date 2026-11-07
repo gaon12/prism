@@ -77,6 +77,23 @@ class WorkerProtocol(unittest.TestCase):
             with self.assertRaises(worker.WorkerError):
                 worker.work_directory(path)
 
+    def test_versioned_shared_leases_coexist_and_do_not_upgrade_legacy(self):
+        with tempfile.TemporaryDirectory(prefix="prism-office-leases-") as name:
+            path = Path(name)
+            marker = path / "owner.txt"
+            marker.write_bytes(worker.OWNER)
+            self.assertIsNone(worker.request_lease(path))
+            self.assertEqual(marker.read_bytes(), worker.OWNER)
+            marker.write_bytes(worker.LEASED_OWNER)
+            self.assertEqual(worker.work_directory(path), path.resolve())
+            first = worker.request_lease(path)
+            second = worker.request_lease(path)
+            try:
+                self.assertEqual(marker.read_bytes(), worker.LEASED_OWNER)
+            finally:
+                second.close()
+                first.close()
+
     def test_bootstrap_replaces_inherited_user_and_configuration_overrides(self):
         with tempfile.TemporaryDirectory(prefix="prism-office-bootstrap-") as name:
             root = Path(name).resolve()

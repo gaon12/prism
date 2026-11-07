@@ -13,6 +13,11 @@ it('permits only known available OS credential providers', () => {
   }
 });
 describe('generation preferences migration', () => {
+  it('requires an explicit keyless local choice and preserves legacy key lookup', () => {
+    for (const localWithoutApiKey of [undefined, false, 'true', 1])
+      expect(normalizeGeneration({ localWithoutApiKey }).localWithoutApiKey).toBe(false);
+    expect(normalizeGeneration({ localWithoutApiKey: true }).localWithoutApiKey).toBe(true);
+  });
   it('keeps old profiles local and blocks external fallback until explicitly allowed', () => {
     expect(normalizeGeneration(undefined)).toEqual(defaultGeneration);
     expect(

@@ -31,6 +31,7 @@ export interface GenerationPreferences {
   priority: 'localFirst' | 'externalFirst';
   fallback: boolean;
   allowExternalQuestions: boolean;
+  localWithoutApiKey: boolean;
   maxContextChars: number | null;
   topK: number | null;
   local: GenerationConfig | null;
@@ -42,6 +43,7 @@ export const defaultGeneration: GenerationPreferences = {
   priority: 'localFirst',
   fallback: false,
   allowExternalQuestions: false,
+  localWithoutApiKey: false,
   maxContextChars: null,
   topK: null,
   local: null,
@@ -74,6 +76,7 @@ export function normalizeGeneration(input: unknown): GenerationPreferences {
     priority: value.priority === 'externalFirst' ? 'externalFirst' : 'localFirst',
     fallback: value.fallback === true,
     allowExternalQuestions: value.allowExternalQuestions === true,
+    localWithoutApiKey: value.localWithoutApiKey === true,
     maxContextChars:
       value.maxContextChars == null ? null : number(value.maxContextChars, 8000, 512, 200000),
     topK: value.topK == null ? null : number(value.topK, 6, 1, 32),

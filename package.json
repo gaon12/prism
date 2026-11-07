@@ -28,6 +28,7 @@
     "test:setup-recovery": "node tests/native/setup-recovery.mjs",
     "test:setup-previous": "node tests/native/setup-previous.mjs",
     "test": "vitest run",
+    "test:rag-core": "cargo test --manifest-path tools/rag-qa/Cargo.toml --locked -j1 -- --test-threads=2",
     "test:e2e": "playwright test",
     "test:e2e:bundle": "node scripts/test-e2e-bundle.mjs",
     "test:native": "node tests/native/client.mjs",

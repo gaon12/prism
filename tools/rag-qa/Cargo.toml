@@ -1,0 +1,46 @@
+[package]
+name = "prism-rag-qa"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.94"
+publish = false
+
+# Keep this additional verification path practical on developer machines.
+# Assertions and overflow checks retain Cargo's normal test defaults.
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "system-proxy"] }
+tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "time", "sync"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+sha2 = "0.10"
+zeroize = "1"
+getrandom = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_JobObjects"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+keyring-core = "=1.0.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "=1.0.2", default-features = false, features = ["keychain"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus-secret-service-keyring-store = { version = "=1.0.1", default-features = false, features = ["rt-async-io-crypto-rust"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[patch.crates-io]
+# Match the application's Windows long-path persistence dependency.
+tempfile = { path = "../../src-tauri/vendor/tempfile" }

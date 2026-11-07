@@ -256,6 +256,13 @@ Browser preview does not have native filesystem, global-shortcut or tray access.
 
 ## Checks
 
+The [RAG/document core checks](tools/rag-qa/README.md) run the current policy,
+storage, transport and document-generation regressions without linking the GUI
+or index engines. Run npm run test:rag-core. The initial Windows check passed 90
+tests and strict Clippy with locked dependencies. Completion/source fixtures
+remain synthetic, and the full app, search-engine adapters and real-model
+native behavior still need their own checks.
+
 On Linux, login startup follows an absolute `XDG_CONFIG_HOME`, with
 `HOME/.config` as the fallback for unset, empty or relative values. The
 [local dependency patch](src-tauri/vendor/auto-launch/PRISM_PATCH.md) records the

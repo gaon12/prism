@@ -202,7 +202,15 @@ and `collection_office_cancel` for an explicitly selected, exactly pinned local
 archive. Status `installed` describes presence only: execution always performs
 full inventory verification. Installation progress uses `prism:office-runtime`,
 and existing unit-import progress remains active while pages are rendered.
-There is no public package URL or automatic download. A delivery/settings UI,
+Settings → General now includes **Original Office pages**, with archive/disk
+sizes, an explicit local ZIP picker, installation progress and a separate
+cancel action. The retained `collection_office_status` snapshot and revisioned
+`prism:office-status` notifications include terminal failure/cancel states;
+closing settings or switching tabs does not abandon an installation. Status is
+retained for the app session, rather than persisted across process restarts.
+Every ZIP must match the compiled catalog; an arbitrary LibreOffice ZIP is not
+accepted. Reimport an original to replace its existing text-preview manifest.
+There is no public package URL or automatic download. Package delivery,
 native Linux/macOS lifetimes, clean-machine dependency coverage, stale-work
 recovery and broader document/layout coverage remain pending.
 
@@ -215,6 +223,8 @@ $env:PRISM_OFFICE_QA_ARCHIVE = 'D:\private\runtime.zip'
 $env:PRISM_OFFICE_QA_TWO_PAGE = 'D:\private\managed-test-output\two-pages.docx'
 $env:PRISM_TEST_EXECUTABLE = 'D:\private\target\debug\prism.exe'
 npm run test:collections-office
+# Real settings progress, cancel, completion while closed and remount recovery:
+node tests/native/office-engine-settings.mjs
 ```
 
 The service also has an ignored opt-in real-engine regression test:

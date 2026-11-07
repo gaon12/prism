@@ -397,10 +397,13 @@ pub fn cleanup(parent: &Path, stage: &Path, marker: &str) {
     }
 }
 fn promote(stage: &Path, installed: &Path, check: Check<'_>) -> Result<()> {
-    // Windows readers (including file scanners) can briefly deny renaming a
-    // complete tree. Retry only those fixed native codes, within a short bound;
+    // Windows can keep a freshly populated tree busy after verification. A
+    // real pinned package recovered 37 seconds after the former retry window;
+    // even a one-minute window failed under heavier app I/O. Give promotion a
+    // bounded two minutes, and check cancellation on every turn. Retry only
+    // these fixed codes;
     // never change ACLs, replace a destination or retry other errors.
-    let until = Instant::now() + Duration::from_secs(3);
+    let until = Instant::now() + Duration::from_secs(120);
     loop {
         check()?;
         if installed.exists() {
@@ -484,6 +487,7 @@ fn unpack(
     let entries = catalog.entries(&raw)?;
     let mut seen = HashSet::new();
     let mut parents = HashSet::new();
+    let mut completed = 0;
     for i in 0..archive.len() {
         check()?;
         let mut item = archive.by_index(i).map_err(|_| error(Code::Integrity))?;
@@ -554,7 +558,10 @@ fn unpack(
                 .set_permissions(fs::Permissions::from_mode(mode))
                 .map_err(io_error("setMemberMode"))?;
         }
-        progress(seen.len());
+        // inventory.json is metadata, not an installed engine member. Its ZIP
+        // position must not advance the UI or report completion one file early.
+        completed += 1;
+        progress(completed);
     }
     fs::write(root.join("inventory.json"), raw).map_err(io_error("writeInventory"))?;
     Ok(())

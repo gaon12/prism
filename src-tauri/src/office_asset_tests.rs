@@ -42,6 +42,47 @@ fn fixture(directory: &Path) -> (Catalog, PathBuf) {
     (value, path)
 }
 
+#[test]
+fn extraction_progress_counts_engine_files_independently_of_inventory_order() {
+    use std::cell::RefCell;
+    for inventory_first in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut catalog, original) = fixture(directory.path());
+        let mut input = zip::ZipArchive::new(File::open(original).unwrap()).unwrap();
+        let mut members = Vec::new();
+        for index in 0..input.len() {
+            let mut member = input.by_index(index).unwrap();
+            let name = member.name().unwrap().into_owned();
+            let mut bytes = Vec::new();
+            member.read_to_end(&mut bytes).unwrap();
+            members.push((name, bytes));
+        }
+        members.sort_by_key(|(name, _)| (name == "inventory.json") != inventory_first);
+        let archive = directory.path().join("reordered.zip");
+        let mut writer = zip::ZipWriter::new(File::create(&archive).unwrap());
+        for (name, bytes) in members {
+            writer
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(&bytes).unwrap();
+        }
+        writer.finish().unwrap();
+        let bytes = fs::read(&archive).unwrap();
+        catalog.archive.bytes = bytes.len() as u64;
+        catalog.archive.sha256 = digest(&bytes);
+        let counts = RefCell::new(Vec::new());
+        install_archive(
+            &directory.path().join("cache"),
+            &archive,
+            &catalog,
+            &|| Ok(()),
+            &|count| counts.borrow_mut().push(count),
+        )
+        .unwrap();
+        assert_eq!(*counts.borrow(), vec![1, 2]);
+    }
+}
+
 #[cfg(unix)]
 fn linux_fixture(directory: &Path, zip_mode: u32) -> (Catalog, PathBuf) {
     let entries: Vec<Entry> = ["program/python.bin", "program/soffice.bin"]
@@ -235,7 +276,8 @@ fn promotion_waits_for_our_live_reader_without_replacing_any_destination() {
         .unwrap();
     assert!(fs::rename(&stage, &installed).is_err());
     let closer = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(120));
+        // Keep only this owned reader open beyond the old retry window.
+        thread::sleep(Duration::from_secs(4));
         drop(reader);
     });
     promote(&stage, &installed, &|| Ok(())).unwrap();
@@ -244,6 +286,34 @@ fn promotion_waits_for_our_live_reader_without_replacing_any_destination() {
     fs::create_dir(&stage).unwrap();
     assert!(promote(&stage, &installed, &|| Ok(())).is_err());
     assert_eq!(fs::read(installed.join("fixture.bin")).unwrap(), b"owned");
+}
+#[cfg(windows)]
+#[test]
+fn promotion_retry_checks_cancellation_while_a_reader_blocks_the_move() {
+    use std::{cell::Cell, os::windows::fs::OpenOptionsExt};
+    let directory = tempfile::tempdir().unwrap();
+    let stage = directory.path().join("stage");
+    let installed = directory.path().join("installed");
+    fs::create_dir(&stage).unwrap();
+    fs::write(stage.join("fixture.bin"), b"owned").unwrap();
+    let reader = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(stage.join("fixture.bin"))
+        .unwrap();
+    let checks = Cell::new(0);
+    let result = promote(&stage, &installed, &|| {
+        checks.set(checks.get() + 1);
+        if checks.get() >= 4 {
+            Err(error(Code::Cancelled))
+        } else {
+            Ok(())
+        }
+    });
+    assert_eq!(result.unwrap_err().code, Code::Cancelled);
+    assert!(stage.exists() && !installed.exists());
+    assert_eq!(fs::read(stage.join("fixture.bin")).unwrap(), b"owned");
+    drop(reader);
 }
 #[cfg(unix)]
 #[test]

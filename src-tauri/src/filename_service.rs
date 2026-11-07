@@ -7,6 +7,8 @@ use prism_ntfs_protocol::stream::Event;
 #[cfg(any(windows, test))]
 use std::io;
 #[cfg(any(windows, test))]
+use std::time::Instant;
+#[cfg(any(windows, test))]
 #[path = "filename_catalog.rs"]
 mod catalog;
 #[cfg(any(windows, test))]
@@ -60,6 +62,11 @@ impl FileIndex {
         sweep: u64,
         fetch: impl FnOnce(Arc<AtomicBool>, &mut dyn FnMut(Event) -> io::Result<()>) -> io::Result<u64>,
     ) -> io::Result<()> {
+        let started = Instant::now();
+        let mut first_batch = None;
+        let mut received_records = 0usize;
+        let mut receive_callback = Duration::ZERO;
+        let mut validated_fetch = Duration::ZERO;
         let root_key = path_key(root);
         let drive = (root_key.len() == 2 && root_key.as_bytes()[1] == b':')
             .then(|| prism_ntfs_protocol::DriveLetter::new(root_key.as_bytes()[0]).ok())
@@ -98,6 +105,11 @@ impl FileIndex {
                 }
                 match event {
                     Event::Records(records) => {
+                        if !records.is_empty() {
+                            first_batch.get_or_insert_with(|| started.elapsed());
+                        }
+                        let callback_started = Instant::now();
+                        received_records = received_records.saturating_add(records.len());
                         for record in &records {
                             // Whole-drive validation needs no allocated path
                             // key. Only validated records may reach private
@@ -127,6 +139,7 @@ impl FileIndex {
                                 }
                             }
                         }
+                        receive_callback += callback_started.elapsed();
                     }
                     Event::Progress { .. } => {}
                     Event::Finished { .. } | Event::Removed(_) => {
@@ -138,6 +151,7 @@ impl FileIndex {
                 }
                 Ok(())
             });
+            validated_fetch = started.elapsed();
             drop(stop);
             if result? == 0 {
                 return Err(io::Error::new(
@@ -156,9 +170,28 @@ impl FileIndex {
             preparation.map(pipeline::Preparation::finish).transpose()
         })?;
         if let Some(prepared) = prepared {
-            return self.publish_initial_catalog(generation, prepared);
+            self.publish_initial_catalog(generation, prepared)?;
+        } else {
+            self.publish_service_rows(generation, rows, sweep, initial, threads)?;
         }
-        self.publish_service_rows(generation, rows, sweep, initial, threads)
+        let total = started.elapsed();
+        let millis = |duration: Duration| duration.as_millis().min(u64::MAX as u128) as u64;
+        if let Ok(mut catalog) = self.catalog.write() {
+            // Only the current, fully authenticated/root-validated collection
+            // may replace the last successful diagnostic. No paths are kept.
+            if self.current(generation) {
+                catalog.status.last_service_snapshot = Some(ServiceSnapshotTiming {
+                    received_records,
+                    first_batch_ms: first_batch.map(millis),
+                    validated_fetch_ms: millis(validated_fetch),
+                    receive_callback_ms: millis(receive_callback),
+                    finish_publish_ms: millis(total.saturating_sub(validated_fetch)),
+                    total_ms: millis(total),
+                    initial_catalog: initial,
+                });
+            }
+        }
+        Ok(())
     }
 
     #[cfg(any(windows, test))]
@@ -317,6 +350,53 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_timings_remain_private_until_validation_and_reset_with_generation() {
+        let (index, _owner) = isolated();
+        let dir = tempfile::tempdir().unwrap();
+        index
+            .collect_service_snapshot(1, dir.path(), 1, |_, receive| {
+                std::thread::sleep(Duration::from_millis(20));
+                receive(Event::Records(vec![record(dir.path(), "private-name.md")]))?;
+                assert!(index.status().unwrap().last_service_snapshot.is_none());
+                std::thread::sleep(Duration::from_millis(20));
+                Ok(1)
+            })
+            .unwrap();
+        let status = index.status().unwrap();
+        let timing = status.last_service_snapshot.as_ref().unwrap();
+        assert_eq!(timing.received_records, 1);
+        assert!(timing.initial_catalog);
+        assert!(timing.first_batch_ms.unwrap() >= 10);
+        assert!(timing.validated_fetch_ms >= timing.first_batch_ms.unwrap());
+        assert!(timing.receive_callback_ms <= timing.validated_fetch_ms);
+        assert!(timing.total_ms >= timing.validated_fetch_ms);
+        assert!(timing.total_ms >= timing.finish_publish_ms);
+        let public = serde_json::to_value(&status).unwrap();
+        assert!(public.get("lastServiceSnapshot").is_none());
+        assert_eq!(public.as_object().unwrap().len(), 7);
+        let diagnostic = serde_json::to_value(timing).unwrap();
+        assert_eq!(diagnostic["receivedRecords"], 1);
+        assert!(!diagnostic.to_string().contains("private-name"));
+        assert!(!diagnostic
+            .to_string()
+            .contains(dir.path().to_string_lossy().as_ref()));
+        index.refresh(vec![]);
+        assert!(index.status().unwrap().last_service_snapshot.is_none());
+    }
+
+    #[test]
+    fn an_empty_validated_snapshot_has_no_first_record_batch() {
+        let (index, _owner) = isolated();
+        let dir = tempfile::tempdir().unwrap();
+        index
+            .collect_service_snapshot(1, dir.path(), 1, |_, _| Ok(1))
+            .unwrap();
+        let timing = index.status().unwrap().last_service_snapshot.unwrap();
+        assert_eq!(timing.received_records, 0);
+        assert_eq!(timing.first_batch_ms, None);
+    }
+
+    #[test]
     fn partial_or_out_of_scope_streams_insert_nothing() {
         let (index, _owner) = isolated();
         let dir = tempfile::tempdir().unwrap();
@@ -327,6 +407,7 @@ mod tests {
                 Ok(1)
             })
             .unwrap();
+        let previous_timing = index.status().unwrap().last_service_snapshot;
         for fail_after_rows in [true, false] {
             let result = index.collect_service_snapshot(1, dir.path(), 1, |_, receive| {
                 receive(Event::Records(vec![record(dir.path(), "private.md")]))?;
@@ -339,6 +420,10 @@ mod tests {
             assert!(result.is_err());
             assert_eq!(index.status().unwrap().count, 1);
             assert_eq!(index.status().unwrap().revision, 1);
+            assert_eq!(
+                index.status().unwrap().last_service_snapshot,
+                previous_timing
+            );
             assert_eq!(
                 index
                     .catalog

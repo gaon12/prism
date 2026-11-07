@@ -229,6 +229,24 @@ pub struct IndexStatus {
     pub skipped: usize,
     pub warnings: Vec<String>,
     pub watching: bool,
+    /// Available only in the user-requested diagnostic projection. Normal
+    /// status/search polls keep their existing DTO and revision semantics.
+    #[serde(skip)]
+    pub(crate) last_service_snapshot: Option<ServiceSnapshotTiming>,
+}
+/// One successfully validated service snapshot, not an entire GUI scan. Fetch
+/// overlaps private preparation and includes callback/backpressure wall time;
+/// callback time is a subset of fetch and must never be added to it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ServiceSnapshotTiming {
+    pub received_records: usize,
+    pub first_batch_ms: Option<u64>,
+    pub validated_fetch_ms: u64,
+    pub receive_callback_ms: u64,
+    pub finish_publish_ms: u64,
+    pub total_ms: u64,
+    pub initial_catalog: bool,
 }
 #[derive(Clone)]
 struct Root {

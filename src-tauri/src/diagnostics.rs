@@ -87,6 +87,7 @@ struct FilenameSummary {
     skipped: usize,
     warning_count: usize,
     watching: bool,
+    last_service_snapshot: Option<crate::index::ServiceSnapshotTiming>,
 }
 impl From<crate::index::IndexStatus> for FilenameSummary {
     fn from(status: crate::index::IndexStatus) -> Self {
@@ -96,6 +97,7 @@ impl From<crate::index::IndexStatus> for FilenameSummary {
             skipped: status.skipped,
             warning_count: status.warnings.len(),
             watching: status.watching,
+            last_service_snapshot: status.last_service_snapshot,
         }
     }
 }
@@ -271,6 +273,15 @@ mod tests {
         let filename = FilenameSummary::from(crate::index::IndexStatus {
             warnings: vec![PRIVATE.into()],
             count: 12,
+            last_service_snapshot: Some(crate::index::ServiceSnapshotTiming {
+                received_records: 12,
+                first_batch_ms: Some(30),
+                validated_fetch_ms: 50,
+                receive_callback_ms: 5,
+                finish_publish_ms: 10,
+                total_ms: 60,
+                initial_catalog: true,
+            }),
             ..Default::default()
         });
         let content = ContentSummary::from(crate::content_service::ContentStatus {
@@ -328,6 +339,7 @@ mod tests {
         assert_eq!(data["content"]["phase"], "unknown");
         assert_eq!(data["content"]["issueCount"], 1);
         assert_eq!(data["filename"]["warningCount"], 1);
+        assert_eq!(data["filename"]["lastServiceSnapshot"]["totalMs"], 60);
         assert_eq!(data["embedding"]["error"], true);
         assert_eq!(data["updates"]["installError"], true);
     }

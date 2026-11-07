@@ -35,6 +35,17 @@ export interface DiagnosticSnapshot {
     skipped: number;
     warningCount: number;
     watching: boolean;
+    /** Last validated NTFS snapshot only; callback time overlaps validatedFetchMs.
+     * Excludes watcher setup, the final sweep and GUI rendering. */
+    lastServiceSnapshot?: {
+      receivedRecords: number;
+      firstBatchMs: number | null;
+      validatedFetchMs: number;
+      receiveCallbackMs: number;
+      finishPublishMs: number;
+      totalMs: number;
+      initialCatalog: boolean;
+    } | null;
   } | null;
   contentIndex: {
     phase: string;

@@ -11,7 +11,9 @@ use std::{
 };
 
 pub const WORKER: &[u8] = include_bytes!("../../tools/office-runtime/worker.py");
-const CATALOG: &str = include_str!("../../tools/office-runtime/windows-x64.lock.json");
+pub const UNIX_OWNER: &[u8] = include_bytes!("../../tools/office-runtime/unix_owner.py");
+const WINDOWS_CATALOG: &str = include_str!("../../tools/office-runtime/windows-x64.lock.json");
+const LINUX_CATALOG: &str = include_str!("../../tools/office-runtime/linux-x64.lock.json");
 const OWNER: &str = ".prism-office-runtime";
 pub const MAX_DOCUMENT: usize = 64 << 20;
 pub type Result<T> = std::result::Result<T, Error>;
@@ -71,11 +73,14 @@ pub struct Catalog {
     pub version: String,
     pub executable: String,
     pub engine_path: String,
+    #[serde(default)]
+    pub python_home: Option<String>,
     pub inventory_sha256: String,
     pub file_count: usize,
     pub expanded_bytes: u64,
     pub archive: Archive,
-    pub upstream_msi_sha256: String,
+    #[serde(alias = "upstreamMsiSha256")]
+    pub upstream_sha256: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -83,6 +88,8 @@ pub struct Entry {
     pub path: String,
     pub bytes: u64,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "unixMode")]
+    pub unix_mode: Option<u32>,
 }
 pub fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -117,14 +124,25 @@ pub fn relative(value: &str) -> Result<&Path> {
     Ok(Path::new(value))
 }
 pub fn catalog() -> Result<Catalog> {
-    let value: Catalog = serde_json::from_str(CATALOG).map_err(|_| error(Code::Integrity))?;
+    let raw = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        LINUX_CATALOG
+    } else {
+        WINDOWS_CATALOG
+    };
+    let value: Catalog = serde_json::from_str(raw).map_err(|_| error(Code::Integrity))?;
     value.validate()?;
     Ok(value)
 }
 impl Catalog {
     fn validate(&self) -> Result<()> {
-        if self.schema != 1
-            || self.target != "windows-x64"
+        let windows =
+            self.schema == 1 && self.target == "windows-x64" && self.python_home.is_none();
+        let linux = self.schema == 2
+            && self.target == "linux-x64"
+            && self.python_home.as_deref() == Some("program/python-core-3.13.17")
+            && self.executable == "program/python.bin"
+            && self.engine_path == "program/soffice.bin";
+        if !(windows || linux)
             || self.engine != "LibreOffice"
             || self.version.is_empty()
             || self.version.len() > 64
@@ -137,7 +155,7 @@ impl Catalog {
             || !(1..=1 << 30).contains(&self.archive.bytes)
             || !valid_hash(&self.archive.sha256)
             || !valid_hash(&self.inventory_sha256)
-            || !valid_hash(&self.upstream_msi_sha256)
+            || !valid_hash(&self.upstream_sha256)
             || self.archive.url.as_ref().is_some_and(|url| {
                 !url.starts_with("https://github.com/gaon12/prism/releases/download/")
                     || !url
@@ -149,6 +167,9 @@ impl Catalog {
         }
         relative(&self.executable)?;
         relative(&self.engine_path)?;
+        if let Some(home) = &self.python_home {
+            relative(home)?;
+        }
         Ok(())
     }
     pub fn directory(&self) -> String {
@@ -177,6 +198,11 @@ impl Catalog {
                 || last.is_some_and(|last| entry.path.as_str() <= last)
                 || entry.bytes > 512 << 20
                 || !valid_hash(&entry.sha256)
+                || if self.target == "linux-x64" {
+                    !matches!(entry.unix_mode, Some(0o444 | 0o555))
+                } else {
+                    entry.unix_mode.is_some()
+                }
             {
                 return Err(error(Code::Integrity));
             }
@@ -186,6 +212,16 @@ impl Catalog {
             || sum != self.expanded_bytes
             || !seen.contains(&self.executable.to_ascii_lowercase())
             || !seen.contains(&self.engine_path.to_ascii_lowercase())
+        {
+            return Err(error(Code::Integrity));
+        }
+        if self.target == "linux-x64"
+            && [&self.executable, &self.engine_path].iter().any(|name| {
+                entries
+                    .iter()
+                    .find(|entry| &entry.path == *name)
+                    .is_none_or(|entry| entry.unix_mode != Some(0o555))
+            })
         {
             return Err(error(Code::Integrity));
         }
@@ -323,6 +359,20 @@ pub fn verify(
                 .map_err(|_| error(Code::Integrity))?;
         }
         let file = leaf(&path)?;
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode {
+            use std::os::unix::fs::PermissionsExt;
+            if file
+                .metadata()
+                .map_err(|_| error(Code::Integrity))?
+                .permissions()
+                .mode()
+                & 0o7777
+                != mode
+            {
+                return Err(error(Code::Integrity));
+            }
+        }
         if file.metadata().map_err(|_| error(Code::Integrity))?.len() != entry.bytes
             || read_hash(file, entry.bytes, check)? != (entry.bytes, entry.sha256.clone())
         {
@@ -461,6 +511,11 @@ fn unpack(
         if item.size() != entry.bytes {
             return Err(error(Code::Integrity));
         }
+        if let Some(mode) = entry.unix_mode {
+            if item.unix_mode() != Some(0o100000 | mode) {
+                return Err(error(Code::Integrity));
+            }
+        }
         let path = root.join(relative(&name)?);
         let parent = path.parent().ok_or_else(|| error(Code::Integrity))?;
         if parents.insert(parent.to_path_buf()) {
@@ -491,6 +546,13 @@ fn unpack(
         }
         if count != entry.bytes || format!("{:x}", hash.finalize()) != entry.sha256 {
             return Err(error(Code::Integrity));
+        }
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode {
+            use std::os::unix::fs::PermissionsExt;
+            output
+                .set_permissions(fs::Permissions::from_mode(mode))
+                .map_err(io_error("setMemberMode"))?;
         }
         progress(seen.len());
     }

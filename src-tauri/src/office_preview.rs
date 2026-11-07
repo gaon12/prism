@@ -43,16 +43,17 @@ impl Runtime {
         })))
     }
     pub fn fingerprint(&self) -> String {
-        format!(
-            "{}:{}",
-            self.0.catalog.inventory_sha256,
+        let worker = if cfg!(target_os = "linux") {
+            assets::digest(&[assets::WORKER, assets::UNIX_OWNER].concat())
+        } else {
             assets::digest(assets::WORKER)
-        )
+        };
+        format!("{}:{}", self.0.catalog.inventory_sha256, worker)
     }
     /// Presence only, not a verification result. Every execution still checks
     /// the full sealed inventory, and a damaged installed tree is an error.
     pub fn installed(&self) -> Result<bool> {
-        if !cfg!(all(windows, target_arch = "x86_64")) {
+        if !supported() {
             return Ok(false);
         }
         self.0
@@ -99,7 +100,7 @@ impl Runtime {
         deadline: Instant,
         progress: &dyn Fn(Progress),
     ) -> Result<Vec<u8>> {
-        if !cfg!(all(windows, target_arch = "x86_64")) {
+        if !supported() {
             return Err(error(Code::Unsupported));
         }
         check(cancel, deadline)?;
@@ -134,7 +135,11 @@ impl Runtime {
         let interpreter = runtime.join(assets::relative(&self.0.catalog.executable)?);
         let mut command = Command::new(interpreter);
         command
-            .arg("-I")
+            .arg(if cfg!(target_os = "linux") {
+                "-P"
+            } else {
+                "-I"
+            })
             .arg("-S")
             .arg("-B")
             .arg(directory.join("worker.py"))
@@ -146,7 +151,7 @@ impl Runtime {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         // No user PATH, PYTHONPATH, add-on or Python startup configuration is
-        // inherited. DLLs/fonts come from the verified engine and Windows.
+        // inherited. Runtime libraries come from the verified private engine.
         let mut paths = vec![
             runtime.join("program"),
             runtime.join("program/python-core-3.13.17/bin"),
@@ -154,6 +159,38 @@ impl Runtime {
         if let Some(windows) = std::env::var_os("SystemRoot") {
             command.env("SystemRoot", &windows).env("WINDIR", &windows);
             paths.push(PathBuf::from(windows).join("System32"));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let home = runtime.join(assets::relative(
+                self.0
+                    .catalog
+                    .python_home
+                    .as_deref()
+                    .ok_or_else(|| error(Code::Integrity))?,
+            )?);
+            command
+                .env("PYTHONHOME", &home)
+                .env(
+                    "PYTHONPATH",
+                    std::env::join_paths([home.join("lib"), home.join("lib/lib-dynload")])
+                        .map_err(|_| error(Code::Input))?,
+                )
+                .env(
+                    "LD_LIBRARY_PATH",
+                    std::env::join_paths([
+                        runtime.join("program/prism-libs/nss"),
+                        runtime.join("program/prism-libs"),
+                        runtime.join("program"),
+                    ])
+                    .map_err(|_| error(Code::Input))?,
+                )
+                .env("HOME", directory.join("home"))
+                .env("XDG_CONFIG_HOME", directory.join("config"))
+                .env("XDG_DATA_HOME", directory.join("data"))
+                .env("XDG_CACHE_HOME", directory.join("cache"))
+                .env("TMPDIR", &directory);
+            paths.extend([PathBuf::from("/usr/bin"), PathBuf::from("/bin")]);
         }
         command
             .env(
@@ -191,6 +228,12 @@ impl Runtime {
         });
         Ok(result)
     }
+}
+pub fn supported() -> bool {
+    cfg!(all(
+        any(windows, target_os = "linux"),
+        target_arch = "x86_64"
+    ))
 }
 fn check(cancel: &AtomicBool, deadline: Instant) -> Result<()> {
     if cancel.load(Ordering::Acquire) {
@@ -232,6 +275,13 @@ impl Work {
                 .and_then(|mut file| file.write_all(bytes))
                 .map_err(|_| error(Code::Failed))?;
         }
+        #[cfg(target_os = "linux")]
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(work.path.join("unix_owner.py"))
+            .and_then(|mut file| file.write_all(assets::UNIX_OWNER))
+            .map_err(|_| error(Code::Failed))?;
         Ok(work)
     }
 }
@@ -258,6 +308,18 @@ impl Drop for Work {
 struct OwnedChild(Child);
 impl OwnedChild {
     fn stop(&mut self) {
+        #[cfg(target_os = "linux")]
+        {
+            // Closing the parent's writer lets the worker close its supervisor
+            // pipe and reap the private engine group before this Child returns.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if matches!(self.0.try_wait(), Ok(Some(_))) {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
         if !matches!(self.0.try_wait(), Ok(Some(_))) {
             let _ = self.0.kill();
             let _ = self.0.wait();

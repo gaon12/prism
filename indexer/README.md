@@ -270,6 +270,21 @@ Remaining integration:
    from live app timings. Cache-read buffering and short-name validation
    experiments showed no consistent gain and were excluded; the snapshot codec
    and its digest/allocation limits remain unchanged.
+   An ordinary native Windows portable app built from `93e3fa4` was also
+   measured with a fresh profile and the unchanged installed service. From
+   the filename-only C-drive settings request, after the GUI was already
+   open, initial catalog usability took 20.194 seconds and the GUI count
+   appeared at 20.278 seconds for 2,340,775 paths, including directories.
+   The 7-second target was not met. A subsequent `cmd.exe` query returned
+   83 matches, including `C:\Windows\System32\cmd.exe`, and rendered in
+   451 ms. The indeterminate collection progress bar was visible, and the
+   same search-to-chat row stayed mounted throughout the observed scan.
+   No app JavaScript errors were recorded, and the 760-pixel layout fit.
+   This was initial catalog readiness, not process-launch timing or a
+   controlled cold-cache benchmark. Cache state, system load and individual
+   transfer/preparation costs were not controlled or measured; subtracting
+   older protocol-only timings would not identify a client-side bottleneck.
+   No newer service was installed and no model or content indexing ran.
    Delta requests currently return `JournalGap`, requiring
    a new snapshot rather than claiming an unchanged catalog.
 3. Verify the newer deferred/per-drive persistence through actual deployment,

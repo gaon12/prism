@@ -341,6 +341,8 @@ function ProviderSettings({
   credentials,
   withoutApiKey = false,
   onWithoutApiKey,
+  structuredDocuments = false,
+  onStructuredDocuments,
 }: {
   slot: GenerationSlot;
   config: GenerationConfig | null;
@@ -350,6 +352,8 @@ function ProviderSettings({
   credentials: GenerationCredentials;
   withoutApiKey?: boolean;
   onWithoutApiKey?: (value: boolean) => void;
+  structuredDocuments?: boolean;
+  onStructuredDocuments?: (value: boolean) => void;
 }) {
   const id = useId();
   const t = (key: Parameters<typeof generationText>[1]) => generationText(language, key);
@@ -495,6 +499,16 @@ function ProviderSettings({
                 <span>{t('withoutApiKey')}</span>
               </label>
               <p className="generation-note">{t('withoutApiKeyHelp')}</p>
+              <label className="generation-check" htmlFor={`${id}-structured-documents`}>
+                <input
+                  id={`${id}-structured-documents`}
+                  type="checkbox"
+                  checked={structuredDocuments}
+                  onChange={(event) => onStructuredDocuments?.(event.target.checked)}
+                />
+                <span>{t('structuredDocuments')}</span>
+              </label>
+              <p className="generation-note">{t('structuredDocumentsHelp')}</p>
             </>
           ) : null}
           {endpointValid && !(slot === 'local' && withoutApiKey) ? (
@@ -634,6 +648,8 @@ export function GenerationPanel({
         onChange={(local) => update({ local })}
         withoutApiKey={preferences.localWithoutApiKey}
         onWithoutApiKey={(localWithoutApiKey) => update({ localWithoutApiKey })}
+        structuredDocuments={preferences.localStructuredDocuments}
+        onStructuredDocuments={(localStructuredDocuments) => update({ localStructuredDocuments })}
         language={language}
         native={native}
         credentials={credentials}

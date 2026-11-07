@@ -188,6 +188,8 @@ test('saves generation connection preferences without contacting a provider or s
     if (request.url().startsWith('https://api.openai.com')) providerRequests.push(request.url());
   });
   await page.goto('/');
+  await expect(page).toHaveTitle('Prism');
+  await expect(page.locator('vite-error-overlay')).toHaveCount(0);
   const settings = async () => {
     await page.getByRole('button', { name: '설정', exact: true }).click();
     await page.getByRole('button', { name: 'AI·모델', exact: true }).click();
@@ -221,6 +223,10 @@ test('saves generation connection preferences without contacting a provider or s
   await local.getByRole('button', { name: 'LM Studio', exact: true }).click();
   await local.getByLabel('모델 이름', { exact: true }).fill('synthetic-local-model');
   const withoutKey = local.getByLabel('로컬 서버에 API 키 없이 연결', { exact: true });
+  const structured = local.getByLabel('로컬 문서 생성에 JSON 스키마 사용', { exact: true });
+  await expect(structured).not.toBeChecked();
+  await structured.check();
+  await expect(external.getByLabel('로컬 문서 생성에 JSON 스키마 사용')).toHaveCount(0);
   await expect(withoutKey).not.toBeChecked();
   await withoutKey.check();
   await expect(local.locator('.generation-credentials')).toHaveCount(0);
@@ -246,6 +252,7 @@ test('saves generation connection preferences without contacting a provider or s
     fallback: false,
     allowExternalQuestions: false,
     localWithoutApiKey: true,
+    localStructuredDocuments: true,
     maxContextChars: 12000,
     external: null,
     local: { temperature: null, tokenParameter: 'maxTokens' },
@@ -253,6 +260,7 @@ test('saves generation connection preferences without contacting a provider or s
   expect(JSON.stringify(saved)).not.toMatch(/apiKey|secret|Bearer/);
   expect(providerRequests).toEqual([]);
   await settings();
+  await expect(structured).toBeChecked();
   await expect(withoutKey).toBeChecked();
   await withoutKey.uncheck();
   await expect(local.locator('.generation-credentials')).toHaveCount(1);
@@ -260,6 +268,13 @@ test('saves generation connection preferences without contacting a provider or s
   await withoutKey.check();
   await panel.scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(evidence, 'generation-settings.png') });
+  await page.setViewportSize({ width: 760, height: 900 });
+  await structured.scrollIntoViewIfNeeded();
+  await expect(structured).toBeVisible();
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
+  ).toBe(true);
+  await page.screenshot({ path: join(evidence, 'generation-settings-narrow.png') });
 });
 
 test('edits, persists and exports a real Markdown draft', async ({ page }) => {

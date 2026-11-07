@@ -32,6 +32,7 @@ export interface GenerationPreferences {
   fallback: boolean;
   allowExternalQuestions: boolean;
   localWithoutApiKey: boolean;
+  localStructuredDocuments: boolean;
   maxContextChars: number | null;
   topK: number | null;
   local: GenerationConfig | null;
@@ -44,6 +45,7 @@ export const defaultGeneration: GenerationPreferences = {
   fallback: false,
   allowExternalQuestions: false,
   localWithoutApiKey: false,
+  localStructuredDocuments: false,
   maxContextChars: null,
   topK: null,
   local: null,
@@ -77,6 +79,7 @@ export function normalizeGeneration(input: unknown): GenerationPreferences {
     fallback: value.fallback === true,
     allowExternalQuestions: value.allowExternalQuestions === true,
     localWithoutApiKey: value.localWithoutApiKey === true,
+    localStructuredDocuments: value.localStructuredDocuments === true,
     maxContextChars:
       value.maxContextChars == null ? null : number(value.maxContextChars, 8000, 512, 200000),
     topK: value.topK == null ? null : number(value.topK, 6, 1, 32),

@@ -25,6 +25,20 @@ const messages = {
     'ハイブリッドはキーワードと意味の順位を統合します。意味検索には起動中のローカル埋め込みモデルが必要で、未起動ならキーワードを使います。長い質問がキーワードの上限を超える場合は意味検索のみを使います。モデルの自動起動やファイル権限の拡張は行いません。',
   ],
   title: ['생성 AI 설정', 'Generation AI', '生成式AI设置', '生成式AI設定', '生成AI設定'],
+  structuredDocuments: [
+    '로컬 문서 생성에 JSON 스키마 사용',
+    'Use JSON Schema for local documents',
+    '本地文档生成使用JSON Schema',
+    '本機文件生成使用JSON Schema',
+    'ローカル文書生成にJSON Schemaを使用',
+  ],
+  structuredDocumentsHelp: [
+    'JSON Schema 출력을 지원하는 서버에서 켜세요. 문서 구조와 섹션 ID를 제한하지만 내용의 정확성을 보장하지는 않습니다. 미지원 서버에서는 생성이 실패할 수 있으며, 실패하면 이전 문서를 유지합니다.',
+    'Enable for a server that supports JSON Schema output. It constrains document structure and section IDs, but does not verify facts. Unsupported servers may fail generation; a failed operation preserves the previous document.',
+    '仅适用于支持JSON Schema输出的服务器。约束文档结构和章节ID，但不验证事实。不支持时生成可能失败；失败的操作保留原文档。',
+    '僅適用於支援JSON Schema輸出的伺服器。限制文件結構與章節ID，但不驗證事實。不支援時生成可能失敗；失敗的操作保留原文件。',
+    'JSON Schema出力対応のサーバーで有効にしてください。文書構造とセクションIDを制限しますが、事実は検証しません。非対応の場合は生成に失敗することがあり、失敗時は前の文書を保持します。',
+  ],
   withoutApiKey: [
     '로컬 서버에 API 키 없이 연결',
     'Connect to the local server without an API key',

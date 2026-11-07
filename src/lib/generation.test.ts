@@ -13,6 +13,16 @@ it('permits only known available OS credential providers', () => {
   }
 });
 describe('generation preferences migration', () => {
+  it('requires an explicit local document schema choice', () => {
+    for (const localStructuredDocuments of [undefined, false, 'true', 1])
+      expect(normalizeGeneration({ localStructuredDocuments }).localStructuredDocuments).toBe(
+        false,
+      );
+    expect(normalizeGeneration({ localStructuredDocuments: true }).localStructuredDocuments).toBe(
+      true,
+    );
+    expect(defaultGeneration.localStructuredDocuments).toBe(false);
+  });
   it('requires an explicit keyless local choice and preserves legacy key lookup', () => {
     for (const localWithoutApiKey of [undefined, false, 'true', 1])
       expect(normalizeGeneration({ localWithoutApiKey }).localWithoutApiKey).toBe(false);

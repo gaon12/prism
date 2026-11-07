@@ -264,9 +264,21 @@ paths, using only its own recorder and private session:
 cargo test --manifest-path src-tauri/Cargo.toml --locked -p auto-launch --test xdg_exec -- real_gio_preserves_executable_and_arguments --ignored --exact
 ```
 
-The previous release AppImage reproduced the wrong configuration path. The source
-fix passes the isolated dependency checks; a corrected release AppImage still
-needs native qualification.
+The previous release AppImage reproduced the wrong configuration path. The
+corrected signed AppImage from CI run `42373664783` passed actual settings UI
+enable/disable checks in a private installed XDG profile. It created and removed
+`XDG_CONFIG_HOME/autostart/Prism.desktop` while leaving the namespace's separate
+HOME configuration unchanged. The generated entry retained the outer AppImage
+path, including Korean, spaces, percent signs, dollar signs and backticks.
+
+The real GIO desktop launcher then executed that entry once. Observed child
+arguments retained the literal AppImage path and `--background`; the child exited
+successfully and the existing native app's single-instance callback restored its
+hidden window. Percent paths use the documented fixed positional shell bridge,
+so the path is passed as data. Disabling startup through the UI removed the
+entry again. This used extract-and-run under private WSL X11; no real user login
+was triggered. Login-manager behavior, FUSE and other desktop setups remain
+unverified.
 
 The [independent platform checks](tools/platform-qa/README.md) compile the exact runtime, credential, extraction, text repository and path modules without Tauri/Lance and document opt-in real archive, model, and OS-store tests. `npm run test:platform-ui` verifies the bundled Windows settings UI with synthetic platform responses. `npm run test:ocr-platform-ui` checks Mac OCR labels, language-tag aliases and capability refresh using the same isolated Windows WebView with synthetic capabilities. Neither establishes macOS/Linux native behavior.
 

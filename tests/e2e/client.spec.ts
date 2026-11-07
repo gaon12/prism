@@ -196,7 +196,9 @@ test('saves generation connection preferences without contacting a provider or s
   };
   await settings();
   const panel = page.locator('.generation-panel');
-  await expect(page.getByRole('heading', { name: '검색용 임베딩 모델', exact: true })).toBeInViewport();
+  await expect(
+    page.getByRole('heading', { name: '검색용 임베딩 모델', exact: true }),
+  ).toBeInViewport();
   await page.screenshot({ path: join(evidence, 'generation-settings-initial.png') });
   await expect(panel.getByLabel('사용 모드', { exact: true })).toHaveValue('local');
   await expect(panel.getByLabel('실패 시 다른 서버 사용 허용', { exact: true })).not.toBeChecked();

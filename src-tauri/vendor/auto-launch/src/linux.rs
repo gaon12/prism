@@ -215,20 +215,83 @@ impl AutoLaunch {
 }
 
 fn build_xdg_autostart_data(app_name: &str, app_path: &str, args: &[String]) -> String {
+    let mut invocation = Vec::new();
+    if app_path.contains('%') || app_path.contains('=') {
+        // GIO checks the first executable before expanding %% field escapes;
+        // the desktop spec also forbids '=' in that first executable token.
+        // Keep the target in positional data for a fixed shell exec command.
+        // No path or argument is interpolated into the shell program itself.
+        invocation.extend(["/bin/sh", "-c", "exec \"$@\"", "prism-autostart"]);
+    }
+    invocation.push(app_path);
+    invocation.extend(args.iter().map(String::as_str));
+    let command = invocation
+        .into_iter()
+        .map(xdg_exec_argument)
+        .collect::<Vec<_>>()
+        .join(" ");
     format!(
         "[Desktop Entry]\n\
         Type=Application\n\
         Version=1.0\n\
         Name={}\n\
         Comment={} startup script\n\
-        Exec={} {}\n\
+        Exec={}\n\
         StartupNotify=false\n\
         Terminal=false",
-        app_name,
-        app_name,
-        app_path,
-        args.join(" ")
+        app_name, app_name, command
     )
+}
+
+// Desktop entries decode string escapes before parsing the Exec command line.
+// Quote one whole argument, then protect the quote/backslash/dollar/backtick
+// syntax for both layers. Percent is a literal here, never a file/URL field code.
+fn xdg_exec_argument(value: &str) -> String {
+    let needs_quotes = value.is_empty()
+        || value.chars().any(|character| {
+            matches!(
+                character,
+                ' ' | '\t'
+                    | '\n'
+                    | '\r'
+                    | '"'
+                    | '\''
+                    | '\\'
+                    | '>'
+                    | '<'
+                    | '~'
+                    | '|'
+                    | '&'
+                    | ';'
+                    | '$'
+                    | '*'
+                    | '?'
+                    | '#'
+                    | '('
+                    | ')'
+                    | '\x60'
+            )
+        });
+    if !needs_quotes {
+        return value.replace('%', "%%");
+    }
+    let mut result = String::from("\"");
+    for character in value.chars() {
+        match character {
+            '\\' => result.push_str(r"\\\\"),
+            '"' | '$' | '\x60' => {
+                result.push_str(r"\\");
+                result.push(character);
+            }
+            '\n' => result.push_str(r"\n"),
+            '\r' => result.push_str(r"\r"),
+            '\t' => result.push_str(r"\t"),
+            '%' => result.push_str("%%"),
+            _ => result.push(character),
+        }
+    }
+    result.push('"');
+    result
 }
 
 fn build_systemd_service_data(app_name: &str, app_path: &str, args: &[String]) -> String {

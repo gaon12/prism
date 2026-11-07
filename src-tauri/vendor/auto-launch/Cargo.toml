@@ -45,6 +45,10 @@ path = "tests/test.rs"
 name = "xdg_autostart"
 path = "tests/xdg_autostart.rs"
 
+[[test]]
+name = "xdg_exec"
+path = "tests/xdg_exec.rs"
+
 [dependencies.os_info]
 version = "3"
 default-features = false

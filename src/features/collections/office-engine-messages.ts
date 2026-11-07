@@ -68,6 +68,13 @@ const messages = {
     '正在等候目前頁面作業',
     '実行中のページ処理を待っています',
   ],
+  finalizing: [
+    '설치를 마무리하는 중',
+    'Finishing installation',
+    '正在完成安装',
+    '正在完成安裝',
+    'インストールを完了しています',
+  ],
   files: [
     '{n} / {total}개 파일',
     '{n} of {total} files',

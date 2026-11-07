@@ -79,7 +79,11 @@ impl Runtime {
         assets::install_archive(&self.0.parent, path, &self.0.catalog, &check, &|n| {
             if n % 1000 == 0 || n == self.0.catalog.file_count {
                 progress(Progress {
-                    phase: "installing",
+                    phase: if n == self.0.catalog.file_count {
+                        "finalizing"
+                    } else {
+                        "installing"
+                    },
                     files: n,
                     total_files: self.0.catalog.file_count,
                 });

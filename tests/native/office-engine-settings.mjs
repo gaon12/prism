@@ -114,6 +114,9 @@ try {
   });
   await startInstall(archive);
   await expect(panel().getByRole('progressbar')).toBeVisible();
+  await main.evaluate(() => {
+    window.__officeProgressNode = document.querySelector('.office-engine-panel progress');
+  });
   await until(
     async () => (await invoke('collection_office_status')).progress?.files > 0,
     'real archive file progress',
@@ -134,6 +137,24 @@ try {
   assert(boxes.actionsTop > boxes.capacityBottom + 15, 'actions are separated from size text');
   await screenshot('engine-installing.png');
   await expect(panel().getByRole('alert')).toHaveCount(0);
+  await until(
+    async () => (await invoke('collection_office_status')).progress?.phase === 'finalizing',
+    'real package reaches final verification and promotion',
+    240_000,
+  );
+  await expect(panel().getByText('설치를 마무리하는 중', { exact: true })).toBeVisible();
+  assert.equal(await panel().getByRole('progressbar').getAttribute('value'), null);
+  assert(
+    await main.evaluate(
+      () =>
+        window.__officeProgressNode === document.querySelector('.office-engine-panel progress') &&
+        window.__officePanelNode === document.querySelector('.office-engine-panel') &&
+        window.__officeSettingsNode === document.querySelector('.settings-modal'),
+    ),
+  );
+  result.finalizingRetainedDom = true;
+  result.finalizingIndeterminate = true;
+  await screenshot('engine-finalizing.png');
   await closeSettings();
   // Complete with settings unmounted, then recover its terminal status.
   await until(
@@ -168,6 +189,8 @@ try {
   console.log(JSON.stringify(result));
 } catch (error) {
   result.error = error instanceof Error ? error.message : error;
+  if (instance)
+    result.failureStatus = await instance.invoke('collection_office_status').catch(() => null);
   if (instance)
     await instance.main.screenshot({ path: join(directory, 'failure.png') }).catch(() => {});
   throw error;

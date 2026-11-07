@@ -104,6 +104,10 @@ export function OfficeEnginePanel({ language }: { language: Language }) {
   const cancelled = issue && failureKey(issue) === 'cancelled';
   const busy = status?.installing ?? false;
   const progress = status?.progress;
+  const finalizing = progress?.phase === 'finalizing';
+  const progressLabel = t(
+    progress?.phase === 'waiting' ? 'waiting' : finalizing ? 'finalizing' : 'installing',
+  );
   const bytes = (value: number) =>
     `${(value / 1024 ** 2).toLocaleString(language, { maximumFractionDigits: 0 })} MiB`;
   return (
@@ -143,12 +147,12 @@ export function OfficeEnginePanel({ language }: { language: Language }) {
           <div className="office-engine-job" aria-live="polite">
             {busy ? (
               <>
-                <p>{t(progress?.phase === 'waiting' ? 'waiting' : 'installing')}</p>
+                <p>{progressLabel}</p>
                 <progress
-                  aria-label={t('installing')}
+                  aria-label={progressLabel}
                   max={progress?.totalFiles || 1}
                   value={
-                    progress?.totalFiles && progress.files > 0
+                    !finalizing && progress?.totalFiles && progress.files > 0
                       ? Math.min(progress.files, progress.totalFiles)
                       : undefined
                   }

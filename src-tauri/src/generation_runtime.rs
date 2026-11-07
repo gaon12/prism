@@ -22,6 +22,7 @@ use zeroize::Zeroizing;
 
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_SCHEMA_BYTES: usize = 64 * 1024;
 const CANCEL_POLL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,13 +261,34 @@ impl GenerationRuntime {
         key: Option<&SecretValue>,
         cancellation: &GenerationCancellation,
     ) -> Result<GenerationResponse, GenerationError> {
+        self.complete_with_response_schema(config, messages, key, cancellation, None)
+            .await
+    }
+
+    /// Internal document-only schema, authored by Prism rather than accepted
+    /// from frontend input. The caller separately opts in for a local server.
+    /// An unsupported server remains an error: never retry without the schema.
+    pub(crate) async fn complete_with_response_schema(
+        &self,
+        config: &GenerationConfig,
+        messages: &[GenerationMessage],
+        key: Option<&SecretValue>,
+        cancellation: &GenerationCancellation,
+        schema: Option<&Value>,
+    ) -> Result<GenerationResponse, GenerationError> {
         cancellation.check()?;
         let endpoint = validate_endpoint(&config.endpoint)?;
         validate_request(config, messages)?;
+        if schema.is_some() && !endpoint.is_local {
+            return Err(error(GenerationErrorCode::Input));
+        }
         if !endpoint.is_local && key.is_none() {
             return Err(error(GenerationErrorCode::Auth));
         }
-        let body = request_body(config, messages)?;
+        let body = match schema {
+            Some(schema) => request_body_with_schema(config, messages, Some(schema))?,
+            None => request_body(config, messages)?,
+        };
         let client = self.client(&endpoint)?;
         let mut request = client
             .post(&endpoint.completion_url)
@@ -392,6 +414,13 @@ fn request_body(
     config: &GenerationConfig,
     messages: &[GenerationMessage],
 ) -> Result<Vec<u8>, GenerationError> {
+    request_body_with_schema(config, messages, None)
+}
+fn request_body_with_schema(
+    config: &GenerationConfig,
+    messages: &[GenerationMessage],
+    schema: Option<&Value>,
+) -> Result<Vec<u8>, GenerationError> {
     let mut body =
         serde_json::json!({ "model": config.model, "messages": messages, "stream": false });
     let parameter = match config.token_parameter {
@@ -401,6 +430,23 @@ fn request_body(
     body[parameter] = Value::from(config.max_tokens);
     if let Some(temperature) = config.temperature {
         body["temperature"] = Value::from(temperature as f64);
+    }
+    if let Some(schema) = schema {
+        // This is a bounded, local document grammar, not a provider-supplied
+        // schema or a URL to fetch. Endpoint/auth/cancellation guards still run.
+        if !schema.is_object()
+            || schema.get("type").and_then(Value::as_str) != Some("object")
+            || serde_json::to_vec(schema)
+                .map_err(|_| error(GenerationErrorCode::Input))?
+                .len()
+                > MAX_SCHEMA_BYTES
+        {
+            return Err(error(GenerationErrorCode::Input));
+        }
+        body["response_format"] = serde_json::json!({
+            "type": "json_schema",
+            "json_schema": { "name": "prism_document", "strict": true, "schema": schema }
+        });
     }
     let bytes = serde_json::to_vec(&body).map_err(|_| error(GenerationErrorCode::Input))?;
     if bytes.len() > MAX_REQUEST_BYTES {
@@ -657,6 +703,37 @@ mod tests {
         assert!(validate_request(&settings, &messages()).is_err());
     }
     #[test]
+    fn document_schema_is_explicit_bounded_and_keeps_the_plain_request_unchanged() {
+        let settings = config("http://localhost:1234/v1".into());
+        let plain: Value =
+            serde_json::from_slice(&request_body(&settings, &messages()).unwrap()).unwrap();
+        assert!(plain.get("response_format").is_none());
+        let schema = serde_json::json!({
+            "type":"object","properties":{"blocks":{"type":"array"}},
+            "required":["blocks"],"additionalProperties":false
+        });
+        let packet: Value = serde_json::from_slice(
+            &request_body_with_schema(&settings, &messages(), Some(&schema)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(packet["response_format"]["type"], "json_schema");
+        assert_eq!(packet["response_format"]["json_schema"]["strict"], true);
+        assert_eq!(packet["response_format"]["json_schema"]["schema"], schema);
+        let mut without_schema = packet;
+        without_schema
+            .as_object_mut()
+            .unwrap()
+            .remove("response_format");
+        assert_eq!(without_schema, plain);
+        for invalid in [
+            Value::Null,
+            serde_json::json!({"type":"array"}),
+            serde_json::json!({"type":"object","description":"x".repeat(MAX_SCHEMA_BYTES)}),
+        ] {
+            assert!(request_body_with_schema(&settings, &messages(), Some(&invalid)).is_err());
+        }
+    }
+    #[test]
     fn local_server_gets_the_real_json_request_and_usage_is_preserved() {
         let _fixture = fixture_gate();
         let (endpoint, receiver, worker) = fixture(200, answer(), false, false);
@@ -678,6 +755,47 @@ mod tests {
         assert_eq!(request["stream"], false);
         assert_eq!(result.text, "합성 응답입니다.");
         assert_eq!(result.usage.unwrap()["provider_detail"]["fixture"], true);
+    }
+    #[test]
+    fn document_schema_reaches_local_http_and_unsupported_response_is_an_error() {
+        let _fixture = fixture_gate();
+        let schema = serde_json::json!({
+            "type":"object","properties":{"blocks":{"type":"array"}},
+            "required":["blocks"],"additionalProperties":false
+        });
+        let (endpoint, receiver, worker) = fixture(
+            400,
+            r#"{"error":{"message":"response_format is unsupported"}}"#.into(),
+            false,
+            false,
+        );
+        let engine = GenerationRuntime::new();
+        let cancellation = GenerationCancellation::new();
+        let result = runtime().block_on(engine.complete_with_response_schema(
+            &config(endpoint),
+            &messages(),
+            None,
+            &cancellation,
+            Some(&schema),
+        ));
+        assert_eq!(result.unwrap_err().code, GenerationErrorCode::Input);
+        let (_, request) = receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(request["response_format"]["json_schema"]["schema"], schema);
+        worker.join().unwrap();
+        let remote = config("https://example.invalid/v1".into());
+        assert_eq!(
+            runtime()
+                .block_on(engine.complete_with_response_schema(
+                    &remote,
+                    &messages(),
+                    None,
+                    &cancellation,
+                    Some(&schema),
+                ))
+                .unwrap_err()
+                .code,
+            GenerationErrorCode::Input
+        );
     }
     #[test]
     fn usage_is_not_estimated_and_response_debug_is_redacted() {

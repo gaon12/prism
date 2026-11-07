@@ -12,6 +12,10 @@ Implemented:
   Requests accept a drive letter and revision, with no filesystem paths,
   program execution, file-content request, or write operation. Replies contain
   only filenames, directory flags, size and modification time.
+  The client retains the codec's owned path-validation result for the stream
+  receiver, avoiding a second scan. Constructed replies still require path
+  checks; volume identity, ordering and global record/byte budgets are checked
+  in both paths. The wire format remains version 2.
 - `core`: read-only FILE-record decoding with sector fixups, base/extension
   references, hard links, DOS alias suppression, standard-information times,
   resident/nonresident data sizes, and parent-sequence checks. Junctions and
@@ -178,6 +182,18 @@ cargo build --manifest-path indexer/Cargo.toml --target-dir indexer/target --loc
 The helper embeds these bytes during compilation; neither callers nor an
 environment variable can choose a payload or destination at runtime.
 
+For an explicit CPU-only comparison of constructed and codec-validated stream
+receivers, run:
+
+```powershell
+cargo run --release --manifest-path indexer/Cargo.toml -p prism-ntfs-protocol --example stream_validation -- --records 2000000
+```
+
+The example prepares identical synthetic wire frames outside the timer, reverses
+variant order between rounds and consumes every decoded filename and metadata
+field. It verifies counts and metadata checksums. It does not contact the service
+or measure disk access, app-catalog publication or UI readiness.
+
 Remaining integration:
 
 1. Continue live churn/recovery coverage. The C-volume collector completed four
@@ -206,6 +222,17 @@ Remaining integration:
    state differ from the earlier measurements; this is a diagnostic baseline,
    not evidence of a controlled cold start, newer service deployment or a
    guaranteed 5–7 second app index.
+   On November 8, an ordinary read-only client against the unchanged installed
+   service observed about 2.34 million paths: 18.971 seconds on its first request
+   and 7.597 seconds on its immediate repeat. The updated client took 7.806
+   seconds in a later request. Duplicate stream-validation time fell from
+   358 ms to 0.24 ms, but native read waits increased, so these runs do not
+   demonstrate an overall wall-clock improvement. In a separate fixed-input
+   2-million-row comparison, median decode/validation CPU time fell from 395 ms
+   for the previous implementation to 213 ms for the updated implementation.
+   These diagnostics exclude app-catalog publication and UI startup. The original
+   whole-app C-drive 5–7 second target remains unmet; service wait time and actual
+   deployment of the newer service still need investigation.
    Delta requests currently return `JournalGap`, requiring
    a new snapshot rather than claiming an unchanged catalog.
 3. Verify the newer deferred/per-drive persistence through actual deployment,

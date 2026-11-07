@@ -30,11 +30,11 @@ const messages = {
     'エンジンファイルあり',
   ],
   verify: [
-    '페이지를 열 때마다 엔진 파일을 검증합니다. 기존 텍스트 미리보기는 원본을 다시 가져오면 페이지로 바뀝니다.',
-    'Engine files are verified each time pages are opened. Reimport an original to replace an existing text preview with pages.',
-    '每次打开页面时都会验证引擎文件。重新导入原始文件可将现有文本预览替换为页面。',
-    '每次開啟頁面時都會驗證引擎檔案。重新匯入原始檔案可將現有文字預覽替換為頁面。',
-    'ページを開くたびにエンジンファイルを検証します。既存のテキストプレビューは元のファイルを再取り込みするとページに変わります。',
+    '변환 엔진을 실행하기 전에 엔진 파일을 검증합니다. 저장된 미리보기는 원본을 확인한 뒤 재사용합니다. 기존 텍스트 미리보기는 원본을 다시 가져오면 페이지로 바뀝니다.',
+    'Engine files are verified before conversion. Cached previews are reused after checking the original. Reimport an original to replace an existing text preview with pages.',
+    '转换前会验证引擎文件。检查原始文件后可复用缓存预览。重新导入原始文件可将现有文本预览替换为页面。',
+    '轉換前會驗證引擎檔案。檢查原始檔案後可重用快取預覽。重新匯入原始檔案可將現有文字預覽替換為頁面。',
+    '変換前にエンジンファイルを検証します。保存したプレビューは元のファイルを確認して再利用します。既存のテキストプレビューは元のファイルを再取り込みするとページに変わります。',
   ],
   unpublished: [
     '다운로드용 패키지는 아직 공개되지 않았습니다. Prism용으로 검증된 ZIP 패키지가 있으면 선택할 수 있습니다.',

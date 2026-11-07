@@ -311,6 +311,19 @@ Remaining integration:
    transfer/preparation costs were not controlled or measured; subtracting
    older protocol-only timings would not identify a client-side bottleneck.
    No newer service was installed and no model or content indexing ran.
+   A later ordinary-client release diagnostic, using filename source
+   `7972ea2` with the same installed service, received and published all
+   2,340,809 paths in 9.316 seconds. The first nonempty batch arrived at
+   4.430 seconds; validated fetch with overlapping preparation took
+   8.723 seconds, including 343 ms in record callbacks, followed by a
+   592 ms join/merge/publication tail. Received and indexed counts and the
+   full metadata aggregates matched. This diagnostic adds QA metadata hashing
+   inside fetch and excludes GUI/watcher setup. Callback time is already part
+   of fetch, and the first-batch delay does not isolate service CPU or wire
+   time. Cache state and system load were uncontrolled; this is not a speed
+   improvement over the earlier 8.696-second sample or a new GUI measurement.
+   The existing service process and image remained unchanged, and the overall
+   5–7 second target remains unmet.
    Delta requests currently return `JournalGap`, requiring
    a new snapshot rather than claiming an unchanged catalog.
 3. Verify the newer deferred/per-drive persistence through actual deployment,

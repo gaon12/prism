@@ -409,9 +409,19 @@ impl RagTransport for GenerationRuntime {
         cancel: &'a GenerationCancellation,
         schema: Option<&'a Value>,
     ) -> GenerationFuture<'a> {
-        Box::pin(GenerationRuntime::complete_with_response_schema(
-            self, config, messages, key, cancel, schema,
-        ))
+        match schema {
+            Some(schema) => Box::pin(GenerationRuntime::complete_with_response_schema(
+                self,
+                config,
+                messages,
+                key,
+                cancel,
+                Some(schema),
+            )),
+            None => Box::pin(GenerationRuntime::complete(
+                self, config, messages, key, cancel,
+            )),
+        }
     }
 }
 

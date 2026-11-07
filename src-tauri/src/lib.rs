@@ -200,6 +200,8 @@ pub fn run() {
             .on_event(|app, event| {
                 if matches!(event, tauri::RunEvent::Exit) {
                     if let Some(state) = app.try_state::<AppState>() {
+                        state.paste_targets.disable();
+                        state.paste_input.shutdown();
                         state.clipboard.shutdown();
                     }
                 }

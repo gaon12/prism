@@ -244,12 +244,18 @@ impl PasteTargets {
             }
             backend.sleep(FOCUS_POLL);
         }
+        if self.disabled.load(Ordering::Acquire) {
+            return fail(true, PasteError::NoTarget);
+        }
         if backend.window_pid(target.window) != Some(target.pid) {
             self.clear();
             return fail(true, PasteError::TargetGone);
         }
         if prepare().is_err() {
             return fail(true, PasteError::FocusFailed);
+        }
+        if self.disabled.load(Ordering::Acquire) {
+            return fail(true, PasteError::NoTarget);
         }
         if !self.bring_to_front(backend, target.window) {
             return fail(true, PasteError::FocusFailed);
@@ -260,6 +266,9 @@ impl PasteTargets {
         }
         if backend.foreground() != Some(target.window) {
             return fail(true, PasteError::FocusFailed);
+        }
+        if self.disabled.load(Ordering::Acquire) {
+            return fail(true, PasteError::NoTarget);
         }
         if !backend.send_ctrl_v(target.window, target.pid) {
             return fail(true, PasteError::InputBlocked);
@@ -928,6 +937,20 @@ mod tests {
             (result.copied, result.error),
             (true, Some(PasteError::FocusFailed))
         );
+        assert!(fake.log().is_empty());
+    }
+
+    #[test]
+    fn shutdown_during_preparation_never_focuses_or_sends_input() {
+        let targets = PasteTargets::default();
+        let fake = Fake::with(&[(10, 200)], 10);
+        assert!(targets.capture(&fake));
+        let result = targets.paste_with(&fake, copy_ok, || {
+            targets.disable();
+            Ok(())
+        });
+        assert_eq!(result.error, Some(PasteError::NoTarget));
+        assert!(result.copied && !result.pasted);
         assert!(fake.log().is_empty());
     }
 

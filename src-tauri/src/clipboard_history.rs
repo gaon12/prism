@@ -638,7 +638,7 @@ struct PollState {
     /// Hash of the last payload seen; only used by sources without change markers.
     last_hash: Option<String>,
     failures: u32,
-    /// The next payload read is a baseline, not a copy (startup or resume without markers).
+    /// The next successful read (including empty) establishes the baseline after startup/resume.
     rebaseline: bool,
 }
 impl PollState {
@@ -932,6 +932,10 @@ impl ClipboardService {
         *failures = 0;
         *marker = next;
         let Some(content) = content else {
+            // Empty is a valid snapshot, not a request to ignore the next future copy.
+            // It also separates identical copies on platforms without change markers.
+            *rebaseline = false;
+            *last_hash = None;
             return false;
         };
         let hash = content_hash(&content);
@@ -1026,6 +1030,12 @@ impl MemoryClipboard {
     fn fail_next_reads(&self, count: u32) {
         self.0.lock().unwrap().fail_reads = count;
     }
+    #[cfg(test)]
+    fn clear(&self) {
+        let mut state = self.0.lock().unwrap();
+        state.marker += 1;
+        state.content = None;
+    }
     pub fn boxed(&self) -> Box<dyn ClipboardSource> {
         Box::new(self.clone())
     }
@@ -1072,6 +1082,13 @@ pub fn system_source<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Box<dyn Cli
     Box::new(SystemSource { app })
 }
 
+fn missing_clipboard_format(error: &tauri_plugin_clipboard_manager::Error) -> bool {
+    // The plugin wraps arboard errors as strings. Compare only the exact error from
+    // the locked arboard version: occupied/conversion/unknown failures are not empty.
+    matches!(error, tauri_plugin_clipboard_manager::Error::Clipboard(message)
+        if message == &arboard::Error::ContentNotAvailable.to_string())
+}
+
 impl<R: tauri::Runtime> ClipboardSource for SystemSource<R> {
     fn change_marker(&mut self) -> Option<u64> {
         #[cfg(windows)]
@@ -1098,8 +1115,8 @@ impl<R: tauri::Runtime> ClipboardSource for SystemSource<R> {
     }
     fn read(&mut self, include_images: bool) -> Result<Option<ClipContent>, String> {
         use tauri_plugin_clipboard_manager::ClipboardExt;
-        // A read failure while a format is advertised means the clipboard is busy (another app
-        // holds it open): report it so the monitor retries instead of skipping the copy.
+        // Only explicit format absence is empty. Advertised formats and other read failures
+        // stay retryable errors, so a transient failure cannot consume the startup baseline.
         #[cfg(windows)]
         let (has_text, has_image) = windows_exclusion::available_formats();
         #[cfg(not(windows))]
@@ -1108,8 +1125,8 @@ impl<R: tauri::Runtime> ClipboardSource for SystemSource<R> {
         match clipboard.read_text() {
             Ok(text) if !text.is_empty() => return Ok(Some(ClipContent::Text(text))),
             Ok(_) => {}
-            Err(_) if has_text => return Err("The clipboard is busy.".into()),
-            Err(_) => {}
+            Err(error) if !has_text && missing_clipboard_format(&error) => {}
+            Err(_) => return Err("The clipboard is busy.".into()),
         }
         if include_images {
             match clipboard.read_image() {
@@ -1120,8 +1137,8 @@ impl<R: tauri::Runtime> ClipboardSource for SystemSource<R> {
                         rgba: image.rgba().to_vec(),
                     }))
                 }
-                Err(_) if has_image => return Err("The clipboard is busy.".into()),
-                Err(_) => {}
+                Err(error) if !has_image && missing_clipboard_format(&error) => {}
+                Err(_) => return Err("The clipboard is busy.".into()),
             }
         }
         Ok(None)
@@ -1395,6 +1412,106 @@ mod tests {
         h.clipboard.copy(ClipContent::Text("busy once".into()));
         assert!(!h.tick());
         assert!(h.tick());
+    }
+
+    #[test]
+    fn markerless_empty_baseline_captures_first_copy_and_recopy_after_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clipboard");
+        let mut h = Harness::with_clipboard(
+            dir,
+            path,
+            ClipboardSettings::default(),
+            MemoryClipboard::without_markers(),
+        );
+        assert!(
+            !h.tick(),
+            "an observed empty clipboard finishes the startup baseline"
+        );
+        assert!(h.copy_text("first copy"));
+        assert_eq!(h.service.list("", None, 10).unwrap().total, 1);
+        h.clipboard.clear();
+        assert!(!h.tick());
+        assert!(
+            h.copy_text("first copy"),
+            "a clear separates two actual copies"
+        );
+        assert_eq!(h.service.list("", None, 10).unwrap().items[0].copy_count, 2);
+    }
+
+    #[test]
+    fn markerless_empty_baseline_after_pause_and_disable_does_not_eat_new_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clipboard");
+        let clipboard = MemoryClipboard::without_markers();
+        clipboard.copy(ClipContent::Text("present before startup".into()));
+        let mut h = Harness::with_clipboard(dir, path, ClipboardSettings::default(), clipboard);
+        assert!(!h.tick());
+        assert!(h.copy_text("already saved"));
+        h.service.set_paused(true).unwrap();
+        h.clipboard.clear();
+        assert!(!h.tick());
+        h.service.set_paused(false).unwrap();
+        assert!(!h.tick());
+        assert!(h.copy_text("first after empty resume"));
+        h.service
+            .apply_settings(ClipboardSettings {
+                enabled: false,
+                ..Default::default()
+            })
+            .unwrap();
+        h.clipboard.clear();
+        assert!(!h.tick());
+        h.service
+            .apply_settings(ClipboardSettings::default())
+            .unwrap();
+        assert!(!h.tick());
+        assert!(h.copy_text("first after empty enable"));
+        assert_eq!(
+            h.previews(""),
+            [
+                "first after empty enable",
+                "first after empty resume",
+                "already saved",
+            ]
+        );
+    }
+
+    #[test]
+    fn markerless_failed_read_does_not_finish_the_startup_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clipboard");
+        let clipboard = MemoryClipboard::without_markers();
+        clipboard.copy(ClipContent::Text("copied before startup".into()));
+        clipboard.fail_next_reads(1);
+        let mut h = Harness::with_clipboard(dir, path, ClipboardSettings::default(), clipboard);
+        assert!(!h.tick(), "a busy clipboard has not yielded a baseline");
+        assert!(
+            !h.tick(),
+            "the pre-existing payload is still only a baseline"
+        );
+        assert_eq!(h.service.list("", None, 10).unwrap().total, 0);
+        assert!(h.copy_text("fresh after a confirmed baseline"));
+    }
+
+    #[test]
+    fn missing_format_is_the_only_read_error_that_can_establish_an_empty_baseline() {
+        let wrapped = |error: arboard::Error| {
+            tauri_plugin_clipboard_manager::Error::Clipboard(error.to_string())
+        };
+        assert!(missing_clipboard_format(&wrapped(
+            arboard::Error::ContentNotAvailable
+        )));
+        for error in [
+            arboard::Error::ClipboardOccupied,
+            arboard::Error::ConversionFailure,
+            arboard::Error::ClipboardNotSupported,
+            arboard::Error::Unknown {
+                description: arboard::Error::ContentNotAvailable.to_string(),
+            },
+        ] {
+            assert!(!missing_clipboard_format(&wrapped(error)));
+        }
     }
 
     #[test]

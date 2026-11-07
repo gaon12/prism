@@ -233,6 +233,13 @@ Remaining integration:
    These diagnostics exclude app-catalog publication and UI startup. The original
    whole-app C-drive 5–7 second target remains unmet; service wait time and actual
    deployment of the newer service still need investigation.
+   A separate release-mode check of the current production filename modules
+   received and published all 2,340,631 C-drive records in 8.696 seconds:
+   8.081 seconds through authenticated transfer and overlapping private
+   preparation, then 0.614 seconds to join, merge and publish. The stored paths,
+   directory flags, sizes and timestamps matched the received metadata. This
+   ordinary-client check used the unchanged installed service and excluded
+   WebView/UI startup and subsequent query latency.
    Delta requests currently return `JournalGap`, requiring
    a new snapshot rather than claiming an unchanged catalog.
 3. Verify the newer deferred/per-drive persistence through actual deployment,

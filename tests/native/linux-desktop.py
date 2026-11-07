@@ -35,7 +35,10 @@ def program(value):
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
-    "--executable", required=True, type=program, help="Bundled debug Prism executable"
+    "--executable",
+    required=True,
+    type=program,
+    help="Bundled Prism executable or AppImage",
 )
 parser.add_argument(
     "--artifacts",
@@ -48,12 +51,26 @@ parser.add_argument(
     type=Path,
     help="Existing native Linux filesystem directory, when artifacts use a mounted filesystem",
 )
+parser.add_argument(
+    "--expect-release",
+    action="store_true",
+    help="Require a genuine release build using a fresh installed XDG profile",
+)
+parser.add_argument(
+    "--expected-sha256",
+    help="Pinned executable/AppImage SHA256; required with --expect-release",
+)
 parser.add_argument("--driver", default="tauri-driver", type=program)
 parser.add_argument("--native-driver", default="WebKitWebDriver", type=program)
 parser.add_argument("--xvfb", default="Xvfb", type=program)
 parser.add_argument("--window-manager", default="openbox", type=program)
 parser.add_argument("--window-manager-config", type=Path)
 parser.add_argument("--xprop", default="xprop", type=program)
+parser.add_argument(
+    "--runtime-temp-parent",
+    type=Path,
+    help="Optional existing filesystem for a fresh runtime temp directory (for example private tmpfs)",
+)
 parser.add_argument(
     "--font", type=Path, help="Optional CJK font copied only into this run’s XDG data"
 )
@@ -76,6 +93,13 @@ if not profile_parent.is_dir():
 candidate = Path(args.executable)
 script_sha = file_hash(Path(__file__))
 app_sha = file_hash(candidate)
+if args.expect_release and not args.expected_sha256:
+    parser.error("--expect-release requires --expected-sha256")
+if args.expected_sha256 and not re.fullmatch(r"[a-fA-F0-9]{64}", args.expected_sha256):
+    parser.error("--expected-sha256 must be a SHA256 hex digest")
+if args.expected_sha256 and app_sha != args.expected_sha256.lower():
+    parser.error("The selected executable does not match --expected-sha256")
+
 fixture = Path(tempfile.mkdtemp(prefix="prism-linux-native-", dir=root))
 (fixture / "qa-owner.txt").write_text(
     "Prism native Linux GUI QA v1\n", encoding="utf-8"
@@ -86,7 +110,19 @@ profile = Path(tempfile.mkdtemp(prefix="prism-linux-profile-", dir=profile_paren
 )
 (fixture / "profile-location.txt").write_text(str(profile) + "\n", encoding="utf-8")
 temporary = profile / "tmp"
-temporary.mkdir()
+runtime_temp_identity = None
+if args.runtime_temp_parent:
+    parent = args.runtime_temp_parent.resolve(strict=True)
+    if not parent.is_dir():
+        parser.error("--runtime-temp-parent must be an existing directory")
+    temporary = Path(tempfile.mkdtemp(prefix="prism-linux-runtime-", dir=parent))
+    (temporary / "qa-owner.txt").write_bytes(b"Prism native Linux runtime temp v1\n")
+    (fixture / "runtime-temp-location.txt").write_text(
+        str(temporary) + "\n", encoding="utf-8"
+    )
+    runtime_stat = temporary.stat()
+    runtime_temp_identity = (runtime_stat.st_dev, runtime_stat.st_ino)
+temporary.mkdir(exist_ok=True)
 if args.font:
     font_source = args.font.resolve(strict=True)
     font_directory = profile / "data/fonts"
@@ -103,7 +139,9 @@ original = (
 )
 source.write_text(original)
 (files / "예산 보고서.md").write_text("# 예산 보고서\n부산 출장 경비 180000원")
-(profile / "settings.json").write_text(
+settings_dir = profile / "config/app.prism.desktop" if args.expect_release else profile
+settings_dir.mkdir(parents=True, exist_ok=True)
+(settings_dir / "settings.json").write_text(
     json.dumps(
         {
             "onboardingVersion": 1,
@@ -140,6 +178,13 @@ env = {
 
 # Normal per-user font discovery, inside this run's XDG_DATA_HOME. No host font
 # installation or special fontconfig override is needed by the real WebView.
+# Both GTK and the real release clipboard adapter must stay on this owned X display.
+env.pop("WAYLAND_DISPLAY", None)
+env.pop("WAYLAND_SOCKET", None)
+env["XDG_SESSION_TYPE"] = "x11"
+if args.expect_release:
+    env.pop("PRISM_DEV_DATA_DIR", None)
+    env.pop("PRISM_DEV_TEST_MODE", None)
 env.pop("FONTCONFIG_FILE", None)
 env.pop("FONTCONFIG_PATH", None)
 # Start a separate X server; never attach to the user's active desktop.
@@ -396,9 +441,25 @@ try:
     runtime = invoke("runtime_info")
     records["runtime"] = runtime
     assert (
-        runtime["platform"] == "linux" and runtime["native"] and runtime["development"]
+        runtime["platform"] == "linux"
+        and runtime["native"]
+        and runtime["development"] is (not args.expect_release)
     )
-    assert runtime["installKind"] == "isolated" and runtime["startupError"] is None
+    assert (
+        runtime["installKind"] == ("installed" if args.expect_release else "isolated")
+        and runtime["startupError"] is None
+    ), runtime
+    actual_settings = invoke("get_settings")
+    assert actual_settings["clipboard"]["enabled"] is False
+    assert actual_settings["updates"]["autoCheck"] is False
+    assert actual_settings["startOnLogin"] is False
+    assert len(actual_settings["scopes"]) == 1 and actual_settings["scopes"][0][
+        "path"
+    ] == str(files)
+    assert (
+        actual_settings["scopes"][0]["contentEnabled"] is False
+        and actual_settings["scopes"][0]["externalAllowed"] is False
+    )
     stage = "real filename index and rendered Korean query"
     until(
         lambda: invoke("index_status")["initialScanComplete"], "initial fixture index"
@@ -711,6 +772,37 @@ finally:
             except subprocess.TimeoutExpired:
                 child.kill()
                 child.wait(10)
+    if runtime_temp_identity:
+        try:
+            # This optional directory was freshly created by this invocation.
+            # Retain the profile and original AppImage; remove only runtime
+            # extraction/cache bytes after shutting down the owned desktop.
+            assert temporary.resolve() == temporary
+            assert temporary.parent == args.runtime_temp_parent.resolve(strict=True)
+            assert temporary.name.startswith("prism-linux-runtime-")
+            metadata = temporary.stat()
+            assert (metadata.st_dev, metadata.st_ino) == runtime_temp_identity
+            assert (
+                temporary / "qa-owner.txt"
+            ).read_bytes() == b"Prism native Linux runtime temp v1\n"
+            assert shutil.rmtree.avoids_symlink_attacks
+            payloads = []
+            for executable in temporary.glob("appimage_extracted_*/usr/bin/prism"):
+                assert executable.resolve().is_relative_to(temporary)
+                assert executable.is_file() and not executable.is_symlink()
+                payloads.append(
+                    {
+                        "relativePath": executable.relative_to(temporary).as_posix(),
+                        "bytes": executable.stat().st_size,
+                        "sha256": file_hash(executable),
+                    }
+                )
+            records["runtimePayloads"] = payloads
+            shutil.rmtree(temporary)
+            records["runtimeTemporaryRemoved"] = not temporary.exists()
+        except (OSError, RuntimeError, ValueError, AssertionError) as error:
+            records["passed"] = False
+            records["runtimeCleanupError"] = repr(error)
     # Check source stability only after owned processes have been stopped.
     unchanged = (
         file_hash(Path(__file__)) == script_sha and file_hash(candidate) == app_sha

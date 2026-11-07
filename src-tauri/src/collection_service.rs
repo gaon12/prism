@@ -543,6 +543,107 @@ mod tests {
             .is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
     }
+    #[test]
+    fn png_viewports_are_stored_as_webp_for_text_and_epub() {
+        for (name, original) in [
+            (
+                "first.txt",
+                "한국어 첫 페이지\n<script>literal</script>".as_bytes(),
+            ),
+            (
+                "first.epub",
+                include_bytes!("../../tests/fixtures/epub/spine.epub").as_slice(),
+            ),
+        ] {
+            let (dir, service, _, work, unit) = fixture();
+            let path = dir.path().join(name);
+            fs::write(&path, original).unwrap();
+            let unit = service
+                .import(&unit.id, unit.revision, vec![path.clone()])
+                .unwrap();
+            let page = service
+                .store
+                .pages(&unit.id, unit.revision, 0, 1)
+                .unwrap()
+                .items
+                .remove(0);
+            // Synthetic bitmap tests codec admission only. Actual document
+            // rendering and first-page text are verified in the native UI.
+            let viewport = dir.path().join("viewport.png");
+            png(&viewport, [21, 113, 58, 255]);
+            let data = format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(fs::read(viewport).unwrap())
+            );
+            let admit = |data: &str| {
+                if page.location.kind == PageKind::Text {
+                    service.cache_text(&page.id, &page.source_hash, data)
+                } else {
+                    service.cache_epub(&page.id, &page.source_hash, data)
+                }
+            };
+            let saved = admit(&data).unwrap();
+            let pixels = decoded(&saved);
+            assert_eq!(pixels.dimensions(), (80, 120));
+            assert_eq!(pixels.get_pixel(40, 60).0, [21, 113, 58, 255]);
+            assert_eq!(service.cover(&work.id).unwrap().data_url, saved.data_url);
+            let reader = service.media(&page.id, false).unwrap();
+            assert!(reader.text.is_some() || reader.document.is_some());
+            assert_eq!(fs::read(&path).unwrap(), original);
+            fs::write(&path, b"changed original").unwrap();
+            assert_eq!(admit(&data).unwrap_err().code, ErrorCode::SourceChanged);
+            assert_eq!(
+                service.cover(&work.id).unwrap_err().code,
+                ErrorCode::SourceChanged
+            );
+        }
+    }
+    #[test]
+    fn viewport_encoding_and_dimensions_are_checked_before_cache_replacement() {
+        let (dir, service, _, work, unit) = fixture();
+        let path = dir.path().join("first.txt");
+        fs::write(&path, "첫 페이지의 원문").unwrap();
+        let unit = service.import(&unit.id, unit.revision, vec![path]).unwrap();
+        let page = service
+            .store
+            .pages(&unit.id, unit.revision, 0, 1)
+            .unwrap()
+            .items
+            .remove(0);
+        let viewport = dir.path().join("viewport.png");
+        png(&viewport, [120, 130, 140, 255]);
+        let payload = base64::engine::general_purpose::STANDARD.encode(fs::read(viewport).unwrap());
+        let data = format!("data:image/png;base64,{payload}");
+        let admit = |data: &str| service.cache_text(&page.id, &page.source_hash, data);
+        let saved = admit(&data).unwrap();
+        let webp = saved
+            .data_url
+            .as_ref()
+            .unwrap()
+            .strip_prefix("data:image/webp;base64,")
+            .unwrap();
+        for invalid in [
+            format!("data:image/webp;base64,{payload}"),
+            format!("data:image/png;base64,{webp}"),
+            format!("data:image/jpeg;base64,{payload}"),
+            "data:image/png;base64,!!".into(),
+            "data:image/png;base64,bm90IGEgcG5n".into(),
+        ] {
+            assert_eq!(admit(&invalid).unwrap_err().code, ErrorCode::Input);
+        }
+        let oversized = dir.path().join("oversized.png");
+        image::RgbaImage::from_pixel(481, 2, image::Rgba([1, 2, 3, 255]))
+            .save(&oversized)
+            .unwrap();
+        let oversized = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(fs::read(oversized).unwrap())
+        );
+        assert_eq!(admit(&oversized).unwrap_err().code, ErrorCode::Limit);
+        assert_eq!(service.cover(&work.id).unwrap().data_url, saved.data_url);
+        service.cancel_all();
+        assert_eq!(admit(&data).unwrap_err().code, ErrorCode::Cancelled);
+    }
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1314,7 +1415,7 @@ impl CollectionService {
     }
     /// Persist the real browser-rendered first viewport, never a guessed cover.
     /// Reauthenticate the current source after rendering and re-encode bounded
-    /// WebP pixels before admitting anything to our owned cache.
+    /// PNG/WebP pixels before admitting a locally encoded WebP to our cache.
     pub fn cache_epub(&self, page_id: &str, source_hash: &str, data_url: &str) -> Result<Media> {
         self.cache_viewport(page_id, source_hash, data_url, PageKind::Epub)
     }
@@ -1346,16 +1447,32 @@ impl CollectionService {
         let source = self.store.source(&page.source_id)?;
         let cancel = &self.inner.shutdown;
         import::image_bytes(&source, &page, &self.inner.excluded, cancel)?;
-        let payload = data_url
-            .strip_prefix("data:image/webp;base64,")
-            .ok_or_else(|| error(ErrorCode::Input))?;
+        let (payload, format) =
+            if let Some(payload) = data_url.strip_prefix("data:image/png;base64,") {
+                (payload, image::ImageFormat::Png)
+            } else if let Some(payload) = data_url.strip_prefix("data:image/webp;base64,") {
+                (payload, image::ImageFormat::WebP)
+            } else {
+                return Err(error(ErrorCode::Input));
+            };
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(payload)
             .map_err(|_| error(ErrorCode::Input))?;
-        let (width, height) =
-            image::ImageReader::with_format(std::io::Cursor::new(&bytes), image::ImageFormat::WebP)
-                .into_dimensions()
-                .map_err(|_| error(ErrorCode::Input))?;
+        // Bound decoder metadata as well as pixels. A browser thumbnail needs
+        // less than 1 MiB of RGBA data, even at the maximum square viewport.
+        let mut reader = image::ImageReader::with_format(std::io::Cursor::new(&bytes), format);
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(480);
+        limits.max_image_height = Some(480);
+        limits.max_alloc = Some(4 << 20);
+        reader.limits(limits);
+        let (width, height) = reader.into_dimensions().map_err(|failure| {
+            error(if matches!(failure, image::ImageError::Limits(_)) {
+                ErrorCode::Limit
+            } else {
+                ErrorCode::Input
+            })
+        })?;
         if width == 0 || height == 0 || width.max(height) > 480 {
             return Err(error(ErrorCode::Limit));
         }

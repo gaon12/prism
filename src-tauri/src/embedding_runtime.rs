@@ -666,13 +666,9 @@ impl EmbeddingRuntime {
             let mut buffer = [0u8; 64 * 1024];
             loop {
                 self.check_cancel()?;
-                let count = reader
-                    .read(&mut buffer)
-                    .map_err(|_| if self.inner.cancel.load(Ordering::Acquire) {
-                        CANCELLED.to_string()
-                    } else {
-                        "Embedding download or import was interrupted; retry or import a verified file".to_string()
-                    })?;
+                let count = reader.read(&mut buffer).map_err(|error| {
+                    asset_read_error(error, self.inner.cancel.load(Ordering::Acquire))
+                })?;
                 if count == 0 {
                     break;
                 }
@@ -750,8 +746,57 @@ impl EmbeddingRuntime {
     }
 }
 
+/// Only these application-authored causes can cross the download thread.
+/// Raw HTTP errors may contain signed redirect URLs; imported file errors can
+/// contain local paths. Neither is safe to expose through the status DTO.
+#[derive(Debug)]
+enum DownloadFailure {
+    Initialize,
+    Timeout,
+    Connection,
+    Request,
+    Server(u16),
+    Size,
+    Body,
+    WorkerStopped,
+    Cancelled,
+}
+impl std::fmt::Display for DownloadFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Initialize => formatter.write_str("Cannot initialize HTTPS downloader"),
+            Self::Timeout => formatter.write_str(
+                "Embedding asset download timed out; check your connection and proxy settings",
+            ),
+            Self::Connection => formatter.write_str(
+                "Cannot connect to the embedding asset server; check your connection and proxy settings",
+            ),
+            Self::Request => formatter.write_str("Embedding asset HTTPS request failed"),
+            Self::Server(status) => write!(formatter, "Embedding asset download server returned HTTP {status}"),
+            Self::Size => formatter.write_str("Embedding asset size mismatch with the pinned release"),
+            Self::Body => formatter.write_str("Embedding asset download interrupted"),
+            Self::WorkerStopped => formatter.write_str("Embedding download worker stopped"),
+            Self::Cancelled => formatter.write_str(CANCELLED),
+        }
+    }
+}
+impl std::error::Error for DownloadFailure {}
+
+fn asset_read_error(error: std::io::Error, cancelled: bool) -> String {
+    if cancelled {
+        return CANCELLED.to_string();
+    }
+    if let Some(cause) = error
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<DownloadFailure>())
+    {
+        return cause.to_string();
+    }
+    "Embedding download or import was interrupted; retry or import a verified file".to_string()
+}
+
 struct DownloadReader {
-    chunks: mpsc::Receiver<Result<Vec<u8>, String>>,
+    chunks: mpsc::Receiver<Result<Vec<u8>, DownloadFailure>>,
     pending: Cursor<Vec<u8>>,
     cancel: Arc<AtomicBool>,
 }
@@ -762,34 +807,43 @@ impl DownloadReader {
         thread::Builder::new()
             .name("prism-model-download".into())
             .spawn(move || {
-                let result = (|| -> Result<(), String> {
+                let result = (|| -> Result<(), DownloadFailure> {
                     let client = Client::builder()
                         .https_only(true)
                         .connect_timeout(Duration::from_secs(10))
                         .timeout(Duration::from_secs(600))
                         .build()
-                        .map_err(|_| "Cannot initialize HTTPS downloader".to_string())?;
-                    let mut response = client
-                        .get(asset.url)
-                        .send()
-                        .map_err(|_| "Embedding asset download failed".to_string())?;
-                    if !response.status().is_success()
-                        || response
-                            .content_length()
-                            .is_some_and(|length| length != asset.bytes)
+                        .map_err(|_| DownloadFailure::Initialize)?;
+                    let mut response = client.get(asset.url).send().map_err(|error| {
+                        if error.is_timeout() {
+                            DownloadFailure::Timeout
+                        } else if error.is_connect() {
+                            DownloadFailure::Connection
+                        } else {
+                            DownloadFailure::Request
+                        }
+                    })?;
+                    if !response.status().is_success() {
+                        return Err(DownloadFailure::Server(response.status().as_u16()));
+                    }
+                    if response
+                        .content_length()
+                        .is_some_and(|length| length != asset.bytes)
                     {
-                        return Err("Embedding asset release response is invalid".into());
+                        return Err(DownloadFailure::Size);
                     }
                     loop {
                         if worker_cancel.load(Ordering::Acquire) {
-                            return Err(CANCELLED.into());
+                            return Err(DownloadFailure::Cancelled);
                         }
                         let mut chunk = vec![0u8; 64 * 1024];
                         let bytes = response
                             .read(&mut chunk)
-                            .map_err(|_| "Embedding asset download interrupted".to_string())?;
+                            .map_err(|_| DownloadFailure::Body)?;
                         chunk.truncate(bytes);
-                        sender.send(Ok(chunk)).map_err(|_| CANCELLED.to_string())?;
+                        sender
+                            .send(Ok(chunk))
+                            .map_err(|_| DownloadFailure::Cancelled)?;
                         if bytes == 0 {
                             return Ok(());
                         }
@@ -831,7 +885,7 @@ impl Read for DownloadReader {
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
-                        "Embedding download worker stopped",
+                        DownloadFailure::WorkerStopped,
                     ))
                 }
             }
@@ -1032,6 +1086,71 @@ mod tests {
         let start = Instant::now();
         assert!(worker.join().unwrap().is_err());
         assert!(start.elapsed() < Duration::from_secs(1));
+    }
+    #[test]
+    fn download_reader_preserves_a_worker_failure_after_buffered_bytes() {
+        let (sender, chunks) = mpsc::sync_channel(2);
+        sender.send(Ok(vec![1, 2, 3])).unwrap();
+        sender.send(Err(DownloadFailure::Server(403))).unwrap();
+        drop(sender);
+        let mut reader = DownloadReader {
+            chunks,
+            pending: Cursor::new(Vec::new()),
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        let mut output = [0u8; 2];
+        assert_eq!(reader.read(&mut output).unwrap(), 2);
+        assert_eq!(output, [1, 2]);
+        assert_eq!(reader.read(&mut output).unwrap(), 1);
+        assert_eq!(output[0], 3);
+        let error = reader.read(&mut output).unwrap_err();
+        assert_eq!(
+            asset_read_error(error, false),
+            "Embedding asset download server returned HTTP 403"
+        );
+    }
+    #[test]
+    fn an_unexpected_download_worker_exit_is_not_successful_eof() {
+        let (sender, chunks) = mpsc::sync_channel(1);
+        drop(sender);
+        let mut reader = DownloadReader {
+            chunks,
+            pending: Cursor::new(Vec::new()),
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        let error = reader.read(&mut [0u8; 8]).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            asset_read_error(error, false),
+            "Embedding download worker stopped"
+        );
+    }
+    #[test]
+    fn download_read_errors_keep_safe_causes_but_never_import_paths() {
+        let timeout = std::io::Error::other(DownloadFailure::Timeout);
+        assert!(asset_read_error(timeout, false).contains("timed out"));
+        let file_error = std::io::Error::other("private/path?token=sensitive");
+        assert_eq!(
+            asset_read_error(file_error, false),
+            "Embedding download or import was interrupted; retry or import a verified file"
+        );
+        let network_error = std::io::Error::other(DownloadFailure::Server(503));
+        assert_eq!(asset_read_error(network_error, true), CANCELLED);
+    }
+    #[test]
+    fn an_explicit_download_end_marker_keeps_normal_eof() {
+        let (sender, chunks) = mpsc::sync_channel(2);
+        sender.send(Ok(vec![4, 5])).unwrap();
+        sender.send(Ok(Vec::new())).unwrap();
+        drop(sender);
+        let mut reader = DownloadReader {
+            chunks,
+            pending: Cursor::new(Vec::new()),
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).unwrap();
+        assert_eq!(output, [4, 5]);
     }
     #[test]
     #[ignore = "Requires PRISM_TEST_MODEL and PRISM_TEST_RUNTIME pinned local assets"]

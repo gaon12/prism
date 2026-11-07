@@ -2569,13 +2569,14 @@ mod tests {
             Ok(())
         }
     }
+    type CountHook = Arc<dyn Fn(usize) + Send + Sync>;
     struct FakeSources {
         items: Mutex<Vec<RagSource>>,
         states: Mutex<HashMap<String, SourceState>>,
         checks: AtomicUsize,
         retrieves: AtomicUsize,
         delay_ms: AtomicUsize,
-        on_check: Mutex<Option<Arc<dyn Fn(usize) + Send + Sync>>>,
+        on_check: Mutex<Option<CountHook>>,
     }
     impl FakeSources {
         fn new() -> Self {
@@ -2668,7 +2669,7 @@ mod tests {
     struct FakeTransport {
         calls: Mutex<Vec<Call>>,
         replies: Mutex<VecDeque<Result<GenerationResponse, GenerationError>>>,
-        hook: Mutex<Option<Arc<dyn Fn(usize) + Send + Sync>>>,
+        hook: Mutex<Option<CountHook>>,
         pending: AtomicBool,
     }
     impl FakeTransport {

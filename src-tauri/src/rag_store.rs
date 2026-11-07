@@ -650,7 +650,10 @@ mod selection_tests {
                 .map(|item| item.id)
                 .collect()
         };
-        assert_eq!(ids(Some("project-a")), [a.id.clone()]);
+        assert_eq!(
+            ids(Some("project-a")).as_slice(),
+            std::slice::from_ref(&a.id)
+        );
         assert!(ids(Some("project-b")).is_empty());
         assert_eq!(ids(None).len(), 2);
 
@@ -658,7 +661,10 @@ mod selection_tests {
         // conversation that already has a project is never moved.
         store.adopt_project(&loose.id, "project-b").unwrap();
         store.adopt_project(&a.id, "project-b").unwrap();
-        assert_eq!(ids(Some("project-b")), [loose.id.clone()]);
+        assert_eq!(
+            ids(Some("project-b")).as_slice(),
+            std::slice::from_ref(&loose.id)
+        );
         assert_eq!(
             store.summary(&a.id).unwrap().project.as_deref(),
             Some("project-a")

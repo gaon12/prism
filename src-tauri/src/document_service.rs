@@ -1735,14 +1735,15 @@ mod tests {
                     .id,
                 current.revision.id
             );
-            let schemas = f.transport.schemas.lock().unwrap();
-            let properties =
-                &schemas[1].as_ref().unwrap()["properties"]["blocks"]["items"]["properties"];
-            assert_eq!(
-                properties["sectionId"]["enum"],
-                serde_json::json!(["summary", null])
-            );
-            drop(schemas);
+            {
+                let schemas = f.transport.schemas.lock().unwrap();
+                let properties =
+                    &schemas[1].as_ref().unwrap()["properties"]["blocks"]["items"]["properties"];
+                assert_eq!(
+                    properties["sectionId"]["enum"],
+                    serde_json::json!(["summary", null])
+                );
+            }
             // A valid opt-in answer remains explicitly unverified.
             f.transport.push(body("b2", "Value [S1]"));
             let generated = f

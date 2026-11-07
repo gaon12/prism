@@ -39,9 +39,12 @@ export async function epubThumbnail(book: EpubDocument): Promise<string> {
   context.fillStyle = 'white';
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  const url = canvas.toDataURL('image/webp', 0.92);
+  // PNG encoding is available in WebKit as well as Chromium. WebKit may
+  // silently return PNG for an image/webp request; the native admission path
+  // validates this bitmap and always persists a WebP thumbnail.
+  const url = canvas.toDataURL('image/png');
   image.src = '';
   canvas.width = canvas.height = 0;
-  if (!url.startsWith('data:image/webp;base64,')) throw { code: 'unsupported' };
+  if (!url.startsWith('data:image/png;base64,')) throw { code: 'unsupported' };
   return url;
 }

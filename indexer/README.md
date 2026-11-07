@@ -175,6 +175,32 @@ separate the server's internal cache/MFT/replay work. Compare the first observed
 request and an immediate repeat separately; neither is a controlled cold-start
 measurement, and service transfer timing excludes the app's search-catalog work.
 
+The app's user-requested diagnostic report also includes
+`filenameIndex.lastServiceSnapshot` for the latest successfully validated NTFS
+snapshot in the current configured generation. It contains only numeric timing,
+count and initial-catalog information, with no paths, file names or drive identity.
+Normal search/status replies are unchanged. Refresh/configuration clears this
+record; a rejected or cancelled transfer cannot replace the previous success.
+
+| Field               | Meaning                                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------------------- |
+| `receivedRecords`   | Received records, including directory entries; this is not a count of unique physical files.      |
+| `firstBatchMs`      | Collection entry to the first nonempty record batch, or null for an empty snapshot.               |
+| `validatedFetchMs`  | Through completed native stream/root validation, overlapping private catalog preparation.         |
+| `receiveCallbackMs` | Record callback wall time, including validation, queuing and backpressure; a subset of fetch.     |
+| `finishPublishMs`   | Remaining worker joins, merging and publication after the validated fetch.                        |
+| `totalMs`           | The snapshot collection/preparation/publication path; excludes watcher setup, final sweep and UI. |
+| `initialCatalog`    | Whether the app catalog was empty when collection began.                                          |
+
+These values cannot identify the server's internal MFT/cache/replay work, and
+callback time must not be added to fetch time. The explicit ignored app test
+`index::service::benchmark::live_streaming_installed_service_catalog` additionally
+checks aggregate path/metadata preservation and prints these counters. Its
+`qaMetadataHashingIncluded` flag notes the extra verification work inside the
+measured fetch. This test requires an explicit ordinary-user C-drive opt-in and
+never installs or manages the service. It does not prove whole-app GUI latency
+or achievement of the 5–7 second target.
+
 The app's Windows build compiles and embeds both images automatically. For
 standalone helper validation, build the real host first (PowerShell):
 

@@ -210,9 +210,19 @@ fn live_streaming_installed_service_catalog() {
     );
     assert!(received > 0);
     let transferred = transfer_done.unwrap();
+    let timing = catalog.status.last_service_snapshot.as_ref().unwrap();
+    assert_eq!(timing.received_records, received);
+    assert!(timing.initial_catalog);
+    assert!(timing.first_batch_ms.is_some());
     // Transfer includes private work/backpressure, not pure wire I/O. Only the
     // tail after successful native/root validation is reported separately.
     println!("{{\"synthetic\":false,\"ordinaryClient\":true,\"streaming\":true,\"received\":{received},\"indexed\":{},\"validatedTransferWithPreparationMs\":{},\"joinMergePublishTailMs\":{},\"totalMs\":{},\"metadataMatches\":true}}", catalog.entries.len(), transferred.as_millis(), (total-transferred).as_millis(), total.as_millis());
+    println!(
+        "{}",
+        serde_json::json!({"serviceSnapshotTiming": timing,
+        "includesGuiOrWatcherSetup": false, "callbackTimeOverlapsFetch": true,
+        "qaMetadataHashingIncluded": true})
+    );
 }
 
 #[cfg(windows)]

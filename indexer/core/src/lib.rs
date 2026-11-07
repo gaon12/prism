@@ -572,10 +572,18 @@ impl Catalog {
         // Directory paths are drive-specific. A catalog may be reused after
         // Windows assigns another drive letter to the same volume.
         self.directories.clear();
-        let mut numbers: Vec<_> = self.records.keys().copied().collect();
-        numbers.sort_unstable();
-        for number in numbers {
-            let record = &self.records[&number];
+        // Copy each number beside its borrowed record before sorting. This
+        // preserves deterministic order without hashing the same number again
+        // for every emitted record. The catalog itself remains immutable.
+        // On 64-bit builds the temporary table adds one pointer per record;
+        // it is dropped on success and on callback failure, not retained.
+        let mut records: Vec<_> = self
+            .records
+            .iter()
+            .map(|(&number, record)| (number, record))
+            .collect();
+        records.sort_unstable_by_key(|(number, _)| *number);
+        for (number, record) in records {
             if record.base.is_some() || record.alias() || (number < 16 && number != 5) {
                 continue;
             }
@@ -695,6 +703,91 @@ mod tests {
             .iter()
             .all(|path| path.starts_with("D:\\")));
     }
+    #[test]
+    fn ordered_visits_keep_metadata_links_and_restart_after_callback_failure() {
+        let mut large = record(17, 16, "가😀.md", false);
+        large.size = Some(u64::MAX);
+        large.modified_ms = None;
+        let mut linked = record(18, 16, "한국어.md", false);
+        linked.names.push(FileName {
+            parent: reference(16, 1),
+            name: "副本.md".into(),
+            namespace: 1,
+        });
+        // Deliberately insert out of MFT-number order.
+        let mut catalog = catalog(vec![
+            linked,
+            large,
+            record(16, 5, "문서", true),
+            record(5, 5, ".", true),
+        ]);
+        let expected = |drive: char, folder: &str, folder_time: i64| {
+            vec![
+                FileRecord {
+                    path: format!("{drive}:\\"),
+                    is_dir: true,
+                    size: 0,
+                    modified_ms: Some(42),
+                },
+                FileRecord {
+                    path: format!("{drive}:\\{folder}"),
+                    is_dir: true,
+                    size: 0,
+                    modified_ms: Some(folder_time),
+                },
+                FileRecord {
+                    path: format!("{drive}:\\{folder}\\가😀.md"),
+                    is_dir: false,
+                    size: u64::MAX,
+                    modified_ms: None,
+                },
+                FileRecord {
+                    path: format!("{drive}:\\{folder}\\한국어.md"),
+                    is_dir: false,
+                    size: 123,
+                    modified_ms: Some(42),
+                },
+                FileRecord {
+                    path: format!("{drive}:\\{folder}\\副本.md"),
+                    is_dir: false,
+                    size: 123,
+                    modified_ms: Some(42),
+                },
+            ]
+        };
+        let collect = |catalog: &mut Catalog, drive| {
+            let mut rows = Vec::new();
+            catalog
+                .visit(DriveLetter::new(drive).unwrap(), |row| {
+                    rows.push(row);
+                    Ok::<_, ()>(())
+                })
+                .unwrap();
+            rows
+        };
+        for _ in 0..3 {
+            assert_eq!(collect(&mut catalog, b'C'), expected('C', "문서", 42));
+        }
+        let mut visited = 0;
+        assert_eq!(
+            catalog.visit(DriveLetter::new(b'C').unwrap(), |_| {
+                visited += 1;
+                if visited == 3 {
+                    Err("stop")
+                } else {
+                    Ok(())
+                }
+            }),
+            Err("stop")
+        );
+        assert_eq!(visited, 3);
+        assert_eq!(collect(&mut catalog, b'C'), expected('C', "문서", 42));
+        let mut moved = record(16, 5, "새 폴더", true);
+        moved.modified_ms = Some(-5);
+        catalog.replace_family(vec![moved]).unwrap();
+        assert_eq!(collect(&mut catalog, b'D'), expected('D', "새 폴더", -5));
+    }
+
     #[test]
     fn extension_names_require_the_correct_base_sequence() {
         let mut extension = record(20, 5, "hardlink.md", false);

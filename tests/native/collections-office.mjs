@@ -120,7 +120,18 @@ try {
   assert.deepEqual(stages, []);
   result.installCancelled = true;
   result.phase = 'install';
-  await invoke('collection_office_install', { path: archive });
+  // Tauri rejects with a plain DTO. Return it across the WebView boundary so
+  // Playwright cannot reduce the real installation failure to "Object".
+  result.installOutcome = await main.evaluate(
+    (path) =>
+      window.__TAURI_INTERNALS__.invoke('collection_office_install', { path }).then(
+        () => ({ ok: true }),
+        (error) => ({ error }),
+      ),
+    archive,
+  );
+  result.installStatus = await invoke('collection_office_status');
+  assert.deepEqual(result.installOutcome, { ok: true });
   assert.equal((await invoke('collection_office_status')).installed, true);
   assert.equal((await invoke('collection_office_status')).installing, false);
   result.installed = true;

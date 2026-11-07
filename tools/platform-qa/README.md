@@ -138,6 +138,24 @@ Expensive or OS-dependent checks are opt-in:
   `src-tauri/src/embedding_assets.rs`. Checks their pinned lengths and SHA-256 hashes,
   extracts them to temporary directories, and verifies every installed file. Does
   not execute foreign-platform binaries.
+
+  Run only this opt-in check with the following PowerShell commands (use an
+  absolute archive directory; temporary extraction can use another local drive):
+
+  ```powershell
+  $env:PRISM_TEST_PACKAGES_DIR = 'D:\runtime-archives'
+  cargo test --manifest-path tools/platform-qa/Cargo.toml --locked actual_upstream_packages_extract_verify_and_materialize_all_aliases -- --ignored --nocapture --test-threads=1
+  ```
+
+  On 2026-11-08, the exact production inventory, extractor and external test
+  module passed this check on Windows using all five pinned b11960 archives:
+  Windows x64, macOS ARM64/x64 and Linux ARM64/x64. Extraction and subsequent
+  installed-byte verification passed, including regular-file materialization of
+  library aliases. The archive-only harness used all 51 dependencies at the
+  application's locked versions. This establishes archive compatibility on the
+  Windows host, not execution, model inference or native installation on the
+  other operating systems.
+
 - `real_korean_retrieval_and_owned_process_shutdown`: set `PRISM_TEST_MODEL` to the
   pinned Q8 model and `PRISM_TEST_RUNTIME` to the **host platform's** pinned archive.
   Runs actual Korean retrieval at 768 and 256 dimensions, reopens installed state,

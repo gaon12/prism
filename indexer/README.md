@@ -324,6 +324,20 @@ Remaining integration:
    improvement over the earlier 8.696-second sample or a new GUI measurement.
    The existing service process and image remained unchanged, and the overall
    5–7 second target remains unmet.
+   In a subsequent native Windows portable check of authenticated `2be96bc`,
+   the initial catalog was usable at 8.519 seconds and the GUI showed the
+   current count at 8.796 seconds. Its actual in-app snapshot diagnostic was
+   8.379 seconds: first batch 3.380 seconds, validated fetch/preparation
+   7.903 seconds and a 476 ms publication tail. The snapshot contained
+   2,340,817 paths; at the GUI milestone the current catalog contained
+   2,340,764, with seven skipped watch-update items. GUI verification bracketed
+   the DOM read with the same current
+   revision/count/phase, rather than requiring an old fixed count. The first
+   fixed-count observer timed out and remains a failed observation. Real
+   collection progress and the retained search-to-chat row were checked;
+   no model/content indexing ran and the service image stayed unchanged.
+   Cache/load remain uncontrolled, so this is neither a controlled improvement
+   over the earlier GUI sample nor achievement of the 5–7 second target.
    Delta requests currently return `JournalGap`, requiring
    a new snapshot rather than claiming an unchanged catalog.
 3. Verify the newer deferred/per-drive persistence through actual deployment,

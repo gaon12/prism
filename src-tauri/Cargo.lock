@@ -7435,6 +7435,7 @@ dependencies = [
  "windows",
  "windows-future",
  "windows-sys 0.61.2",
+ "x11rb",
  "zbus-secret-service-keyring-store",
  "zeroize",
  "zip",

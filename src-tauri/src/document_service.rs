@@ -690,6 +690,7 @@ impl DocumentService {
                     &request.instruction,
                 )?,
                 external_query: request.research_query.clone(),
+                response_schema: Some(document_response_schema(&revision, operation, &targets)),
             };
             let rag_request = RagRequest {
                 external: request.research_query.is_some(),
@@ -895,6 +896,23 @@ fn validate_targets(
         }
     }
     Ok(())
+}
+fn document_response_schema(
+    revision: &DocumentRevision,
+    operation: DocumentOperation,
+    targets: &[String],
+) -> Value {
+    let sections: Vec<_> = revision
+        .plan
+        .sections
+        .iter()
+        .map(|section| section.id.as_str())
+        .collect();
+    crate::document_schema::response_schema(
+        operation == DocumentOperation::Outline,
+        &sections,
+        (operation == DocumentOperation::Rewrite).then_some(targets),
+    )
 }
 fn json_payload(value: &str) -> DocumentResult<&str> {
     if value.len() > MAX_RESPONSE {
@@ -1489,6 +1507,7 @@ mod tests {
     struct Transport {
         responses: Mutex<VecDeque<Result<String, GenerationErrorCode>>>,
         calls: Mutex<Vec<(String, String)>>,
+        schemas: Mutex<Vec<Option<Value>>>,
         pending: AtomicBool,
         hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     }
@@ -1504,7 +1523,9 @@ mod tests {
             messages: &'a [GenerationMessage],
             _: Option<&'a SecretValue>,
             _: &'a GenerationCancellation,
+            schema: Option<&'a Value>,
         ) -> GenerationFuture<'a> {
+            self.schemas.lock().unwrap().push(schema.cloned());
             self.calls.lock().unwrap().push((
                 config.endpoint.clone(),
                 messages
@@ -1583,6 +1604,7 @@ mod tests {
         let transport = Arc::new(Transport {
             responses: Mutex::new(VecDeque::new()),
             calls: Mutex::new(vec![]),
+            schemas: Mutex::new(vec![]),
             pending: AtomicBool::new(false),
             hook: Mutex::new(None),
         });
@@ -1671,6 +1693,106 @@ mod tests {
             document: page.document,
             revision,
         }
+    }
+    #[test]
+    fn local_document_schema_is_opt_in_and_does_not_replace_validation() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            // Legacy profiles send no grammar.
+            f.transport.push(body("b1", "Value [S1]"));
+            let revision = f
+                .service
+                .generate_body(request(&page, "plain_body"))
+                .await
+                .unwrap();
+            assert!(f.transport.schemas.lock().unwrap()[0].is_none());
+            f.policy.write().unwrap().prefs.local_structured_documents = true;
+            let current = DocumentPage {
+                document: page.document,
+                revision,
+            };
+            // Simulate a server ignoring the grammar, just as an incompatible
+            // provider might. Existing strict validation must still reject it.
+            f.transport.push(
+                serde_json::json!({"blocks":[{
+                    "id":"b2","sectionId":"invented_section","kind":"fact",
+                    "markdown":"Value [S1]","sourceLabels":["[S1]"]
+                }]})
+                .to_string(),
+            );
+            let error = f
+                .service
+                .generate_body(request(&current, "invalid_section"))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, DocumentErrorCode::Malformed);
+            assert_eq!(
+                f.service
+                    .get(&current.document.id, None)
+                    .unwrap()
+                    .revision
+                    .id,
+                current.revision.id
+            );
+            let schemas = f.transport.schemas.lock().unwrap();
+            let properties =
+                &schemas[1].as_ref().unwrap()["properties"]["blocks"]["items"]["properties"];
+            assert_eq!(
+                properties["sectionId"]["enum"],
+                serde_json::json!(["summary", null])
+            );
+            drop(schemas);
+            // A valid opt-in answer remains explicitly unverified.
+            f.transport.push(body("b2", "Value [S1]"));
+            let generated = f
+                .service
+                .generate_body(request(&current, "valid_body"))
+                .await
+                .unwrap();
+            assert!(!generated.claims_verified);
+            assert!(!generated.blocks[0].claims_verified);
+            // External document calls never inherit the local grammar choice.
+            f.policy.write().unwrap().prefs.mode = GenerationMode::External;
+            let next = DocumentPage {
+                document: current.document,
+                revision: generated,
+            };
+            f.transport.push(body("b3", "Value [S1]"));
+            f.service
+                .generate_body(request(&next, "external_body"))
+                .await
+                .unwrap();
+            assert!(f
+                .transport
+                .schemas
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .is_none());
+        });
+    }
+    #[test]
+    fn document_grammar_uses_reviewed_ids_and_rewrite_targets() {
+        let f = fixture();
+        let page = reviewed(&f);
+        let outline = document_response_schema(&page.revision, DocumentOperation::Outline, &[]);
+        assert_eq!(outline["properties"]["sections"]["maxItems"], 64);
+        assert_eq!(
+            outline["properties"]["sections"]["items"]["properties"]["id"]["maxLength"],
+            96
+        );
+        let rewrite =
+            document_response_schema(&page.revision, DocumentOperation::Rewrite, &["b1".into()]);
+        let block = &rewrite["properties"]["blocks"]["items"];
+        assert_eq!(block["additionalProperties"], false);
+        assert_eq!(block["properties"]["id"]["enum"], serde_json::json!(["b1"]));
+        assert_eq!(
+            block["properties"]["sectionId"]["enum"],
+            serde_json::json!(["summary", null])
+        );
+        assert!(block["properties"].get("claimsVerified").is_none());
     }
     #[test]
     fn outline_requires_explicit_review_and_preserves_provider_usage() {
@@ -2295,6 +2417,7 @@ mod tests {
                     },
                     RagDocumentInput {
                         external_query: None,
+                        response_schema: None,
                         provenance: vec![],
                         external_input_eligible: true,
                         retrieval_query: "Evidence based report".into(),
@@ -2504,6 +2627,7 @@ mod tests {
             };
             let input = RagDocumentInput {
                 external_query: None,
+                response_schema: None,
                 provenance: vec![],
                 external_input_eligible: true,
                 retrieval_query: "Evidence based report".into(),

@@ -27,6 +27,7 @@ mod document_hwpx_commands;
 mod document_pdf;
 mod document_pdf_file;
 mod document_pdf_job;
+mod document_schema;
 mod document_service;
 mod document_store;
 mod embedding_assets;

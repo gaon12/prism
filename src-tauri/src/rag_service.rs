@@ -151,6 +151,8 @@ pub struct GenerationPreferences {
     /// Explicitly connect to the validated loopback provider without consulting
     /// the OS keychain. Existing profiles keep their stored-key behavior.
     pub local_without_api_key: bool,
+    /// Only document operations on a local server that supports JSON Schema.
+    pub local_structured_documents: bool,
     pub max_context_chars: Option<usize>,
     pub top_k: Option<usize>,
     pub local: Option<GenerationConfig>,
@@ -165,6 +167,7 @@ impl Default for GenerationPreferences {
             fallback: false,
             allow_external_questions: false,
             local_without_api_key: false,
+            local_structured_documents: false,
             max_context_chars: None,
             top_k: None,
             local: None,
@@ -394,6 +397,7 @@ pub trait RagTransport: Send + Sync {
         messages: &'a [GenerationMessage],
         key: Option<&'a SecretValue>,
         cancel: &'a GenerationCancellation,
+        schema: Option<&'a Value>,
     ) -> GenerationFuture<'a>;
 }
 impl RagTransport for GenerationRuntime {
@@ -403,9 +407,10 @@ impl RagTransport for GenerationRuntime {
         messages: &'a [GenerationMessage],
         key: Option<&'a SecretValue>,
         cancel: &'a GenerationCancellation,
+        schema: Option<&'a Value>,
     ) -> GenerationFuture<'a> {
-        Box::pin(GenerationRuntime::complete(
-            self, config, messages, key, cancel,
+        Box::pin(GenerationRuntime::complete_with_response_schema(
+            self, config, messages, key, cancel, schema,
         ))
     }
 }
@@ -673,8 +678,11 @@ pub(crate) struct RagDocumentInput {
     /// Only this explicitly supplied sentence may go to an MCP search server.
     /// `RagRequest.question` contains the document's private generation prompt.
     pub external_query: Option<String>,
+    /// Trusted operation grammar; never accepted from a frontend request.
+    pub response_schema: Option<Value>,
 }
 struct Prepared {
+    response_schema: Option<Value>,
     config: GenerationConfig,
     key: Option<SecretValue>,
     messages: Vec<GenerationMessage>,
@@ -1431,6 +1439,7 @@ impl RagService {
                     &prepared.messages,
                     prepared.key.as_ref(),
                     &cancel.generation,
+                    prepared.response_schema.as_ref(),
                 ),
                 cancel,
             )
@@ -1866,6 +1875,13 @@ impl RagService {
             }
             cancel.check()?;
             return Ok(Prepared {
+                response_schema: if slot == ProviderSlot::Local
+                    && policy.prefs.local_structured_documents
+                {
+                    input.and_then(|input| input.response_schema.clone())
+                } else {
+                    None
+                },
                 config,
                 key,
                 messages: packet.messages,
@@ -2683,6 +2699,7 @@ mod tests {
         endpoint: String,
         messages: Vec<GenerationMessage>,
         key_present: bool,
+        schema: Option<Value>,
     }
     struct FakeTransport {
         calls: Mutex<Vec<Call>>,
@@ -2707,6 +2724,7 @@ mod tests {
             messages: &'a [GenerationMessage],
             key: Option<&'a SecretValue>,
             _: &'a GenerationCancellation,
+            schema: Option<&'a Value>,
         ) -> GenerationFuture<'a> {
             Box::pin(async move {
                 let count = {
@@ -2715,6 +2733,7 @@ mod tests {
                         endpoint: config.endpoint.clone(),
                         messages: messages.to_vec(),
                         key_present: key.is_some(),
+                        schema: schema.cloned(),
                     });
                     calls.len()
                 };
@@ -2969,6 +2988,32 @@ mod tests {
             preferences.validate().unwrap_err().code,
             RagErrorCode::Endpoint
         );
+    }
+    #[test]
+    fn local_document_grammar_is_off_for_legacy_and_ordinary_chat() {
+        let legacy: GenerationPreferences = serde_json::from_str("{}").unwrap();
+        assert!(!legacy.local_structured_documents);
+        let explicit: GenerationPreferences =
+            serde_json::from_str(r#"{"localStructuredDocuments":true}"#).unwrap();
+        assert!(explicit.local_structured_documents);
+        let f = fixture();
+        let before = f.policy.read().unwrap().clone();
+        f.policy.write().unwrap().prefs.local_structured_documents = true;
+        assert_ne!(
+            policy_stamp(&before).unwrap(),
+            policy_stamp(&f.policy.read().unwrap()).unwrap()
+        );
+        let conversation = f.service.create_conversation(Some("Plain"), None).unwrap();
+        runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &conversation.id,
+                "ordinary_chat",
+                "Question",
+            )))
+            .unwrap();
+        // No document operation means no schema, even after opt-in.
+        assert!(f.transport.calls.lock().unwrap()[0].schema.is_none());
     }
     fn request(service: &RagService, conversation: &str, id: &str, question: &str) -> RagRequest {
         let _ = service;

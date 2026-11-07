@@ -32,10 +32,19 @@ struct Cache {
 pub struct Office {
     runtime: office_preview::Runtime,
     cache: Mutex<Cache>,
-    installation: Mutex<Option<Arc<AtomicBool>>>,
+    installation: Mutex<Installation>,
     stopping: AtomicBool,
 }
-#[derive(Serialize)]
+#[derive(Default)]
+struct Installation {
+    cancel: Option<Arc<AtomicBool>>,
+    progress: Option<office_preview::Progress>,
+    last_error: Option<ErrorCode>,
+    revision: u64,
+}
+// The snapshot survives a settings-window remount. Revision prevents an older
+// status response from overwriting a newer notification in either app window.
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub supported: bool,
@@ -45,6 +54,9 @@ pub struct Status {
     pub archive_bytes: u64,
     pub expanded_bytes: u64,
     pub download_available: bool,
+    pub progress: Option<office_preview::Progress>,
+    pub last_error: Option<ErrorCode>,
+    pub revision: u64,
 }
 pub fn map(issue: office_assets::Error) -> crate::collection_store::LibraryError {
     use office_assets::Code;
@@ -66,23 +78,26 @@ impl Office {
         Ok(Self {
             runtime: office_preview::Runtime::open(directory).map_err(map)?,
             cache: Mutex::new(Cache::default()),
-            installation: Mutex::new(None),
+            installation: Mutex::new(Installation::default()),
             stopping: AtomicBool::new(false),
         })
     }
     pub fn status(&self) -> Result<Status> {
         let catalog = office_assets::catalog().map_err(map)?;
+        let installation = self
+            .installation
+            .lock()
+            .map_err(|_| error(ErrorCode::Storage))?;
         Ok(Status {
             supported: cfg!(all(windows, target_arch = "x86_64")),
             installed: self.runtime.installed().map_err(map)?,
-            installing: self
-                .installation
-                .lock()
-                .map_err(|_| error(ErrorCode::Storage))?
-                .is_some(),
+            installing: installation.cancel.is_some(),
             archive_bytes: catalog.archive.bytes,
             expanded_bytes: catalog.expanded_bytes,
             download_available: catalog.archive.url.is_some(),
+            progress: installation.progress.clone(),
+            last_error: installation.last_error.clone(),
+            revision: installation.revision,
         })
     }
     fn lock(&self, cancel: &AtomicBool, deadline: Instant) -> Result<MutexGuard<'_, Cache>> {
@@ -111,31 +126,57 @@ impl Office {
             if self.stopping.load(Ordering::Acquire) {
                 return Err(error(ErrorCode::Cancelled));
             }
-            if active.is_some() {
+            if active.cancel.is_some() {
                 return Err(error(ErrorCode::Busy));
             }
-            *active = Some(cancel.clone());
+            active.cancel = Some(cancel.clone());
+            active.progress = None;
+            active.last_error = None;
+            active.revision += 1;
         }
         // Clear the active token on success, errors and unwinding.
-        struct Install<'a>(&'a Mutex<Option<Arc<AtomicBool>>>);
+        struct Install<'a>(&'a Mutex<Installation>, Option<ErrorCode>);
         impl Drop for Install<'_> {
             fn drop(&mut self) {
-                *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+                state.cancel = None;
+                state.last_error = self.1.clone();
+                state.revision += 1;
             }
         }
-        let _active = Install(&self.installation);
+        let mut active = Install(&self.installation, Some(ErrorCode::Storage));
         let deadline = Instant::now() + Duration::from_secs(600);
-        let mut cache = self.lock(&cancel, deadline)?;
-        self.runtime
-            .install_archive(path, &cancel, deadline, progress)
-            .map_err(map)?;
-        cache.entries.clear();
-        cache.bytes = 0;
-        Ok(())
+        let report = |value: office_preview::Progress| {
+            {
+                let mut state = self.installation.lock().unwrap_or_else(|e| e.into_inner());
+                state.progress = Some(value.clone());
+                state.revision += 1;
+            }
+            progress(value);
+        };
+        report(office_preview::Progress {
+            phase: "waiting",
+            files: 0,
+            total_files: 0,
+        });
+        let result = (|| {
+            let mut cache = self.lock(&cancel, deadline)?;
+            self.runtime
+                .install_archive(path, &cancel, deadline, &report)
+                .map_err(map)?;
+            cache.entries.clear();
+            cache.bytes = 0;
+            Ok(())
+        })();
+        active.1 = result
+            .as_ref()
+            .err()
+            .map(|issue: &crate::collection_store::LibraryError| issue.code.clone());
+        result
     }
     pub fn cancel_install(&self) {
         if let Ok(active) = self.installation.lock() {
-            if let Some(cancel) = active.as_ref() {
+            if let Some(cancel) = active.cancel.as_ref() {
                 cancel.store(true, Ordering::Release);
             }
         }
@@ -259,4 +300,70 @@ pub fn extension(source: &Source) -> String {
         .unwrap_or_default()
         .to_string_lossy()
         .to_ascii_lowercase()
+}
+
+#[cfg(all(test, windows, target_arch = "x86_64"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_installation_retains_a_terminal_snapshot_without_claiming_presence() {
+        let directory = tempfile::tempdir().unwrap();
+        let office = Office::open(directory.path().join("engine")).unwrap();
+        let before = office.status().unwrap();
+        assert!(!before.installed && !before.installing);
+        let failure = office
+            .install(&directory.path().join("missing.zip"), &|_| {})
+            .unwrap_err();
+        let after = office.status().unwrap();
+        assert!(!after.installed && !after.installing);
+        assert_eq!(after.last_error, Some(failure.code));
+        assert!(after.revision > before.revision);
+        let json = serde_json::to_value(&after).unwrap();
+        assert!(json.get("lastError").is_some());
+        assert!(json.get("archiveBytes").is_some());
+        assert_eq!(office.status().unwrap().revision, after.revision);
+    }
+
+    #[test]
+    fn waiting_installation_can_cancel_and_busy_requests_do_not_replace_its_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let office = Office::open(directory.path().join("engine")).unwrap();
+        // A real reader holds the shared cache while an install waits. No OS
+        // process, user profile or archive is involved in this admission test.
+        let reader = office.cache.lock().unwrap();
+        std::thread::scope(|scope| {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            let installer = &office;
+            let archive = directory.path().join("missing.zip");
+            let worker = scope.spawn(move || {
+                installer.install(&archive, &|p| {
+                    assert_eq!(p.phase, "waiting");
+                    sender.send(()).unwrap();
+                })
+            });
+            receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+            let waiting = office.status().unwrap();
+            assert!(waiting.installing);
+            assert_eq!(waiting.progress.as_ref().unwrap().phase, "waiting");
+            assert_eq!(
+                office
+                    .install(&directory.path().join("another.zip"), &|_| {})
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Busy
+            );
+            assert_eq!(office.status().unwrap().revision, waiting.revision);
+            office.cancel_install();
+            assert_eq!(
+                worker.join().unwrap().unwrap_err().code,
+                ErrorCode::Cancelled
+            );
+            let terminal = office.status().unwrap();
+            assert!(!terminal.installing);
+            assert_eq!(terminal.last_error, Some(ErrorCode::Cancelled));
+            assert!(terminal.revision > waiting.revision);
+        });
+        drop(reader);
+    }
 }

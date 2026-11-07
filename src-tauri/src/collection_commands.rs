@@ -56,12 +56,23 @@ pub async fn collection_office_install(
 ) -> Result<()> {
     use tauri::Emitter;
     let service = service(&state)?;
-    blocking(move || {
+    let snapshot = service.clone();
+    let notifications = app.clone();
+    let result = blocking(move || {
         service.install_office(&PathBuf::from(path), &|progress| {
             let _ = app.emit("prism:office-runtime", progress);
+            if let Ok(status) = service.office_status() {
+                let _ = app.emit("prism:office-status", status);
+            }
         })
     })
-    .await
+    .await;
+    // Always publish after the active guard drops, including errors/cancel and
+    // a worker panic. Other windows need a terminal notification as well.
+    if let Ok(status) = snapshot.office_status() {
+        let _ = notifications.emit("prism:office-status", status);
+    }
+    result
 }
 #[tauri::command]
 pub async fn collection_office_cancel(state: State<'_, AppState>) -> Result<()> {

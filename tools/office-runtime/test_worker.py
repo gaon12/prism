@@ -3,9 +3,11 @@
 import importlib.util
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location(
     "office_worker", Path(__file__).with_name("worker.py")
@@ -73,6 +75,34 @@ class WorkerProtocol(unittest.TestCase):
             (path / "owner.txt").write_bytes(b"different")
             with self.assertRaises(worker.WorkerError):
                 worker.work_directory(path)
+
+    def test_bootstrap_replaces_inherited_user_and_configuration_overrides(self):
+        with tempfile.TemporaryDirectory(prefix="prism-office-bootstrap-") as name:
+            root = Path(name).resolve()
+            runtime = root / "engine with spaces $"
+            profile = root / "한글 request"
+            with patch.dict(
+                os.environ,
+                {
+                    "URE_BOOTSTRAP": "file:///outside/fundamental.ini",
+                    "UNO_PATH": "outside",
+                    "UserInstallation": "file:///outside/user",
+                    "CONFIGURATION_LAYERS": "winreg:CURRENT_USER user:!/outside.xcu",
+                },
+            ):
+                user = worker.configure_bootstrap(runtime, profile)
+                self.assertEqual(user, (profile / "user").as_uri())
+                self.assertEqual(os.environ["UserInstallation"], user)
+                self.assertEqual(os.environ["UNO_PATH"], str(runtime / "program"))
+                self.assertEqual(
+                    os.environ["URE_BOOTSTRAP"],
+                    (runtime / "program/fundamental.ini").as_uri(),
+                )
+                layers = os.environ["CONFIGURATION_LAYERS"]
+                self.assertNotIn("winreg:", layers)
+                self.assertNotIn("outside", layers)
+                self.assertIn((runtime / "share/registry").as_uri(), layers)
+                self.assertIn(f"user:!{user}/user/registrymodifications.xcu", layers)
 
 
 if __name__ == "__main__":

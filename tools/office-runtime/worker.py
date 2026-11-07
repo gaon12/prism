@@ -1,7 +1,7 @@
 """One owned LibreOffice conversion; binary documents never become CLI paths.
 
-This worker is not connected to the app yet. See README.md for the parent-side
-verification, deadline, byte-budget and cancellation requirements.
+The application authenticates the engine before starting this worker. See
+README.md for the deadline, byte-budget and cancellation requirements.
 """
 
 import ctypes
@@ -95,6 +95,26 @@ def work_directory(path):
     ):
         raise WorkerError("input")
     return path.resolve(strict=True)
+
+
+def configure_bootstrap(runtime, profile):
+    # Importing uno immediately creates a local component context, BEFORE the
+    # separate soffice process is started. Its extension registry and settings
+    # must therefore use the same private profile as the renderer itself.
+    user = (profile / "user").as_uri()
+    registry = (runtime / "share" / "registry").as_uri()
+    os.environ.update(
+        URE_BOOTSTRAP=(runtime / "program" / "fundamental.ini").as_uri(),
+        UNO_PATH=str(runtime / "program"),
+        UserInstallation=user,
+        # Use the verified engine's defaults/resources and this request's own
+        # overrides. Do not merge host HKCU/HKLM policy or extension settings.
+        CONFIGURATION_LAYERS=(
+            f"xcsxcu:{registry} res:{registry} "
+            f"user:!{user}/user/registrymodifications.xcu"
+        ),
+    )
+    return user
 
 
 def parent_lifeline(stream):
@@ -198,8 +218,7 @@ def run():
     threading.Thread(target=parent_lifeline, args=(stream,), daemon=True).start()
     _dll_directory = os.add_dll_directory(str(runtime / "program"))
     sys.dont_write_bytecode = True
-    os.environ["URE_BOOTSTRAP"] = (runtime / "program" / "fundamental.ini").as_uri()
-    os.environ["UNO_PATH"] = str(runtime / "program")
+    user_profile = configure_bootstrap(runtime, profile)
     sys.path.insert(0, str(runtime / "program"))
     import uno
     import unohelper
@@ -317,7 +336,7 @@ def run():
             # before the normal private profile crash directory is available.
             # Don't persist document-memory dumps or mutate the verified engine.
             "-env:CrashDumpEnable=false",
-            "-env:UserInstallation=" + (profile / "user").as_uri(),
+            "-env:UserInstallation=" + user_profile,
             "--accept=pipe,name=" + pipe + ";urp;StarOffice.ComponentContext",
         ],
         env=environment,

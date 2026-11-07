@@ -69,10 +69,22 @@ export async function untilWebView(child, port, label, stillOk = () => {}) {
   }
 }
 export async function launch(dataDir, options = {}) {
+  let port = options.cdpPort;
+  if (port !== undefined) {
+    assert(Number.isInteger(port) && port > 1024 && port < 65536, 'Invalid explicit test CDP port');
+  }
+  // An occupied explicit port could otherwise attach a stale/foreign WebView.
   const reservation = createServer();
-  await new Promise((done) => reservation.listen(0, '127.0.0.1', done));
-  const port = reservation.address().port;
+  await new Promise((done, reject) => {
+    reservation.once('error', reject);
+    reservation.listen(port ?? 0, '127.0.0.1', done);
+  });
+  port = reservation.address().port;
   await new Promise((done) => reservation.close(done));
+  assert(
+    !options.productionPortable || options.portable,
+    'Production portable mode needs portable',
+  );
   const environment = {
     ...process.env,
     PRISM_DEV_DATA_DIR: dataDir,
@@ -82,17 +94,30 @@ export async function launch(dataDir, options = {}) {
   if (options.portable) {
     delete environment.PRISM_DEV_DATA_DIR;
     delete environment.WEBVIEW2_USER_DATA_FOLDER;
-    environment.PRISM_DEV_TEST_MODE = '1';
+    if (options.productionPortable) {
+      for (const key of Object.keys(environment))
+        if (key.startsWith('PRISM_DEV_')) delete environment[key];
+    } else {
+      environment.PRISM_DEV_TEST_MODE = '1';
+    }
   }
   const child = spawn(resolve(options.executable ?? 'src-tauri/target/debug/prism.exe'), [], {
     windowsHide: true,
     stdio: 'ignore',
     env: environment,
   });
+  let spawnError;
+  child.on('error', (error) => {
+    spawnError = error;
+  });
   let browser;
   try {
+    // A resource guard must own the process handle even before WebView starts.
+    options.onSpawn?.(child);
     await until(async () => {
-      if (child.exitCode !== null) throw new Error(`Prism exited: ${child.exitCode}`);
+      if (spawnError) throw spawnError;
+      if (child.exitCode !== null || child.signalCode !== null)
+        throw new Error(`Prism exited: ${child.exitCode ?? child.signalCode}`);
       try {
         return (await fetch(`http://127.0.0.1:${port}/json/version`)).ok;
       } catch {
@@ -130,7 +155,7 @@ export async function launch(dataDir, options = {}) {
       });
     return { child, browser, main, quick, errors, invoke, port };
   } catch (error) {
-    await browser?.close();
+    await browser?.close().catch(() => {});
     child.kill();
     throw error;
   }
@@ -146,8 +171,9 @@ export async function shutdown(instance) {
   } catch {
     /* window closes during IPC */
   }
-  await instance.browser.close();
-  await until(() => instance.child.exitCode !== null, 'owned test process exit').catch(() =>
-    instance.child.kill(),
-  );
+  await instance.browser.close().catch(() => {});
+  await until(
+    () => instance.child.exitCode !== null || instance.child.signalCode !== null,
+    'owned test process exit',
+  ).catch(() => instance.child.kill());
 }

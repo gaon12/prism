@@ -475,4 +475,32 @@ npm run test:native
 
 This tests actual WebView2 windows, IPC, shortcut registration, isolated settings persistence, restart recovery and Markdown writes. It uses a temporary data directory through the development-only `PRISM_DEV_DATA_DIR` override, plus a separate WebView2 profile. Isolated debug tests skip the single-instance handoff so they can coexist with an open user app. Normal debug and release apps retain single-instance behavior. Screenshots and test output are saved in the OS temporary directory, outside committed source. The tests do not send physical OS keyboard input or exercise native file-picker dialogs. Isolated debug profiles inject an in-memory clipboard, including copy commands, so they never read or write the user’s system clipboard. Clipboard fixtures cover text/link/image restoration, filtering, pinning, retention settings, first-run acknowledgment and restart; real Windows clipboard capture remains a separate manual integration check.
 
+The real-download settings regression is an explicit Windows check. After building
+the bundled release executable, run it with PowerShell:
+
+```powershell
+$env:PRISM_TEST_EXECUTABLE = (Resolve-Path src-tauri/target/release/prism.exe).Path
+$env:PRISM_TEST_EXPECT_RELEASE = '1'
+node tests/native/model-progress.mjs
+```
+
+This downloads the pinned official embedding package through the actual app,
+requires real byte progress and fixture-file watcher changes, observes repeated
+settings frames, checks the cancel row at desktop and 390px, and cancels through
+the UI. It copies the executable into a fresh owned portable directory, disables
+clipboard/OCR/content indexing/updates/external AI, and never starts inference.
+Production mode strips inherited `PRISM_DEV_*` overrides. The original executable
+and user profile are not modified. It requires 3 GiB available before launch and
+stops only its owned app below 1 GiB. A transfer that finishes before sustained
+observation/cancellation is reported as unqualified rather than silently passing.
+Screenshots and `result.json` are kept in the printed `evidence` directory even
+on a test failure. Upload that subdirectory only, not its parent executable/profile.
+
+An elevated disposable Windows CI runner may need its existing test-controlled
+WebView2 policy to use the same dedicated port passed as `PRISM_APP_CDP_PORT`.
+The harness rejects an occupied port before spawning and checks a unique profile
+scope before any download. Local runs use a free loopback port by default; this
+test does not change machine policy or install/manage the NTFS service. Successful
+startup alone is not a completed real-download or real-model generation check.
+
 Planning notes and local verification artifacts are kept in the ignored `.dev/` directory.

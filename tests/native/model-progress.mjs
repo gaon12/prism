@@ -60,6 +60,7 @@ await writeFile(
 );
 let instance;
 let child;
+let verifiedProfile = false;
 let writes;
 let writer = Promise.resolve();
 let writerError;
@@ -110,20 +111,24 @@ try {
     page.on('console', (entry) => {
       if (entry.type() === 'warning') warnings.push(entry.text());
     });
+  const settings = await invoke('get_settings');
+  assert.equal(settings.scopes.length, 1);
+  assert(settings.scopes[0].id === scopeId, 'CDP must reach this fixture profile');
+  assert(
+    resolve(settings.scopes[0].path).toLowerCase() === resolve(scopePath).toLowerCase(),
+    'Unexpected fixture scope path',
+  );
+  verifiedProfile = true;
   result.runtime = await invoke('runtime_info');
   assert.equal(result.runtime.installKind, 'portable');
   assert.equal(result.runtime.development, expectedRelease !== '1');
   assert.equal(result.runtime.startupError, null);
-  const settings = await invoke('get_settings');
   assert(
     !settings.clipboard.enabled &&
       !settings.ocr.enabled &&
       !settings.updates.autoCheck &&
       !settings.startOnLogin,
   );
-  assert.equal(settings.scopes.length, 1);
-  assert.equal(settings.scopes[0].id, scopeId, 'CDP must reach this fixture profile');
-  assert.equal(resolve(settings.scopes[0].path).toLowerCase(), resolve(scopePath).toLowerCase());
   assert(!settings.scopes[0].contentEnabled && !settings.scopes[0].externalAllowed);
   assert.equal((await invoke('model_status')).pid, null);
   await main.getByRole('button', { name: 'AI·모델 설정 열기', exact: true }).click();
@@ -269,14 +274,16 @@ try {
   assert.equal((await invoke('content_status')).indexed, 0);
   result.passed = true;
 } catch (error) {
-  result.error = String(error.stack ?? error);
-  if (instance)
+  result.error = verifiedProfile
+    ? String(error.stack ?? error)
+    : 'Portable fixture profile was not verified; no download or cleanup IPC was sent';
+  if (instance && verifiedProfile)
     await instance.main.screenshot({ path: join(evidence, 'failure.png') }).catch(() => {});
-  throw error;
+  throw verifiedProfile ? error : new Error(result.error);
 } finally {
   clearInterval(writes);
   await writer;
-  if (instance) {
+  if (instance && verifiedProfile) {
     await instance.main
       .evaluate(() => {
         window.__stopProgressObservation = true;
@@ -286,6 +293,10 @@ try {
     await shutdown(instance).catch((error) => {
       result.shutdownError = String(error);
     });
+  } else if (instance) {
+    // Detach from an unverified endpoint. Only the child handle created above
+    // may be terminated; never send stop/quit to an unrelated application.
+    await instance.browser.close().catch(() => {});
   }
   if (child && child.exitCode === null && child.signalCode === null) {
     child.kill();
@@ -300,8 +311,9 @@ try {
   clearInterval(guard);
   result.minimumAvailable = minimumAvailable;
   result.resourceStop = resourceStop;
-  result.errors = instance?.errors ?? [];
-  result.warnings = warnings;
+  result.profileVerified = verifiedProfile;
+  result.errors = verifiedProfile ? (instance?.errors ?? []) : [];
+  result.warnings = verifiedProfile ? warnings : [];
   result.appExitCode = child?.exitCode ?? null;
   result.appExitSignal = child?.signalCode ?? null;
   result.appUnchanged = (await sha(executable).catch(() => null)) === candidateSha256;

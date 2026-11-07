@@ -499,7 +499,9 @@ on a test failure. Upload that subdirectory only, not its parent executable/prof
 An elevated disposable Windows CI runner may need its existing test-controlled
 WebView2 policy to use the same dedicated port passed as `PRISM_APP_CDP_PORT`.
 The harness rejects an occupied port before spawning and checks a unique profile
-scope before any download. Local runs use a free loopback port by default; this
+scope before any download. An unverified endpoint is detached without screenshots
+or stop/quit IPC; cleanup can terminate only the newly spawned child handle.
+Local runs use a free loopback port by default; this
 test does not change machine policy or install/manage the NTFS service. Successful
 startup alone is not a completed real-download or real-model generation check.
 

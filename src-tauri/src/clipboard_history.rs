@@ -100,6 +100,8 @@ pub struct ClipItem {
 pub struct ClipStatus {
     pub enabled: bool,
     pub paused: bool,
+    /// A control transition is waiting for a successful markerless baseline.
+    pub preparing: bool,
     pub count: usize,
     pub unpinned_count: usize,
     pub bytes: u64,
@@ -173,6 +175,10 @@ struct Store {
     settings: ClipboardSettings,
     revision: u64,
     last_error: Option<String>,
+    /// Volatile control identity; never persisted with clipboard items.
+    capture_epoch: u64,
+    capture_marker: Option<u64>,
+    preparing: bool,
 }
 
 fn now_ms() -> i64 {
@@ -332,6 +338,9 @@ impl Store {
             settings,
             revision: 1,
             last_error: None,
+            capture_epoch: 0,
+            capture_marker: None,
+            preparing: false,
         };
         if let Err(error) = store.load() {
             store.last_error = Some(error);
@@ -432,6 +441,7 @@ impl Store {
         ClipStatus {
             enabled: self.settings.enabled,
             paused,
+            preparing: self.preparing && self.settings.enabled && !paused,
             count: self.items.len(),
             unpinned_count: self
                 .items
@@ -442,6 +452,14 @@ impl Store {
             revision: self.revision,
             last_error: self.last_error.clone(),
         }
+    }
+    fn finish_preparing(&mut self) -> bool {
+        if !self.preparing {
+            return false;
+        }
+        self.preparing = false;
+        self.revision += 1;
+        true
     }
     fn changed(&mut self) -> Result<(), String> {
         self.revision += 1;
@@ -640,6 +658,7 @@ struct PollState {
     failures: u32,
     /// The next successful read (including empty) establishes the baseline after startup/resume.
     rebaseline: bool,
+    capture_epoch: u64,
 }
 impl PollState {
     /// Content already on the clipboard at startup was copied before Prism was watching.
@@ -650,6 +669,7 @@ impl PollState {
             last_hash: None,
             failures: 0,
             rebaseline: marker.is_none(),
+            capture_epoch: 0,
         }
     }
 }
@@ -706,7 +726,12 @@ impl ClipboardService {
         settings.validate()?;
         let result = {
             let mut store = self.lock()?;
+            let capture_changed = store.settings.enabled != settings.enabled
+                || store.settings.capture_images != settings.capture_images;
             store.settings = settings;
+            if capture_changed {
+                self.change_capture_policy(&mut store);
+            }
             if store.prune(now_ms()) > 0 {
                 store.changed()
             } else {
@@ -718,10 +743,30 @@ impl ClipboardService {
         result
     }
     pub fn set_paused(&self, paused: bool) -> Result<ClipStatus, String> {
-        self.paused.store(paused, Ordering::SeqCst);
-        self.lock()?.revision += 1;
+        {
+            let mut store = self.lock()?;
+            if self.paused.swap(paused, Ordering::SeqCst) != paused {
+                self.change_capture_policy(&mut store);
+            }
+            store.revision += 1;
+        }
         self.notify();
         self.status()
+    }
+    /// Called with the same lock used to commit captured items. A marker is cheap;
+    /// never wait behind a restore write or read clipboard contents on this path.
+    fn change_capture_policy(&self, store: &mut Store) {
+        let active = store.settings.enabled && !self.paused.load(Ordering::SeqCst);
+        store.capture_epoch = store.capture_epoch.wrapping_add(1);
+        store.capture_marker = if active {
+            self.writer
+                .try_lock()
+                .ok()
+                .and_then(|mut writer| writer.as_mut().and_then(|source| source.change_marker()))
+        } else {
+            None
+        };
+        store.preparing = active && store.capture_marker.is_none();
     }
     pub fn list(
         &self,
@@ -893,16 +938,29 @@ impl ClipboardService {
             last_hash,
             failures,
             rebaseline,
+            capture_epoch,
         } = state;
-        let next = source.change_marker();
-        if next.is_some() && next == *marker {
-            return false;
-        }
-        let (enabled, images) = match self.store.lock() {
-            Ok(store) => (store.settings.enabled, store.settings.capture_images),
+        let (enabled, images, policy_epoch, boundary_marker, paused) = match self.store.lock() {
+            Ok(store) => (
+                store.settings.enabled,
+                store.settings.capture_images,
+                store.capture_epoch,
+                store.capture_marker,
+                self.paused.load(Ordering::SeqCst),
+            ),
             Err(_) => return false,
         };
-        if !enabled || self.paused.load(Ordering::SeqCst) {
+        let next = source.change_marker();
+        if *capture_epoch != policy_epoch {
+            // Setters remember transitions even when no poll ran while stopped.
+            // A known boundary keeps the first genuinely new marked copy eligible.
+            *capture_epoch = policy_epoch;
+            *marker = boundary_marker;
+            *rebaseline = boundary_marker.is_none() || next.is_none();
+            *last_hash = None;
+            *failures = 0;
+        }
+        if !enabled || paused {
             // Anything copied while paused or disabled is never recorded, even after resuming.
             // Without change markers the first payload seen after resuming becomes the new
             // baseline instead of a new copy.
@@ -910,11 +968,35 @@ impl ClipboardService {
             *rebaseline = next.is_none();
             return false;
         }
-        if source.excluded() {
-            *marker = next;
+        if next.is_some() && next == *marker && !*rebaseline {
             return false;
         }
-        let content = match source.read(images) {
+        let excluded = source.excluded();
+        // OS transfer may block. Never hold the store/control lock across it.
+        let result = if excluded {
+            Ok(None)
+        } else {
+            source.read(images)
+        };
+        let mut store = match self.store.lock() {
+            Ok(store) => store,
+            Err(_) => return false,
+        };
+        // A stop/resume during that transfer invalidates both its data and errors.
+        // This lock is shared with setters, so a stale read cannot commit after them.
+        if store.capture_epoch != policy_epoch
+            || !store.settings.enabled
+            || self.paused.load(Ordering::SeqCst)
+        {
+            return false;
+        }
+        if excluded {
+            *marker = next;
+            *rebaseline = next.is_none();
+            *failures = 0;
+            return next.is_some() && store.finish_preparing();
+        }
+        let content = match result {
             Ok(content) => content,
             Err(_) => {
                 // Another app may hold the clipboard open; retry a few ticks before skipping.
@@ -922,9 +1004,7 @@ impl ClipboardService {
                 if *failures >= 5 {
                     *failures = 0;
                     *marker = next;
-                    if let Ok(mut store) = self.store.lock() {
-                        return store.report_error("The clipboard could not be read.");
-                    }
+                    return store.report_error("The clipboard could not be read.");
                 }
                 return false;
             }
@@ -936,12 +1016,12 @@ impl ClipboardService {
             // It also separates identical copies on platforms without change markers.
             *rebaseline = false;
             *last_hash = None;
-            return false;
+            return store.finish_preparing();
         };
         let hash = content_hash(&content);
         if std::mem::take(rebaseline) {
             *last_hash = Some(hash);
-            return false;
+            return store.finish_preparing();
         }
         if next.is_none() && last_hash.as_ref() == Some(&hash) {
             return false;
@@ -963,12 +1043,11 @@ impl ClipboardService {
         if own_write {
             return false;
         }
-        match self.store.lock() {
-            Ok(mut store) => match store.add(&content, now_ms(), true) {
-                Ok(added) => added,
-                Err(_) => store.report_error("Clipboard history could not be saved. Check available disk space and permissions."),
-            },
-            Err(_) => false,
+        match store.add(&content, now_ms(), true) {
+            Ok(added) => added,
+            Err(_) => store.report_error(
+                "Clipboard history could not be saved. Check available disk space and permissions.",
+            ),
         }
     }
 }
@@ -1393,7 +1472,10 @@ mod tests {
         h.service.set_paused(true).unwrap();
         assert!(!h.copy_text("copied while paused"));
         h.service.set_paused(false).unwrap();
-        assert!(!h.tick(), "paused content is not recorded after resuming");
+        assert!(h.service.status().unwrap().preparing);
+        assert!(h.tick(), "finishing the resume baseline changes status");
+        assert!(!h.service.status().unwrap().preparing);
+        assert_eq!(h.previews(""), ["first"]);
         assert!(h.copy_text("after resume"));
         h.service
             .apply_settings(ClipboardSettings {
@@ -1405,7 +1487,7 @@ mod tests {
         h.service
             .apply_settings(ClipboardSettings::default())
             .unwrap();
-        assert!(!h.tick());
+        assert!(h.tick(), "finishing the enable baseline changes status");
         assert_eq!(h.previews(""), ["after resume", "first"]);
         // Read failures are retried for markerless sources too.
         h.clipboard.fail_next_reads(1);
@@ -1452,7 +1534,9 @@ mod tests {
         h.clipboard.clear();
         assert!(!h.tick());
         h.service.set_paused(false).unwrap();
-        assert!(!h.tick());
+        assert!(h.service.status().unwrap().preparing);
+        assert!(h.tick(), "an empty resume baseline also finishes preparing");
+        assert!(!h.service.status().unwrap().preparing);
         assert!(h.copy_text("first after empty resume"));
         h.service
             .apply_settings(ClipboardSettings {
@@ -1465,7 +1549,7 @@ mod tests {
         h.service
             .apply_settings(ClipboardSettings::default())
             .unwrap();
-        assert!(!h.tick());
+        assert!(h.tick(), "an empty enable baseline also finishes preparing");
         assert!(h.copy_text("first after empty enable"));
         assert_eq!(
             h.previews(""),
@@ -1512,6 +1596,178 @@ mod tests {
         ] {
             assert!(!missing_clipboard_format(&wrapped(error)));
         }
+    }
+
+    #[derive(Clone, Copy)]
+    enum CaptureTransition {
+        Pause,
+        Disable,
+    }
+    impl CaptureTransition {
+        fn active(self, service: &ClipboardService, active: bool) {
+            match self {
+                Self::Pause => {
+                    service.set_paused(!active).unwrap();
+                }
+                Self::Disable => {
+                    service
+                        .apply_settings(ClipboardSettings {
+                            enabled: active,
+                            ..Default::default()
+                        })
+                        .unwrap();
+                }
+            }
+        }
+    }
+
+    fn short_capture_transition(
+        clipboard: MemoryClipboard,
+        transition: CaptureTransition,
+        fresh_before_poll: bool,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clipboard");
+        let mut h = Harness::with_clipboard(dir, path, ClipboardSettings::default(), clipboard);
+        h.tick(); // An initial empty snapshot, without recording anything.
+        assert!(h.copy_text("saved before stopping"));
+        transition.active(&h.service, false);
+        h.clipboard
+            .copy(ClipContent::Text("copied while stopped".into()));
+        transition.active(&h.service, true);
+        if fresh_before_poll {
+            h.clipboard
+                .copy(ClipContent::Text("fresh after resuming".into()));
+        }
+        h.tick();
+        if fresh_before_poll {
+            assert_eq!(
+                h.previews(""),
+                ["fresh after resuming", "saved before stopping"]
+            );
+        } else {
+            assert_eq!(h.previews(""), ["saved before stopping"]);
+            assert!(h.copy_text("fresh after a resume baseline"));
+        }
+    }
+
+    #[test]
+    fn short_pause_with_markers_does_not_capture_stopped_content() {
+        short_capture_transition(MemoryClipboard::default(), CaptureTransition::Pause, false);
+    }
+    #[test]
+    fn short_pause_without_markers_does_not_capture_stopped_content() {
+        short_capture_transition(
+            MemoryClipboard::without_markers(),
+            CaptureTransition::Pause,
+            false,
+        );
+    }
+    #[test]
+    fn short_disable_with_markers_does_not_capture_stopped_content() {
+        short_capture_transition(
+            MemoryClipboard::default(),
+            CaptureTransition::Disable,
+            false,
+        );
+    }
+    #[test]
+    fn short_disable_without_markers_does_not_capture_stopped_content() {
+        short_capture_transition(
+            MemoryClipboard::without_markers(),
+            CaptureTransition::Disable,
+            false,
+        );
+    }
+    #[test]
+    fn short_resume_keeps_a_fresh_marked_copy_before_the_first_poll() {
+        short_capture_transition(MemoryClipboard::default(), CaptureTransition::Pause, true);
+    }
+    #[test]
+    fn short_reenable_keeps_a_fresh_marked_copy_before_the_first_poll() {
+        short_capture_transition(MemoryClipboard::default(), CaptureTransition::Disable, true);
+    }
+
+    #[test]
+    fn resume_readiness_waits_for_a_successful_baseline_and_is_not_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clipboard");
+        let mut h = Harness::with_clipboard(
+            dir,
+            path,
+            ClipboardSettings::default(),
+            MemoryClipboard::without_markers(),
+        );
+        h.tick();
+        assert!(h.copy_text("saved"));
+        h.service.set_paused(true).unwrap();
+        assert!(!h.service.status().unwrap().preparing);
+        h.clipboard.copy(ClipContent::Text("stopped".into()));
+        h.service.set_paused(false).unwrap();
+        h.clipboard.fail_next_reads(1);
+        assert!(!h.tick());
+        let status = h.service.status().unwrap();
+        assert!(status.preparing, "a failed read cannot establish readiness");
+        assert_eq!(serde_json::to_value(status).unwrap()["preparing"], true);
+        assert!(h.tick());
+        assert!(!h.service.status().unwrap().preparing);
+        assert_eq!(h.previews(""), ["saved"]);
+        assert!(h.copy_text("fresh"));
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(h.path.join("index.json")).unwrap()).unwrap();
+        for field in ["preparing", "captureEpoch", "captureMarker"] {
+            assert!(persisted.get(field).is_none(), "control state is volatile");
+        }
+    }
+
+    struct TransitionDuringRead {
+        clipboard: MemoryClipboard,
+        after_read: Option<Box<dyn FnOnce() + Send>>,
+    }
+    impl ClipboardSource for TransitionDuringRead {
+        fn change_marker(&mut self) -> Option<u64> {
+            self.clipboard.change_marker()
+        }
+        fn excluded(&mut self) -> bool {
+            false
+        }
+        fn read(&mut self, images: bool) -> Result<Option<ClipContent>, String> {
+            let snapshot = self.clipboard.read(images);
+            if let Some(action) = self.after_read.take() {
+                action();
+            }
+            snapshot
+        }
+        fn write(&mut self, content: &ClipContent) -> Result<(), String> {
+            self.clipboard.write(content)
+        }
+    }
+    fn transition_during_read(transition: CaptureTransition) {
+        let mut h = Harness::new(ClipboardSettings::default());
+        assert!(h.copy_text("saved before read"));
+        h.clipboard
+            .copy(ClipContent::Text("old in-flight snapshot".into()));
+        let service = h.service.clone();
+        h.source = Box::new(TransitionDuringRead {
+            clipboard: h.clipboard.clone(),
+            after_read: Some(Box::new(move || {
+                transition.active(&service, false);
+                transition.active(&service, true);
+            })),
+        });
+        h.tick();
+        assert_eq!(h.previews(""), ["saved before read"]);
+        h.tick();
+        assert_eq!(h.previews(""), ["saved before read"]);
+        assert!(h.copy_text("fresh after the interrupted read"));
+    }
+    #[test]
+    fn pause_resume_during_a_read_discards_the_old_snapshot() {
+        transition_during_read(CaptureTransition::Pause);
+    }
+    #[test]
+    fn disable_reenable_during_a_read_discards_the_old_snapshot() {
+        transition_during_read(CaptureTransition::Disable);
     }
 
     #[test]

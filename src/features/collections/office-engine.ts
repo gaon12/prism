@@ -10,6 +10,7 @@ export interface OfficeStatus {
   downloadAvailable: boolean;
   progress: { phase: string; files: number; totalFiles: number } | null;
   lastError: string | null;
+  failureDetails?: { stage: string | null; nativeCode: number | null } | null;
   revision: number;
 }
 export const officeEngine = {

@@ -40,7 +40,23 @@ struct Installation {
     cancel: Option<Arc<AtomicBool>>,
     progress: Option<office_preview::Progress>,
     last_error: Option<ErrorCode>,
+    failure_details: Option<FailureDetails>,
     revision: u64,
+}
+/// Fixed operation tokens and native numbers only, never paths or document data.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailureDetails {
+    pub stage: Option<&'static str>,
+    pub native_code: Option<i32>,
+}
+impl FailureDetails {
+    fn from_issue(issue: &office_assets::Error) -> Option<Self> {
+        (issue.stage.is_some() || issue.native_code.is_some()).then_some(Self {
+            stage: issue.stage,
+            native_code: issue.native_code,
+        })
+    }
 }
 // The snapshot survives a settings-window remount. Revision prevents an older
 // status response from overwriting a newer notification in either app window.
@@ -56,6 +72,8 @@ pub struct Status {
     pub download_available: bool,
     pub progress: Option<office_preview::Progress>,
     pub last_error: Option<ErrorCode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_details: Option<FailureDetails>,
     pub revision: u64,
 }
 pub fn map(issue: office_assets::Error) -> crate::collection_store::LibraryError {
@@ -97,6 +115,7 @@ impl Office {
             download_available: catalog.archive.url.is_some(),
             progress: installation.progress.clone(),
             last_error: installation.last_error.clone(),
+            failure_details: installation.failure_details.clone(),
             revision: installation.revision,
         })
     }
@@ -132,19 +151,25 @@ impl Office {
             active.cancel = Some(cancel.clone());
             active.progress = None;
             active.last_error = None;
+            active.failure_details = None;
             active.revision += 1;
         }
         // Clear the active token on success, errors and unwinding.
-        struct Install<'a>(&'a Mutex<Installation>, Option<ErrorCode>);
+        struct Install<'a>(
+            &'a Mutex<Installation>,
+            Option<ErrorCode>,
+            Option<FailureDetails>,
+        );
         impl Drop for Install<'_> {
             fn drop(&mut self) {
                 let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
                 state.cancel = None;
                 state.last_error = self.1.clone();
+                state.failure_details = self.2.clone();
                 state.revision += 1;
             }
         }
-        let mut active = Install(&self.installation, Some(ErrorCode::Storage));
+        let mut active = Install(&self.installation, Some(ErrorCode::Storage), None);
         let deadline = Instant::now() + Duration::from_secs(600);
         let report = |value: office_preview::Progress| {
             {
@@ -159,11 +184,15 @@ impl Office {
             files: 0,
             total_files: 0,
         });
+        let mut failure_details = None;
         let result = (|| {
             let mut cache = self.lock(&cancel, deadline)?;
             self.runtime
                 .install_archive(path, &cancel, deadline, &report)
-                .map_err(map)?;
+                .map_err(|issue| {
+                    failure_details = FailureDetails::from_issue(&issue);
+                    map(issue)
+                })?;
             cache.entries.clear();
             cache.bytes = 0;
             Ok(())
@@ -172,6 +201,7 @@ impl Office {
             .as_ref()
             .err()
             .map(|issue: &crate::collection_store::LibraryError| issue.code.clone());
+        active.2 = failure_details;
         result
     }
     pub fn cancel_install(&self) {
@@ -300,6 +330,29 @@ pub fn extension(source: &Source) -> String {
         .unwrap_or_default()
         .to_string_lossy()
         .to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod failure_details_tests {
+    use super::*;
+
+    #[test]
+    fn installation_diagnostics_serialize_fixed_tokens_and_numbers_only() {
+        assert!(
+            FailureDetails::from_issue(&office_assets::error(office_assets::Code::Integrity))
+                .is_none()
+        );
+        let details = FailureDetails::from_issue(&office_assets::Error {
+            code: office_assets::Code::Failed,
+            stage: Some("promote"),
+            native_code: Some(5),
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(details).unwrap(),
+            serde_json::json!({"stage":"promote", "nativeCode":5})
+        );
+    }
 }
 
 #[cfg(all(test, windows, target_arch = "x86_64"))]

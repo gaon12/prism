@@ -129,6 +129,24 @@ the existing unavailable result. Ordinary tests do not enable it or download a
 runtime. This staging route is for native qualification, not a claim of Mac
 Paddle support.
 
+The ignored Rust check
+`actual_macos_reference_extracts_and_authenticates_every_installed_file` can
+verify the complete reference as **data** on a maintainer machine. Set
+`PRISM_TEST_MAC_PADDLE_ARTIFACTS` to the prepared 129-artifact directory and
+`PRISM_TEST_MAC_PADDLE_DATA_OUTPUT` to a new absolute output directory whose
+parent already exists. Existing outputs are refused; both successful and failed
+outputs are retained. Allow at least 3.3 GB for its independent installed copy.
+
+```sh
+cargo test --manifest-path tools/platform-qa/Cargo.toml --locked actual_macos_reference_extracts_and_authenticates_every_installed_file -- --ignored --nocapture --test-threads=1
+```
+
+The check authenticates every input, uses the real Rust archive installers,
+validates the full installed inventory, reopens it and rejects an unexpected
+importable file. It preserves the verified runtime and a separate `result.json`.
+No downloaded interpreter, worker or model runs. A Windows result proves its
+data extraction and byte checks, not Mac filesystem, imports or inference.
+
 On an actual macOS 14+ ARM64 machine with the prepared, authenticated artifacts,
 run the complete production installer and image/PDF/cancellation test:
 

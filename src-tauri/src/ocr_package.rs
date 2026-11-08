@@ -303,6 +303,10 @@ pub fn installed(root: &Path, catalog: &Catalog) -> PathBuf {
 }
 
 #[cfg(test)]
+#[path = "../../tools/ocr-runtime/tests/install_reference.rs"]
+mod reference_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]

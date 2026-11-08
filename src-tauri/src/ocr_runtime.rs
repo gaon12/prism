@@ -39,7 +39,18 @@ pub struct Status {
     pub last_error: Option<Code>,
 }
 
-#[cfg(all(test, any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+#[path = "../../tools/platform-qa/tests/support/macos_exit.rs"]
+mod macos_exit;
+
+#[cfg(all(
+    test,
+    any(
+        windows,
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    )
+))]
 mod tests {
     use super::*;
     fn launcher() -> PathBuf {
@@ -47,7 +58,7 @@ mod tests {
         {
             std::env::current_exe().unwrap()
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             PathBuf::from(std::env::var_os("PRISM_TEST_LAUNCHER").expect(
                 "Set PRISM_TEST_LAUNCHER to the QA binary with pre-GUI supervisor dispatch",
@@ -165,6 +176,9 @@ mod tests {
             );
             unsafe { OwnedFd::from_raw_fd(fd as i32) }
         };
+        #[cfg(target_os = "macos")]
+        let process = macos_exit::ExitProbe::new(pid)
+            .expect("retain the live owned worker's kernel exit notification");
         eprintln!("paddle actual image passed");
         control.deadline = Instant::now() + Duration::from_secs(180);
         let recognized = runtime
@@ -228,6 +242,10 @@ mod tests {
                 "cancel must terminate the actual owned process"
             );
         }
+        #[cfg(target_os = "macos")]
+        process
+            .wait(Duration::from_secs(5))
+            .expect("cancel must terminate the actual owned process");
         eprintln!("paddle actual cancellation and process exit passed");
         runtime.shutdown();
     }

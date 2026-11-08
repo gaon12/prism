@@ -111,8 +111,8 @@ On the actual Mac, generate a new inventory using the prepared inputs:
 python -B tools/ocr-runtime/lock_assets.py --target macos-arm64 --wheelhouse /path/to/new-mac-sources/wheels --python-archive /path/to/new-mac-sources/cpython-3.13.18+20261026-aarch64-apple-darwin-install_only_stripped.tar.gz --model-manifest /path/to/new-mac-sources/model-files.json --model-directory /path/to/new-mac-sources/models --output /path/to/new-macos-arm64.lock.json --materialize /path/to/new-private-runtime
 ```
 
-The resulting lock still needs native verification before registration in the
-app. Users never run these tools or install Python themselves.
+The resulting lock still needs native verification before release registration
+in the app. Users never run these tools or install Python themselves.
 
 `macos-arm64.inventory-reference.json` records the data-only reference generated
 from all 129 authenticated inputs: 36,322 expected installed files, 3,256,648,939
@@ -120,6 +120,37 @@ expanded bytes and the inventory/catalog hashes. It is not a runtime catalog and
 is not registered in the app. Compare an actual Mac build against these fields
 before native qualification. Windows archive parsing does not establish Mac
 filesystem, import, recognition, cancellation or process-lifetime behavior.
+
+`macos-arm64.reference.lock.json` is that complete, byte-pinned reference catalog.
+An explicit **Mac ARM64 debug/test-only** route selects it when
+`PRISM_DEV_PADDLE_REFERENCE=1`. The source plan, reference catalog and worker are
+checked against their compiled hashes. Release builds ignore this flag and keep
+the existing unavailable result. Ordinary tests do not enable it or download a
+runtime. This staging route is for native qualification, not a claim of Mac
+Paddle support.
+
+On an actual macOS 14+ ARM64 machine with the prepared, authenticated artifacts,
+run the complete production installer and image/PDF/cancellation test:
+
+```sh
+export PRISM_DEV_PADDLE_REFERENCE=1
+export PRISM_TEST_PADDLE_OFFLINE=/absolute/path/to/new-mac-sources
+cargo build --manifest-path tools/platform-qa/Cargo.toml --locked --bin prism-platform-qa
+export PRISM_TEST_LAUNCHER="$PWD/tools/platform-qa/target/debug/prism-platform-qa"
+cargo test --manifest-path tools/platform-qa/Cargo.toml --locked real_paddle_install_recognition_and_cancellation -- --ignored --nocapture
+```
+
+If `CARGO_TARGET_DIR` is set, use that directory's `debug/prism-platform-qa`
+instead. The test installs a disposable private runtime, rejects an injected
+unexpected file, executes the full official pipeline on the real bilingual PNG
+and mixed PDF, checks process reuse and cancels active recognition. It attaches
+a kernel `NOTE_EXIT` notification while the owned worker is alive and waits on
+that retained queue after cancellation; it does not infer exit from a later PID
+lookup. A separate small native test exercises this observer using its own
+`/bin/sleep` child. Cross-compilation alone does not establish either result.
+Mac parent-app termination and actual filesystem/import behavior remain pending
+until their respective native tests run; Windows reference generation cannot
+close those requirements.
 
 The Rust exact-source harness has a separate opt-in production installation,
 real image/PDF recognition and cancellation test. It needs about 3 GiB of free

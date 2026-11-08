@@ -27,6 +27,10 @@ LINUX_PYTHON_VERSION = "3.13.18"
 LINUX_PYTHON_NAME = "cpython-3.13.18+20261026-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
 LINUX_PYTHON_BYTES = 35_395_906
 LINUX_PYTHON_SHA256 = "df15fe60d3ff55bf9dcf25824b5572756bb8816ff93865a273d3301d7066a8b7"
+MACOS_PYTHON_NAME = "cpython-3.13.18+20261026-aarch64-apple-darwin-install_only_stripped.tar.gz"
+MACOS_PYTHON_BYTES = 25_265_774
+MACOS_PYTHON_SHA256 = "8392b6ea51d94391befb2c31ebe75463f045d0b69dfcf5e1bb3234e1f5fa3405"
+UNIX_TARGETS = ("linux-x64", "macos-arm64")
 # -I -S excludes user modules and .pth execution. Add only the private wheel tree
 # before running the same worker as Windows; stdlib stays interpreter-relative.
 LINUX_BOOTSTRAP = b'''import os, runpy, sys
@@ -49,18 +53,18 @@ def safe_path(value: str) -> str:
 def destination(kind: str, member: str, target: str = TARGET) -> str:
     member = safe_path(member)
     if kind == "python":
-        if target == "linux-x64":
+        if target in UNIX_TARGETS:
             if not member.startswith("python/"):
                 raise ValueError("interpreter member outside python prefix")
             return member
         return "python/" + member
-    site = "python/lib/python3.13/site-packages" if target == "linux-x64" else "python/Lib/site-packages"
+    site = "python/lib/python3.13/site-packages" if target in UNIX_TARGETS else "python/Lib/site-packages"
     parts = member.split("/")
     if parts[0].endswith(".data"):
         if len(parts) < 3:
             raise ValueError("invalid wheel data scheme")
         base = {"purelib": site, "platlib": site, "data": "python",
-                "headers": "python/include", "scripts": "python/bin" if target == "linux-x64" else "python/Scripts"}[parts[1]]
+                "headers": "python/include", "scripts": "python/bin" if target in UNIX_TARGETS else "python/Scripts"}[parts[1]]
         return base + "/" + "/".join(parts[2:])
     return site + "/" + member
 
@@ -197,16 +201,19 @@ def main():
     parser.add_argument("--model-directory", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--materialize", type=Path)
-    parser.add_argument("--target", choices=(TARGET, "linux-x64"), default=TARGET)
+    parser.add_argument("--target", choices=(TARGET, *UNIX_TARGETS), default=TARGET)
     args = parser.parse_args()
     linux = args.target == "linux-x64"
-    python_bytes = LINUX_PYTHON_BYTES if linux else PYTHON_BYTES
-    python_sha = LINUX_PYTHON_SHA256 if linux else PYTHON_SHA256
-    python_version = LINUX_PYTHON_VERSION if linux else PYTHON_VERSION
-    bootstrap = LINUX_BOOTSTRAP if linux else BOOTSTRAP
-    bootstrap_path = "bootstrap.py" if linux else "python/python313._pth"
+    macos = args.target == "macos-arm64"
+    unix = linux or macos
+    python_name = MACOS_PYTHON_NAME if macos else LINUX_PYTHON_NAME
+    python_bytes = MACOS_PYTHON_BYTES if macos else LINUX_PYTHON_BYTES if linux else PYTHON_BYTES
+    python_sha = MACOS_PYTHON_SHA256 if macos else LINUX_PYTHON_SHA256 if linux else PYTHON_SHA256
+    python_version = LINUX_PYTHON_VERSION if unix else PYTHON_VERSION
+    bootstrap = LINUX_BOOTSTRAP if unix else BOOTSTRAP
+    bootstrap_path = "bootstrap.py" if unix else "python/python313._pth"
     if (args.python_archive.stat().st_size != python_bytes or file_hash(args.python_archive) != python_sha
-            or (linux and args.python_archive.name != LINUX_PYTHON_NAME)):
+            or (unix and args.python_archive.name != python_name)):
         raise ValueError("unexpected interpreter")
     root = args.materialize.resolve() if args.materialize else None
     if root:
@@ -214,9 +221,9 @@ def main():
     wheels = sorted(args.wheelhouse.glob("*.whl"))
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         wheel_assets = list(pool.map(official_wheel, wheels))
-    assets = [dict(kind="pythonTarGz" if linux else "python", path=args.python_archive.name,
+    assets = [dict(kind="pythonTarGz" if unix else "python", path=args.python_archive.name,
                    url=("https://github.com/astral-sh/python-build-standalone/releases/download/20261026/"
-                        + urllib.parse.quote(LINUX_PYTHON_NAME) if linux else
+                        + urllib.parse.quote(python_name) if unix else
                         f"https://www.python.org/ftp/python/{PYTHON_VERSION}/{args.python_archive.name}"),
                    bytes=python_bytes, sha256=python_sha)] + wheel_assets
     inventory = []
@@ -239,7 +246,7 @@ def main():
                 output.write(data)
 
     for kind, path in [("python", args.python_archive)] + [("wheel", p) for p in wheels]:
-        if linux and kind == "python":
+        if unix and kind == "python":
             unpack_python_tar(path, register, root)
             continue
         with zipfile.ZipFile(path) as archive:
@@ -283,11 +290,11 @@ def main():
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, dest)
     manifest = dict(schema=1, target=args.target, pipeline="PaddleOCR-VL-1.6", pythonVersion=python_version,
-                    executable="python/bin/python3.13" if linux else "python/python.exe", bootstrapPath=bootstrap_path,
+                    executable="python/bin/python3.13" if unix else "python/python.exe", bootstrapPath=bootstrap_path,
                     bootstrap=bootstrap.decode(), workerSha256=hashlib.sha256(worker).hexdigest(),
                     inventorySha256=digest_inventory(inventory), fileCount=len(inventory),
                     expandedBytes=sum(f["bytes"] for f in inventory), assets=assets)
-    if linux:
+    if unix:
         manifest["bootstrapEntrypoint"] = True
     args.output.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
     if root:

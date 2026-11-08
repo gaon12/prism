@@ -6,6 +6,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("lock_assets", Path(__file__).parents[1] / "lock_assets.py")
 assets = importlib.util.module_from_spec(spec)
@@ -62,6 +63,37 @@ class InterpreterArchive(unittest.TestCase):
         self.assertEqual(assets.destination("wheel", "x.data/scripts/tool", "linux-x64"), "python/bin/tool")
         with self.assertRaises(ValueError):
             assets.destination("python", "../escape", "linux-x64")
+
+    def test_macos_arm64_uses_private_unix_python_and_wheel_layout(self):
+        self.assertEqual(assets.destination("python", "python/bin/python3.13", "macos-arm64"), "python/bin/python3.13")
+        self.assertEqual(assets.destination("wheel", "torch/lib/libtorch.dylib", "macos-arm64"), "python/lib/python3.13/site-packages/torch/lib/libtorch.dylib")
+        for scheme in ("purelib", "platlib"):
+            self.assertEqual(assets.destination("wheel", f"x.data/{scheme}/mod.py", "macos-arm64"), "python/lib/python3.13/site-packages/mod.py")
+        self.assertEqual(assets.destination("wheel", "x.data/scripts/tool", "macos-arm64"), "python/bin/tool")
+        self.assertEqual(assets.destination("wheel", "x.data/data/shared.dat", "macos-arm64"), "python/shared.dat")
+        self.assertEqual(assets.destination("wheel", "x.data/headers/shared.h", "macos-arm64"), "python/include/shared.h")
+        for path in ("outside/file", "../escape", "python/../escape"):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                assets.destination("python", path, "macos-arm64")
+
+    def test_macos_rejects_an_unverified_interpreter_before_preparing_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            archive = temp / assets.MACOS_PYTHON_NAME
+            archive.write_bytes(b"not an interpreter")
+            output, stage = temp / "lock.json", temp / "stage"
+            arguments = [
+                "lock_assets.py", "--target", "macos-arm64",
+                "--wheelhouse", str(temp / "absent-wheels"),
+                "--python-archive", str(archive),
+                "--model-manifest", str(temp / "absent-models.json"),
+                "--model-directory", str(temp / "absent-models"),
+                "--output", str(output), "--materialize", str(stage),
+            ]
+            with patch("sys.argv", arguments), self.assertRaisesRegex(ValueError, "unexpected interpreter"):
+                assets.main()
+            self.assertFalse(output.exists())
+            self.assertFalse(stage.exists())
 
 
 if __name__ == "__main__":

@@ -72,6 +72,26 @@ The Linux package currently downloads 2,525,472,054 bytes and expands to
 3,704,586,012 bytes in 38,709 files. Upstream Linux wheels still require compatible
 OS libraries; the WSL result does not establish all AppImage distributions.
 
+### macOS ARM64 preparation
+
+`macos-arm64.sources.lock.json` pins official sources for macOS 14+ and Python
+3.13.18: the standalone interpreter, 107 compatible wheels and the same 21 model
+files. Dependency metadata was checked against the target's Python, platform and
+requested extras. The macOS PyTorch wheels use versions without Linux's `+cpu`
+suffix; `worker.py` still selects CPU and the complete official pipeline.
+
+This is a **source-only plan**, not an installed inventory or a runtime offered
+by the application. Actual Mac installation, native imports, recognition,
+cancellation and package verification remain required. Windows cannot establish
+those results by inspecting Mach-O files. The ARM64 plan does not qualify Intel
+execution or change the Windows/Linux locks.
+
+Download the exact source-lock artifacts into an owned maintainer directory,
+then use `--target macos-arm64` with `lock_assets.py` and the corresponding
+interpreter/wheelhouse/model inputs described above. Generate the inventory on
+the target platform; the resulting lock must be verified before registration in
+the native app. Users never run this builder or install Python themselves.
+
 The Rust exact-source harness has a separate opt-in production installation,
 real image/PDF recognition and cancellation test. It needs about 3 GiB of free
 space for its disposable installed copy. `PRISM_TEST_PADDLE_OFFLINE` must point

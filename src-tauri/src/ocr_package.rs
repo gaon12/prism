@@ -79,7 +79,8 @@ pub fn member(kind: Kind, value: &str, target: &str) -> Result<String> {
     if kind != Kind::Wheel {
         return Err(error(Code::InvalidInput));
     }
-    let site = if target.starts_with("linux-") {
+    let unix = target.starts_with("linux-") || target.starts_with("macos-");
+    let site = if unix {
         "python/lib/python3.13/site-packages"
     } else {
         "python/Lib/site-packages"
@@ -93,7 +94,7 @@ pub fn member(kind: Kind, value: &str, target: &str) -> Result<String> {
             "purelib" | "platlib" => site,
             "data" => "python",
             "headers" => "python/include",
-            "scripts" if target.starts_with("linux-") => "python/bin",
+            "scripts" if unix => "python/bin",
             "scripts" => "python/Scripts",
             _ => return Err(error(Code::InvalidInput)),
         };
@@ -320,6 +321,31 @@ mod tests {
         );
         assert!(member(Kind::Wheel, "x.data/unknown/a", "windows-x64").is_err());
         assert!(member(Kind::Wheel, "../escape", "windows-x64").is_err());
+    }
+    #[test]
+    fn macos_wheels_use_the_private_unix_layout() {
+        for target in ["macos-arm64", "linux-x64"] {
+            assert_eq!(
+                member(Kind::Wheel, "torch/lib/libtorch.dylib", target).unwrap(),
+                "python/lib/python3.13/site-packages/torch/lib/libtorch.dylib"
+            );
+            for scheme in ["purelib", "platlib"] {
+                assert_eq!(
+                    member(Kind::Wheel, &format!("x.data/{scheme}/a.py"), target).unwrap(),
+                    "python/lib/python3.13/site-packages/a.py"
+                );
+            }
+            assert_eq!(
+                member(Kind::Wheel, "x.data/scripts/tool", target).unwrap(),
+                "python/bin/tool"
+            );
+            assert_eq!(
+                member(Kind::Wheel, "x.data/headers/a.h", target).unwrap(),
+                "python/include/a.h"
+            );
+            assert!(member(Kind::Wheel, "x.data/unknown/a", target).is_err());
+            assert!(member(Kind::Wheel, "../escape", target).is_err());
+        }
     }
     #[test]
     fn cancelled_or_unsafe_archives_never_escape_the_owned_stage() {

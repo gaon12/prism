@@ -628,7 +628,7 @@ try {
   result.passed = true;
 } catch (error) {
   result.error =
-    instance && !verifiedProfile
+    (child || instance) && !verifiedProfile
       ? 'Portable profile not verified; no model, generation, screenshot or cleanup IPC sent'
       : String(error.stack ?? error);
   if (instance && verifiedProfile)

@@ -26,6 +26,21 @@ product default. EmbeddingGemma 2 Q8 and the b11960 CPU archive match the app's
 immutable inventory. The test hashes every supplied asset before use and rehashes
 the input files and installed runtime after cleanup.
 
+In a validation environment with network access, prepare a **new** output
+directory with the repository's immutable pins:
+
+```powershell
+node scripts/prepare-generation-assets.mjs 'D:\qa-temp\new-generation-assets'
+```
+
+The helper streams and verifies the three assets, follows HTTPS redirects and
+publishes each complete file only after its size and SHA-256 match. It refuses
+an existing directory. `assets.json` lists the verified paths for the environment
+variables below; `status.json` records progress or a static error code. Failed
+partial files remain in that owned directory for diagnosis. Upload only
+`status.json` with QA evidence, never the downloaded models or partial files.
+Asset preparation does not run a model or qualify the native generation gate.
+
 Authenticate the candidate release against its CI build/artifact provenance
 before running. `PRISM_TEST_APP_SHA256` pins that selected executable; setting it
 does **not** itself establish publisher signature or artifact authenticity.

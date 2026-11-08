@@ -162,6 +162,16 @@ pub struct ContentChunk {
     pub char_start: u32,
     pub char_end: u32,
 }
+
+/// Identity for physical cache maintenance only. There is deliberately no text
+/// or serialization surface: this is never permission to serve a source.
+#[derive(Debug)]
+pub(crate) struct CachedChunkIdentity {
+    pub id: String,
+    pub file_path: String,
+    pub fingerprint: SourceFingerprint,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContentSearchHit {
@@ -979,6 +989,66 @@ impl ContentStore {
         }
     }
 
+    /// Keep known vector identities through uncertain source I/O. Search, RAG
+    /// and writes must continue to use the current-source lookup below instead.
+    pub(crate) fn retained_chunk_identities(
+        &self,
+        ids: &[String],
+        allowed_content_roots: &[PathBuf],
+        cancel: &AtomicBool,
+    ) -> Result<Vec<CachedChunkIdentity>> {
+        check_cancel(cancel)?;
+        if ids.len() > MAX_IDS || ids.iter().any(|id| id.len() > 128) {
+            return Err(error(
+                ContentStoreErrorCode::InvalidInput,
+                "Content chunk lookup exceeds allowed limits",
+            ));
+        }
+        let allowed = roots(allowed_content_roots);
+        if allowed.is_empty() || ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.run(cancel, |connection| {
+            // Do not load excerpts, section headings or other document content.
+            let mut statement = connection.prepare(
+                "SELECT c.id,d.file_path,d.sha256,d.size_bytes,d.modified_unix_ms \
+                 FROM content_chunks c JOIN content_documents d ON d.id=c.document_id \
+                 JOIN content_sections s ON s.document_id=c.document_id AND s.section_index=c.section_index \
+                 WHERE c.id=?1",
+            ).map_err(storage)?;
+            let mut output = Vec::new();
+            let mut seen = HashSet::new();
+            let mut files = HashMap::new();
+            for id in ids {
+                check_cancel(cancel)?;
+                if !seen.insert(id) {
+                    continue;
+                }
+                let identity = statement.query_row([id], |row| {
+                    Ok(CachedChunkIdentity {
+                        id: row.get(0)?,
+                        file_path: row.get(1)?,
+                        fingerprint: SourceFingerprint {
+                            sha256: row.get(2)?,
+                            size_bytes: row.get(3)?,
+                            modified_unix_ms: row.get(4)?,
+                        },
+                    })
+                }).optional().map_err(storage)?;
+                if let Some(identity) = identity {
+                    let keep = *files.entry(identity.file_path.clone()).or_insert_with(|| {
+                        !cached_source_is_obsolete(&identity.file_path, &identity.fingerprint, &allowed)
+                    });
+                    if keep {
+                        output.push(identity);
+                    }
+                }
+            }
+            check_cancel(cancel)?;
+            Ok(output)
+        })
+    }
+
     pub fn chunks_by_ids(
         &self,
         ids: &[String],
@@ -1280,6 +1350,56 @@ fn plain_snippet(text: &str, terms: &[String]) -> String {
     }
     let end = (selected + 320).min(chars.len());
     chars[selected..end].iter().collect()
+}
+
+#[cfg(all(test, windows))]
+pub(crate) mod transient_source_fixture {
+    use super::*;
+    use std::{
+        io,
+        os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileDispositionInfo, SetFileInformationByHandle, DELETE, FILE_DISPOSITION_INFO,
+    };
+    // A share-denied data handle still permits metadata queries. Pending
+    // deletion gives a real, reversible access-denied error without ACL
+    // changes. This fixture operates only on its own temporary files.
+    pub(crate) struct Pending(fs::File);
+    impl Pending {
+        pub(crate) fn set(&self, value: bool) -> io::Result<()> {
+            let info = FILE_DISPOSITION_INFO { DeleteFile: value };
+            let ok = unsafe {
+                SetFileInformationByHandle(
+                    self.0.as_raw_handle() as _,
+                    FileDispositionInfo,
+                    (&info as *const FILE_DISPOSITION_INFO).cast(),
+                    std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+                )
+            };
+            if ok == 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
+        pub(crate) fn new(path: &Path) -> Self {
+            let pending = Self(
+                fs::OpenOptions::new()
+                    .access_mode(DELETE)
+                    .share_mode(7)
+                    .open(path)
+                    .unwrap(),
+            );
+            pending.set(true).unwrap();
+            pending
+        }
+    }
+    impl Drop for Pending {
+        fn drop(&mut self) {
+            let _ = self.set(false);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1595,63 +1715,41 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn transient_source_failures_hide_text_without_losing_cached_extraction() {
-        use std::{
-            io,
-            os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
-        };
-        use windows_sys::Win32::Storage::FileSystem::{
-            FileDispositionInfo, SetFileInformationByHandle, DELETE, FILE_DISPOSITION_INFO,
-        };
-        // A share-denied data handle still permits metadata queries. Pending
-        // deletion gives a real, reversible access-denied error without ACL
-        // changes. This fixture operates only on its own temporary files.
-        struct Pending(fs::File);
-        impl Pending {
-            fn set(&self, value: bool) -> io::Result<()> {
-                let info = FILE_DISPOSITION_INFO { DeleteFile: value };
-                let ok = unsafe {
-                    SetFileInformationByHandle(
-                        self.0.as_raw_handle() as _,
-                        FileDispositionInfo,
-                        (&info as *const FILE_DISPOSITION_INFO).cast(),
-                        std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
-                    )
-                };
-                if ok == 0 {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
-            }
-            fn new(path: &Path) -> Self {
-                let pending = Self(
-                    fs::OpenOptions::new()
-                        .access_mode(DELETE)
-                        .share_mode(7)
-                        .open(path)
-                        .unwrap(),
-                );
-                pending.set(true).unwrap();
-                pending
-            }
-        }
-        impl Drop for Pending {
-            fn drop(&mut self) {
-                let _ = self.set(false);
-            }
-        }
+        use super::transient_source_fixture::Pending;
+        use std::io;
         let dir = tempfile::tempdir().unwrap();
         let roots = vec![dir.path().to_owned()];
         let doc = document(dir.path(), "source.txt", "reusable cached evidence");
         let store = ContentStore::open(&dir.path().join("index.sqlite")).unwrap();
         store.replace_document(&doc, &roots, &cancel()).unwrap();
         let source = Path::new(&doc.file_path);
+        let ids: Vec<_> = store
+            .chunks_for_document(source, &roots, &cancel())
+            .unwrap()
+            .iter()
+            .map(|chunk| chunk.id.clone())
+            .collect();
         let held = Pending::new(source);
         assert_eq!(
             fs::canonicalize(source).unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
         );
         assert!(search(&store, "evidence", &roots).is_empty());
+        assert!(store
+            .chunks_by_ids(&ids, &roots, &cancel())
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .retained_chunk_identities(&ids, &roots, &cancel())
+                .unwrap()
+                .len(),
+            ids.len()
+        );
+        assert!(store
+            .retained_chunk_identities(&ids, &[], &cancel())
+            .unwrap()
+            .is_empty());
         assert_eq!(store.purge_outside_roots(&roots, &cancel()).unwrap(), 0);
         assert_eq!(
             store
@@ -1667,6 +1765,10 @@ mod tests {
         drop(held);
         assert_eq!(search(&store, "evidence", &roots).len(), 1);
         fs::remove_file(source).unwrap();
+        assert!(store
+            .retained_chunk_identities(&ids, &roots, &cancel())
+            .unwrap()
+            .is_empty());
         assert_eq!(store.purge_outside_roots(&roots, &cancel()).unwrap(), 1);
 
         let doc = document(dir.path(), "revoked.txt", "revoked cached evidence");

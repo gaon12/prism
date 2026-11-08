@@ -956,15 +956,15 @@ impl VectorStore {
             }
             for batch in candidates(&batch, false)?.chunks(256) {
                 let ids: Vec<_> = batch.iter().map(|row| row.id.clone()).collect();
-                let authorized: HashMap<_, _> = content
-                    .chunks_by_ids(&ids, allowed_roots, cancel)
+                let retained: HashMap<_, _> = content
+                    .retained_chunk_identities(&ids, allowed_roots, cancel)
                     .map_err(content_error)?
                     .into_iter()
                     .map(|chunk| (chunk.id.clone(), chunk))
                     .collect();
                 for row in batch {
                     if row.model_fingerprint != self.model.model_fingerprint
-                        || authorized.get(&row.id).is_none_or(|chunk| {
+                        || retained.get(&row.id).is_none_or(|chunk| {
                             chunk.fingerprint.sha256 != row.fingerprint
                                 || key(&chunk.file_path) != key(&row.file_path)
                         })
@@ -1053,6 +1053,117 @@ mod tests {
         (document, chunks)
     }
     use crate::document_extract::ExtractedDocument;
+
+    #[cfg(windows)]
+    #[test]
+    fn transient_source_failures_hide_vectors_without_deleting_cached_embeddings() {
+        use crate::content_store::transient_source_fixture::Pending;
+        let directory = tempfile::tempdir().unwrap();
+        runtime(async {
+            let folder = directory.path().join("sources");
+            fs::create_dir(&folder).unwrap();
+            let roots = vec![folder.clone()];
+            let content = ContentStore::open(&directory.path().join("index.sqlite")).unwrap();
+            let spec = VectorModelSpec {
+                model_fingerprint: "temporary-source-io".into(),
+                dimensions: 2,
+                chunking_version: "content-chunk-v1:1200:150".into(),
+            };
+            let vector_dir = directory.path().join("vectors");
+            let store = VectorStore::open(&vector_dir, spec.clone()).await.unwrap();
+            let (document, chunks) =
+                source(&folder, "source.txt", "cached evidence", &content, &roots);
+            store
+                .replace_document(
+                    batch(&document, &chunks, &spec.model_fingerprint, vec![1.0, 0.0]),
+                    &content,
+                    &roots,
+                    &cancel(),
+                )
+                .await
+                .unwrap();
+            let held = Pending::new(Path::new(&document.file_path));
+            assert_eq!(
+                fs::canonicalize(&document.file_path).unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            assert!(store
+                .search(
+                    &[1.0, 0.0],
+                    &spec.model_fingerprint,
+                    &ContentSearchFilter::default(),
+                    &content,
+                    &roots,
+                    1,
+                    8,
+                    &cancel()
+                )
+                .await
+                .unwrap()
+                .hits
+                .is_empty());
+            assert_eq!(content.purge_outside_roots(&roots, &cancel()).unwrap(), 0);
+            assert_eq!(
+                store
+                    .purge_outside_roots(&content, &roots, &cancel())
+                    .await
+                    .unwrap()
+                    .deleted,
+                0
+            );
+            held.set(false).unwrap();
+            drop(held);
+            // No new replace_document/embed call: the original vector must recover.
+            let reopened = VectorStore::open(&vector_dir, spec.clone()).await.unwrap();
+            assert_eq!(
+                reopened
+                    .search(
+                        &[1.0, 0.0],
+                        &spec.model_fingerprint,
+                        &ContentSearchFilter::default(),
+                        &content,
+                        &roots,
+                        1,
+                        8,
+                        &cancel()
+                    )
+                    .await
+                    .unwrap()
+                    .hits
+                    .len(),
+                1
+            );
+
+            let held = Pending::new(Path::new(&document.file_path));
+            // Cached identity never substitutes for an actual source permission.
+            assert_eq!(
+                reopened
+                    .purge_outside_roots(&content, &[], &cancel())
+                    .await
+                    .unwrap()
+                    .deleted,
+                1
+            );
+            held.set(false).unwrap();
+            drop(held);
+            assert!(reopened
+                .search(
+                    &[1.0, 0.0],
+                    &spec.model_fingerprint,
+                    &ContentSearchFilter::default(),
+                    &content,
+                    &roots,
+                    1,
+                    8,
+                    &cancel()
+                )
+                .await
+                .unwrap()
+                .hits
+                .is_empty());
+        });
+    }
+
     fn batch(
         document: &ExtractedDocument,
         chunks: &[ContentChunk],

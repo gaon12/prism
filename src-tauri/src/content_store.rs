@@ -316,6 +316,46 @@ fn visible(path: &str, fingerprint: &SourceFingerprint, roots: &[PathBuf]) -> Op
     Some(canonical)
 }
 
+/// Cache cleanup needs stronger evidence than a read being unavailable. Search
+/// still uses `visible` above and exposes nothing on any validation failure.
+/// Only an authorized, unchanged source may recover its cached extraction after
+/// a transient I/O failure; an absent scope never gets this grace period.
+fn cached_source_is_obsolete(
+    path: &str,
+    fingerprint: &SourceFingerprint,
+    roots: &[PathBuf],
+) -> bool {
+    let stored = normal_path(Path::new(path));
+    if !roots.iter().any(|root| within(&stored, root)) {
+        return true;
+    }
+    let inspect = || -> std::io::Result<bool> {
+        let absolute = std::path::absolute(&stored)?;
+        crate::path_identity::no_links(&absolute)?;
+        let canonical = normal_path(&absolute.canonicalize()?);
+        if path_key(&canonical) != path_key(&stored)
+            || !roots.iter().any(|root| within(&canonical, root))
+        {
+            return Ok(true);
+        }
+        let meta = fs::metadata(&canonical)?;
+        Ok(!meta.is_file()
+            || meta.len() != fingerprint.size_bytes
+            || fingerprint
+                .modified_unix_ms
+                .is_some_and(|expected| modified(&meta).is_some_and(|current| current != expected)))
+    };
+    match inspect() {
+        Ok(obsolete) => obsolete,
+        Err(failure) => matches!(
+            failure.kind(),
+            std::io::ErrorKind::NotFound
+                | std::io::ErrorKind::NotADirectory
+                | std::io::ErrorKind::InvalidInput
+        ),
+    }
+}
+
 fn purge_path(path: &Path) -> Result<PathBuf> {
     crate::path_identity::comparison(path).map_err(|failure| {
         if failure.kind() == std::io::ErrorKind::InvalidInput {
@@ -1157,7 +1197,7 @@ impl ContentStore {
             !unavailable
                 .iter()
                 .any(|root| within(&normal_path(Path::new(path)), root))
-                && visible(path, fingerprint, &allowed).is_none()
+                && cached_source_is_obsolete(path, fingerprint, &allowed)
         })
     }
     fn purge_where(
@@ -1551,6 +1591,91 @@ mod tests {
         assert!(search(&store, "reconnectable", &[]).is_empty());
         assert_eq!(search(&store, "reconnectable", &[folder]).len(), 1);
         assert_eq!(store.purge_for_scopes(&[], &[], &cancel()).unwrap(), 1);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn transient_source_failures_hide_text_without_losing_cached_extraction() {
+        use std::{
+            io,
+            os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+        };
+        use windows_sys::Win32::Storage::FileSystem::{
+            FileDispositionInfo, SetFileInformationByHandle, DELETE, FILE_DISPOSITION_INFO,
+        };
+        // A share-denied data handle still permits metadata queries. Pending
+        // deletion gives a real, reversible access-denied error without ACL
+        // changes. This fixture operates only on its own temporary files.
+        struct Pending(fs::File);
+        impl Pending {
+            fn set(&self, value: bool) -> io::Result<()> {
+                let info = FILE_DISPOSITION_INFO { DeleteFile: value };
+                let ok = unsafe {
+                    SetFileInformationByHandle(
+                        self.0.as_raw_handle() as _,
+                        FileDispositionInfo,
+                        (&info as *const FILE_DISPOSITION_INFO).cast(),
+                        std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+                    )
+                };
+                if ok == 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            }
+            fn new(path: &Path) -> Self {
+                let pending = Self(
+                    fs::OpenOptions::new()
+                        .access_mode(DELETE)
+                        .share_mode(7)
+                        .open(path)
+                        .unwrap(),
+                );
+                pending.set(true).unwrap();
+                pending
+            }
+        }
+        impl Drop for Pending {
+            fn drop(&mut self) {
+                let _ = self.set(false);
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let roots = vec![dir.path().to_owned()];
+        let doc = document(dir.path(), "source.txt", "reusable cached evidence");
+        let store = ContentStore::open(&dir.path().join("index.sqlite")).unwrap();
+        store.replace_document(&doc, &roots, &cancel()).unwrap();
+        let source = Path::new(&doc.file_path);
+        let held = Pending::new(source);
+        assert_eq!(
+            fs::canonicalize(source).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(search(&store, "evidence", &roots).is_empty());
+        assert_eq!(store.purge_outside_roots(&roots, &cancel()).unwrap(), 0);
+        assert_eq!(
+            store
+                .connection
+                .lock()
+                .unwrap()
+                .query_row("SELECT count(*) FROM content_documents", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        held.set(false).unwrap();
+        drop(held);
+        assert_eq!(search(&store, "evidence", &roots).len(), 1);
+        fs::remove_file(source).unwrap();
+        assert_eq!(store.purge_outside_roots(&roots, &cancel()).unwrap(), 1);
+
+        let doc = document(dir.path(), "revoked.txt", "revoked cached evidence");
+        store.replace_document(&doc, &roots, &cancel()).unwrap();
+        let held = Pending::new(Path::new(&doc.file_path));
+        // Uncertain source I/O must never postpone an actual scope revocation.
+        assert_eq!(store.purge_outside_roots(&[], &cancel()).unwrap(), 1);
+        held.set(false).unwrap();
+        drop(held);
     }
     #[test]
     fn purge_scope_uses_components_and_cascades_sections_and_chunks() {

@@ -113,11 +113,15 @@ cargo test --manifest-path tools/platform-qa/Cargo.toml --locked macos_quartz_pr
 The first requires native Korean recognition and forces the System engine so a
 Paddle fallback cannot conceal a native failure. The second checks actual Quartz
 pixels, crop/rotation geometry, invalid pages and cancellation without enabling
-OCR or requiring a Vision language. Neither test downloads models. Neither has
-been executed on macOS yet. Intel/Apple Silicon checks of the adapter's SDK
-bindings do not establish whole-app compilation or native behavior. Windows/Linux
-tests of the shared decoder and worker ownership establish only those components;
-independent PDFium rendering establishes fixture expectations, not Quartz output.
+OCR or requiring a Vision language. Neither test downloads models. Both passed
+as explicit opt-in runs on macOS 26.7.2 arm64 in
+[CI job 128564691627](https://github.com/gaon12/prism/actions/runs/42426131901/job/128564691627)
+at `ce6715592b1a69773f9dd6adc6a4e4ec00597d47`: Quartz in 0.04s and Korean
+Vision in 8.04s. The ordinary suite still reports them as ignored; the separate
+steps execute them. This verifies those native library fixtures, not desktop UI,
+Intel runtime behavior, managed Paddle/Office packages or arbitrary documents.
+Cross-target SDK checks and independent PDFium rendering remain separate from
+actual Vision/Quartz execution.
 
 The [native path policy workflow](../../.github/workflows/path-policy.yml) runs
 these library tests on macOS with `TMPDIR=/var/tmp`. It intentionally exercises

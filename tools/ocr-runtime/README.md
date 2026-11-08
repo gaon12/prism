@@ -166,14 +166,33 @@ entire package instead of reading the offline directory.
 cargo test --manifest-path tools/platform-qa/Cargo.toml --locked real_paddle_install_recognition_and_cancellation -- --ignored --nocapture
 ```
 
-The Linux opt-in `real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill`
-uses `PRISM_TEST_PADDLE_INSTALLED` as an authenticated runtime seed. It recognizes
-the actual Korean image through public Automatic dispatch, sends SIGKILL only
-to its own app-parent fixture, and polls the retained worker pidfd for exit. This
-uses real inference and the normal production supervisor, not an OCR substitute.
+The Linux x64 and staged Mac ARM64 opt-in
+`real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill` uses
+`PRISM_TEST_PADDLE_INSTALLED` as an authenticated runtime seed. It recognizes the
+actual Korean image through public Automatic dispatch and sends SIGKILL only to
+its own app-parent fixture. Linux polls the retained worker pidfd; Mac waits on
+the kernel exit notification registered before killing that parent. The normal
+production supervisor must terminate the same owned worker within eight seconds.
+This uses real inference, not an OCR substitute. On Mac, a valid unsupported
+language first has to produce a real OS `LanguageUnavailable` error; only then
+may Automatic fall back to the installed full Paddle pipeline.
+
 The same fixture exercises document extraction for mixed typed/scanned pages,
 blank-page omission and AES-256 user/owner passwords, retaining original source
-hashes and bytes without writing a decrypted PDF.
+hashes and bytes without writing a decrypted PDF. On Mac ARM64, retain the debug
+reference flag from the previous commands and use the actual materialized Mac
+runtime as the seed:
+
+```sh
+export PRISM_DEV_PADDLE_REFERENCE=1
+export PRISM_TEST_PADDLE_INSTALLED=/absolute/path/to/new-private-runtime
+cargo test --manifest-path tools/platform-qa/Cargo.toml --locked --test paddle_lifetime real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill -- --ignored --nocapture
+```
+
+This separate test builds its own QA host and does not require
+`PRISM_TEST_LAUNCHER`. A compilation result does not qualify the actual model,
+source extraction or parent-death behavior. Mac native execution is still
+required before the reference can become a release runtime.
 
 For the real Windows WebView regression, set `PRISM_TEST_PADDLE_RUNTIME` to the
 materialized QA directory and run `npm run test:paddle-ocr`. It clicks the actual

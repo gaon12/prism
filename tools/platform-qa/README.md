@@ -175,19 +175,27 @@ Expensive or OS-dependent checks are opt-in:
   actual server is gone. This uses the normal production supervisor, not a model
   substitute. It does not require `PRISM_TEST_SUPERVISOR` because the parent is
   already the QA binary with the proper dispatcher.
-- `real_paddle_install_recognition_and_cancellation`: Windows x64 or Linux x64;
+- `real_paddle_install_recognition_and_cancellation`: Windows x64, Linux x64 or
+  staged Mac ARM64 debug/test qualification;
   set `PRISM_TEST_PADDLE_OFFLINE` to the exact artifact directory in the
   [runtime guide](../ocr-runtime/README.md), or explicitly set
   `PRISM_TEST_PADDLE_NETWORK=1` to download the full package. Runs installation,
   complete inventory verification, real Korean image/PDF recognition, process
-  reuse and cancellation. Linux needs `PRISM_TEST_LAUNCHER` pointing to the built
-  QA binary. It retains a Windows process handle/Linux pidfd to prove exit.
-- `real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill`: Linux x64;
+  reuse and cancellation. Unix needs `PRISM_TEST_LAUNCHER` pointing to the built
+  QA binary. Mac also needs `PRISM_DEV_PADDLE_REFERENCE=1`; release Mac runtime
+  availability is unchanged. It retains a Windows process handle, Linux pidfd or
+  Mac kernel exit notification to prove exit. Mac execution is still pending.
+- `real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill`: Linux x64 or
+  staged Mac ARM64 debug/test qualification;
   set `PRISM_TEST_PADDLE_INSTALLED` to the authenticated prepared runtime. The
   test copies it to a temporary profile, recognizes real text through Automatic
   dispatch, and proves the exact worker exits after SIGKILL of its own parent.
   It also checks the actual extractor's mixed PDF page order, blank-page omission,
   AES-256 user/owner passwords, raw fingerprints and original-file preservation.
+  Mac requires the explicit reference flag and an actual materialized Mac seed,
+  then exercises real OS language unavailability before Auto fallback. The worker
+  exit observer attaches before parent termination. See the [runtime guide](../ocr-runtime/README.md)
+  for exact native commands. Compilation does not establish native execution.
 - `native_store_roundtrip_replacement_isolation_and_delete`: on macOS or Linux,
   set `PRISM_TEST_OS_CREDENTIALS=1` and provide an accessible **disposable** user
   keychain or Secret Service session. Creates a random QA service namespace,

@@ -135,7 +135,10 @@ fn fixture() -> Option<i32> {
         println!("Actual Linux PDF collection import, WebP cover, reader, cache reopen and stale-source checks passed; OCR remains disabled");
         return Some(0);
     }
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
     if args
         .first()
         .is_some_and(|arg| arg == "--fixture-paddle-parent")
@@ -156,13 +159,21 @@ fn fixture() -> Option<i32> {
         let system = ocr::Preferences {
             enabled: true,
             engine: ocr::Engine::System,
+            // Mac has a real OS engine. Request a valid but unsupported tag
+            // to exercise actual language failure and public Auto fallback.
+            #[cfg(target_os = "macos")]
+            language: "zz-PrismUnavailable".into(),
             ..Default::default()
         };
+        #[cfg(target_os = "linux")]
+        let expected_absence = ocr::Code::Unavailable;
+        #[cfg(target_os = "macos")]
+        let expected_absence = ocr::Code::LanguageUnavailable;
         assert_eq!(
             ocr::recognize(ocr::Input::Image(bytes), &system, &limits, &cancel)
                 .unwrap_err()
                 .code,
-            ocr::Code::Unavailable
+            expected_absence
         );
         let automatic = ocr::Preferences {
             engine: ocr::Engine::Auto,

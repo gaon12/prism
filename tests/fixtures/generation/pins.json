@@ -1,0 +1,27 @@
+{
+  "generation": {
+    "filename": "Qwen3-1.7B-Q8_0.gguf",
+    "bytes": 1834426016,
+    "sha256": "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
+    "url": "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/90862c4b9d2787eaed51d12237eafdfe7c5f6077/Qwen3-1.7B-Q8_0.gguf",
+    "license": "Apache-2.0",
+    "testOnly": true
+  },
+  "embedding": {
+    "filename": "embeddinggemma-2-Q8_0.gguf",
+    "bytes": 309855456,
+    "sha256": "2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135",
+    "url": "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/6ea3e3a309d12a4779cfda98b8c19800d2d5da71/embeddinggemma-2-Q8_0.gguf"
+  },
+  "runtime": {
+    "filename": "llama-b11960-bin-win-cpu-x64.zip",
+    "bytes": 24407745,
+    "sha256": "73f962f82850d244db47eaacb9d913637027b82399124324298576d58c5f4287",
+    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11960/llama-b11960-bin-win-cpu-x64.zip"
+  },
+  "server": {
+    "filename": "llama-server.exe",
+    "bytes": 9216,
+    "sha256": "81f65c6681d66099e5d48757aa2c050ba958dc43816e584f0bb4181eb7c910d8"
+  }
+}

@@ -165,7 +165,9 @@ def official_wheel(path: Path) -> dict:
         info = email.parser.BytesParser().parsebytes(archive.read(metadata))
     name, version = info["Name"], info["Version"]
     digest = file_hash(path)
-    if name.lower() in ("torch", "torchvision"):
+    # Windows/Linux CPU builds have a local +cpu version on PyTorch's index.
+    # Ordinary macOS releases use PyPI, matching their pinned source URLs.
+    if name.lower() in ("torch", "torchvision") and version.endswith("+cpu"):
         base = "https://download.pytorch.org/whl/cpu/" + name.lower() + "/"
         parser = Links()
         parser.feed(urllib.request.urlopen(base, timeout=60).read().decode("utf-8"))

@@ -2,11 +2,13 @@
 import hashlib
 import importlib.util
 import io
+import json
 from pathlib import Path
 import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 spec = importlib.util.spec_from_file_location("lock_assets", Path(__file__).parents[1] / "lock_assets.py")
 assets = importlib.util.module_from_spec(spec)
@@ -94,6 +96,53 @@ class InterpreterArchive(unittest.TestCase):
                 assets.main()
             self.assertFalse(output.exists())
             self.assertFalse(stage.exists())
+
+
+class WheelAuthority(unittest.TestCase):
+    def wheel(self, directory, name, version, platform):
+        path = directory / f"{name}-{version}-cp313-cp313-{platform}.whl"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr(
+                f"{name}-{version}.dist-info/METADATA",
+                f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+            )
+        return path
+
+    def test_macos_torch_uses_pypi_wheel_authority(self):
+        for name in ("torch", "torchvision"):
+            version = "2.13.0" if name == "torch" else "0.28.0"
+            with self.subTest(package=name), tempfile.TemporaryDirectory() as temp:
+                wheel = self.wheel(Path(temp), name, version, "macosx_14_0_arm64")
+                url = f"https://files.pythonhosted.org/packages/fixture/{wheel.name}"
+                metadata = json.dumps({"urls": [{
+                    "filename": wheel.name, "size": wheel.stat().st_size,
+                    "digests": {"sha256": assets.file_hash(wheel)}, "url": url,
+                }]}).encode()
+
+                def fetch(request_url, timeout):
+                    self.assertEqual(request_url, f"https://pypi.org/pypi/{name}/{version}/json")
+                    return io.BytesIO(metadata)
+
+                with patch.object(assets.urllib.request, "urlopen", fetch):
+                    verified = assets.official_wheel(wheel)
+                self.assertEqual(verified["url"], url)
+                self.assertEqual(verified["sha256"], assets.file_hash(wheel))
+
+    def test_cpu_local_versions_keep_the_pytorch_index_authority(self):
+        for platform in ("win_amd64", "manylinux_2_28_x86_64"):
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as temp:
+                wheel = self.wheel(Path(temp), "torch", "2.13.0+cpu", platform)
+                url = "https://download.pytorch.org/whl/cpu/" + assets.urllib.parse.quote(wheel.name)
+                page = f'<a href="{url}#sha256={assets.file_hash(wheel)}">wheel</a>'.encode()
+
+                def fetch(request_url, timeout):
+                    self.assertEqual(request_url, "https://download.pytorch.org/whl/cpu/torch/")
+                    return io.BytesIO(page)
+
+                with patch.object(assets.urllib.request, "urlopen", fetch):
+                    verified = assets.official_wheel(wheel)
+                self.assertEqual(verified["url"], url)
+                self.assertEqual(verified["sha256"], assets.file_hash(wheel))
 
 
 if __name__ == "__main__":

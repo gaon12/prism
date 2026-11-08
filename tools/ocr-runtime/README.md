@@ -86,11 +86,33 @@ cancellation and package verification remain required. Windows cannot establish
 those results by inspecting Mach-O files. The ARM64 plan does not qualify Intel
 execution or change the Windows/Linux locks.
 
-Download the exact source-lock artifacts into an owned maintainer directory,
-then use `--target macos-arm64` with `lock_assets.py` and the corresponding
-interpreter/wheelhouse/model inputs described above. Generate the inventory on
-the target platform; the resulting lock must be verified before registration in
-the native app. Users never run this builder or install Python themselves.
+Prepare the exact source-lock artifacts in a **new** maintainer directory:
+
+```sh
+python -B tools/ocr-runtime/prepare_sources.py --output /path/to/new-mac-sources
+```
+
+The helper streams each source under its size bound and verifies its full SHA
+before publication. Existing output folders are refused. Failed partials and a
+sanitized `status.json` remain for diagnosis; `model-files.json` is published only
+after every source passes. Status always records `actualExecution=false` and a
+canonical plan hash. It does not parse archives, install anything or run Python
+from the downloaded interpreter. Do not upload its whole source directory as
+test evidence.
+
+Optional `--reuse-models /path/to/existing/models` makes independent, fully
+verified copies of all 21 model files instead of downloading them again. A
+missing or incorrect cache fails preparation; it does not silently fall back to
+another source or link writable staged files to an existing runtime.
+
+On the actual Mac, generate a new inventory using the prepared inputs:
+
+```sh
+python -B tools/ocr-runtime/lock_assets.py --target macos-arm64 --wheelhouse /path/to/new-mac-sources/wheels --python-archive /path/to/new-mac-sources/cpython-3.13.18+20261026-aarch64-apple-darwin-install_only_stripped.tar.gz --model-manifest /path/to/new-mac-sources/model-files.json --model-directory /path/to/new-mac-sources/models --output /path/to/new-macos-arm64.lock.json --materialize /path/to/new-private-runtime
+```
+
+The resulting lock still needs native verification before registration in the
+app. Users never run these tools or install Python themselves.
 
 The Rust exact-source harness has a separate opt-in production installation,
 real image/PDF recognition and cancellation test. It needs about 3 GiB of free

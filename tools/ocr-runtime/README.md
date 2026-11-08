@@ -114,6 +114,13 @@ python -B tools/ocr-runtime/lock_assets.py --target macos-arm64 --wheelhouse /pa
 The resulting lock still needs native verification before registration in the
 app. Users never run these tools or install Python themselves.
 
+`macos-arm64.inventory-reference.json` records the data-only reference generated
+from all 129 authenticated inputs: 36,322 expected installed files, 3,256,648,939
+expanded bytes and the inventory/catalog hashes. It is not a runtime catalog and
+is not registered in the app. Compare an actual Mac build against these fields
+before native qualification. Windows archive parsing does not establish Mac
+filesystem, import, recognition, cancellation or process-lifetime behavior.
+
 The Rust exact-source harness has a separate opt-in production installation,
 real image/PDF recognition and cancellation test. It needs about 3 GiB of free
 space for its disposable installed copy. `PRISM_TEST_PADDLE_OFFLINE` must point

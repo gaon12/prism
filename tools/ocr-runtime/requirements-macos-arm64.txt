@@ -1,0 +1,10 @@
+# Maintainer input for macOS 14+ on Apple Silicon, not a user install command.
+# Official macOS wheels do not use Linux's +cpu version suffix. The same worker
+# still forces device="cpu"; this does not enable Metal or change either model.
+torch==2.13.0
+torchvision==0.28.0
+transformers==5.18.0
+paddleocr[doc-parser]==3.7.0
+paddlex==3.7.2
+pillow==12.2.0
+pypdfium2==5.13.0

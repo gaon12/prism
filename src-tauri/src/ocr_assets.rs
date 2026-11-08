@@ -9,6 +9,24 @@ pub const PIPELINE: &str = "PaddleOCR-VL-1.6";
 pub const WORKER: &[u8] = include_bytes!("../../tools/ocr-runtime/worker.py");
 const WINDOWS: &str = include_str!("../../tools/ocr-runtime/windows-x64.lock.json");
 const LINUX: &str = include_str!("../../tools/ocr-runtime/linux-x64.lock.json");
+// This reference is available only for explicit native qualification. Release
+// builds keep the existing unsupported result until actual Mac validation.
+#[cfg(any(
+    test,
+    all(debug_assertions, target_os = "macos", target_arch = "aarch64")
+))]
+const MAC_REFERENCE: &str = include_str!("../../tools/ocr-runtime/macos-arm64.reference.lock.json");
+#[cfg(any(
+    test,
+    all(debug_assertions, target_os = "macos", target_arch = "aarch64")
+))]
+const MAC_REFERENCE_INFO: &str =
+    include_str!("../../tools/ocr-runtime/macos-arm64.inventory-reference.json");
+#[cfg(any(
+    test,
+    all(debug_assertions, target_os = "macos", target_arch = "aarch64")
+))]
+const MAC_SOURCES: &str = include_str!("../../tools/ocr-runtime/macos-arm64.sources.lock.json");
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -86,8 +104,19 @@ pub fn for_target(target: &str) -> Result<Catalog> {
     let raw = match target {
         "windows-x64" => WINDOWS,
         "linux-x64" => LINUX,
+        #[cfg(all(
+            any(test, debug_assertions),
+            target_os = "macos",
+            target_arch = "aarch64"
+        ))]
+        "macos-arm64" if std::env::var("PRISM_DEV_PADDLE_REFERENCE").as_deref() == Ok("1") => {
+            return macos_reference_catalog();
+        }
         _ => return Err(error(Code::Unavailable)),
     };
+    parse_catalog(raw, target)
+}
+fn parse_catalog(raw: &str, target: &str) -> Result<Catalog> {
     let catalog: Catalog = serde_json::from_str(raw).map_err(|_| error(Code::Failed))?;
     if catalog.schema != 1
         || catalog.target != target
@@ -129,6 +158,43 @@ pub fn for_target(target: &str) -> Result<Catalog> {
         {
             return Err(error(Code::Failed));
         }
+    }
+    Ok(catalog)
+}
+#[cfg(any(
+    test,
+    all(debug_assertions, target_os = "macos", target_arch = "aarch64")
+))]
+pub(crate) fn macos_reference_catalog() -> Result<Catalog> {
+    checked_macos_reference(MAC_REFERENCE)
+}
+#[cfg(any(
+    test,
+    all(debug_assertions, target_os = "macos", target_arch = "aarch64")
+))]
+fn checked_macos_reference(raw: &str) -> Result<Catalog> {
+    let expected: serde_json::Value =
+        serde_json::from_str(MAC_REFERENCE_INFO).map_err(|_| error(Code::Failed))?;
+    let source_sha = digest(MAC_SOURCES.as_bytes());
+    let catalog_sha = digest(raw.as_bytes());
+    if expected["referenceOnly"] != true
+        || expected["nativeValidated"] != false
+        || expected["target"] != "macos-arm64"
+        || expected["sourceLockSha256"].as_str() != Some(source_sha.as_str())
+        || expected["catalogSha256"].as_str() != Some(catalog_sha.as_str())
+    {
+        return Err(error(Code::Failed));
+    }
+    let catalog = parse_catalog(raw, "macos-arm64")?;
+    if expected["inventorySha256"].as_str() != Some(catalog.inventory_sha256.as_str())
+        || expected["workerSha256"].as_str() != Some(catalog.worker_sha256.as_str())
+        || expected["fileCount"].as_u64() != Some(catalog.file_count as u64)
+        || expected["expandedBytes"].as_u64() != Some(catalog.expanded_bytes)
+        || !catalog.bootstrap_entrypoint
+        || catalog.executable != "python/bin/python3.13"
+        || catalog.bootstrap_path != "bootstrap.py"
+    {
+        return Err(error(Code::Failed));
     }
     Ok(catalog)
 }
@@ -194,6 +260,35 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn macos_reference_is_bound_to_the_verified_sources_and_not_a_release_target() {
+        let catalog = macos_reference_catalog().unwrap();
+        let sources: serde_json::Value = serde_json::from_str(MAC_SOURCES).unwrap();
+        assert_eq!(
+            catalog.assets.len(),
+            sources["assets"].as_array().unwrap().len()
+        );
+        for asset in &catalog.assets {
+            let source = sources["assets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["path"] == asset.path)
+                .unwrap();
+            assert_eq!(source["sha256"], asset.sha256);
+            assert_eq!(source["bytes"].as_u64(), Some(asset.bytes));
+            assert_eq!(source["url"], asset.url);
+        }
+        assert!(checked_macos_reference("{}").is_err());
+        let altered = MAC_REFERENCE.replacen("36322", "36323", 1);
+        assert!(checked_macos_reference(&altered).is_err());
+        // Host-independent parsing is data validation, not Mac availability.
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        assert_eq!(
+            for_target("macos-arm64").unwrap_err().code,
+            Code::Unavailable
+        );
+    }
     #[test]
     fn official_catalog_pins_the_complete_pipeline_and_worker() {
         let catalog = for_target("windows-x64").unwrap();

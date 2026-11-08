@@ -238,6 +238,9 @@ pub struct GenerationRuntime {
     connect_timeout: Duration,
     read_timeout: Duration,
     total_timeout: Duration,
+    // Passive clock observation for tests; absent from every app build.
+    #[cfg(test)]
+    deadline_started: Option<std::sync::mpsc::Sender<Instant>>,
 }
 impl Default for GenerationRuntime {
     fn default() -> Self {
@@ -250,6 +253,8 @@ impl GenerationRuntime {
             connect_timeout: Duration::from_secs(4),
             read_timeout: Duration::from_secs(45),
             total_timeout: Duration::from_secs(180),
+            #[cfg(test)]
+            deadline_started: None,
         }
     }
 
@@ -302,6 +307,10 @@ impl GenerationRuntime {
             request = request.header(AUTHORIZATION, header);
         }
         let deadline = Instant::now() + self.total_timeout;
+        #[cfg(test)]
+        if let Some(observer) = &self.deadline_started {
+            let _ = observer.send(deadline - self.total_timeout);
+        }
         let mut response = wait(request.send(), cancellation, deadline).await?;
         let status = response.status();
         // These statuses need no error body. In particular never expose server echoes.
@@ -859,6 +868,52 @@ mod tests {
             worker.join().unwrap();
         }
     }
+    /// Keep runtime/client setup outside the transport latency measurement.
+    /// The production deadline starts just before send(), after that setup.
+    fn total_timeout_sample(setup_delay: Duration) -> (Duration, Duration) {
+        let (observer, observed) = mpsc::channel();
+        let (endpoint, receiver, worker) = fixture(200, answer(), false, true);
+        let mut transport = GenerationRuntime::new();
+        transport.total_timeout = Duration::from_millis(125);
+        transport.deadline_started = Some(observer);
+        let started = Instant::now();
+        thread::sleep(setup_delay);
+        let failure = runtime()
+            .block_on(transport.complete(
+                &config(endpoint),
+                &messages(),
+                None,
+                &GenerationCancellation::new(),
+            ))
+            .unwrap_err();
+        let returned = Instant::now();
+        let deadline_started = observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        let transport_elapsed = returned.duration_since(deadline_started);
+        let setup_elapsed = deadline_started.duration_since(started);
+        let full_elapsed = returned.duration_since(started);
+        // Capture timestamps before cleanup/logging so their scheduling costs
+        // cannot masquerade as transport latency. Still join the owned fixture.
+        receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+        eprintln!(
+            "total-timeout setup={setup_elapsed:?} transport={transport_elapsed:?} full={full_elapsed:?}"
+        );
+        assert_eq!(failure.code, GenerationErrorCode::Network);
+        assert!(
+            transport_elapsed < Duration::from_millis(450),
+            "125ms total timeout exceeded its unchanged 450ms return bound: setup={setup_elapsed:?}, transport={transport_elapsed:?}, full={full_elapsed:?}"
+        );
+        (full_elapsed, transport_elapsed)
+    }
+    #[test]
+    fn total_timeout_excludes_pre_transport_setup() {
+        let _fixture = fixture_gate();
+        // A controlled pre-call delay reproduces the old clock's false failure
+        // without replacing the actual HTTP request or timeout implementation.
+        let delay = Duration::from_millis(500);
+        let (full_elapsed, _) = total_timeout_sample(delay);
+        assert!(full_elapsed >= delay);
+    }
     #[test]
     fn response_limit_read_and_total_timeouts_are_enforced() {
         let _fixture = fixture_gate();
@@ -889,22 +944,7 @@ mod tests {
         receiver.recv().unwrap();
         worker.join().unwrap();
         assert_eq!(failure.code, GenerationErrorCode::Network);
-        let (endpoint, receiver, worker) = fixture(200, answer(), false, true);
-        let mut transport = GenerationRuntime::new();
-        transport.total_timeout = Duration::from_millis(125);
-        let started = Instant::now();
-        let failure = runtime()
-            .block_on(transport.complete(
-                &config(endpoint),
-                &messages(),
-                None,
-                &GenerationCancellation::new(),
-            ))
-            .unwrap_err();
-        assert_eq!(failure.code, GenerationErrorCode::Network);
-        assert!(started.elapsed() < Duration::from_millis(450));
-        receiver.recv().unwrap();
-        worker.join().unwrap();
+        total_timeout_sample(Duration::ZERO);
     }
     #[test]
     fn pre_cancelled_and_missing_remote_key_do_not_send_requests() {

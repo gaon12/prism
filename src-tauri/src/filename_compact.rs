@@ -116,22 +116,36 @@ impl Dir {
     }
 }
 
-/// One entry. 40 bytes; its name bytes live in `Catalog::text`.
+/// One entry. 36 bytes (there is one per file, millions of them); its name
+/// bytes live in `Catalog::text`.
+///
+/// The 64-bit size and time are kept as two `u32` halves so the record only
+/// needs 4-byte alignment: with `u64` fields it was padded to 40 bytes.
 #[derive(Clone, Copy)]
 struct Node {
     /// Parent directory id, or `NONE` for a free slot.
     dir: u32,
-    /// Display name in `text`.
+    /// Display name in `text`. A free slot keeps the next free slot here.
     name: u32,
     /// Stored key/search/initials/keyboard name block, or `NONE` when derived.
     extra: u32,
-    /// Free-list link for free slots.
-    next: u32,
+    seen: u32,
+    /// `u64` size, low half first.
+    size: [u32; 2],
+    /// `i64` modification time (ms), low half first.
+    modified: [u32; 2],
     name_len: u16,
     flags: u8,
-    seen: u32,
-    size: u64,
-    modified: i64,
+}
+
+const _: () = assert!(std::mem::size_of::<Node>() == 36);
+
+/// Split a 64-bit value into the two halves a `Node` stores.
+fn halves(value: u64) -> [u32; 2] {
+    [value as u32, (value >> 32) as u32]
+}
+fn whole(halves: [u32; 2]) -> u64 {
+    u64::from(halves[0]) | (u64::from(halves[1]) << 32)
 }
 
 // ----- stored blocks -----
@@ -305,7 +319,7 @@ impl Text {
     }
 }
 
-/// Entry records per chunk: 65,536 records, 2.5 MiB.
+/// Entry records per chunk: 65,536 records, 2.25 MiB.
 const NODE_CHUNK_BITS: u32 = 16;
 const NODE_CHUNK: usize = 1 << NODE_CHUNK_BITS;
 
@@ -916,16 +930,15 @@ impl Catalog {
             dir,
             name,
             extra,
-            next: NONE,
             name_len: u16::try_from(split.name_path.len()).expect("a file name below 64 KiB"),
             flags,
             seen: input.seen as u32,
-            size: input.size,
-            modified: input.modified_ms.unwrap_or(0),
+            size: halves(input.size),
+            modified: halves(input.modified_ms.unwrap_or(0) as u64),
         };
         let id = if self.free_nodes != NONE {
             let id = self.free_nodes;
-            self.free_nodes = self.nodes[id as usize].next;
+            self.free_nodes = self.nodes[id as usize].name;
             self.nodes[id as usize] = node;
             id
         } else {
@@ -968,14 +981,14 @@ impl Catalog {
         self.release_dir(node.dir);
         self.nodes[id as usize] = Node {
             dir: NONE,
-            name: 0,
+            // Free-list link.
+            name: self.free_nodes,
             extra: NONE,
-            next: self.free_nodes,
             name_len: 0,
             flags: 0,
             seen: 0,
-            size: 0,
-            modified: 0,
+            size: [0; 2],
+            modified: [0; 2],
         };
         self.free_nodes = id;
         self.len -= 1;
@@ -1006,8 +1019,8 @@ impl Catalog {
     /// Update metadata of an existing entry in place.
     pub fn set_metadata(&mut self, id: u32, size: u64, modified_ms: Option<i64>, seen: u64) {
         let node = &mut self.nodes[id as usize];
-        node.size = size;
-        node.modified = modified_ms.unwrap_or(0);
+        node.size = halves(size);
+        node.modified = halves(modified_ms.unwrap_or(0) as u64);
         node.flags = (node.flags & !HAS_TIME) | if modified_ms.is_some() { HAS_TIME } else { 0 };
         node.seen = seen as u32;
     }
@@ -1114,6 +1127,24 @@ impl Catalog {
                     .count(),
             ),
             ("dirTableBytes", self.dir_table.bytes()),
+            // Directories that keep their whole path (no linkable parent).
+            (
+                "unlinkedDirs",
+                self.dirs
+                    .iter()
+                    .skip(1)
+                    .filter(|dir| dir.children > 0 && dir.parent == NONE)
+                    .count(),
+            ),
+            (
+                "unlinkedDirBytes",
+                self.dirs
+                    .iter()
+                    .skip(1)
+                    .filter(|dir| dir.children > 0 && dir.parent == NONE)
+                    .map(Dir::stored_len)
+                    .sum(),
+            ),
             ("keyTableBytes", self.key_table.bytes()),
         ]
     }
@@ -1268,11 +1299,11 @@ impl<'a> EntryRef<'a> {
         self.node().flags & IS_DIR != 0
     }
     pub fn size(&self) -> u64 {
-        self.node().size
+        whole(self.node().size)
     }
     pub fn modified_ms(&self) -> Option<i64> {
         let node = self.node();
-        (node.flags & HAS_TIME != 0).then_some(node.modified)
+        (node.flags & HAS_TIME != 0).then_some(whole(node.modified) as i64)
     }
     /// The stored sweep id (modulo 2^32).
     pub fn seen(&self) -> u32 {
@@ -1482,6 +1513,32 @@ mod tests {
             catalog.text_str(sub.path, sub.stored_len()),
             r"C:\USERS\me\sub"
         );
+    }
+
+    #[test]
+    fn split_size_and_time_halves_keep_every_64_bit_value() {
+        let mut catalog = Catalog::new();
+        let cases = [
+            (u64::MAX, Some(i64::MIN)),
+            (0, Some(-1)),
+            (1 << 32, Some(i64::MAX)),
+            (u64::from(u32::MAX), Some((1 << 32) - 1)),
+            (5, None),
+        ];
+        for (index, (size, modified_ms)) in cases.into_iter().enumerate() {
+            let path = format!(r"F:\m\{index}.bin");
+            let key = path.replace('\\', "/").to_ascii_lowercase();
+            let mut row = input(&path, &key);
+            row.size = size;
+            row.modified_ms = modified_ms;
+            let id = catalog.insert(&row);
+            assert_round_trip(&catalog, &row);
+            // In-place updates use the same halves.
+            catalog.set_metadata(id, size ^ 1, modified_ms.map(|time| time ^ 1), 3);
+            let entry = catalog.get(&key).unwrap();
+            assert_eq!(entry.size(), size ^ 1);
+            assert_eq!(entry.modified_ms(), modified_ms.map(|time| time ^ 1));
+        }
     }
 
     #[test]

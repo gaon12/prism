@@ -2,20 +2,45 @@
 // content extraction. Only the save picker response is supplied by the fixture;
 // one real IPC is held to exercise cancellation before worker admission.
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { copyFile, mkdtemp, mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join, toNamespacedPath } from 'node:path';
+import { join, resolve, toNamespacedPath } from 'node:path';
 import { expect } from '@playwright/test';
 import { inspectHwpx } from './hwpx-inspect.mjs';
 import { launch, shutdown, until } from './harness.mjs';
 const directory = await mkdtemp(join(tmpdir(), 'prism-document-hwpx-'));
 const pathKey = (value) =>
   process.platform === 'win32' ? toNamespacedPath(value).toLowerCase() : value;
-const profile = join(directory, 'profile'),
+const portable = Boolean(process.env.PRISM_TEST_EXECUTABLE);
+const application = join(directory, 'app');
+const profile = portable ? join(application, 'PrismData') : join(directory, 'profile'),
   outputs = join(directory, 'exports');
-await mkdir(profile);
+await mkdir(profile, { recursive: true });
 await mkdir(outputs);
+const scopeId = `hwpx_fixture_${randomUUID()}`;
+const sourceDirectory = join(directory, 'empty-sources');
+await mkdir(sourceDirectory);
+const sha = async (path) => {
+  const hash = createHash('sha256');
+  for await (const part of createReadStream(path)) hash.update(part);
+  return hash.digest('hex');
+};
+let executable, executableSha256;
+if (portable) {
+  assert.equal(process.platform, 'win32', 'This portable native fixture uses Windows WebView2');
+  const original = resolve(process.env.PRISM_TEST_EXECUTABLE);
+  assert((await stat(original)).isFile());
+  executableSha256 = await sha(original);
+  if (process.env.PRISM_TEST_APP_SHA256)
+    assert.equal(executableSha256, process.env.PRISM_TEST_APP_SHA256.toLowerCase());
+  executable = join(application, 'prism.exe');
+  await copyFile(original, executable);
+  await writeFile(join(application, 'prism.portable'), '');
+  assert.equal(await sha(executable), executableSha256);
+}
 await writeFile(
   join(profile, 'settings.json'),
   JSON.stringify({
@@ -26,7 +51,17 @@ await writeFile(
     startOnLogin: false,
     updates: { autoCheck: false },
     clipboard: { enabled: false, onboarded: true },
-    scopes: [],
+    ocr: { enabled: false },
+    scopes: [
+      {
+        id: scopeId,
+        name: 'HWPX fixture identity',
+        path: sourceDirectory,
+        filenameEnabled: false,
+        contentEnabled: false,
+        externalAllowed: false,
+      },
+    ],
   }),
 );
 const secret = join(directory, 'private.txt');
@@ -53,13 +88,22 @@ const block = (markdown) => ({
   userEdited: true,
 });
 let instance;
+let verifiedProfile = false;
 try {
   instance = await launch(
     profile,
-    process.env.PRISM_TEST_EXECUTABLE ? { executable: process.env.PRISM_TEST_EXECUTABLE } : {},
+    portable ? { executable, portable: true, productionPortable: true } : {},
   );
   const { main, quick, invoke, errors } = instance;
   const settingsBefore = await invoke('get_settings');
+  assert.equal(settingsBefore.scopes.length, 1);
+  assert.equal(settingsBefore.scopes[0].id, scopeId, 'CDP must reach the fresh fixture profile');
+  assert.equal(pathKey(settingsBefore.scopes[0].path), pathKey(sourceDirectory));
+  verifiedProfile = true;
+  const runtime = await invoke('runtime_info');
+  if (portable) assert.equal(runtime.installKind, 'portable');
+  if (process.env.PRISM_TEST_EXPECT_RELEASE === '1') assert.equal(runtime.development, false);
+  assert.equal((await invoke('doc_list', { query: '', limit: 100 })).length, 0);
   const created = await invoke('doc_create', {
     input: {
       title: '다국어 HWPX',
@@ -300,6 +344,9 @@ try {
   console.log(
     JSON.stringify({
       directory,
+      runtime,
+      verifiedProfile,
+      executableSha256,
       parts: result.parts,
       tables: result.tables,
       notes: result.notes,
@@ -312,8 +359,14 @@ try {
   );
 } finally {
   if (instance) {
-    await instance.main.evaluate(() => window.__restoreHwpxFetch?.()).catch(() => {});
-    await shutdown(instance);
+    if (verifiedProfile) {
+      await instance.main.evaluate(() => window.__restoreHwpxFetch?.()).catch(() => {});
+      await shutdown(instance);
+    } else {
+      await instance.browser.close().catch(() => {});
+      instance.child.kill();
+    }
   }
+  if (executable) assert.equal(await sha(executable), executableSha256);
   await new Promise((resolve) => tracker.close(resolve));
 }

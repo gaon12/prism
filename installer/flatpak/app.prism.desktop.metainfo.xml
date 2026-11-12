@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata shown by software centers for the Flatpak build. -->
+<component type="desktop-application">
+  <id>app.prism.desktop</id>
+  <name>Prism</name>
+  <summary>Find files and their contents, then work with them locally</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <description>
+    <p>
+      Prism searches file names and file contents on your computer, previews documents and
+      helps you write and fill documents with a local AI model.
+    </p>
+  </description>
+  <launchable type="desktop-id">app.prism.desktop.desktop</launchable>
+  <url type="homepage">https://github.com/gaon12/prism</url>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-11-12" />
+  </releases>
+</component>

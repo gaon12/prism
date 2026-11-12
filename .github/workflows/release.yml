@@ -157,13 +157,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri -- build --target universal-apple-darwin --bundles app,dmg --config "$BUILD_CONFIG" -- --locked
-      - name: Build Linux AppImage
+      - name: Build Linux AppImage and .deb
         if: matrix.platform == 'linux'
         env:
           BUILD_CONFIG: ${{ steps.plan.outputs.config }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri -- build --bundles appimage --config "$BUILD_CONFIG" -- --locked
+        # The .deb (same binary) is only the input of the Flatpak bundle below.
+        run: npm run tauri -- build --bundles appimage,deb --config "$BUILD_CONFIG" -- --locked
       - name: Test the native app library
         # On macOS the universal build compiled into target/aarch64-apple-darwin. Testing the same
         # target reuses those compiled dependencies instead of rebuilding everything for the host.
@@ -333,6 +334,24 @@ jobs:
           file -L "${images[0]}" | grep -q "$expected"
           cp "${images[0]}" "out/Prism_${VERSION}_${ARCH}.AppImage"
           if [ "$SIGNED" = true ]; then cp "${images[0]}.sig" "out/Prism_${VERSION}_${ARCH}.AppImage.sig"; fi
+      - name: Install Flatpak tooling
+        if: matrix.platform == 'linux'
+        # Ubuntu 22.04's own flatpak is too old for current GNOME runtimes.
+        run: |
+          sudo add-apt-repository -y ppa:flatpak/stable
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      - name: Build and check the Linux Flatpak
+        if: matrix.platform == 'linux'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          ARCH: ${{ matrix.appimage }}
+        run: |
+          debs=(src-tauri/target/release/bundle/deb/*.deb)
+          if [ "${#debs[@]}" -ne 1 ] || [ ! -f "${debs[0]}" ]; then exit 1; fi
+          node scripts/build-flatpak.mjs --deb "${debs[0]}" --version "$VERSION" --arch "$ARCH" --out out
+          test -s "out/Prism_${VERSION}_${ARCH}.flatpak"
       - name: Verify updater artifact against the app's public key
         if: steps.plan.outputs.signed == 'true'
         env:
@@ -409,7 +428,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           printf '%s\n' "Prism $VERSION" "" \
-            'Windows: custom setup and portable ZIP. macOS: universal DMG. Linux: x86_64 and ARM64 AppImage.' \
+            'Windows: custom setup and portable ZIP. macOS: universal DMG. Linux: x86_64 and ARM64 AppImage and Flatpak.' \
             'MSIX is a separate unsigned CI inspection artifact, pending a signing/distribution choice.' \
             'Windows Authenticode and Apple notarization are not configured for this build.' \
             'Review platform smoke tests, prerequisites and checksums before publishing.' > "$RUNNER_TEMP/release-notes.md"

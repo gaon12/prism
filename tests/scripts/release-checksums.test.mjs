@@ -18,16 +18,23 @@ async function fixture(t, complete = false) {
 }
 test('streamed checksums roundtrip, preserve existing sidecars and require complete primary downloads', async (t) => {
   const f = await fixture(t, true);
-  assert.equal(await f.run({ write: true, complete: true }), 5);
+  assert.equal(await f.run({ write: true, complete: true }), 7);
   const sidecar = join(f.directory, `${f.files[0]}.sha256`);
   const original = await readFile(sidecar, 'utf8');
-  assert.equal(await f.run({ complete: true }), 5);
-  assert.equal(await f.run({ write: true, complete: true }), 5);
+  assert.equal(await f.run({ complete: true }), 7);
+  assert.equal(await f.run({ write: true, complete: true }), 7);
   assert.equal(await readFile(sidecar, 'utf8'), original);
-  // The Linux ARM64 AppImage is a required primary download like the others.
-  await rm(join(f.directory, f.files[4]));
-  await rm(join(f.directory, `${f.files[4]}.sha256`));
-  await assert.rejects(f.run({ complete: true }), /missing/);
+  // The Linux ARM64 AppImage and both Flatpak bundles are required primary
+  // downloads like the others.
+  for (const name of ['aarch64.AppImage', 'amd64.flatpak', 'aarch64.flatpak']) {
+    const file = f.files.find((candidate) => candidate.endsWith(name));
+    assert.ok(file, name);
+    await rm(join(f.directory, file));
+    await rm(join(f.directory, `${file}.sha256`));
+    await assert.rejects(f.run({ complete: true }), /missing/);
+    await writeFile(join(f.directory, file), `inert bytes: ${file}`);
+    await f.run({ write: true, complete: true });
+  }
 });
 test('tampering and traversal-valued sidecars fail without creating other checksums', async (t) => {
   const f = await fixture(t, true);

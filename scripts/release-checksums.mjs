@@ -15,6 +15,9 @@ export function downloadFiles(version) {
     `Prism_${version}_universal.dmg`,
     `Prism_${version}_amd64.AppImage`,
     `Prism_${version}_aarch64.AppImage`,
+    // Flatpak bundles use the GNOME runtime's WebKitGTK instead of the host's.
+    `Prism_${version}_amd64.flatpak`,
+    `Prism_${version}_aarch64.flatpak`,
   ];
   return {
     primary,

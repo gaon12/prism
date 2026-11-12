@@ -1,0 +1,60 @@
+# Flatpak manifest for Prism (Linux, x86_64 and aarch64).
+#
+# The release workflow builds Prism once on Ubuntu and packs the same binary
+# into the AppImage and the .deb. This manifest repackages that .deb on the
+# GNOME runtime, which already ships WebKitGTK 4.1, GTK 3 and libsoup 3, so the
+# Flatpak does not depend on the host's GTK/WebKit versions at all.
+#
+# scripts/build-flatpak.mjs stages the inputs next to a copy of this file:
+#   prism.deb   the .deb from `tauri build --bundles deb`
+#   tray/       libappindicator3 + libdbusmenu (the tray library Tauri loads at
+#               runtime; the GNOME runtime does not include it)
+#   app.prism.desktop.metainfo.xml
+id: app.prism.desktop
+runtime: org.gnome.Platform
+runtime-version: '49'
+sdk: org.gnome.Sdk
+command: prism
+finish-args:
+  # Display: Wayland first, X11 when the session has no Wayland.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # Model downloads, optional external AI providers and update checks.
+  - --share=network
+  # A file search tool: the user chose whole-host access (2026-11-12) so
+  # every folder can be indexed, like the AppImage.
+  - --filesystem=host
+  # Tray icon (StatusNotifierItem), notifications and the login keyring
+  # where API keys are stored.
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.secrets
+modules:
+  - name: prism
+    buildsystem: simple
+    sources:
+      - type: file
+        path: prism.deb
+      - type: dir
+        path: tray
+        dest: tray
+      - type: file
+        path: app.prism.desktop.metainfo.xml
+    build-commands:
+      # Unpack the .deb (an ar archive) and install its /usr tree under /app.
+      # /app/bin/prism then finds its resources in /app/lib/Prism, the same
+      # relative place as in the .deb and the AppImage.
+      - ar x prism.deb
+      - tar -xf data.tar.*
+      - cp -a usr/. /app/
+      - install -Dm644 -t /app/lib tray/*
+      # Flatpak names the desktop entry, icons and metadata after the app id.
+      - mv /app/share/applications/Prism.desktop /app/share/applications/app.prism.desktop.desktop
+      - desktop-file-edit --set-icon=app.prism.desktop /app/share/applications/app.prism.desktop.desktop
+      - |
+        for icon in /app/share/icons/hicolor/*/apps/prism.png; do
+          mv "$icon" "$(dirname "$icon")/app.prism.desktop.png"
+        done
+      - install -Dm644 app.prism.desktop.metainfo.xml /app/share/metainfo/app.prism.desktop.metainfo.xml

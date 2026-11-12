@@ -237,5 +237,12 @@ mod tests {
             assert!(!stream.directories.records.contains_key(&19));
             assert!(!stream.overrides.contains_key(&19));
         }
+        let mut saved = Cursor::new(Vec::new());
+        stream.write(DEVICE, &mut saved, || Ok(())).unwrap();
+        assert_eq!(
+            saved.into_inner(),
+            encoded(&full),
+            "overlay persistence retains every metadata field and owner in the unchanged format"
+        );
     }
 }

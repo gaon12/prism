@@ -6,6 +6,7 @@ use super::*;
 use prism_ntfs_protocol::{DriveLetter, FileRecord};
 use std::collections::BTreeMap;
 mod replay;
+mod writer;
 
 pub struct Reader<R> {
     input: R,

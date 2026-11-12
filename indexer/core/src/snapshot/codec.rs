@@ -173,21 +173,40 @@ pub fn write(
     out: &mut (impl Write + Seek),
     check: impl Fn() -> super::layout::Result<()>,
 ) -> io::Result<()> {
-    checked(&check)?;
-    snapshot.geometry.validate().map_err(io::Error::other)?;
-    snapshot.checkpoint.validate().map_err(io::Error::other)?;
+    write_using(
+        (
+            snapshot.geometry,
+            snapshot.checkpoint,
+            snapshot.catalog.records.len(),
+        ),
+        device,
+        (&snapshot.catalog.owners, &snapshot.catalog.families),
+        out,
+        &check,
+        |accept| {
+            for (_, record) in snapshot.catalog.records.iter() {
+                accept(record)?;
+            }
+            Ok(())
+        },
+    )
+}
+
+fn write_using(
+    shape: (Geometry, Checkpoint, usize),
+    device: &str,
+    (owners, families): (&Owners, &Families),
+    out: &mut (impl Write + Seek),
+    check: &impl Fn() -> super::layout::Result<()>,
+    visit: impl FnOnce(&mut dyn FnMut(&MetadataRecord) -> io::Result<()>) -> io::Result<()>,
+) -> io::Result<()> {
+    let (geometry, checkpoint, count) = shape;
+    checked(check)?;
+    geometry.validate().map_err(io::Error::other)?;
+    checkpoint.validate().map_err(io::Error::other)?;
     if !valid_device_name(device)
-        || snapshot
-            .catalog
-            .records
-            .len()
-            .saturating_add(snapshot.catalog.owners.len())
-            > MAX_RECORDS
-        || snapshot
-            .catalog
-            .families
-            .values()
-            .any(|members| members.len() > 65536)
+        || count.saturating_add(owners.len()) > MAX_RECORDS
+        || families.values().any(|members| members.len() > 65536)
         || out.stream_position()? != 0
         || out.seek(SeekFrom::End(0))? != 0
     {
@@ -200,8 +219,8 @@ pub fn write(
             digest: Sha256::new(),
             length: 0,
         };
-        let g = snapshot.geometry;
-        let p = snapshot.checkpoint;
+        let g = geometry;
+        let p = checkpoint;
         for n in [g.sector_size, g.cluster_size, g.record_size] {
             body.put(&n.to_le_bytes())?;
         }
@@ -218,29 +237,40 @@ pub fn write(
         }
         body.put(&(device.len() as u16).to_le_bytes())?;
         body.put(device.as_bytes())?;
-        body.put(&(snapshot.catalog.records.len() as u32).to_le_bytes())?;
+        body.put(&(count as u32).to_le_bytes())?;
         let mut bytes = Vec::new();
-        for (index, (_, record)) in snapshot.catalog.records.iter().enumerate() {
-            if index % 256 == 0 {
-                checked(&check)?;
+        let mut written = 0usize;
+        let mut previous = None;
+        visit(&mut |record| {
+            if written >= count || previous.is_some_and(|last| last >= record.reference.number()) {
+                return Err(invalid());
+            }
+            if written.is_multiple_of(256) {
+                checked(check)?;
             }
             encode_record(record, &mut bytes)?;
             body.put(&(bytes.len() as u32).to_le_bytes())?;
             body.put(&bytes)?;
+            previous = Some(record.reference.number());
+            written += 1;
+            Ok(())
+        })?;
+        if written != count {
+            return Err(invalid());
         }
-        body.put(&(snapshot.catalog.owners.len() as u32).to_le_bytes())?;
-        let mut keys: Vec<_> = snapshot.catalog.owners.keys().copied().collect();
+        body.put(&(owners.len() as u32).to_le_bytes())?;
+        let mut keys: Vec<_> = owners.keys().copied().collect();
         keys.sort_unstable();
         for (index, key) in keys.into_iter().enumerate() {
             if index % 256 == 0 {
-                checked(&check)?;
+                checked(check)?;
             }
             body.put(&key.to_le_bytes())?;
-            body.put(&snapshot.catalog.owners[&key].0.to_le_bytes())?;
+            body.put(&owners[&key].0.to_le_bytes())?;
         }
         (body.length, body.digest.finalize())
     };
-    checked(&check)?;
+    checked(check)?;
     out.seek(SeekFrom::Start(0))?;
     out.write_all(MAGIC)?;
     out.write_all(&length.to_le_bytes())?;

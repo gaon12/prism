@@ -578,6 +578,30 @@ fn sequential_cache_replay_matches_full_across_renames_deletions_reuse_and_two_i
         (stream_source.record_reads, stream_source.journal_reads),
         (0, 0)
     );
+    // Persist the replayed checkpoint in the original cache format, reopen it
+    // and replay another unchanged interval without raw MFT reads.
+    let mut expected = std::io::Cursor::new(Vec::new());
+    snapshot::codec::write(&full, r"\Device\ReplayFixture", &mut expected, || Ok(())).unwrap();
+    let mut saved = std::io::Cursor::new(Vec::new());
+    stream
+        .write(r"\Device\ReplayFixture", &mut saved, || Ok(()))
+        .unwrap();
+    assert_eq!(saved.get_ref(), expected.get_ref());
+    let reopened = snapshot::codec::streaming::Reader::open(
+        saved,
+        geometry(),
+        r"\Device\ReplayFixture",
+        || Ok(()),
+    )
+    .unwrap();
+    let mut reopened = reopened
+        .refresh(&mut stream_source, geometry(), || Ok(()), |_| {})
+        .unwrap();
+    assert_eq!(compare_replayed(&mut full, &mut reopened), rows);
+    assert_eq!(
+        (stream_source.record_reads, stream_source.journal_reads),
+        (0, 0)
+    );
 }
 
 #[cfg(feature = "cache")]

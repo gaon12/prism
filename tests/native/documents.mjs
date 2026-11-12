@@ -72,7 +72,8 @@ let releaseUiBody;
 const literalMarkdown =
   '모델 분류 예시\n\n`CODE_LITERAL_S1 [S1]` · `CODE_LITERAL_FOOTNOTE [^S1]`\n\n' +
   '```text\nFENCED_LITERAL [S1]\n```\n\n' +
-  '[링크](https://example.invalid/[S1])\n\nEscaped \\[S1]';
+  '[링크](https://example.invalid/[S1])\n\nEscaped \\[S1]\n\n' +
+  '````text\nUNFINISHED_LITERAL [S1]\n```';
 const server = createServer((request, response) => {
   const buffers = [];
   request.on('data', (chunk) => buffers.push(chunk));
@@ -357,6 +358,7 @@ try {
       'CODE_LITERAL_S1[S1]',
       'CODE_LITERAL_FOOTNOTE[^S1]',
       'FENCED_LITERAL[S1]',
+      'UNFINISHED_LITERAL[S1]',
     ])
       assert(inspected.text.replace(/\s+/g, '').includes(literal), `PDF literal: ${literal}`);
     assert.equal(
@@ -380,6 +382,7 @@ try {
       'CODE_LITERAL_S1[S1]',
       'CODE_LITERAL_FOOTNOTE[^S1]',
       'FENCED_LITERAL[S1]',
+      'UNFINISHED_LITERAL[S1]',
     ])
       assert(hwpx.text.replace(/\s+/g, '').includes(literal), `HWPX literal: ${literal}`);
     assert.equal(hwpx.notes, sources ? 2 : 0, 'Only rendered references create source notes');

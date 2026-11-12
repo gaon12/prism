@@ -23,6 +23,7 @@ import { launch, shutdown, until } from './harness.mjs';
 import { documentFailureEvidence } from './support/generation-evidence.mjs';
 import { inspectHwpx } from './hwpx-inspect.mjs';
 import { hasTableHeaders } from './support/table-headers.mjs';
+import { hasReservationAbsenceStatement } from './support/reservation-note.mjs';
 
 assert.equal(process.platform, 'win32', 'This actual WebView2/model gate requires Windows');
 assert.equal(process.arch, 'x64', 'Use the pinned Windows x64 CPU runtime');
@@ -112,7 +113,7 @@ function assertFacts(text) {
     'Preserve the complete workshop date',
   );
   assert(
-    /예약[^\n]{0,80}(없|미정|미기재|기재되어있지|정해지지)/.test(compact),
+    hasReservationAbsenceStatement(text),
     'Explicitly state that the reservation number is absent from the supplied material',
   );
   assert(!compact.includes('190000'), 'The distractor budget must not enter the answer');

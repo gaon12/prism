@@ -29,3 +29,12 @@ using the current amounts. It also omitted the requested missing-information
 note. This failed experiment was not adopted in production. The capture tests
 only the independent header assertion and is never supplied as an answer or
 source by the actual native generation gate.
+
+`body-echoed-missing-note.txt` retains one block from a 2026-11-13 direct
+two-stage layout-contract prototype using the same pinned model/runtime. The
+model repeated the user's instruction to state missing reservation information
+instead of answering it. The old absence regex accepted that instruction echo.
+The fixture records the full response file's SHA-256 and the unchanged block;
+it tests rejection of that false positive and is never a generation input.
+The prototype also chose incorrect columns and violated block identities. It
+was not adopted in production and does not qualify the actual native gate.

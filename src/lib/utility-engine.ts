@@ -7,6 +7,7 @@ import {
   formatDependencies,
   bignumberDependencies,
   OperatorNodeDependencies,
+  isBigNumber,
 } from 'mathjs';
 import type { MathNode } from 'mathjs';
 import type { UtilityAnswer } from './utilities';
@@ -15,13 +16,16 @@ const engine = new ComputeEngine({ precision: 32 });
 // Importing mathjs' singleton parser initializes its entire function namespace.
 // We only parse an AST here; Cortex evaluates the allowed numeric expressions.
 // Keep the same units/BigNumber support without loading unrelated operations.
-const { parse, unit, format, bignumber, OperatorNode } = create({
-  parseDependencies,
-  unitDependencies,
-  formatDependencies,
-  bignumberDependencies,
-  OperatorNodeDependencies,
-});
+const { parse, unit, format, bignumber, OperatorNode } = create(
+  {
+    parseDependencies,
+    unitDependencies,
+    formatDependencies,
+    bignumberDependencies,
+    OperatorNodeDependencies,
+  },
+  { number: 'BigNumber' },
+);
 const operators: Record<string, string> = {
   add: 'Add',
   subtract: 'Subtract',
@@ -111,6 +115,14 @@ function mathJson(node: Ast, angle: 'rad' | 'deg', depth = 0): Expression {
   const convert = (child: Ast) => mathJson(child, angle, depth + 1);
   if (node.type === 'ConstantNode' && typeof node.value === 'number' && Number.isFinite(node.value))
     return node.value;
+  if (node.type === 'ConstantNode' && isBigNumber(node.value) && node.value.isFinite()) {
+    // Preserve the source literal before Cortex evaluates it. Display precision
+    // must not round two different input integers or underflow small literals.
+    const numeric = node.value.toNumber();
+    return Number.isSafeInteger(numeric) && node.value.eq(numeric)
+      ? numeric
+      : { num: node.value.toString() };
+  }
   if (node.type === 'ParenthesisNode' && node.content) return convert(node.content);
   if (node.type === 'SymbolNode' && ['pi', 'e'].includes(node.name ?? ''))
     return node.name === 'pi' ? 'Pi' : 'ExponentialE';

@@ -86,6 +86,12 @@ describe('general calculator', () => {
     expect(calculate('10^-400').value).toBe('1e-400');
     expect(calculate('1000!').value).toMatch(/^4\.02387260077e\+2567$/);
   });
+  it('preserves numeric literals before evaluation and display rounding', () => {
+    expect(calculate('9007199254740993 - 9007199254740992').value).toBe('1');
+    expect(calculate('1.0000000000000001 - 1').value).toBe('1e-16');
+    expect(calculate('1e400 / 1e400').value).toBe('1');
+    expect(calculate('1e-400 / 1e-400').value).toBe('1');
+  });
   it('distinguishes actual rounding from exact values and scientific formatting', () => {
     for (const input of ['2', '1/8', '0.1+0.2', '10^400'])
       expect(calculate(input).accuracy, input).toBeUndefined();

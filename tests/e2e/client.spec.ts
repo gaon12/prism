@@ -430,6 +430,12 @@ test('calculates in a worker, converts units, reports errors and discards stale 
   await page.screenshot({ path: join(evidence, 'implicit-calculation.png') });
   await input.fill('=48/2*(9+3)');
   await expect(page.locator('.utility-value')).toHaveText('288');
+  await input.fill('=9007199254740993 - 9007199254740992');
+  await expect(page.locator('.utility-value')).toHaveText('1');
+  await expect(page.locator('.accuracy-note')).toHaveCount(0);
+  await page.screenshot({ path: join(evidence, 'calculator-precise-literals.png') });
+  await input.fill('=1e400 / 1e400');
+  await expect(page.locator('.utility-value')).toHaveText('1');
   await input.fill('unit: 10인치 to cm');
   await expect(page.locator('.utility-value')).toHaveText('25.4 cm');
   await page.screenshot({ path: join(evidence, 'units-quick.png') });

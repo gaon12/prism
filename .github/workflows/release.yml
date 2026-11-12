@@ -19,7 +19,9 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.platform }}
+    # Keep the established job and artifact names for the existing platforms;
+    # only the added ARM64 Linux build gets a suffix.
+    name: Build ${{ matrix.platform }}${{ matrix.suffix }}
     # A cold build compiles LanceDB and Tauri from scratch; 120 minutes was too tight on Windows.
     timeout-minutes: 180
     strategy:
@@ -29,12 +31,21 @@ jobs:
           - platform: windows
             runner: windows-latest
             verifier: tools/update-verifier/target/debug/prism-update-verifier.exe
+            suffix: ''
           - platform: macos
             runner: macos-latest
             verifier: tools/update-verifier/target/debug/prism-update-verifier
+            suffix: ''
           - platform: linux
             runner: ubuntu-22.04
             verifier: tools/update-verifier/target/debug/prism-update-verifier
+            suffix: ''
+            appimage: amd64
+          - platform: linux
+            runner: ubuntu-22.04-arm
+            verifier: tools/update-verifier/target/debug/prism-update-verifier
+            suffix: '-arm64'
+            appimage: aarch64
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -307,22 +318,27 @@ jobs:
         env:
           VERSION: ${{ steps.plan.outputs.version }}
           SIGNED: ${{ steps.plan.outputs.signed }}
+          ARCH: ${{ matrix.appimage }}
         run: |
           mkdir out
           images=(src-tauri/target/release/bundle/appimage/*.AppImage)
           if [ "${#images[@]}" -ne 1 ] || [ ! -f "${images[0]}" ]; then exit 1; fi
-          cp "${images[0]}" "out/Prism_${VERSION}_amd64.AppImage"
-          if [ "$SIGNED" = true ]; then cp "${images[0]}.sig" "out/Prism_${VERSION}_amd64.AppImage.sig"; fi
+          # Refuse an image whose ELF machine does not match this matrix entry.
+          expected=$([ "$ARCH" = aarch64 ] && echo 'ARM aarch64' || echo 'x86-64')
+          file -L "${images[0]}" | grep -q "$expected"
+          cp "${images[0]}" "out/Prism_${VERSION}_${ARCH}.AppImage"
+          if [ "$SIGNED" = true ]; then cp "${images[0]}.sig" "out/Prism_${VERSION}_${ARCH}.AppImage.sig"; fi
       - name: Verify updater artifact against the app's public key
         if: steps.plan.outputs.signed == 'true'
         env:
           VERSION: ${{ steps.plan.outputs.version }}
           PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.appimage }}
         run: |
           case "$PLATFORM" in
             windows) file="Prism_${VERSION}_x64-setup.exe" ;;
             macos) file="Prism_${VERSION}_universal.app.tar.gz" ;;
-            linux) file="Prism_${VERSION}_amd64.AppImage" ;;
+            linux) file="Prism_${VERSION}_${ARCH}.AppImage" ;;
             *) exit 1 ;;
           esac
           "$PRISM_UPDATE_VERIFIER" --version "$VERSION" --file "out/$file"
@@ -332,7 +348,7 @@ jobs:
         run: node scripts/release-checksums.mjs --dir out --version "$VERSION" --write
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: downloads-${{ matrix.platform }}
+          name: downloads-${{ matrix.platform }}${{ matrix.suffix }}
           path: out/*
           if-no-files-found: error
           compression-level: 0
@@ -388,7 +404,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           printf '%s\n' "Prism $VERSION" "" \
-            'Windows: custom setup and portable ZIP. macOS: universal DMG. Linux: AppImage.' \
+            'Windows: custom setup and portable ZIP. macOS: universal DMG. Linux: x86_64 and ARM64 AppImage.' \
             'MSIX is a separate unsigned CI inspection artifact, pending a signing/distribution choice.' \
             'Windows Authenticode and Apple notarization are not configured for this build.' \
             'Review platform smoke tests, prerequisites and checksums before publishing.' > "$RUNNER_TEMP/release-notes.md"

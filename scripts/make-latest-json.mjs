@@ -17,6 +17,7 @@ export function updateFiles(version) {
     'darwin-aarch64': mac,
     'darwin-x86_64': mac,
     'linux-x86_64': `Prism_${version}_amd64.AppImage`,
+    'linux-aarch64': `Prism_${version}_aarch64.AppImage`,
   };
 }
 export function buildManifest({

@@ -8,7 +8,7 @@ import { checksums, downloadFiles } from '../../scripts/release-checksums.mjs';
 async function fixture(t, complete = false) {
   const directory = await mkdtemp(join(tmpdir(), 'prism-release-hashes-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const files = downloadFiles('0.1.0').primary.slice(0, complete ? 4 : 1);
+  const files = downloadFiles('0.1.0').primary.slice(0, complete ? undefined : 1);
   for (const file of files) await writeFile(join(directory, file), `inert bytes: ${file}`);
   return {
     directory,
@@ -18,14 +18,15 @@ async function fixture(t, complete = false) {
 }
 test('streamed checksums roundtrip, preserve existing sidecars and require complete primary downloads', async (t) => {
   const f = await fixture(t, true);
-  assert.equal(await f.run({ write: true, complete: true }), 4);
+  assert.equal(await f.run({ write: true, complete: true }), 5);
   const sidecar = join(f.directory, `${f.files[0]}.sha256`);
   const original = await readFile(sidecar, 'utf8');
-  assert.equal(await f.run({ complete: true }), 4);
-  assert.equal(await f.run({ write: true, complete: true }), 4);
+  assert.equal(await f.run({ complete: true }), 5);
+  assert.equal(await f.run({ write: true, complete: true }), 5);
   assert.equal(await readFile(sidecar, 'utf8'), original);
-  await rm(join(f.directory, f.files[3]));
-  await rm(join(f.directory, `${f.files[3]}.sha256`));
+  // The Linux ARM64 AppImage is a required primary download like the others.
+  await rm(join(f.directory, f.files[4]));
+  await rm(join(f.directory, `${f.files[4]}.sha256`));
   await assert.rejects(f.run({ complete: true }), /missing/);
 });
 test('tampering and traversal-valued sidecars fail without creating other checksums', async (t) => {

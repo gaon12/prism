@@ -66,8 +66,8 @@ test('all updater platforms require verification, with one verification per univ
     ...base,
     verifyArtifact: (file, version) => checked.push([file, version]),
   });
-  assert.equal(Object.keys(manifest.platforms).length, 4);
-  assert.equal(checked.length, 3);
+  assert.equal(Object.keys(manifest.platforms).length, 5);
+  assert.equal(checked.length, 4);
   assert(checked.every(([, version]) => version === base.version));
   assert.deepEqual(manifest.platforms['darwin-aarch64'], manifest.platforms['darwin-x86_64']);
   assert.equal(
@@ -130,7 +130,7 @@ test('actual CLI verifies real public fixtures and refuses to overwrite its mani
   const result = f.run(['--notes', base.notes]);
   assert.equal(result.status, 0, result.stderr);
   const original = readFileSync(f.output, 'utf8');
-  assert.equal(Object.keys(JSON.parse(original).platforms).length, 4);
+  assert.equal(Object.keys(JSON.parse(original).platforms).length, 5);
   assert.equal(JSON.parse(original).notes, base.notes);
   assert.notEqual(f.run().status, 0);
   assert.equal(readFileSync(f.output, 'utf8'), original);

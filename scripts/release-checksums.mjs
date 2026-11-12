@@ -14,6 +14,7 @@ export function downloadFiles(version) {
     `Prism_${version}_x64_portable.zip`,
     `Prism_${version}_universal.dmg`,
     `Prism_${version}_amd64.AppImage`,
+    `Prism_${version}_aarch64.AppImage`,
   ];
   return {
     primary,

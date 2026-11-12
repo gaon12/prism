@@ -121,6 +121,8 @@ jobs:
           npm run test:release
           cargo fmt --manifest-path src-tauri/Cargo.toml --check
           cargo fmt --manifest-path tools/update-verifier/Cargo.toml --check
+      - name: Check native model asset preparation helper
+        run: node --test tests/scripts/prepare-generation-assets.test.mjs
       - name: Check Windows package creation and setup core
         if: matrix.platform == 'windows'
         run: |
@@ -202,6 +204,63 @@ jobs:
         run: |
           npm run test:setup-recovery
           npm run test:setup-previous
+      - name: Let native model tests reach their owned app WebView
+        # Match the setup test policy on this disposable hosted runner only.
+        # Both native gates first verify their unique portable profile nonce.
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $taskKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+          New-Item -Path $taskKey -Force | Out-Null
+          New-ItemProperty -Path $taskKey -Name 'prism.exe' -PropertyType String -Force `
+            -Value '--remote-debugging-port=9324 --remote-debugging-address=127.0.0.1' | Out-Null
+      - name: Verify actual embedding download progress and cancellation
+        if: matrix.platform == 'windows'
+        timeout-minutes: 8
+        env:
+          PRISM_TEST_EXECUTABLE: ${{ github.workspace }}/src-tauri/target/release/prism.exe
+          PRISM_TEST_EXPECT_RELEASE: '1'
+          PRISM_APP_CDP_PORT: '9324'
+        run: node tests/native/model-progress.mjs
+      - name: Prepare immutable native generation assets
+        if: matrix.platform == 'windows'
+        timeout-minutes: 20
+        shell: pwsh
+        env:
+          PRISM_REAL_ASSET_DIR: ${{ runner.temp }}/prism-generation-assets-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          node scripts/prepare-generation-assets.mjs $env:PRISM_REAL_ASSET_DIR
+          exit $LASTEXITCODE
+      - name: Verify actual local chat and document generation
+        if: matrix.platform == 'windows'
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          PRISM_REAL_ASSET_DIR: ${{ runner.temp }}/prism-generation-assets-${{ github.run_id }}-${{ github.run_attempt }}
+          PRISM_TEST_EXECUTABLE: ${{ github.workspace }}/src-tauri/target/release/prism.exe
+          PRISM_TEST_EXPECT_RELEASE: '1'
+          PRISM_TEST_SOURCE_SHA: ${{ github.sha }}
+          PRISM_APP_CDP_PORT: '9324'
+        run: |
+          $taskAssetsPath = Join-Path $env:PRISM_REAL_ASSET_DIR 'assets.json'
+          $taskAssets = Get-Content -LiteralPath $taskAssetsPath -Raw | ConvertFrom-Json
+          $env:PRISM_REAL_GENERATION = $taskAssets.generation.path
+          $env:PRISM_REAL_EMBEDDING = $taskAssets.embedding.path
+          $env:PRISM_REAL_RUNTIME = $taskAssets.runtime.path
+          $env:PRISM_TEST_APP_SHA256 = (Get-FileHash -LiteralPath $env:PRISM_TEST_EXECUTABLE -Algorithm SHA256).Hash.ToLowerInvariant()
+          node tests/native/real-generation.mjs
+          exit $LASTEXITCODE
+      - name: Keep native model gate evidence on success or failure
+        if: always() && matrix.platform == 'windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: native-model-gates-windows
+          path: |
+            ${{ runner.temp }}/prism-model-progress-*/evidence/**
+            ${{ runner.temp }}/prism-real-generation-*/evidence/**
+            ${{ runner.temp }}/prism-generation-assets-*/status.json
+          if-no-files-found: warn
+          compression-level: 0
       - name: Collect Windows setup
         if: matrix.platform == 'windows'
         shell: pwsh

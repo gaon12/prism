@@ -382,7 +382,7 @@ try {
       'FENCED_LITERAL[S1]',
     ])
       assert(hwpx.text.replace(/\s+/g, '').includes(literal), `HWPX literal: ${literal}`);
-    assert.equal(hwpx.footnotes, sources ? 2 : 0, 'Only rendered references create source notes');
+    assert.equal(hwpx.notes, sources ? 2 : 0, 'Only rendered references create source notes');
     assert.equal(
       hwpx.text.includes('원본.md'),
       sources,

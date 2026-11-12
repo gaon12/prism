@@ -45,4 +45,6 @@ test('the manifest keeps the agreed sandbox and the app id everywhere', () => {
     'libdbusmenu-gtk3.so.4',
   ]);
   assert.ok(manifest.includes('install -Dm644 -t /app/lib tray/*'));
+  // AppStream compose fails without a valid main category in the desktop entry.
+  assert.match(manifest, /--set-key=Categories --set-value='Utility;FileTools;'/);
 });

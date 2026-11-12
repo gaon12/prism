@@ -53,6 +53,9 @@ modules:
       # Flatpak names the desktop entry, icons and metadata after the app id.
       - mv /app/share/applications/Prism.desktop /app/share/applications/app.prism.desktop.desktop
       - desktop-file-edit --set-icon=app.prism.desktop /app/share/applications/app.prism.desktop.desktop
+      # Tauri writes no Categories; AppStream compose rejects an entry without
+      # a valid main category. Prism is a file search utility.
+      - desktop-file-edit --set-key=Categories --set-value='Utility;FileTools;' /app/share/applications/app.prism.desktop.desktop
       - |
         for icon in /app/share/icons/hicolor/*/apps/prism.png; do
           mv "$icon" "$(dirname "$icon")/app.prism.desktop.png"

@@ -42,6 +42,9 @@ Document Markdown exports link sources bound to a block even when a model omits
 inline citation labels. Missing footnote references appear after the block,
 preserving table and code syntax. Existing inline references are not duplicated;
 unknown labels cannot acquire a source, and no claim becomes verified.
+Code spans/blocks, escaped literal labels, HTML attributes and link/image targets
+keep their original Markdown. Tokens inside those regions do not count as visible
+source references; a bound source still receives a separate reference outside them.
 
 Document generation distinguishes the user's writing request and reviewed plan
 from untrusted source and document text. Body instructions preserve each reviewed

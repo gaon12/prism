@@ -20,6 +20,8 @@
 //
 // Optional: PRISM_HARSH_SCOPE (default C:\), PRISM_HARSH_CPUS (1),
 // PRISM_HARSH_MEMORY_MB (512), PRISM_HARSH_TIMEOUT_MS (600000).
+// PRISM_WEBVIEW_SOFTWARE=1 makes the app draw without the GPU, as it does on
+// a machine with 4 GiB or less; the run then checks that the app reports it.
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { copyFile, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
@@ -158,6 +160,8 @@ try {
   assert(settings.scopes[0]?.id === scopeId, 'CDP must reach this fixture profile');
   result.runtime = await invoke('runtime_info');
   assert.equal(result.runtime.installKind, 'portable');
+  if (process.env.PRISM_WEBVIEW_SOFTWARE === '1')
+    assert.equal(result.runtime.softwareRendering, true, 'The app must choose software drawing');
   result.service = await invoke('index_service_status').catch(() => null);
   let status;
   await until(

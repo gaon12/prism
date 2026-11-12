@@ -13,8 +13,74 @@ pub fn build_main(app: &AppHandle) -> tauri::Result<()> {
     if let Some(dir) = app.state::<AppState>().location.webview_dir() {
         builder = builder.data_directory(dir);
     }
+    #[cfg(windows)]
+    if let Some(args) = browser_args() {
+        builder = builder.additional_browser_args(&args);
+    }
     builder.build()?;
     Ok(())
+}
+
+/// Machines with this much physical memory or less draw the WebView in
+/// software (see `software_rendering`).
+const LOW_MEMORY_BYTES: u64 = 4 << 30;
+
+/// Whether this run draws its WebView windows without the GPU.
+///
+/// The WebView2 GPU process alone holds over 100 MB while Prism shows
+/// results. On a small machine that is a fifth of everything Prism may use
+/// (measured: 1 CPU / 512 MB, whole C: drive, peak 470-478 MB with the GPU,
+/// 372 MB without, at the same scan time and CPU cost). Drawing in software
+/// costs some animation smoothness, which is the better trade there, so it is
+/// only chosen when the machine has 4 GiB of memory or less.
+/// `PRISM_WEBVIEW_SOFTWARE=1` or `=0` forces either choice (for testing).
+/// Decided once, because every window must share the same arguments.
+pub fn software_rendering() -> bool {
+    static CHOICE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CHOICE.get_or_init(|| {
+        let forced = std::env::var("PRISM_WEBVIEW_SOFTWARE").ok();
+        // Only WebView2 takes the argument; elsewhere nothing would change.
+        cfg!(windows) && choose_software_rendering(forced.as_deref(), total_memory())
+    })
+}
+
+/// The decision itself: an explicit `1`/`0` wins, otherwise low memory.
+/// Unknown memory keeps the default GPU drawing.
+fn choose_software_rendering(forced: Option<&str>, total_memory: Option<u64>) -> bool {
+    match forced {
+        Some("1") => true,
+        Some("0") => false,
+        _ => total_memory.is_some_and(|bytes| bytes <= LOW_MEMORY_BYTES),
+    }
+}
+
+/// Installed physical memory in bytes.
+#[cfg(windows)]
+fn total_memory() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..unsafe { std::mem::zeroed() }
+    };
+    // SAFETY: `status` is a correctly sized, writable MEMORYSTATUSEX.
+    (unsafe { GlobalMemoryStatusEx(&mut status) } != 0).then_some(status.ullTotalPhys)
+}
+/// Only WebView2 takes browser arguments; other platforms keep their engine.
+#[cfg(not(windows))]
+fn total_memory() -> Option<u64> {
+    None
+}
+
+/// WebView2 arguments for every Prism window, or `None` for Tauri's own.
+///
+/// Passing arguments replaces wry's default ones, so those are repeated:
+/// they turn off Edge's mini menu, PDF mini menu and SmartScreen in the app.
+/// Prism sets no proxy or autoplay, the only other things wry would add.
+#[cfg(windows)]
+fn browser_args() -> Option<String> {
+    software_rendering().then(|| {
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu".to_string()
+    })
 }
 
 /// Tell a window's WebView2 how hard to hold on to memory.
@@ -72,6 +138,11 @@ pub fn build_quick(app: &AppHandle) -> tauri::Result<()> {
         WebviewWindowBuilder::new(app, "quick", WebviewUrl::App("index.html#quick".into()));
     if let Some(dir) = app.state::<AppState>().location.webview_dir() {
         builder = builder.data_directory(dir);
+    }
+    // Both windows share one WebView2 environment: same arguments.
+    #[cfg(windows)]
+    if let Some(args) = browser_args() {
+        builder = builder.additional_browser_args(&args);
     }
     builder
         .title("Prism — 빠른 검색")
@@ -218,4 +289,31 @@ pub fn toggle_quick(app: &AppHandle) -> Result<(), String> {
         }
     }
     show_quick_window(app)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn software_rendering_is_for_small_machines_unless_forced() {
+        let gib = 1u64 << 30;
+        assert!(choose_software_rendering(None, Some(2 * gib)));
+        assert!(choose_software_rendering(None, Some(4 * gib)));
+        assert!(!choose_software_rendering(None, Some(4 * gib + 1)));
+        assert!(!choose_software_rendering(None, Some(16 * gib)));
+        // Unknown memory keeps the GPU.
+        assert!(!choose_software_rendering(None, None));
+        // An explicit choice wins either way; anything else is ignored.
+        assert!(choose_software_rendering(Some("1"), Some(16 * gib)));
+        assert!(!choose_software_rendering(Some("0"), Some(2 * gib)));
+        assert!(choose_software_rendering(Some("yes"), Some(2 * gib)));
+        assert!(!choose_software_rendering(Some("yes"), Some(16 * gib)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn this_machine_reports_its_memory() {
+        assert!(total_memory().is_some_and(|bytes| bytes >= 256 << 20));
+    }
 }

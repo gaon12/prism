@@ -89,7 +89,10 @@ export async function launch(dataDir, options = {}) {
     ...process.env,
     PRISM_DEV_DATA_DIR: dataDir,
     WEBVIEW2_USER_DATA_FOLDER: join(dataDir, 'webview'),
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1`,
+    // This variable can take the place of the arguments the app passes, so a
+    // forced software-drawing run (PRISM_WEBVIEW_SOFTWARE=1, see windows.rs)
+    // repeats the app's own --disable-gpu here.
+    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1${process.env.PRISM_WEBVIEW_SOFTWARE === '1' ? ' --disable-gpu' : ''}`,
   };
   if (options.portable) {
     delete environment.PRISM_DEV_DATA_DIR;

@@ -107,6 +107,8 @@ export interface RuntimeInfo {
   installKind: 'installed' | 'portable' | 'packaged' | 'isolated' | 'flatpak' | null;
   shortcutError: string | null;
   startupError: string | null;
+  /** Windows only: the WebView draws without the GPU on a small machine. */
+  softwareRendering?: boolean;
 }
 export interface FileResult {
   path: string;

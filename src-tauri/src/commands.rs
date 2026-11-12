@@ -493,6 +493,8 @@ pub struct RuntimeInfo {
     install_kind: crate::app_paths::InstallKind,
     shortcut_error: Option<String>,
     startup_error: Option<String>,
+    /// The WebView draws without the GPU on this (small) machine.
+    software_rendering: bool,
 }
 
 #[tauri::command]
@@ -512,6 +514,7 @@ pub fn runtime_info(state: State<'_, AppState>) -> Result<RuntimeInfo, String> {
             .lock()
             .map_err(|_| "Shortcut state is unavailable.")?
             .clone(),
+        software_rendering: windows::software_rendering(),
     })
 }
 

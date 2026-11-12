@@ -40,5 +40,32 @@
     }
   },
   "scope": "Native platform QA using the production installer/worker and staged reference. This does not establish Mac desktop installation UI, Intel support or execution on every supported OS version.",
-  "pinnedRuntimePython": "3.13.18"
+  "pinnedRuntimePython": "3.13.18",
+  "releaseRegistrationVerification": {
+    "runId": 43303213953,
+    "jobId": 131479575852,
+    "sourceCommit": "4fe14535a76a0e3bc7ddac52cd0bfa3d0a5a503f",
+    "runUrl": "https://github.com/gaon12/prism/actions/runs/43303213953",
+    "referenceFlagRequired": false,
+    "referenceFlagSetInWorkflow": false,
+    "artifactId": 13983432361,
+    "artifactSha256": "f2bf48f5a3f3bd028fceb0e42d44a90e9d0324702d67202062b7aaa47d7e5077",
+    "catalogSha256": "ce4b11a9a200ff0729013efe071491fdf6086983c32f0693585c5f2b3a07af63",
+    "actualInstallRecognitionReuseCancellation": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 170.74,
+      "logSha256": "e6c23ff113ede92c637333d0f30358bdfbf499cce8972cb5fcde240bcb1efad1"
+    },
+    "actualAutoFallbackAndAppParentSigkillWorkerExit": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 237.03,
+      "postKillDeadlineSeconds": 8,
+      "logSha256": "22db7d71dd11aff16cda3b3027ee614d7f27a96c60562b1cb41c64d2f02d5216"
+    },
+    "scope": "Production catalog selection compiled and exercised on native Mac ARM64 without the reference flag. Universal release app integration and desktop installation UI remain separate."
+  }
 }

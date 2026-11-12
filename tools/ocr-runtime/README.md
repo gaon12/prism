@@ -176,6 +176,13 @@ Its separate Automatic fallback, mixed/encrypted extraction and app-parent
 SIGKILL/worker-exit test also passed (250.49s), retaining the eight-second worker
 exit deadline. The host was macOS 26.7.2 ARM64. This qualifies the native runtime;
 it does not establish desktop installation UI or every supported OS version.
+The [post-registration run](https://github.com/gaon12/prism/actions/runs/43303213953)
+at `4fe1453` repeated both native checks without the reference-catalog flag.
+Installation, recognition, reuse and cancellation passed in 170.74s; Automatic
+fallback and parent-death worker cleanup passed in 237.03s with the same
+eight-second exit deadline. The catalog remained byte-identical. This also
+exercises production catalog selection; universal release app integration and
+desktop installation UI require separate verification.
 The parent fixture records fixed stage names and elapsed times in its own log
 and beside its readiness file. On failure, the test emits the last phase and at
 most 16 KiB from the end of `fixture.log` after cleaning up its owned parent and

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import {
   FileText,
   Folder,
@@ -18,6 +18,7 @@ import { providerNames } from '../lib/utilities';
 import type { SearchController } from '../lib/use-search';
 import { EmptyState } from '../components/EmptyState';
 import { IndexProgress } from '../components/IndexProgress';
+import { drawnRows, nearEnd, RESULT_PAGE } from '../lib/result-window';
 import './results.css';
 
 export function UtilityResult({ search }: { search: SearchController }) {
@@ -150,6 +151,27 @@ export function FileResults({
 }) {
   const { t, data, selected, error, loading, status, session, language } = search;
   const list = useRef<HTMLDivElement>(null);
+  // Rows opened by scrolling (see result-window.ts). A new query starts from
+  // one page again; a refresh of the same query keeps what was opened.
+  const [shown, setShown] = useState(RESULT_PAGE);
+  useEffect(() => setShown(RESULT_PAGE), [session.query]);
+  const results = data?.results ?? [];
+  const drawn = drawnRows(
+    results.length,
+    shown,
+    results.findIndex((file) => file.path === selected?.path),
+  );
+  const more = () => {
+    const element = list.current;
+    if (
+      element &&
+      drawn < results.length &&
+      nearEnd(element.scrollTop, element.clientHeight, element.scrollHeight)
+    )
+      setShown(drawn + RESULT_PAGE);
+  };
+  // A tall window may show every drawn row without any scrolling: fill it.
+  useEffect(more);
   useEffect(() => {
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
   }, [selected?.path]);
@@ -233,13 +255,17 @@ export function FileResults({
         aria-activedescendant={search.selectedId}
         tabIndex={0}
         onKeyDown={search.keyDown}
+        onScroll={more}
         ref={list}
       >
-        {data.results.map((file, index) => (
+        {data.results.slice(0, drawn).map((file, index) => (
           <div
             key={file.path}
             id={`${search.listId}-${index}`}
             role="option"
+            // Assistive technology still hears the full count.
+            aria-setsize={data.results.length}
+            aria-posinset={index + 1}
             tabIndex={-1}
             aria-selected={file.path === selected?.path}
             className="file-result-row"

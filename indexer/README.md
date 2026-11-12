@@ -151,6 +151,18 @@ aliases and absent/negative timestamps. These component timings exclude current
 journal replay, IPC, the app and WebView; warm-file-cache observations on an SSD
 do not establish HDD or cold-MFT performance.
 
+`replay-full <synthetic-cache> <new-output>` and
+`replay-stream <synthetic-cache> <new-output>` additionally run a deterministic
+driver/journal fixture through real core refresh, visit and cache serialization.
+The fixture renames a directory (affecting unchanged descendants), changes a
+file, deletes another, reuses an ID and adds a file beyond the old reference
+range. Both modes hash all returned paths/metadata, check the changed paths,
+report phase timings and write only a new output file. The caller can compare
+the complete output bytes. These modes require an original generated cache
+with at least 16 metadata records and use the same `G` start gate. Raw MFT reads
+are rejected. The driver/journal is synthetic; this is not an installed-service,
+protected-Store, IPC, app or HDD qualification.
+
 An explicit read-only probe is available for an already authorized Windows
 administrator shell:
 

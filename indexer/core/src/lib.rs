@@ -474,6 +474,11 @@ pub struct Catalog {
     families: HashMap<FileReference, Vec<u64>>,
 }
 impl Catalog {
+    /// Number of merged base metadata records, not emitted hard-link paths or
+    /// the extension records already folded into their bases.
+    pub fn record_count(&self) -> usize {
+        self.records.len()
+    }
     pub(crate) fn owner(&self, reference: FileReference) -> Option<FileReference> {
         self.owners.get(&reference.number()).copied()
     }

@@ -20,6 +20,8 @@ use std::{
 };
 
 const DEVICE: &str = r"\Device\PrismSyntheticCache";
+#[path = "cache_reader_bench/replay.rs"]
+mod replay;
 fn geometry() -> Geometry {
     Geometry {
         sector_size: 512,
@@ -156,53 +158,75 @@ fn open_immutable(path: &Path) -> io::Result<File> {
     }
     options.open(path)
 }
-fn measure(mode: &str, path: &Path) -> Result<(), Box<dyn Error>> {
+fn start_gate() -> Result<(), Box<dyn Error>> {
     println!("{{\"waitingForStart\":true}}");
     io::stdout().flush()?;
     let mut start_byte = [0];
     if io::stdin().read_exact(&mut start_byte).is_err() || start_byte != *b"G" {
         return Err(input_error("Expected G before cache access").into());
     }
+    Ok(())
+}
+struct Rows {
+    started: Instant,
+    count: u64,
+    path_bytes: u64,
+    digest: Sha256,
+    first_row: Option<f64>,
+    first_batch: Option<f64>,
+}
+impl Rows {
+    fn new(started: Instant) -> Self {
+        Self {
+            started,
+            count: 0,
+            path_bytes: 0,
+            digest: Sha256::new(),
+            first_row: None,
+            first_batch: None,
+        }
+    }
+    fn accept(&mut self, row: FileRecord) -> io::Result<()> {
+        self.count += 1;
+        self.path_bytes += row.path.len() as u64;
+        if self.first_row.is_none() {
+            self.first_row = Some(self.started.elapsed().as_secs_f64());
+        }
+        if self.count == MAX_BATCH_RECORDS as u64 {
+            self.first_batch = Some(self.started.elapsed().as_secs_f64());
+        }
+        self.digest.update((row.path.len() as u64).to_le_bytes());
+        self.digest.update(row.path.as_bytes());
+        self.digest.update([u8::from(row.is_dir)]);
+        self.digest.update(row.size.to_le_bytes());
+        self.digest.update([u8::from(row.modified_ms.is_some())]);
+        self.digest
+            .update(row.modified_ms.unwrap_or(0).to_le_bytes());
+        Ok(())
+    }
+}
+fn optional(value: Option<f64>) -> String {
+    value.map_or_else(|| "null".into(), |value| value.to_string())
+}
+fn measure(mode: &str, path: &Path) -> Result<(), Box<dyn Error>> {
+    start_gate()?;
     let started = Instant::now();
     let input = BufReader::with_capacity(1024 * 1024, open_immutable(path)?);
     let drive = DriveLetter::new(b'C')?;
-    let mut rows = 0u64;
-    let mut path_bytes = 0u64;
-    let mut digest = Sha256::new();
-    let mut first_row = None;
-    let mut first_batch = None;
-    let mut accept = |row: FileRecord| -> io::Result<()> {
-        rows += 1;
-        path_bytes += row.path.len() as u64;
-        if first_row.is_none() {
-            first_row = Some(started.elapsed().as_secs_f64());
-        }
-        if rows == MAX_BATCH_RECORDS as u64 {
-            first_batch = Some(started.elapsed().as_secs_f64());
-        }
-        digest.update((row.path.len() as u64).to_le_bytes());
-        digest.update(row.path.as_bytes());
-        digest.update([u8::from(row.is_dir)]);
-        digest.update(row.size.to_le_bytes());
-        digest.update([u8::from(row.modified_ms.is_some())]);
-        digest.update(row.modified_ms.unwrap_or(0).to_le_bytes());
-        Ok(())
-    };
+    let mut rows = Rows::new(started);
     let opened;
     if mode == "full" {
         let mut input = input;
         let mut snapshot = codec::read(&mut input, geometry(), DEVICE, || Ok(()))?;
         opened = started.elapsed().as_secs_f64();
-        snapshot.catalog.visit(drive, &mut accept)?;
+        snapshot.catalog.visit(drive, |row| rows.accept(row))?;
     } else {
         let mut reader = codec::streaming::Reader::open(input, geometry(), DEVICE, || Ok(()))?;
         opened = started.elapsed().as_secs_f64();
-        reader.visit(drive, || Ok(()), &mut accept)?;
+        reader.visit(drive, || Ok(()), |row| rows.accept(row))?;
     }
     let total = started.elapsed().as_secs_f64();
-    let optional =
-        |value: Option<f64>| value.map_or_else(|| "null".into(), |value| value.to_string());
-    println!("{{\"mode\":\"{mode}\",\"synthetic\":true,\"cacheCheckpointOnly\":true,\"startGateUsed\":true,\"records\":{rows},\"pathBytes\":{path_bytes},\"openSeconds\":{opened},\"firstRowSeconds\":{},\"firstBatchSeconds\":{},\"batchRecords\":{MAX_BATCH_RECORDS},\"visitSeconds\":{},\"totalSeconds\":{total},\"rowMetadataSha256\":\"{:x}\"}}", optional(first_row), optional(first_batch), total-opened, digest.finalize());
+    println!("{{\"mode\":\"{mode}\",\"synthetic\":true,\"cacheCheckpointOnly\":true,\"startGateUsed\":true,\"records\":{},\"pathBytes\":{},\"openSeconds\":{opened},\"firstRowSeconds\":{},\"firstBatchSeconds\":{},\"batchRecords\":{MAX_BATCH_RECORDS},\"visitSeconds\":{},\"totalSeconds\":{total},\"rowMetadataSha256\":\"{:x}\"}}", rows.count, rows.path_bytes, optional(rows.first_row), optional(rows.first_batch), total-opened, rows.digest.finalize());
     Ok(())
 }
 fn run() -> Result<(), Box<dyn Error>> {
@@ -210,7 +234,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     match args.as_slice() {
         [mode, path, count] if mode == "generate" => generate(Path::new(path), count.parse()?),
         [mode, path] if matches!(mode.as_str(), "full" | "stream") => measure(mode, Path::new(path)),
-        _ => Err(input_error("Usage: cache_reader_bench generate <new-cache> <count> | full|stream <synthetic-cache>; reads require G on stdin").into()),
+        [mode, path, output] if matches!(mode.as_str(), "replay-full" | "replay-stream") => replay::measure(mode, Path::new(path), Path::new(output)),
+        _ => Err(input_error("Usage: cache_reader_bench generate <new-cache> <count> | full|stream <synthetic-cache> | replay-full|replay-stream <synthetic-cache> <new-output>; reads require G on stdin").into()),
     }
 }
 fn main() {

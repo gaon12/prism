@@ -140,6 +140,15 @@ try {
   await until(
     async () => {
       status = await invoke('index_status');
+      // The first moment a search can find files: a first scan's rows are
+      // searchable before the whole snapshot is validated.
+      if (result.firstSearchableMs === undefined && status.count > 0) {
+        const partial = await invoke('search_files', { query: '', extension: '', scopeId });
+        if (partial.total > 0) {
+          result.firstSearchableMs = Math.round(performance.now() - spawnedAt);
+          result.firstSearchableTotal = partial.total;
+        }
+      }
       return status.initialScanComplete && !status.scanning;
     },
     'first complete filename sweep',

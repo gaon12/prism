@@ -1,0 +1,18 @@
+{
+  "blocks": [
+    {
+      "id": "block_1",
+      "sectionId": "3fe4815b-bd3a-494f-8845-a7835b664540",
+      "kind": "fact",
+      "markdown": "# 은하 워크숍 확정 계획\n\n개최일: 2026년 12월 5일 [S1]\n\n장소: 부산 해운대 [S2]",
+      "sourceLabels": ["[S1]", "[S2]"]
+    },
+    {
+      "id": "block_2",
+      "sectionId": "95bfd2c0-c10d-4866-b740-b0059692ad8f",
+      "kind": "fact",
+      "markdown": "| 재료 | 분량 |\n|---|---|\n| 참가 인원 | 7명 [S4] |\n| 예산 총액 | 347000원 [S5] |",
+      "sourceLabels": ["[S4]", "[S5]"]
+    }
+  ]
+}

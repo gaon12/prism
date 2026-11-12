@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { launch, shutdown, until } from './harness.mjs';
 import { documentFailureEvidence } from './support/generation-evidence.mjs';
 import { inspectHwpx } from './hwpx-inspect.mjs';
+import { hasTableHeaders } from './support/table-headers.mjs';
 
 assert.equal(process.platform, 'win32', 'This actual WebView2/model gate requires Windows');
 assert.equal(process.arch, 'x64', 'Use the pinned Windows x64 CPU runtime');
@@ -144,6 +145,7 @@ try {
     fileURLToPath(new URL('./harness.mjs', import.meta.url)),
     fileURLToPath(new URL('./support/generation-evidence.mjs', import.meta.url)),
     fileURLToPath(new URL('./hwpx-inspect.mjs', import.meta.url)),
+    fileURLToPath(new URL('./support/table-headers.mjs', import.meta.url)),
     ...['pins.json', '은하 워크숍.md', '별빛 세미나.md', '독서 동호회.md'].map((name) =>
       join(fixtures, name),
     ),
@@ -577,11 +579,12 @@ try {
       result.bodyTables.some(
         (rows) =>
           rows.length >= 3 &&
+          hasTableHeaders(rows, ['항목', '값']) &&
           rows.every((cells) => cells.length === 2) &&
           rows.some((cells) => /347000원/.test(cells.join('').replace(/[\s,]/g, ''))) &&
           rows.some((cells) => /7명/.test(cells.join('').replace(/\s/g, ''))),
       ),
-      'The reviewed plan requires the original budget and attendance in a two-column table',
+      'The reviewed plan requires 항목/값 columns with the original budget and attendance',
     );
     assert.equal(result.body.revision.claimsVerified, false);
     assert(result.body.revision.provenance.length > 0);

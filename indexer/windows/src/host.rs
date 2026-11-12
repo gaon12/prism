@@ -40,6 +40,34 @@ pub struct SnapshotBackend {
     serial: Arc<AtomicBool>,
 }
 struct Permit(Arc<AtomicBool>);
+enum SnapshotData {
+    Full(snapshot::Snapshot),
+    Cached(crate::administration::cache::CachedSnapshot),
+}
+impl SnapshotData {
+    fn visit(
+        &mut self,
+        drive: prism_ntfs_protocol::DriveLetter,
+        check: &impl Fn() -> layout::Result<()>,
+        visit: impl FnMut(prism_ntfs_protocol::FileRecord) -> io::Result<()>,
+    ) -> io::Result<()> {
+        match self {
+            Self::Full(snapshot) => snapshot.catalog.visit(drive, visit),
+            Self::Cached(snapshot) => snapshot.visit(drive, check, visit),
+        }
+    }
+    fn save(
+        self,
+        store: &crate::administration::cache::Store,
+        device: &str,
+        check: impl Fn() -> layout::Result<()>,
+    ) -> io::Result<()> {
+        match self {
+            Self::Full(snapshot) => store.save(&snapshot, device, check),
+            Self::Cached(snapshot) => store.save_cached(snapshot, device, check),
+        }
+    }
+}
 impl Drop for Permit {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
@@ -131,36 +159,38 @@ impl Backend for SnapshotBackend {
         // A cancelled or timed-out load must not turn into a new bulk scan.
         check().map_err(failure)?;
         let refreshed =
-            cached.map(|cached| snapshot::refresh(cached, &mut volume, geometry, check, &progress));
+            cached.map(|cached| cached.refresh(&mut volume, geometry, check, &progress));
         let mut result = match refreshed {
-            Some(Ok(result)) => result,
+            Some(Ok(result)) => SnapshotData::Cached(result),
             Some(Err(Error::Cancelled)) => return Err(FailureCode::Cancelled),
             Some(Err(Error::TimedOut)) => return Err(FailureCode::Unavailable),
             // Wrapped/lost journals, incompatible caches and inconsistent
             // metadata families invalidate private state and require a fresh
             // read. Never send paths from the discarded partial refresh.
-            _ => snapshot::collect(&mut volume, geometry, check, &progress).map_err(failure)?,
+            _ => SnapshotData::Full(
+                snapshot::collect(&mut volume, geometry, check, &progress).map_err(failure)?,
+            ),
         };
         check().map_err(failure)?;
         let mut batch = vec![];
         let mut encoded = 5usize;
         result
-            .catalog
-            .visit(drive, |record| -> Result<(), FailureCode> {
-                check().map_err(failure)?;
+            .visit(drive, &check, |record| -> io::Result<()> {
+                check().map_err(io::Error::other)?;
                 let length = record.path.len() + 22;
                 if !batch.is_empty()
                     && (batch.len() == MAX_BATCH_RECORDS
                         || encoded.saturating_add(length) > MAX_FRAME_BYTES)
                 {
                     emit.borrow_mut()(Response::Records(std::mem::take(&mut batch)))
-                        .map_err(|_| FailureCode::Cancelled)?;
+                        .map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?;
                     encoded = 5;
                 }
                 encoded += length;
                 batch.push(record);
                 Ok(())
-            })?;
+            })
+            .map_err(visitor_failure)?;
         if !batch.is_empty() {
             emit.borrow_mut()(Response::Records(batch)).map_err(|_| FailureCode::Cancelled)?;
         }
@@ -186,8 +216,7 @@ impl Backend for SnapshotBackend {
                     // Session cancellation is intentionally NOT used: the session
                     // sets its flag even after a successful terminal ACK. Service
                     // shutdown and this writer's own deadline still apply.
-                    let _ = store.save(&result, &device, check);
-                    drop(result);
+                    let _ = result.save(&store, &device, check);
                     drop(store);
                     drop(serial);
                 });
@@ -197,6 +226,16 @@ impl Backend for SnapshotBackend {
             .map_err(|_| FailureCode::Unavailable)?
             .as_nanos() as u64)
             .max(1))
+    }
+}
+fn visitor_failure(error: io::Error) -> FailureCode {
+    if let Some(error) = error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<layout::Error>())
+    {
+        failure(*error)
+    } else {
+        failure(error.into())
     }
 }
 fn failure(error: layout::Error) -> FailureCode {
@@ -352,6 +391,25 @@ mod tests {
     use super::*;
     use prism_ntfs_protocol::{stream::Event, DriveLetter, FileRecord};
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    #[test]
+    fn streaming_visitor_keeps_cancellation_deadline_and_volume_failure_codes() {
+        for (error, expected) in [
+            (Error::Cancelled, FailureCode::Cancelled),
+            (Error::TimedOut, FailureCode::Unavailable),
+            (Error::JournalGap, FailureCode::JournalGap),
+            (Error::Corrupt, FailureCode::CorruptVolume),
+        ] {
+            assert_eq!(visitor_failure(io::Error::other(error)), expected);
+        }
+        assert_eq!(
+            visitor_failure(io::ErrorKind::Interrupted.into()),
+            FailureCode::Cancelled
+        );
+        assert_eq!(
+            visitor_failure(io::ErrorKind::PermissionDenied.into()),
+            FailureCode::AccessDenied
+        );
+    }
     #[test]
     fn deferred_commit_owns_serialization_until_its_thread_releases_memory() {
         let busy = Arc::new(AtomicBool::new(false));

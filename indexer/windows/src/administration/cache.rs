@@ -15,6 +15,7 @@ const LEGACY_MARKER: &[u8] =
     b"Prism filename metadata cache v1\ncatalog.pnc\ncatalog.next\ntransaction.lock\n";
 const MARKER: &[u8] = b"Prism filename metadata cache v2\ncatalog-[A-Z].pnc\ncatalog.pnc (legacy)\ncatalog.next\ntransaction.lock\n";
 const TOTAL_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
+pub(crate) type CachedSnapshot = codec::streaming::Reader<BufReader<File>>;
 
 pub(crate) struct Store {
     directory: PathBuf,
@@ -214,7 +215,7 @@ impl Store {
         geometry: layout::Geometry,
         device: &str,
         check: impl Fn() -> layout::Result<()>,
-    ) -> io::Result<Option<Snapshot>> {
+    ) -> io::Result<Option<CachedSnapshot>> {
         let file = match private_file(&self.target(), false, OPEN_EXISTING, false) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -239,8 +240,8 @@ impl Store {
         }
         // This handle denies writes AND deletion throughout both digest and
         // decode passes. A metadata-only handle with WRITE sharing is unsafe.
-        codec::read(
-            &mut BufReader::with_capacity(1024 * 1024, file),
+        codec::streaming::Reader::open(
+            BufReader::with_capacity(1024 * 1024, file),
             geometry,
             device,
             check,
@@ -252,6 +253,23 @@ impl Store {
         snapshot: &Snapshot,
         device: &str,
         check: impl Fn() -> layout::Result<()>,
+    ) -> io::Result<()> {
+        self.save_using(&check, |writer| {
+            codec::write(snapshot, device, writer, &check)
+        })
+    }
+    pub(crate) fn save_cached(
+        &self,
+        snapshot: CachedSnapshot,
+        device: &str,
+        check: impl Fn() -> layout::Result<()>,
+    ) -> io::Result<()> {
+        self.save_using(&check, |writer| snapshot.write(device, writer, &check))
+    }
+    fn save_using(
+        &self,
+        check: &impl Fn() -> layout::Result<()>,
+        write: impl FnOnce(&mut BufWriter<&mut File>) -> io::Result<()>,
     ) -> io::Result<()> {
         check().map_err(io::Error::other)?;
         let target = self.target();
@@ -268,14 +286,16 @@ impl Store {
         file.rewind()?;
         {
             let mut writer = BufWriter::with_capacity(1024 * 1024, &mut file);
-            codec::write(snapshot, device, &mut writer, &check)?;
+            // A cached writer consumes its reader here. Its immutable input
+            // must be CLOSED before make_room/replace can delete the old file.
+            write(&mut writer)?;
             writer.flush()?;
         }
         file.sync_all()?;
         let size = file.metadata()?.len();
         drop(file);
         check().map_err(io::Error::other)?;
-        self.make_room(size, &check)?;
+        self.make_room(size, check)?;
         // Cache publication is one same-volume rename after data+checkpoint
         // validation and fsync. No copy-to-another-volume/reboot fallback.
         replace(&stage, &target)
@@ -442,6 +462,86 @@ fn replace(from: &Path, to: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::os::windows::fs::OpenOptionsExt;
+
+    #[test]
+    fn consuming_cache_write_releases_the_native_read_lock_before_publication() {
+        let geometry = layout::Geometry {
+            sector_size: 512,
+            cluster_size: 512,
+            record_size: 1024,
+            volume_bytes: 1024 * 1024,
+            mft_bytes: 1024,
+            serial: 7,
+        };
+        let snapshot = Snapshot {
+            catalog: prism_ntfs_core::CatalogBuilder::default().finish().unwrap(),
+            checkpoint: prism_ntfs_core::journal::Checkpoint {
+                id: 1,
+                first: 0,
+                next: 0,
+                lowest: 0,
+            },
+            records_read: 0,
+            geometry,
+        };
+        let device = r"\Device\OwnedCacheFixture";
+        let mut encoded = io::Cursor::new(Vec::new());
+        codec::write(&snapshot, device, &mut encoded, || Ok(())).unwrap();
+        let bytes = encoded.into_inner();
+        for cancel in [false, true] {
+            // Ordinary-user fixtures exercise the real Windows share/delete
+            // rules, never Store's machine paths or a running service. Store
+            // separately requires protected ownership and exact ACLs.
+            let directory = tempfile::tempdir().unwrap();
+            let target = directory.path().join("cache.pnc");
+            let stage = directory.path().join("cache.next");
+            fs::write(&target, &bytes).unwrap();
+            let input = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .open(&target)
+                .unwrap();
+            let reader =
+                codec::streaming::Reader::open(BufReader::new(input), geometry, device, || Ok(()))
+                    .unwrap();
+            let mut output = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&stage)
+                .unwrap();
+            assert!(
+                replace(&stage, &target).is_err(),
+                "the live reader must deny native replacement"
+            );
+            assert_eq!(fs::read(&target).unwrap(), bytes);
+            let result = reader.write(device, &mut output, || {
+                if cancel {
+                    Err(layout::Error::Cancelled)
+                } else {
+                    Ok(())
+                }
+            });
+            if cancel {
+                assert!(result.is_err());
+                assert_eq!(fs::read(&target).unwrap(), bytes);
+                // Exclusive access now succeeds: failure consumed the reader
+                // too. Do not publish the incomplete staging file.
+                drop(
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .share_mode(0)
+                        .open(&target)
+                        .unwrap(),
+                );
+            } else {
+                result.unwrap();
+                output.sync_all().unwrap();
+                drop(output);
+                replace(&stage, &target).unwrap();
+                assert_eq!(fs::read(&target).unwrap(), bytes);
+            }
+        }
+    }
 
     // These handles belong to ordinary-user test fixtures. Production cleanup
     // always opens through private_file after verifying the machine directory

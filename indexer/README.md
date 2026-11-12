@@ -78,8 +78,11 @@ Implemented:
   format. Its consuming `refresh` replays the journal into a changed-family
   overlay and updates the directory graph before returning; failure drops the
   private reader. Unchanged file names remain in the serialized input. This
-  core path is not yet wired into the service or protected cache writer. A new
-  reader's cached checkpoint must be replayed before authoritative publication.
+  path now serves compatible service caches after replay; lost journals or
+  inconsistent families discard it before a fresh scan. Its consuming writer
+  shares the existing codec and closes the immutable input before protected
+  staging-file publication. The installed service still needs an explicit
+  upgrade; source tests do not establish installed-service performance.
   It does not enable results during a cold MFT scan or qualify the memory/time
   target by itself.
 - Persistent metadata uses a fixed private service subdirectory, exact protected

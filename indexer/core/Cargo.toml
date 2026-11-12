@@ -14,3 +14,7 @@ cache = ["dep:sha2"]
 
 [dev-dependencies]
 flate2 = "1"
+
+[[example]]
+name = "cache_reader_bench"
+required-features = ["cache"]

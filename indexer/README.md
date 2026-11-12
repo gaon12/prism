@@ -130,7 +130,20 @@ Run `cargo test --manifest-path indexer/Cargo.toml --locked` and
 Core/protocol metadata parsing has no external runtime dependencies. The optional
 cache codec uses `sha2`; enable it with `--features prism-ntfs-core/cache` in
 workspace checks. The Windows adapter uses `windows-sys`; `flate2` and
-`tempfile` are test-only dependencies.
+`tempfile` are used only by tests and explicit benchmarks.
+
+An explicit synthetic, file-backed cache benchmark is available with
+`cargo build --release --manifest-path indexer/Cargo.toml -p prism-ntfs-core --features cache --example cache_reader_bench`.
+The example accepts `generate <new-cache> <metadata-count>` (create-new only),
+or `full <synthetic-cache>` and `stream <synthetic-cache>`. Read modes print a
+readiness line and require `G` on stdin before cache access or catalog allocation.
+An external parent must assign CPU/memory limits before sending that byte; the
+example does not impose those limits itself. Its output includes first-row and
+first-2048-row timing, complete visitation time and a SHA-256 over every returned
+path and metadata field. Generated records include Unicode, hard links, DOS
+aliases and absent/negative timestamps. These component timings exclude current
+journal replay, IPC, the app and WebView; warm-file-cache observations on an SSD
+do not establish HDD or cold-MFT performance.
 
 An explicit read-only probe is available for an already authorized Windows
 administrator shell:

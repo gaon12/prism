@@ -73,7 +73,7 @@ const literalMarkdown =
   '모델 분류 예시\n\n`CODE_LITERAL_S1 [S1]` · `CODE_LITERAL_FOOTNOTE [^S1]`\n\n' +
   '```text\nFENCED_LITERAL [S1]\n```\n\n' +
   '[링크](https://example.invalid/[S1])\n\nEscaped \\[S1]\n\n' +
-  'Authored note[^S1].\n\n[^S1]: AUTHOR_NOTE_CANARY\n\n' +
+  'Authored note[^s1].\n\n[^S1]: AUTHOR_NOTE_CANARY\n\n' +
   '````text\nUNFINISHED_LITERAL [S1]\n```';
 const server = createServer((request, response) => {
   const buffers = [];

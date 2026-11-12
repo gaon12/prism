@@ -177,21 +177,52 @@ fn live_streaming_installed_service_catalog() {
     let mut wire = (0u64, 0u64);
     let start = Instant::now();
     let mut transfer_done = None;
-    index
-        .collect_service_snapshot(1, Path::new(r"C:\"), 1, |cancel, receive| {
-            let result = client::snapshot(Path::new(r"C:\"), cancel, |event| {
-                if let Event::Records(rows) = &event {
-                    received += rows.len();
-                    for row in rows {
-                        add_metadata(&mut wire, &row.path, row.is_dir, row.size, row.modified_ms);
-                    }
+    let mut first_searchable = None;
+    // PRISM_BENCH_WINDOW_SEARCH=1 also does what an open main window does
+    // during the first scan: an empty-query search every two seconds.
+    let window = std::env::var("PRISM_BENCH_WINDOW_SEARCH").as_deref() == Ok("1");
+    let scanning = AtomicBool::new(true);
+    let window_searches = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        if window {
+            scope.spawn(|| {
+                while scanning.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_secs(2));
+                    let _ = index.search_with_keyboard("", "", None, 200, false);
+                    window_searches.fetch_add(1, Ordering::Relaxed);
                 }
-                receive(event)
             });
-            transfer_done = Some(start.elapsed());
-            result
-        })
-        .unwrap();
+        }
+        index
+            .collect_service_snapshot(1, Path::new(r"C:\"), 1, |cancel, receive| {
+                let result = client::snapshot(Path::new(r"C:\"), cancel, |event| {
+                    if let Event::Records(rows) = &event {
+                        received += rows.len();
+                        for row in rows {
+                            add_metadata(
+                                &mut wire,
+                                &row.path,
+                                row.is_dir,
+                                row.size,
+                                row.modified_ms,
+                            );
+                        }
+                    }
+                    let result = receive(event);
+                    // When the first rows became searchable (provisional).
+                    if first_searchable.is_none()
+                        && index.status().is_ok_and(|status| status.count > 0)
+                    {
+                        first_searchable = Some(start.elapsed());
+                    }
+                    result
+                });
+                transfer_done = Some(start.elapsed());
+                result
+            })
+            .unwrap();
+        scanning.store(false, Ordering::Release);
+    });
     let total = start.elapsed();
     let catalog = index.catalog.read().unwrap();
     // Stream the stored rows: the aggregate is order-independent, and building
@@ -224,7 +255,9 @@ fn live_streaming_installed_service_catalog() {
     println!("{{\"synthetic\":false,\"ordinaryClient\":true,\"streaming\":true,\"received\":{received},\"indexed\":{},\"validatedTransferWithPreparationMs\":{},\"joinMergePublishTailMs\":{},\"totalMs\":{},\"metadataMatches\":true}}", catalog.entries.len(), transferred.as_millis(), (total-transferred).as_millis(), total.as_millis());
     println!(
         "{}",
-        serde_json::json!({"serviceSnapshotTiming": timing,
+        serde_json::json!({"firstSearchableMs": first_searchable.map(|time| time.as_millis() as u64),
+        "windowSearchesDuringScan": window_searches.load(Ordering::Relaxed),
+        "serviceSnapshotTiming": timing,
         "includesGuiOrWatcherSetup": false, "callbackTimeOverlapsFetch": true,
         "qaMetadataHashingIncluded": true,
         // Where the stored catalog's heap goes (after the scan, not the peak).

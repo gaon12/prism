@@ -127,19 +127,30 @@ impl<'scope> Preparation<'scope> {
         }
     }
 
-    pub(super) fn finish(mut self) -> io::Result<Prepared> {
+    /// The private catalog the workers fill. Searches may read it while the
+    /// first scan runs (`Provisional` in `index.rs`); only the caller ever
+    /// publishes it, after validation.
+    pub(super) fn shared(&self) -> &Arc<Mutex<Prepared>> {
+        &self.prepared
+    }
+
+    /// Close the queue and wait for every worker. The prepared rows stay in
+    /// `shared()`, so a search reading them never sees them vanish before the
+    /// caller swaps them in under the catalog lock.
+    pub(super) fn join(mut self) -> io::Result<Arc<Mutex<Prepared>>> {
         self.sender.take();
         join_all(std::mem::take(&mut self.workers), &self.stop)?;
-        // All workers are joined: nobody else holds the shared catalog lock.
-        let prepared = std::mem::take(
-            &mut *self
-                .prepared
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()),
-        );
         if !active(self.index, self.generation, &self.stop) {
             return Err(cancelled());
         }
+        Ok(self.prepared.clone())
+    }
+
+    pub(super) fn finish(self) -> io::Result<Prepared> {
+        let shared = self.join()?;
+        // All workers are joined: nobody else adds to the shared catalog.
+        let prepared =
+            std::mem::take(&mut *shared.lock().unwrap_or_else(|error| error.into_inner()));
         Ok(prepared)
     }
 }

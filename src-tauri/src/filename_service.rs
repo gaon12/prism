@@ -11,6 +11,10 @@ use std::time::Instant;
 #[cfg(any(windows, test))]
 #[path = "filename_catalog.rs"]
 mod catalog;
+/// How often the window is told about more first-scan rows. The window
+/// itself also limits re-searching to once per two seconds while scanning.
+#[cfg(any(windows, test))]
+const PROVISIONAL_REFRESH: Duration = Duration::from_secs(1);
 #[cfg(any(windows, test))]
 #[path = "filename_pipeline.rs"]
 mod pipeline;
@@ -81,6 +85,7 @@ impl FileIndex {
             .clamp(1, 8);
         let mut rows = Vec::new();
         let mut row_count = 0usize;
+        let mut shown = Instant::now();
         let prepared = std::thread::scope(|scope| {
             let (stop, stopped) = mpsc::channel::<()>();
             let cancel = &cancel;
@@ -127,6 +132,7 @@ impl FileIndex {
                         }
                         if let Some(preparation) = &preparation {
                             preparation.send(records)?;
+                            self.refresh_provisional(generation, preparation.shared(), &mut shown);
                         } else {
                             row_count = row_count.saturating_add(records.len());
                             rows.push(records);
@@ -136,9 +142,12 @@ impl FileIndex {
                                 preparation = Some(pipeline::Preparation::start(
                                     scope, self, generation, sweep, threads,
                                 )?);
+                                let preparation = preparation.as_ref().unwrap();
                                 for batch in std::mem::take(&mut rows) {
-                                    preparation.as_ref().unwrap().send(batch)?;
+                                    preparation.send(batch)?;
                                 }
+                                self.show_provisional(generation, preparation.shared());
+                                shown = Instant::now();
                             }
                         }
                         receive_callback += callback_started.elapsed();
@@ -169,12 +178,19 @@ impl FileIndex {
             }
             // Dropping a failed fetch cancels and joins its private workers.
             // Only the successful terminal/root-validated path may merge them.
-            preparation.map(pipeline::Preparation::finish).transpose()
-        })?;
-        if let Some(prepared) = prepared {
-            self.publish_initial_catalog(generation, prepared)?;
-        } else {
-            self.publish_service_rows(generation, rows, sweep, initial, threads)?;
+            preparation.map(pipeline::Preparation::join).transpose()
+        });
+        let published = match prepared {
+            Ok(Some(shared)) => self.publish_provisional(generation, &shared),
+            Ok(None) => self.publish_service_rows(generation, rows, sweep, initial, threads),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = published {
+            // Failure, cancellation, an out-of-scope frame or a revoked owner:
+            // searches stop showing this attempt's rows at once. The real
+            // catalog was never touched, so nothing else needs undoing.
+            self.drop_provisional(generation);
+            return Err(error);
         }
         let total = started.elapsed();
         let millis = |duration: Duration| duration.as_millis().min(u64::MAX as u128) as u64;
@@ -194,6 +210,112 @@ impl FileIndex {
             }
         }
         Ok(())
+    }
+
+    /// Let searches read the first scan's private rows while they arrive.
+    /// Only for a current generation whose real catalog is still empty.
+    #[cfg(any(windows, test))]
+    fn show_provisional(&self, generation: u64, shared: &Arc<Mutex<catalog::Prepared>>) {
+        let Ok(mut catalog) = self.catalog.write() else {
+            return;
+        };
+        if !self.current(generation) || !catalog.entries.is_empty() || catalog.provisional.is_some()
+        {
+            return;
+        }
+        catalog.provisional = Some(Provisional {
+            generation,
+            entries: shared.clone(),
+        });
+        catalog.status.count = shared.lock().unwrap_or_else(|e| e.into_inner()).len();
+        catalog.status.revision += 1;
+    }
+
+    /// About once a second, publish the provisional row count and a new
+    /// revision so the window searches again. Never waits for a running
+    /// search: when the catalog is busy, the next frame tries again.
+    #[cfg(any(windows, test))]
+    fn refresh_provisional(
+        &self,
+        generation: u64,
+        shared: &Arc<Mutex<catalog::Prepared>>,
+        shown: &mut Instant,
+    ) {
+        if shown.elapsed() < PROVISIONAL_REFRESH {
+            return;
+        }
+        let Ok(mut catalog) = self.catalog.try_write() else {
+            return;
+        };
+        *shown = Instant::now();
+        let ours = catalog.provisional.as_ref().is_some_and(|provisional| {
+            provisional.generation == generation && Arc::ptr_eq(&provisional.entries, shared)
+        });
+        if ours && self.current(generation) {
+            catalog.status.count = shared.lock().unwrap_or_else(|e| e.into_inner()).len();
+            catalog.status.revision += 1;
+        }
+    }
+
+    /// Swap the validated first-scan rows in, in one step under the catalog
+    /// lock, so a search sees either the provisional or the real rows.
+    #[cfg(any(windows, test))]
+    fn publish_provisional(
+        &self,
+        generation: u64,
+        shared: &Arc<Mutex<catalog::Prepared>>,
+    ) -> io::Result<()> {
+        let mut catalog = self
+            .catalog
+            .write()
+            .map_err(|_| io::Error::other("Filename catalog unavailable."))?;
+        if !self.current(generation) {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "Collection cancelled.",
+            ));
+        }
+        let prepared = std::mem::take(&mut *shared.lock().unwrap_or_else(|e| e.into_inner()));
+        if catalog
+            .provisional
+            .as_ref()
+            .is_some_and(|provisional| Arc::ptr_eq(&provisional.entries, shared))
+        {
+            catalog.provisional = None;
+        }
+        // The usual case: the real catalog is still empty and takes the rows
+        // whole, under this same lock (no moment with neither shown).
+        catalog.status.revision += 1;
+        if catalog.entries.is_empty() {
+            let mut prepared = prepared;
+            prepared.shrink_to_fit();
+            catalog.entries = prepared;
+            catalog.status.count = catalog.entries.len();
+            catalog.status.scanning = true;
+            return Ok(());
+        }
+        // Another valid writer filled the catalog meanwhile: keep its rows
+        // and merge ours in checked batches, as before.
+        catalog.status.count = catalog.entries.len();
+        drop(catalog);
+        self.publish_initial_catalog(generation, prepared)
+    }
+
+    /// Detach this generation's provisional rows (if still shown).
+    #[cfg(any(windows, test))]
+    fn drop_provisional(&self, generation: u64) {
+        let Ok(mut catalog) = self.catalog.write() else {
+            return;
+        };
+        if catalog
+            .provisional
+            .as_ref()
+            .is_some_and(|provisional| provisional.generation == generation)
+        {
+            catalog.provisional = None;
+            catalog.status.count = catalog.entries.len();
+            catalog.status.revision += 1;
+        }
     }
 
     #[cfg(any(windows, test))]
@@ -582,8 +704,21 @@ mod tests {
             .all(|entry| !matches!(entry.name(), "revoked.md" | "owner-gone.md")));
     }
 
+    /// Search the provisional/real catalog for "private" rows, waiting
+    /// briefly for the preparation workers that add them in the background.
+    fn visible(index: &FileIndex, query: &str, at_least: usize) -> usize {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let total = index.search(query, "", None, 10).unwrap().total;
+            if total >= at_least || Instant::now() > deadline {
+                return total;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     #[test]
-    fn an_eligible_first_catalog_stays_private_until_terminal_and_root_validation() {
+    fn a_first_catalog_is_searchable_while_streaming_and_detached_on_every_failure() {
         for failure in 0..5 {
             let (index, owner) = isolated();
             let mut owner = Some(owner);
@@ -598,8 +733,12 @@ mod tests {
                             })
                             .collect(),
                     ))?;
-                    assert_eq!(index.status().unwrap().count, 0);
                 }
+                // Before the terminal frame: rows are searchable, the real
+                // catalog stays empty.
+                assert!(visible(&index, "private", 1) > 0);
+                assert!(index.catalog.read().unwrap().entries.is_empty());
+                assert!(index.status().unwrap().count > 0);
                 match failure {
                     0 => Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
@@ -621,14 +760,87 @@ mod tests {
                 }
             });
             assert!(result.is_err());
-            assert_eq!(
-                (
-                    index.status().unwrap().count,
-                    index.status().unwrap().revision
-                ),
-                (0, 0)
-            );
+            // Every failure detaches the provisional rows: nothing is left to
+            // search, count or open, and nothing reached the real catalog.
+            let catalog = index.catalog.read().unwrap();
+            assert!(catalog.provisional.is_none(), "failure {failure}");
+            assert!(catalog.entries.is_empty());
+            assert_eq!(catalog.status.count, 0);
+            drop(catalog);
+            assert_eq!(index.search("private", "", None, 10).unwrap().total, 0);
         }
+    }
+
+    #[test]
+    fn a_validated_first_catalog_replaces_its_provisional_rows_in_one_step() {
+        let (index, _owner) = isolated();
+        let root = tempfile::tempdir().unwrap();
+        // A real file, so opening a provisional result can be checked too.
+        fs::write(root.path().join("private-0-0.md"), "x").unwrap();
+        let canonical = fs::canonicalize(root.path()).unwrap();
+        index.catalog.write().unwrap().roots.push(Root {
+            id: "root".into(),
+            key: path_key(&canonical),
+            path: canonical.clone(),
+            source: root.path().to_string_lossy().into_owned(),
+            available: true,
+        });
+        let opened = canonical.join("private-0-0.md");
+        let mut revision_while_streaming = 0;
+        index
+            .collect_service_snapshot(1, &canonical, 1, |_, receive| {
+                for batch in 0..8 {
+                    receive(Event::Records(
+                        (0..1024)
+                            .map(|number| {
+                                record(&canonical, &format!("private-{batch}-{number}.md"))
+                            })
+                            .collect(),
+                    ))?;
+                }
+                assert!(visible(&index, "private", 8 * 1024) == 8 * 1024);
+                // Scoped searches and opening a shown result work as well.
+                let scoped = index.search("private", "", Some("root"), 10).unwrap();
+                assert_eq!(scoped.total, 8 * 1024);
+                index
+                    .resolve_result(&opened.to_string_lossy())
+                    .expect("a provisional result opens");
+                revision_while_streaming = index.status().unwrap().revision;
+                assert!(revision_while_streaming > 0, "the window is told to search");
+                Ok(1)
+            })
+            .unwrap();
+        let catalog = index.catalog.read().unwrap();
+        assert!(catalog.provisional.is_none());
+        assert_eq!(catalog.entries.len(), 8 * 1024);
+        assert_eq!(catalog.status.count, 8 * 1024);
+        assert!(catalog.status.revision > revision_while_streaming);
+        drop(catalog);
+        assert_eq!(
+            index.search("private", "", None, 10).unwrap().total,
+            8 * 1024
+        );
+    }
+
+    #[test]
+    fn a_new_generation_hides_and_detaches_an_unfinished_first_scan() {
+        let (index, _owner) = isolated();
+        let root = tempfile::tempdir().unwrap();
+        let result = index.collect_service_snapshot(1, root.path(), 1, |_, receive| {
+            receive(Event::Records(
+                (0..5000)
+                    .map(|number| record(root.path(), &format!("private-{number}.md")))
+                    .collect(),
+            ))?;
+            assert!(visible(&index, "private", 1) > 0);
+            // A scope change (refresh/configure/reset) starts a new generation.
+            index.refresh(vec![]);
+            assert!(index.catalog.read().unwrap().provisional.is_none());
+            assert_eq!(index.search("private", "", None, 10).unwrap().total, 0);
+            Ok(1)
+        });
+        assert!(result.is_err());
+        assert!(index.catalog.read().unwrap().entries.is_empty());
     }
 
     #[test]

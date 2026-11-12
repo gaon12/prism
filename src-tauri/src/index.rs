@@ -239,6 +239,25 @@ struct Catalog {
     entries: Entries,
     roots: Vec<Root>,
     status: IndexStatus,
+    /// The very first scan's rows while its NTFS snapshot is still arriving.
+    /// See `Provisional`.
+    provisional: Option<Provisional>,
+}
+
+/// A first scan's catalog that searches may read before the snapshot ends.
+///
+/// The NTFS service sends a whole drive in a few seconds of frames, and a
+/// snapshot is only trusted once its terminal frame and the open root are
+/// validated. Rows are prepared in this separate catalog meanwhile. Searches
+/// show it only while the real catalog is still empty and its generation is
+/// current, so the user sees results seconds earlier. It never becomes the
+/// real catalog unless the whole snapshot validates: on failure, cancellation
+/// or a scope change it is simply detached, and nothing has to be removed
+/// from (or told apart in) the real catalog.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+struct Provisional {
+    generation: u64,
+    entries: Arc<Mutex<Entries>>,
 }
 
 /// Bound queued recursive subtrees, not notifications: one busy file or an
@@ -427,6 +446,8 @@ impl FileIndex {
             if self.generation.load(Ordering::SeqCst) != generation {
                 return;
             }
+            // An unfinished first scan belongs to the old generation.
+            catalog.provisional = None;
             // Removed or disabled scopes must stop being searchable immediately. Entries under
             // scopes that are still configured unchanged stay visible while the rescan runs, so
             // adding a folder does not blank existing results.
@@ -466,12 +487,38 @@ impl FileIndex {
     pub fn status(&self) -> Result<IndexStatus, String> {
         self.catalog
             .read()
-            .map(|catalog| catalog.status.clone())
+            .map(|catalog| self.status_of(&catalog))
             .map_err(|_| "File index unavailable.".into())
+    }
+    /// The status a caller sees: a first scan still arriving reports the rows
+    /// searches can already find.
+    fn status_of(&self, catalog: &Catalog) -> IndexStatus {
+        let mut status = catalog.status.clone();
+        if let Some(entries) = self.provisional(catalog) {
+            status.count = entries.len();
+        }
+        status
     }
     fn current(&self, generation: u64) -> bool {
         Arc::strong_count(&self.lifetime) > 1
             && self.generation.load(Ordering::SeqCst) == generation
+    }
+    /// The first scan's provisional rows, when searches should read them
+    /// instead of the (still empty) real catalog. Lock order is always the
+    /// catalog first, then the provisional rows.
+    fn provisional<'a>(&self, catalog: &'a Catalog) -> Option<std::sync::MutexGuard<'a, Entries>> {
+        catalog
+            .provisional
+            .as_ref()
+            .filter(|provisional| {
+                catalog.entries.is_empty() && self.current(provisional.generation)
+            })
+            .map(|provisional| {
+                provisional
+                    .entries
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+            })
     }
     fn resolve_roots(&self, scopes: &[SearchScope]) -> (Vec<Root>, Vec<String>) {
         let previous = self
@@ -1001,22 +1048,19 @@ impl FileIndex {
     ) -> Result<SearchResponse, String> {
         let query = Query::parse(query, extension)?;
         let catalog = self.catalog.read().map_err(|_| "File index unavailable.")?;
+        let provisional = self.provisional(&catalog);
+        let entries = provisional.as_deref().unwrap_or(&catalog.entries);
         let limit = limit.clamp(1, 500);
         // A selected scope only scans its own directories' entries.
         let candidates = match scope_id {
-            None => Candidates::All(catalog.entries.slots()),
+            None => Candidates::All(entries.slots()),
             Some(id) => match catalog.roots.iter().find(|root| root.id == id) {
-                Some(root) => Candidates::Ids(
-                    catalog
-                        .entries
-                        .subtree(&root.key)
-                        .map(|entry| entry.id())
-                        .collect(),
-                ),
+                Some(root) => {
+                    Candidates::Ids(entries.subtree(&root.key).map(|entry| entry.id()).collect())
+                }
                 None => Candidates::Ids(vec![]),
             },
         };
-        let entries = &catalog.entries;
         let (mut total, mut ranked) = top_matches(entries, &candidates, limit, false, |entry| {
             query.matches(entry).then(|| query.rank(entry))
         });
@@ -1040,7 +1084,13 @@ impl FileIndex {
                 .filter_map(|ranked| entries.entry(ranked.id).map(entries::result))
                 .collect(),
             total,
-            status: catalog.status.clone(),
+            status: {
+                let mut status = catalog.status.clone();
+                if provisional.is_some() {
+                    status.count = entries.len();
+                }
+                status
+            },
         })
     }
     pub fn resolve_result(&self, path: &str) -> Result<PathBuf, String> {
@@ -1048,8 +1098,13 @@ impl FileIndex {
             fs::canonicalize(path).map_err(|_| "This file no longer exists or is unavailable.")?;
         let key = path_key(&canonical);
         let catalog = self.catalog.read().map_err(|_| "File index unavailable.")?;
+        // A row shown from the first scan's provisional catalog opens too.
+        let known = catalog.entries.contains_key(key.as_str())
+            || self
+                .provisional(&catalog)
+                .is_some_and(|entries| entries.contains_key(key.as_str()));
         if key != path_key(Path::new(path))
-            || !catalog.entries.contains_key(key.as_str())
+            || !known
             || !catalog.roots.iter().any(|root| under(&key, &root.key))
         {
             return Err(

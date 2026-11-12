@@ -312,7 +312,25 @@ pub struct CheckedSource {
     pub state: SourceState,
     pub text: Option<String>,
 }
+/// Document instructions can refine semantic retrieval without turning prose
+/// formatting directions into mandatory keyword-search terms.
+#[derive(Clone, Copy)]
+pub struct DocumentRetrieval<'a> {
+    pub keyword: &'a str,
+    pub semantic: &'a str,
+}
 pub trait SourceResolver: Send + Sync {
+    fn retrieve_document(
+        &self,
+        query: DocumentRetrieval<'_>,
+        scope_ids: &[String],
+        policy: &RagPolicy,
+        documents: Option<&[String]>,
+        top_k: usize,
+        cancel: &AtomicBool,
+    ) -> RagResult<Vec<RagSource>> {
+        self.retrieve_selected(query.keyword, scope_ids, policy, documents, top_k, cancel)
+    }
     fn retrieve_set(
         &self,
         question: &str,
@@ -685,6 +703,7 @@ pub(crate) struct RagDocumentInput {
     pub provenance: Vec<SourceRef>,
     pub external_input_eligible: bool,
     pub retrieval_query: String,
+    pub semantic_query: String,
     /// Only this explicitly supplied sentence may go to an MCP search server.
     /// `RagRequest.question` contains the document's private generation prompt.
     pub external_query: Option<String>,
@@ -1226,6 +1245,9 @@ impl RagService {
             || input.retrieval_query.trim().is_empty()
             || input.retrieval_query.len() > 4096
             || input.retrieval_query.chars().any(char::is_control)
+            || input.semantic_query.trim().is_empty()
+            || input.semantic_query.len() > 4096
+            || input.semantic_query.chars().any(char::is_control)
             || input.provenance.len() > 256
             || input.provenance.iter().any(|source| !valid_source(source))
             || request.external != input.external_query.is_some()
@@ -1679,6 +1701,7 @@ impl RagService {
                 let question = input
                     .map(|input| input.retrieval_query.clone())
                     .unwrap_or_else(|| request.question.clone());
+                let semantic_query = input.map(|input| input.semantic_query.clone());
                 let selection = request.scope_ids.clone();
                 let documents = request.document_paths.clone();
                 let set = request.document_set.clone();
@@ -1693,6 +1716,18 @@ impl RagService {
                                 &selection,
                                 &snapshot,
                                 set.as_ref(),
+                                candidates,
+                                &flag,
+                            )
+                        } else if let Some(semantic) = &semantic_query {
+                            resolver.retrieve_document(
+                                DocumentRetrieval {
+                                    keyword: &question,
+                                    semantic,
+                                },
+                                &selection,
+                                &snapshot,
+                                documents.as_deref(),
                                 candidates,
                                 &flag,
                             )

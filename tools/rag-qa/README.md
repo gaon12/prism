@@ -49,6 +49,13 @@ section's language, layout and requested missing-information notes. This is a
 prompting rule, not a guarantee of model quality: the actual-generation native
 gate checks the requested two-column table and the original factual assertions.
 
+Document semantic retrieval combines the topic with the user's writing
+instruction within the existing 512-byte UTF-8 bound. Keyword retrieval keeps the
+topic, so formatting instructions do not become mandatory source words. This also
+preserves keyword fallback when embeddings are unavailable. Stored template
+bodies and complete revisions remain excluded. Policy fixtures record both query
+forms; the actual retriever and model still require full-app qualification.
+
 Saved file-set retrieval uses path-key order for its bounded 256-file batches,
 independent of producer arrival order. SQLite regressions cover shuffled sets
 across batch boundaries, deselection, root filters and stale revisions while

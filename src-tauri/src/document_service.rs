@@ -681,14 +681,19 @@ impl DocumentService {
                 &targets,
                 selection.as_ref(),
             )?;
+            let retrieval_query =
+                retrieval_query(&revision.plan.title, &purpose, &request.instruction)?;
+            let instruction_query = bounded_query(&[&request.instruction]);
+            let semantic_query = if instruction_query == retrieval_query {
+                retrieval_query.clone()
+            } else {
+                bounded_query(&[&retrieval_query, &instruction_query])
+            };
             let rag_input = RagDocumentInput {
                 provenance: revision.provenance.clone(),
                 external_input_eligible: revision.external_input_eligible,
-                retrieval_query: retrieval_query(
-                    &revision.plan.title,
-                    &purpose,
-                    &request.instruction,
-                )?,
+                retrieval_query,
+                semantic_query,
                 external_query: request.research_query.clone(),
                 response_schema: Some(document_response_schema(&revision, operation, &targets)),
             };
@@ -1108,8 +1113,9 @@ fn remap_model_citations(
     }
 }
 fn retrieval_query(title: &str, purpose: &str, instruction: &str) -> DocumentResult<String> {
-    // Purpose is the user's document topic, whereas instruction may describe
-    // presentation edits. The optional stored template is never a search query.
+    // Keep keyword lookup on the document topic: prose formatting directions
+    // need not occur literally in a source. The semantic query is enriched
+    // separately, never with a stored template or the complete revision.
     let stored = serde_json::from_str::<Value>(purpose).ok();
     let purpose = stored
         .as_ref()
@@ -1118,27 +1124,32 @@ fn retrieval_query(title: &str, purpose: &str, instruction: &str) -> DocumentRes
         .and_then(Value::as_str)
         .unwrap_or(purpose);
     for candidate in [purpose, instruction, title] {
-        let mut result = String::new();
+        let result = bounded_query(&[candidate]);
+        if !result.is_empty() {
+            return Ok(result);
+        }
+    }
+    Err(DocumentError::new(DocumentErrorCode::Input))
+}
+fn bounded_query(parts: &[&str]) -> String {
+    let mut result = String::new();
+    'parts: for candidate in parts {
         for token in candidate.split_whitespace() {
             if !result.is_empty() && result.len() < 512 {
                 result.push(' ');
             }
             for value in token.chars().filter(|value| !value.is_control()) {
                 if result.len() + value.len_utf8() > 512 {
-                    break;
+                    break 'parts;
                 }
                 result.push(value);
             }
             if result.len() >= 509 {
-                break;
+                break 'parts;
             }
         }
-        let result = result.trim();
-        if !result.is_empty() {
-            return Ok(result.into());
-        }
     }
-    Err(DocumentError::new(DocumentErrorCode::Input))
+    result.trim().to_owned()
 }
 fn make_prompt(
     purpose: &str,
@@ -1419,8 +1430,9 @@ mod tests {
             GenerationMessage, GenerationResponse,
         },
         rag_service::{
-            CheckedSource, GenerationFuture, GenerationMode, GenerationPreferences, PolicyGetter,
-            RagPolicy, RagResult, RagScope, RagSource, RagTransport, SourceResolver, SourceState,
+            CheckedSource, DocumentRetrieval, GenerationFuture, GenerationMode,
+            GenerationPreferences, PolicyGetter, RagPolicy, RagResult, RagScope, RagSource,
+            RagTransport, SourceResolver, SourceState,
         },
         secret_store::{SecretError, SecretProvider, SecretStore, SecretSupport, SecretValue},
     };
@@ -1451,6 +1463,7 @@ mod tests {
         private: AtomicBool,
         changed: AtomicBool,
         queries: Mutex<Vec<String>>,
+        semantic_queries: Mutex<Vec<String>>,
     }
     fn source(private: bool) -> RagSource {
         let id = if private { "private" } else { "public" };
@@ -1471,6 +1484,21 @@ mod tests {
         }
     }
     impl SourceResolver for Sources {
+        fn retrieve_document(
+            &self,
+            query: DocumentRetrieval<'_>,
+            selected: &[String],
+            policy: &RagPolicy,
+            documents: Option<&[String]>,
+            top_k: usize,
+            cancel: &AtomicBool,
+        ) -> RagResult<Vec<RagSource>> {
+            self.semantic_queries
+                .lock()
+                .unwrap()
+                .push(query.semantic.into());
+            self.retrieve_selected(query.keyword, selected, policy, documents, top_k, cancel)
+        }
         fn retrieve(
             &self,
             query: &str,
@@ -1618,6 +1646,7 @@ mod tests {
             private: AtomicBool::new(false),
             changed: AtomicBool::new(false),
             queries: Mutex::new(vec![]),
+            semantic_queries: Mutex::new(vec![]),
         });
         let transport = Arc::new(Transport {
             responses: Mutex::new(VecDeque::new()),
@@ -2548,6 +2577,7 @@ mod tests {
                         provenance: vec![],
                         external_input_eligible: true,
                         retrieval_query: "Evidence based report".into(),
+                        semantic_query: "Evidence based report".into(),
                     },
                 )
                 .await
@@ -2607,6 +2637,28 @@ mod tests {
             assert_eq!(calls.len(), 2);
             assert!(calls[1].1.contains(&original));
             assert!(calls[1].1.contains("Return only JSON"));
+        });
+    }
+    #[test]
+    fn body_retrieval_keeps_explicit_content_requirements_beyond_the_document_topic() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            let mut input = request(&page, "additional_content_requirement");
+            input.instruction = "SYNTHETIC_APPROVED_VALUE".into();
+            f.transport.push(body("b1", "123.4500 [S1]"));
+            let revision = f.service.generate_body(input).await.unwrap();
+            assert!(revision.markdown.contains("123.4500"));
+            let keyword_queries = f.sources.queries.lock().unwrap();
+            assert_eq!(keyword_queries.as_slice(), ["Evidence based report"]);
+            let queries = f.sources.semantic_queries.lock().unwrap();
+            assert_eq!(queries.len(), 1);
+            assert!(queries[0].contains("Evidence based report"));
+            assert!(
+                queries[0].contains("SYNTHETIC_APPROVED_VALUE"),
+                "the user's additional content requirement must reach retrieval"
+            );
+            assert!(queries[0].len() <= 512);
         });
     }
     #[test]
@@ -2758,6 +2810,7 @@ mod tests {
                 provenance: vec![],
                 external_input_eligible: true,
                 retrieval_query: "Evidence based report".into(),
+                semantic_query: "Evidence based report".into(),
             };
             assert_eq!(
                 f.rag
@@ -2785,16 +2838,22 @@ mod tests {
                 "x".repeat(4097),
                 "topic\0canary".into(),
             ] {
-                let mut input = input.clone();
-                input.retrieval_query = bad_query;
-                assert_eq!(
-                    f.rag
-                        .ask_for_document(explicit.clone(), input)
-                        .await
-                        .unwrap_err()
-                        .code,
-                    RagErrorCode::Input
-                );
+                for semantic in [false, true] {
+                    let mut input = input.clone();
+                    if semantic {
+                        input.semantic_query = bad_query.clone();
+                    } else {
+                        input.retrieval_query = bad_query.clone();
+                    }
+                    assert_eq!(
+                        f.rag
+                            .ask_for_document(explicit.clone(), input)
+                            .await
+                            .unwrap_err()
+                            .code,
+                        RagErrorCode::Input
+                    );
+                }
             }
             assert!(f.transport.calls.lock().unwrap().is_empty());
             assert!(f.sources.queries.lock().unwrap().is_empty());

@@ -4,8 +4,8 @@ use crate::{
     content_service::ContentService,
     content_store::ContentChunk,
     rag_service::{
-        CheckedSource, RagError, RagErrorCode, RagPolicy, RagResult, RagSource, SourceRef,
-        SourceResolver, SourceState,
+        CheckedSource, DocumentRetrieval, RagError, RagErrorCode, RagPolicy, RagResult, RagSource,
+        SourceRef, SourceResolver, SourceState,
     },
 };
 use sha2::{Digest, Sha256};
@@ -156,6 +156,81 @@ mod tests {
     use super::*;
     use crate::rag_service::{GenerationPreferences, RagScope};
     #[cfg(windows)]
+    #[test]
+    fn document_requirements_do_not_break_keyword_or_unavailable_embedding_fallback() {
+        use crate::{rag_service::RetrievalMode, settings::SearchScope};
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path().join("sources");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("source.md"), "shared evidence").unwrap();
+        let service = ContentService::open(
+            &directory.path().join("index"),
+            Err("not installed".into()),
+            |_| {},
+        )
+        .unwrap();
+        service
+            .configure(vec![SearchScope {
+                id: "docs".into(),
+                name: "docs".into(),
+                path: folder.to_string_lossy().into(),
+                filename_enabled: true,
+                content_enabled: true,
+                external_allowed: false,
+            }])
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while service.status().unwrap().phase != "ready" {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let resolver = ContentSources(service);
+        let mut policy = RagPolicy {
+            mcp: vec![],
+            revision: 1,
+            prefs: GenerationPreferences::default(),
+            scopes: vec![RagScope {
+                id: "docs".into(),
+                name: "docs".into(),
+                path: folder.to_string_lossy().into(),
+                content_enabled: true,
+                external_allowed: false,
+            }],
+        };
+        let cancel = AtomicBool::new(false);
+        for mode in [RetrievalMode::Keyword, RetrievalMode::Hybrid] {
+            policy.prefs.retrieval = mode;
+            let found = resolver
+                .retrieve_document(
+                    DocumentRetrieval {
+                        keyword: "shared",
+                        semantic: "shared format as a two-column table",
+                    },
+                    &["docs".into()],
+                    &policy,
+                    None,
+                    8,
+                    &cancel,
+                )
+                .unwrap();
+            assert_eq!(found.len(), 1);
+            assert!(found[0].text.contains("shared evidence"));
+            assert!(resolver
+                .retrieve_document(
+                    DocumentRetrieval {
+                        keyword: "shared",
+                        semantic: "shared format as a two-column table"
+                    },
+                    &["docs".into()],
+                    &policy,
+                    Some(&[]),
+                    8,
+                    &cancel,
+                )
+                .unwrap()
+                .is_empty());
+        }
+    }
     #[test]
     fn real_short_source_alias_preserves_hash_and_chunk_identity_guards() {
         use crate::settings::SearchScope;
@@ -559,6 +634,27 @@ impl SourceResolver for ContentSources {
         top_k: usize,
         cancel: &AtomicBool,
     ) -> RagResult<Vec<RagSource>> {
+        self.retrieve_document(
+            DocumentRetrieval {
+                keyword: question,
+                semantic: question,
+            },
+            scope_ids,
+            policy,
+            documents,
+            top_k,
+            cancel,
+        )
+    }
+    fn retrieve_document(
+        &self,
+        query: DocumentRetrieval<'_>,
+        scope_ids: &[String],
+        policy: &RagPolicy,
+        documents: Option<&[String]>,
+        top_k: usize,
+        cancel: &AtomicBool,
+    ) -> RagResult<Vec<RagSource>> {
         cancel_check(cancel)?;
         if documents.is_some_and(<[String]>::is_empty) {
             return Ok(vec![]);
@@ -568,13 +664,13 @@ impl SourceResolver for ContentSources {
             return Ok(vec![]);
         }
         let ids: Vec<_> = folders.iter().map(|(id, _)| id.clone()).collect();
-        let prepared = self.prepare_retrieval(question, policy.prefs.retrieval, cancel)?;
+        let prepared = self.prepare_retrieval(query.semantic, policy.prefs.retrieval, cancel)?;
         let hybrid = policy.prefs.retrieval == crate::rag_service::RetrievalMode::Hybrid
             && prepared.is_some();
         let limit = top_k.clamp(1, 128);
         let branch_limit = if hybrid { HYBRID_BRANCH_LIMIT } else { limit };
         let plan = RetrievalPlan {
-            question,
+            question: query.keyword,
             ids: &ids,
             prepared: prepared.as_ref(),
             hybrid,

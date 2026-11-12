@@ -7,10 +7,21 @@ import { copyFile, mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises';
 import { freemem, tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { launch, shutdown, until } from './harness.mjs';
+import { startThrottleProxy } from './support/throttle-proxy.mjs';
 
 assert.equal(process.platform, 'win32', 'This WebView2 regression requires Windows');
 const expectedRelease = process.env.PRISM_TEST_EXPECT_RELEASE ?? '0';
 assert(['0', '1'].includes(expectedRelease), 'PRISM_TEST_EXPECT_RELEASE must be 0 or 1');
+// Optional: relay the real official transfer through a loopback CONNECT proxy
+// that only slows it down (see support/throttle-proxy.mjs). Fast CI networks
+// otherwise finish the download before it can be observed and cancelled.
+const downloadRate = process.env.PRISM_TEST_DOWNLOAD_RATE
+  ? Number(process.env.PRISM_TEST_DOWNLOAD_RATE)
+  : undefined;
+assert(
+  downloadRate === undefined || Number.isSafeInteger(downloadRate),
+  'PRISM_TEST_DOWNLOAD_RATE must be bytes per second',
+);
 const candidate = resolve(process.env.PRISM_TEST_EXECUTABLE ?? 'src-tauri/target/debug/prism.exe');
 assert.equal(basename(candidate).toLowerCase(), 'prism.exe');
 assert((await stat(candidate)).isFile());
@@ -67,6 +78,7 @@ let writerError;
 let guard;
 let minimumAvailable = freemem();
 let resourceStop = false;
+let throttle;
 const warnings = [];
 const result = {
   passed: false,
@@ -77,6 +89,8 @@ const result = {
   responsesReplaced: false,
   inferenceRequested: false,
   externalScopeOverride: Boolean(process.env.PRISM_PROGRESS_SCOPE),
+  // Set when the real transfer was relayed, unchanged but rate-limited.
+  transferThrottled: downloadRate !== undefined,
 };
 const check = () => {
   assert(!resourceStop, 'Owned app stopped below1GiB available memory');
@@ -97,6 +111,12 @@ try {
       if (child?.exitCode === null && child?.signalCode === null) child.kill();
     }
   }, 250);
+  if (downloadRate !== undefined) {
+    throttle = await startThrottleProxy(downloadRate);
+    // The app's download client honours HTTPS_PROXY; loopback stays direct.
+    process.env.HTTPS_PROXY = throttle.url;
+    process.env.NO_PROXY = '127.0.0.1,localhost,::1';
+  }
   instance = await launch(profile, {
     executable,
     portable: true,
@@ -196,6 +216,10 @@ try {
     result.progress = current;
     return current.downloadedBytes > phase.downloadedBytes + 2 * 1024 * 1024;
   }, 'real byte count advances');
+  if (throttle) {
+    // Prove the bytes actually came through the slowed tunnel, not around it.
+    assert(throttle.stats().relayedBytes > 2 * 1024 * 1024, 'download bypassed the throttle');
+  }
   await new Promise((done) => setTimeout(done, 4000));
   check();
   assert.equal(
@@ -309,6 +333,10 @@ try {
     });
   }
   clearInterval(guard);
+  if (throttle) {
+    result.throttle = throttle.stats();
+    await throttle.close().catch(() => {});
+  }
   result.minimumAvailable = minimumAvailable;
   result.resourceStop = resourceStop;
   result.profileVerified = verifiedProfile;

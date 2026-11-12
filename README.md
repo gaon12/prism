@@ -493,6 +493,15 @@ Production mode strips inherited `PRISM_DEV_*` overrides. The original executabl
 and user profile are not modified. It requires 3 GiB available before launch and
 stops only its owned app below 1 GiB. A transfer that finishes before sustained
 observation/cancellation is reported as unqualified rather than silently passing.
+
+On a fast network, set `PRISM_TEST_DOWNLOAD_RATE` (bytes per second, at least
+65536; CI uses `1048576`). The test then starts a loopback `CONNECT host:443`
+proxy and passes it to the app as `HTTPS_PROXY`. The app still opens its own TLS
+connection to the official servers and verifies certificates and hashes; the
+proxy sees only encrypted bytes and delays relaying them. Plain HTTP and other
+ports are refused. `result.json` records the rate, relayed byte count and tunnel
+host names, and the test fails if the download bypassed the proxy.
+
 Screenshots and `result.json` are kept in the printed `evidence` directory even
 on a test failure. Upload that subdirectory only, not its parent executable/profile.
 

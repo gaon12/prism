@@ -221,6 +221,9 @@ jobs:
           PRISM_TEST_EXECUTABLE: ${{ github.workspace }}/src-tauri/target/release/prism.exe
           PRISM_TEST_EXPECT_RELEASE: '1'
           PRISM_APP_CDP_PORT: '9324'
+          # Hosted runners finish the real download before it can be observed and
+          # cancelled; relay the same official TLS bytes at 1 MiB/s.
+          PRISM_TEST_DOWNLOAD_RATE: '1048576'
         run: node tests/native/model-progress.mjs
       - name: Prepare immutable native generation assets
         if: matrix.platform == 'windows'

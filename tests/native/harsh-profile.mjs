@@ -155,6 +155,26 @@ try {
   const search = await invoke('search_files', { query: 'readme', extension: '', scopeId });
   result.searchMs = Math.round(performance.now() - searchStart);
   result.searchTotal = search.total;
+  // Renderer-side numbers for each window, to tell how much of a WebView
+  // renderer's memory is the app's own JavaScript heap and DOM.
+  result.pages = {};
+  for (const [name, page] of [
+    ['main', instance.main],
+    ['quick', instance.quick],
+  ]) {
+    const session = await page.context().newCDPSession(page);
+    await session.send('Performance.enable');
+    const { metrics } = await session.send('Performance.getMetrics');
+    await session.detach();
+    const value = (key) => metrics.find((metric) => metric.name === key)?.value ?? null;
+    result.pages[name] = {
+      jsHeapUsedBytes: value('JSHeapUsedSize'),
+      jsHeapTotalBytes: value('JSHeapTotalSize'),
+      domNodes: value('Nodes'),
+      documents: value('Documents'),
+      jsEventListeners: value('JSEventListeners'),
+    };
+  }
   result.job = await job.report();
   result.passed = true;
 } catch (error) {

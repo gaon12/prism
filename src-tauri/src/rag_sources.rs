@@ -520,7 +520,7 @@ impl SourceResolver for ContentSources {
             && prepared.is_some();
         let limit = top_k.clamp(1, 128);
         let branch_limit = if hybrid { HYBRID_BRANCH_LIMIT } else { limit };
-        let mut after = 0;
+        let mut after = String::new();
         let plan = RetrievalPlan {
             question,
             ids: &ids,
@@ -531,9 +531,9 @@ impl SourceResolver for ContentSources {
         let mut candidates = RetrievalCandidates::default();
         loop {
             cancel_check(cancel)?;
-            let batch = selection.batch_in_roots(after, Some(&roots))?;
+            let batch = selection.batch_in_roots(&after, Some(&roots))?;
             let Some(last) = batch.last() else { break };
-            after = last.id;
+            after = crate::chat_selection::path_key(&last.path);
             let paths: Vec<_> = batch.into_iter().map(|file| file.path).collect();
             self.collect_retrieval(&plan, Some(&paths), &mut candidates, cancel)?;
         }

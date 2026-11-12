@@ -31,6 +31,12 @@ explicitly ignored unless selected with their documented environment opt-in.
 The Windows process-job tests start and terminate only their own windowless
 loopback ping children.
 
+Saved file-set retrieval uses path-key order for its bounded 256-file batches,
+independent of producer arrival order. SQLite regressions cover shuffled sets
+across batch boundaries, deselection, root filters and stale revisions while
+preserving the stored UI ordinals. The retrieval cursor uses a selected/path-key
+index; it does not allocate another complete list of paths.
+
 The search-engine adapters in rag_search_snapshot.rs remain part of the full
 app. This crate does **not** qualify their linkage, filesystem indexing, vector
 retrieval, GUI behavior, actual generative-model quality or shipping artifacts.

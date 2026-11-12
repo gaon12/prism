@@ -19,7 +19,8 @@ pub(crate) fn initialize(db: &Connection) -> RagResult<()> {
       conversation_id TEXT NOT NULL REFERENCES search_file_sets(conversation_id) ON DELETE CASCADE,
       ordinal INTEGER NOT NULL,path_key TEXT NOT NULL,file_path TEXT NOT NULL,selected INTEGER NOT NULL,
       PRIMARY KEY(conversation_id,ordinal),UNIQUE(conversation_id,path_key));
-      CREATE INDEX IF NOT EXISTS search_set_selected ON search_set_files(conversation_id,selected,ordinal);")
+      CREATE INDEX IF NOT EXISTS search_set_selected ON search_set_files(conversation_id,selected,ordinal);
+      CREATE INDEX IF NOT EXISTS search_set_selected_path ON search_set_files(conversation_id,selected,path_key);")
       .map_err(storage)
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -69,20 +70,36 @@ impl SavedSelection {
         self.checked_connection()?.query_row("SELECT EXISTS(SELECT 1 FROM search_set_files WHERE conversation_id=?1 AND path_key=?2 AND selected=1)", params![self.id,path_key(path)], |row| row.get(0)).map_err(storage)
     }
     pub fn batch(&self, after: u64) -> RagResult<Vec<SelectionFile>> {
-        self.batch_in_roots(after, None)
+        self.read_batch(
+            "ordinal",
+            rusqlite::types::Value::Integer(i64::try_from(after).map_err(storage)?),
+            None,
+        )
     }
     /// A lexical root predicate is only a cheap candidate reduction. Files are
     /// still canonicalized, authorized and hash-checked by ContentSources.
     pub fn batch_in_roots(
         &self,
-        after: u64,
+        after: &str,
+        roots: Option<&[String]>,
+    ) -> RagResult<Vec<SelectionFile>> {
+        // Retrieval batches must not depend on the producer's visit order:
+        // per-batch candidate limits could otherwise change the final hits.
+        // The selected/path index streams this order without a full path Vec.
+        self.read_batch(
+            "path_key",
+            rusqlite::types::Value::Text(after.to_owned()),
+            roots,
+        )
+    }
+    fn read_batch(
+        &self,
+        column: &'static str,
+        after: rusqlite::types::Value,
         roots: Option<&[String]>,
     ) -> RagResult<Vec<SelectionFile>> {
         let db = self.checked_connection()?;
-        let mut parameters = vec![
-            rusqlite::types::Value::Text(self.id.clone()),
-            rusqlite::types::Value::Integer(i64::try_from(after).map_err(storage)?),
-        ];
+        let mut parameters = vec![rusqlite::types::Value::Text(self.id.clone()), after];
         let restriction = if let Some(roots) = roots {
             if roots.is_empty() {
                 return Ok(vec![]);
@@ -103,7 +120,7 @@ impl SavedSelection {
         } else {
             String::new()
         };
-        let mut query = db.prepare(&format!("SELECT ordinal,file_path,selected FROM search_set_files WHERE conversation_id=?1 AND selected=1 AND ordinal>?2{restriction} ORDER BY ordinal LIMIT 256")).map_err(storage)?;
+        let mut query = db.prepare(&format!("SELECT ordinal,file_path,selected FROM search_set_files WHERE conversation_id=?1 AND selected=1 AND {column}>?2{restriction} ORDER BY {column} LIMIT 256")).map_err(storage)?;
         let rows = query
             .query_map(rusqlite::params_from_iter(parameters), read_file)
             .map_err(storage)?;
@@ -295,6 +312,104 @@ impl RagStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn path_batches(set: &SavedSelection, roots: &[String]) -> Vec<Vec<String>> {
+        let mut result = Vec::new();
+        let mut after = String::new();
+        loop {
+            let batch = set.batch_in_roots(&after, Some(roots)).unwrap();
+            let Some(last) = batch.last() else { break };
+            assert!(batch.len() <= 256);
+            let next = path_key(&last.path);
+            assert!(next > after);
+            after = next;
+            result.push(batch.into_iter().map(|file| path_key(&file.path)).collect());
+        }
+        result
+    }
+    #[test]
+    fn retrieval_pages_are_identical_across_producer_orders_and_keep_ui_ordinals() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RagStore::open(dir.path()).unwrap();
+        let paths: Vec<_> = (0..769)
+            .map(|i| format!("/fixture/한글-{i:04}.md"))
+            .collect();
+        let orders = [
+            (0..paths.len()).collect::<Vec<_>>(),
+            (0..paths.len()).rev().collect(),
+            (0..paths.len()).map(|i| (i * 37) % paths.len()).collect(),
+        ];
+        let roots = vec!["/fixture".into()];
+        let mut expected: Vec<_> = paths
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| ![1, 256, 513].contains(i))
+            .map(|(_, path)| path_key(path))
+            .collect();
+        expected.sort();
+        let mut reference = None;
+        for order in orders {
+            let chat = store
+                .create_file_set("same files", |emit| {
+                    for &i in &order {
+                        emit(&paths[i])?;
+                        if i % 17 == 0 {
+                            emit(&paths[i])?;
+                        }
+                    }
+                    emit("/fixture-sibling/outside.md")?;
+                    emit("/other/outside.md")?;
+                    Ok(false)
+                })
+                .unwrap();
+            let before = store.selection_page(&chat.id, 0, 50).unwrap().unwrap();
+            assert_eq!(before.files[0].path, paths[order[0]]);
+            let changes: Vec<_> = [1, 256, 513]
+                .iter()
+                .map(|&i| {
+                    let ordinal = store
+                        .connect()
+                        .unwrap()
+                        .query_row(
+                            "SELECT ordinal FROM search_set_files WHERE conversation_id=?1 AND path_key=?2",
+                            params![chat.id, path_key(&paths[i])],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    (ordinal, false)
+                })
+                .collect();
+            store.edit_file_set(&chat.id, 1, &changes, None).unwrap();
+            let set = store.saved_selection(&chat.id).unwrap().unwrap();
+            let pages = path_batches(&set, &roots);
+            assert_eq!(
+                pages.iter().map(Vec::len).collect::<Vec<_>>(),
+                [256, 256, 254]
+            );
+            assert_eq!(pages.concat(), expected);
+            if let Some(reference) = &reference {
+                assert_eq!(&pages, reference);
+            } else {
+                reference = Some(pages);
+            }
+            let after = store.selection_page(&chat.id, 0, 50).unwrap().unwrap();
+            assert_eq!(after.files[0].id, before.files[0].id);
+            assert_eq!(after.files[0].path, before.files[0].path);
+            assert!(set.batch_in_roots("", Some(&[])).unwrap().is_empty());
+            assert!(set
+                .batch_in_roots("", Some(&vec!["/fixture".into(); 129]))
+                .is_err());
+            store.edit_file_set(&chat.id, 2, &[], Some(false)).unwrap();
+            assert!(matches!(
+                set.batch_in_roots("", Some(&roots)),
+                Err(RagError {
+                    code: RagErrorCode::PolicyChanged,
+                    ..
+                })
+            ));
+            let set = store.saved_selection(&chat.id).unwrap().unwrap();
+            assert!(set.batch_in_roots("", Some(&roots)).unwrap().is_empty());
+        }
+    }
     #[test]
     fn full_sets_page_edit_reopen_and_rollback_without_ipc_sized_limits() {
         let dir = tempfile::tempdir().unwrap();

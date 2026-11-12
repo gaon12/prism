@@ -1,0 +1,13 @@
+[package]
+name = "prism-catalog-qa"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.94"
+publish = false
+
+# Tests the production compact filename catalog module directly, without
+# linking the GUI or any heavy dependency. The module itself has none.
+[dependencies]
+
+[profile.release]
+debug = 0

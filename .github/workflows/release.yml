@@ -114,6 +114,11 @@ jobs:
           cargo test --manifest-path tools/platform-qa/Cargo.toml --locked
           cargo clippy --manifest-path tools/platform-qa/Cargo.toml --all-targets --locked -- -D warnings
           cargo fmt --manifest-path tools/platform-qa/Cargo.toml --check
+      - name: Test the compact filename catalog module
+        run: |
+          cargo test --manifest-path tools/catalog-qa/Cargo.toml --locked
+          cargo clippy --manifest-path tools/catalog-qa/Cargo.toml --all-targets --locked -- -D warnings
+          cargo fmt --manifest-path tools/catalog-qa/Cargo.toml --check
       - name: Verify actual macOS Quartz PDF previews
         if: matrix.platform == 'macos'
         timeout-minutes: 5

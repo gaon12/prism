@@ -1,5 +1,7 @@
-//! Optional snapshot source for complete local drives. A reply stays private
-//! until the client has validated its terminal frame and open root identity.
+//! Optional snapshot source for complete local drives. The real catalog only
+//! changes after the client has validated a reply's terminal frame and open
+//! root identity. A first catalog may meanwhile be searched as a provisional
+//! view (`Provisional` in `index.rs`), which any failure detaches.
 //! Ordinary folder walks remain available on every OS and on service failure.
 use super::*;
 #[cfg(any(windows, test))]
@@ -118,7 +120,8 @@ impl FileIndex {
                         for record in &records {
                             // Whole-drive validation needs no allocated path
                             // key. Only validated records may reach private
-                            // workers; they never publish during transfer.
+                            // workers; during transfer they are at most a
+                            // provisional search view, never the real catalog.
                             let inside = drive.map_or_else(
                                 || under(&path_key(Path::new(&record.path)), &root_key),
                                 |drive| drive.contains(&record.path),

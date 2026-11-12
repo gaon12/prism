@@ -14,6 +14,39 @@ import net from 'node:net';
 
 const MAX_HEADER_BYTES = 8 * 1024;
 
+export function resumeWhenReady(client, upstream, wait, drained) {
+  if (client.destroyed || upstream.destroyed) return;
+  let timer;
+  let delayDone = wait <= 0;
+  let writable = drained;
+  const cleanup = () => {
+    clearTimeout(timer);
+    client.off('drain', onDrain);
+    client.off('close', cleanup);
+    upstream.off('close', cleanup);
+  };
+  const resume = () => {
+    if (!delayDone || !writable) return;
+    cleanup();
+    if (!client.destroyed && !upstream.destroyed) upstream.resume();
+  };
+  const onDrain = () => {
+    writable = true;
+    resume();
+  };
+  // Drain may happen while the rate timer is still pending. Observe both
+  // conditions immediately, then resume once both are true in either order.
+  client.once('close', cleanup);
+  upstream.once('close', cleanup);
+  if (!drained) client.once('drain', onDrain);
+  if (wait > 0)
+    timer = setTimeout(() => {
+      delayDone = true;
+      resume();
+    }, wait);
+  resume();
+}
+
 /**
  * Start the proxy on 127.0.0.1 with an OS-assigned port.
  * @param {number} bytesPerSecond Total server-to-app relay rate for all tunnels.
@@ -88,12 +121,7 @@ export async function startThrottleProxy(bytesPerSecond) {
         const wait = delayAfter(chunk.length);
         if (wait === 0 && drained) return;
         upstream.pause();
-        const resume = () => {
-          if (drained) upstream.resume();
-          else client.once('drain', () => upstream.resume());
-        };
-        if (wait > 0) setTimeout(resume, wait);
-        else resume();
+        resumeWhenReady(client, upstream, wait, drained);
       });
       upstream.on('end', () => client.end());
       client.on('end', () => upstream.end());

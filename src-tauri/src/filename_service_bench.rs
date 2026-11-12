@@ -226,7 +226,9 @@ fn live_streaming_installed_service_catalog() {
         "{}",
         serde_json::json!({"serviceSnapshotTiming": timing,
         "includesGuiOrWatcherSetup": false, "callbackTimeOverlapsFetch": true,
-        "qaMetadataHashingIncluded": true})
+        "qaMetadataHashingIncluded": true,
+        // Where the stored catalog's heap goes (after the scan, not the peak).
+        "catalogBreakdown": catalog.entries.breakdown().into_iter().collect::<std::collections::BTreeMap<_, _>>()})
     );
 }
 

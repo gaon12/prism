@@ -189,6 +189,11 @@ impl Entries {
     pub(super) fn len(&self) -> usize {
         self.inner.len()
     }
+    /// Per-part heap bytes of the compact storage (memory benchmarks only).
+    #[cfg(test)]
+    pub(super) fn breakdown(&self) -> Vec<(&'static str, usize)> {
+        self.inner.breakdown()
+    }
     pub(super) fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }

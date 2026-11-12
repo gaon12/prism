@@ -951,6 +951,25 @@ impl Catalog {
             ),
             ("nodeBytes", self.nodes.capacity_bytes()),
             ("textBytes", self.text.capacity()),
+            ("textUsedBytes", self.text.used),
+            // Display-name bytes of live entries; the rest of the used text is
+            // directory paths and stored key/search blocks.
+            (
+                "entryNameBytes",
+                (0..self.nodes.len())
+                    .map(|id| &self.nodes[id])
+                    .filter(|node| node.dir != NONE)
+                    .map(|node| node.name_len as usize)
+                    .sum(),
+            ),
+            // Live entries that need a stored key/search block.
+            (
+                "entriesWithBlock",
+                (0..self.nodes.len())
+                    .map(|id| &self.nodes[id])
+                    .filter(|node| node.dir != NONE && node.extra != NONE)
+                    .count(),
+            ),
             ("dirTableBytes", self.dir_table.bytes()),
             ("keyTableBytes", self.key_table.bytes()),
         ]

@@ -20,7 +20,10 @@ mod diagnostics;
 #[cfg(target_os = "macos")]
 #[path = "support/macos_exit.rs"]
 mod macos_exit;
+#[path = "support/paddle_readiness.rs"]
+mod readiness;
 use diagnostics::{last_phase, FailureDiagnostics};
+use readiness::ReadinessBudget;
 
 struct Cleanup(Child);
 impl Drop for Cleanup {
@@ -85,8 +88,20 @@ fn real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill() {
             .spawn()
             .unwrap(),
     );
-    let deadline = Instant::now() + Duration::from_secs(180);
+    let mut budget = ReadinessBudget::new(
+        Instant::now(),
+        prism_platform_qa::ocr::Limits::default().max_duration,
+    );
     let status: serde_json::Value = loop {
+        let phase_text = last_phase(&ready);
+        let phase = serde_json::from_str::<serde_json::Value>(&phase_text).ok();
+        assert!(
+            budget.within_deadline(
+                Instant::now(),
+                phase.as_ref().and_then(|value| value["phase"].as_str()),
+            ),
+            "Actual Paddle recognition exceeded its bounded deadline; phase={phase_text}"
+        );
         if let Ok(bytes) = fs::read(&ready) {
             if let Ok(value) = serde_json::from_slice(&bytes) {
                 break value;
@@ -97,11 +112,6 @@ fn real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill() {
             "Actual Paddle parent exited before readiness; phase={}; inspect {}",
             last_phase(&ready),
             directory.path().display()
-        );
-        assert!(
-            Instant::now() < deadline,
-            "Actual Paddle recognition exceeded its bounded deadline; phase={}",
-            last_phase(&ready)
         );
         thread::sleep(Duration::from_millis(50));
     };

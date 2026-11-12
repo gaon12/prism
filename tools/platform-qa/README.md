@@ -184,7 +184,10 @@ Expensive or OS-dependent checks are opt-in:
   reuse and cancellation. Unix needs `PRISM_TEST_LAUNCHER` pointing to the built
   QA binary. Mac also needs `PRISM_DEV_PADDLE_REFERENCE=1`; release Mac runtime
   availability is unchanged. It retains a Windows process handle, Linux pidfd or
-  Mac kernel exit notification to prove exit. Mac execution is still pending.
+  Mac kernel exit notification to prove exit. The explicit Mac runs
+  `43180553078` and `43186709347` passed this installation/recognition/cancellation
+  check. Their separate parent-lifetime check failed before SIGKILL and remains
+  unqualified.
 - `real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill`: Linux x64 or
   staged Mac ARM64 debug/test qualification;
   set `PRISM_TEST_PADDLE_INSTALLED` to the authenticated prepared runtime. The
@@ -194,7 +197,15 @@ Expensive or OS-dependent checks are opt-in:
   AES-256 user/owner passwords, raw fingerprints and original-file preservation.
   Mac requires the explicit reference flag and an actual materialized Mac seed,
   then exercises real OS language unavailability before Auto fallback. The worker
-  exit observer attaches before parent termination. See the [runtime guide](../ocr-runtime/README.md)
+  exit observer attaches before parent termination. Each fixed progress stage has
+  the production 180-second OCR allowance, and the complete fixture has a
+  900-second ceiling for its four independent OCR/extraction calls plus setup.
+  Missing, repeated, unknown or backward phases cannot extend a stalled stage.
+  On Mac run `43186709347`, the image completed in 112.439s and mixed extraction
+  in 62.784s; the old aggregate 180-second bound killed the next request at
+  `encrypted-user-extraction`. This measured result motivates separate operation
+  budgets; it does not qualify the remaining extraction or SIGKILL assertions.
+  See the [runtime guide](../ocr-runtime/README.md)
   for exact native commands. Compilation does not establish native execution.
 - `native_store_roundtrip_replacement_isolation_and_delete`: on macOS or Linux,
   set `PRISM_TEST_OS_CREDENTIALS=1` and provide an accessible **disposable** user

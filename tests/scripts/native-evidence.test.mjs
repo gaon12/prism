@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { documentFailureEvidence } from '../native/support/generation-evidence.mjs';
 
 // Execute the runner's actual catch block, not a second copy of its policy.
 // Only lifecycle/error objects are synthetic: no app, model or browser starts.
@@ -83,4 +86,56 @@ test('errors before any launch retain useful asset or preflight diagnostics', as
   const state = await observe();
   assert(state.result.error.includes(state.marker));
   assert.equal(state.screenshots, 0);
+});
+
+test('failed document evidence selects only its persisted request and opens databases read-only', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'prism-document-evidence-'));
+  await Promise.all(['documents', 'rag'].map((name) => mkdir(join(profile, name))));
+  const documentPath = join(profile, 'documents', 'documents.sqlite3');
+  const ragPath = join(profile, 'rag', 'conversations.sqlite3');
+  const job = { documentId: 'a'.repeat(32), requestId: 'failed-request' };
+  const documents = new DatabaseSync(documentPath);
+  documents.exec('CREATE TABLE documents(id TEXT, rag_conversation_id TEXT)');
+  documents.prepare('INSERT INTO documents VALUES (?, ?)').run(job.documentId, 'owned-document');
+  documents.close();
+  const rag = new DatabaseSync(ragPath);
+  rag.exec(`CREATE TABLE conversation_turns(
+    conversation_id TEXT, request_id TEXT, sequence INTEGER, role TEXT, payload TEXT)`);
+  const insert = rag.prepare('INSERT INTO conversation_turns VALUES (?, ?, ?, ?, ?)');
+  const response = {
+    requestId: 'doc_failed-request',
+    role: 'assistant',
+    status: 'complete',
+    text: '{"title":"truncated',
+    finishReason: 'length',
+    usage: { completion_tokens: 2048 },
+    requestedModel: 'fixture',
+    reportedModel: 'fixture',
+  };
+  insert.run('owned-document', 'doc_failed-request', 1, 'user', '{"secret":"user question"}');
+  insert.run('owned-document', 'doc_old-request', 2, 'assistant', '{"secret":"old answer"}');
+  insert.run('other-document', 'doc_failed-request', 3, 'assistant', '{"secret":"other answer"}');
+  insert.run('owned-document', 'doc_failed-request', 4, 'assistant', JSON.stringify(response));
+  rag.close();
+  const before = await Promise.all([documentPath, ragPath].map((path) => readFile(path)));
+  assert.deepEqual(documentFailureEvidence(profile, job), {
+    documentId: job.documentId,
+    requestId: job.requestId,
+    ...Object.fromEntries(
+      ['status', 'text', 'finishReason', 'usage', 'requestedModel', 'reportedModel'].map((key) => [
+        key,
+        response[key],
+      ]),
+    ),
+  });
+  const after = await Promise.all([documentPath, ragPath].map((path) => readFile(path)));
+  assert.deepEqual(after, before);
+  assert.throws(() => documentFailureEvidence(profile, { ...job, requestId: "' OR 1=1 --" }));
+  assert.throws(() => documentFailureEvidence(profile, { ...job, requestId: 'missing' }));
+  const inconsistent = new DatabaseSync(ragPath);
+  inconsistent
+    .prepare('UPDATE conversation_turns SET payload = ? WHERE sequence = 4')
+    .run(JSON.stringify({ ...response, requestId: 'doc_other-request' }));
+  inconsistent.close();
+  assert.throws(() => documentFailureEvidence(profile, job));
 });

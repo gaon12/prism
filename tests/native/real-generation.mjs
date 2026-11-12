@@ -20,6 +20,7 @@ import { freemem, tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launch, shutdown, until } from './harness.mjs';
+import { documentFailureEvidence } from './support/generation-evidence.mjs';
 
 assert.equal(process.platform, 'win32', 'This actual WebView2/model gate requires Windows');
 assert.equal(process.arch, 'x64', 'Use the pinned Windows x64 CPU runtime');
@@ -140,6 +141,7 @@ try {
   for (const path of [
     fileURLToPath(import.meta.url),
     fileURLToPath(new URL('./harness.mjs', import.meta.url)),
+    fileURLToPath(new URL('./support/generation-evidence.mjs', import.meta.url)),
     ...['pins.json', '은하 워크숍.md', '별빛 세미나.md', '독서 동호회.md'].map((name) =>
       join(fixtures, name),
     ),
@@ -658,6 +660,16 @@ try {
   process.off('SIGINT', interrupt);
   process.off('SIGTERM', interrupt);
   if (serverLog !== undefined) closeSync(serverLog);
+  if (verifiedProfile && result.failedJob && child && !alive(child)) {
+    try {
+      result.failedDocumentResponse = documentFailureEvidence(
+        join(directory, 'app', 'PrismData'),
+        result.failedJob,
+      );
+    } catch (error) {
+      result.documentEvidenceError = String(error);
+    }
+  }
   result.stage = stage;
   result.profileVerified = verifiedProfile;
   result.memory = {

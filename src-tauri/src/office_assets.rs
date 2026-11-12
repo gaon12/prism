@@ -228,18 +228,20 @@ impl Catalog {
         Ok(entries)
     }
 }
+/// True when this is a plain file or folder: not a symbolic link and, on
+/// Windows, not any other reparse point (a junction or mount point can also
+/// redirect a path somewhere else).
 fn not_link(metadata: &fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return false;
-    }
+    // FILE_ATTRIBUTE_REPARSE_POINT. Other platforms have no such attribute;
+    // their links are all symbolic links.
     #[cfg(windows)]
-    {
+    let reparse = {
         use std::os::windows::fs::MetadataExt;
-        if metadata.file_attributes() & 0x400 != 0 {
-            return false;
-        }
-    }
-    true
+        metadata.file_attributes() & 0x400 != 0
+    };
+    #[cfg(not(windows))]
+    let reparse = false;
+    !metadata.file_type().is_symlink() && !reparse
 }
 fn leaf(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();

@@ -150,6 +150,18 @@ jobs:
         env:
           BUILD_CONFIG: ${{ steps.plan.outputs.config }}
         run: npm run tauri -- build --no-bundle --config "$BUILD_CONFIG" -- --locked
+      - name: Keep the built Windows app for low-end memory measurement
+        # The 1 CPU / 512 MB job measurement (tests/native/harsh-profile.mjs)
+        # only needs prism.exe. Upload it right after the build so a later
+        # gate failure does not hide it. Not a release download (the draft
+        # job only takes downloads-*), and kept for a week only.
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: qa-windows-app
+          path: src-tauri/target/release/prism.exe
+          if-no-files-found: error
+          retention-days: 7
       - name: Build universal macOS app and DMG
         if: matrix.platform == 'macos'
         env:

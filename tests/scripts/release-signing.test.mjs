@@ -124,7 +124,7 @@ test('fresh Tauri version-bound signing, key pairing, hashes and complete manife
   );
   const manifest = JSON.parse(readFileSync(join(output, 'latest.json'), 'utf8'));
   assert.equal(manifest.version, version);
-  assert.equal(Object.keys(manifest.platforms).length, 4);
+  assert.equal(Object.keys(manifest.platforms).length, 5);
   const before = readFileSync(join(output, 'latest.json'), 'utf8');
   // Cryptographic verification still fails if bytes change after collection.
   writeFileSync(join(output, updates[0]), 'tampered');

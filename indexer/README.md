@@ -5,6 +5,9 @@ installation and SCM startup have been verified on the development machine.
 The app prefers an already running service
 for complete drive-root reconciliations and otherwise uses the parallel folder
 walker. A 5–7 second C-drive index is still unverified.
+The target is a cached start with about two million entries on one logical CPU,
+512 MB RAM and an HDD. Cold MFT collection is measured separately. The complete
+app/service memory budget and actual HDD timings remain unqualified.
 
 Implemented:
 
@@ -21,10 +24,12 @@ Implemented:
   resident/nonresident data sizes, and parent-sequence checks. Junctions and
   symlinks are excluded; cloud placeholders can contribute names. Deleted,
   corrupt, orphaned, and reused references cannot invent live paths.
-  Deterministic visitation sorts numbers alongside borrowed records, avoiding
-  another hash lookup per row. The temporary order table adds one pointer per
-  stored record (about 15 MiB for 2 million records on 64-bit systems); it keeps
-  no catalog clone and is released on success or callback failure.
+  Metadata is stored in ordered, fixed-size pages. Sequential MFT/cache records
+  append without a large hash table or whole-table reallocation; out-of-order
+  replay uses a small ordered overlay. Removed slots and large overlays are
+  merged while consuming the old pages, so deletion history does not accumulate
+  dead storage. Visitation and cache writing merge this order directly, without
+  a separate whole-catalog sorting table. The cache format is unchanged.
   Derived paths reserve their complete UTF-8 byte size before appending the
   parent, separator and name; the separate Windows UTF-16 limit still applies.
 - An independent public mkntfs image exercises 581 records, file sizes, and

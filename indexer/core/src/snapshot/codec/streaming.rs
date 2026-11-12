@@ -1,0 +1,330 @@
+//! Verified, bounded-memory traversal of the unchanged metadata cache format.
+//! Keep only file references, directory metadata and extension ownership; file
+//! names are decoded as visited. The owned input MUST deny external mutation,
+//! including deletion, for this reader's lifetime (as the native cache does).
+use super::*;
+use prism_ntfs_protocol::{DriveLetter, FileRecord};
+
+pub struct Reader<R> {
+    input: R,
+    header: CacheHeader,
+    references: Vec<FileReference>,
+    directories: Catalog,
+    records_start: u64,
+    records_bytes: u64,
+}
+
+impl<R: Read + Seek> Reader<R> {
+    /// Validate the full digest and every record/owner before any row visitor
+    /// can run. Construction failure drops the private index and owned input.
+    pub fn open(
+        mut input: R,
+        expected: Geometry,
+        device: &str,
+        check: impl Fn() -> super::super::layout::Result<()>,
+    ) -> io::Result<Self> {
+        let (mut body, header) = open_body(&mut input, expected, device, &check)?;
+        let records_start = HEADER + header.length - body.limit();
+        let mut references: Vec<FileReference> = Vec::with_capacity(header.records);
+        let mut records = Records::default();
+        let mut bytes = Vec::new();
+        for index in 0..header.records {
+            if index % 256 == 0 {
+                checked(&check)?;
+            }
+            let record = read_record(&mut body, &mut bytes)?;
+            let number = record.reference.number();
+            if references
+                .last()
+                .is_some_and(|last| last.number() >= number)
+            {
+                return Err(invalid());
+            }
+            references.push(record.reference);
+            if record.is_dir {
+                records.insert(number, record);
+            }
+        }
+        let records_bytes = HEADER + header.length - body.limit() - records_start;
+        let reference = |number| {
+            references
+                .binary_search_by_key(&number, |reference| reference.number())
+                .ok()
+                .map(|index| references[index])
+        };
+        let (owners, families) = read_owners(&mut body, references.len(), reference, &check)?;
+        checked(&check)?;
+        if body.limit() != 0 {
+            return Err(invalid());
+        }
+        Ok(Self {
+            input,
+            header,
+            references,
+            directories: Catalog {
+                records,
+                directories: HashMap::new(),
+                owners,
+                families,
+            },
+            records_start,
+            records_bytes,
+        })
+    }
+
+    pub fn geometry(&self) -> Geometry {
+        self.header.geometry
+    }
+    pub fn checkpoint(&self) -> Checkpoint {
+        self.header.checkpoint
+    }
+    pub fn record_count(&self) -> usize {
+        self.references.len()
+    }
+    pub fn directory_count(&self) -> usize {
+        self.directories.records.len()
+    }
+    pub fn reference(&self, number: u64) -> Option<FileReference> {
+        self.references
+            .binary_search_by_key(&number, |reference| reference.number())
+            .ok()
+            .map(|index| self.references[index])
+    }
+    pub fn owner(&self, reference: FileReference) -> Option<FileReference> {
+        self.directories.owner(reference)
+    }
+    pub fn family_members(&self, base: FileReference) -> &[u64] {
+        self.directories
+            .families
+            .get(&base)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Restart from the verified record region on every call, also after a
+    /// visitor fails. At most one decoded file metadata record is retained.
+    pub fn visit_metadata(
+        &mut self,
+        check: impl Fn() -> super::super::layout::Result<()>,
+        visit: impl FnMut(MetadataRecord) -> io::Result<()>,
+    ) -> io::Result<()> {
+        visit_records(
+            &mut self.input,
+            &self.references,
+            self.records_start,
+            self.records_bytes,
+            &check,
+            visit,
+        )
+    }
+
+    /// Same path, hard-link, alias and sequence rules as Catalog::visit. This
+    /// is the cached checkpoint, not a fresh journal-replayed service snapshot.
+    /// The service must replay current changes before publishing authoritative
+    /// results; adding this reader alone does not enable early cold MFT results.
+    pub fn visit(
+        &mut self,
+        drive: DriveLetter,
+        check: impl Fn() -> super::super::layout::Result<()>,
+        mut visit: impl FnMut(FileRecord) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.directories.directories.clear();
+        let directories = &mut self.directories;
+        visit_records(
+            &mut self.input,
+            &self.references,
+            self.records_start,
+            self.records_bytes,
+            &check,
+            |record| {
+                Catalog::visit_record(
+                    &directories.records,
+                    &mut directories.directories,
+                    drive,
+                    record.reference.number(),
+                    &record,
+                    &mut visit,
+                )
+            },
+        )
+    }
+}
+
+fn read_record(body: &mut io::Take<impl Read>, bytes: &mut Vec<u8>) -> io::Result<MetadataRecord> {
+    let size = u32_value(body)? as usize;
+    if !(38..=MAX_RECORD_BYTES).contains(&size) || size as u64 > body.limit() {
+        return Err(invalid());
+    }
+    bytes.resize(size, 0);
+    body.read_exact(bytes)?;
+    decode_record(bytes)
+}
+
+fn visit_records(
+    input: &mut (impl Read + Seek),
+    references: &[FileReference],
+    start: u64,
+    length: u64,
+    check: &impl Fn() -> super::super::layout::Result<()>,
+    mut visit: impl FnMut(MetadataRecord) -> io::Result<()>,
+) -> io::Result<()> {
+    checked(check)?;
+    input.seek(SeekFrom::Start(start))?;
+    let mut body = input.take(length);
+    let mut bytes = Vec::new();
+    for (index, reference) in references.iter().enumerate() {
+        if index % 256 == 0 {
+            checked(check)?;
+        }
+        let record = read_record(&mut body, &mut bytes)?;
+        if record.reference != *reference {
+            return Err(invalid());
+        }
+        visit(record)?;
+    }
+    checked(check)?;
+    if body.limit() != 0 {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::{encoded, rehash, sample, DEVICE};
+    use super::*;
+    use std::{cell::Cell, io::Cursor};
+    fn paths(catalog: &mut Catalog, drive: DriveLetter) -> Vec<FileRecord> {
+        let mut rows = vec![];
+        catalog
+            .visit(drive, |row| {
+                rows.push(row);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        rows
+    }
+    #[test]
+    fn rows_and_extension_ownership_match_full_load_without_retaining_file_names() {
+        let mut snapshot = sample();
+        let bytes = encoded(&snapshot);
+        let mut reader =
+            Reader::open(Cursor::new(bytes), snapshot.geometry, DEVICE, || Ok(())).unwrap();
+        assert_eq!(reader.record_count(), 2);
+        assert_eq!(reader.directory_count(), 1);
+        let base = FileReference((2 << 48) | 18);
+        assert_eq!(reader.reference(18), Some(base));
+        assert_eq!(reader.owner(FileReference((3 << 48) | 42)), Some(base));
+        assert_eq!(reader.family_members(base), &[42]);
+        let actual = reader.geometry();
+        let expected = snapshot.geometry;
+        assert_eq!(
+            (
+                actual.sector_size,
+                actual.cluster_size,
+                actual.record_size,
+                actual.volume_bytes,
+                actual.mft_bytes,
+                actual.serial
+            ),
+            (
+                expected.sector_size,
+                expected.cluster_size,
+                expected.record_size,
+                expected.volume_bytes,
+                expected.mft_bytes,
+                expected.serial
+            )
+        );
+        assert_eq!(reader.checkpoint(), snapshot.checkpoint);
+        for letter in *b"CDC" {
+            let drive = DriveLetter::new(letter).unwrap();
+            let mut actual = vec![];
+            reader
+                .visit(
+                    drive,
+                    || Ok(()),
+                    |row| {
+                        actual.push(row);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert_eq!(actual, paths(&mut snapshot.catalog, drive));
+        }
+    }
+    #[test]
+    fn corruptions_have_the_same_acceptance_as_full_load_before_visiting() {
+        let snapshot = sample();
+        let original = encoded(&snapshot);
+        for index in 0..original.len() {
+            let mut bytes = original.clone();
+            bytes[index] ^= 0x81;
+            if index >= HEADER as usize {
+                rehash(&mut bytes);
+            }
+            let full = read(
+                &mut Cursor::new(bytes.clone()),
+                snapshot.geometry,
+                DEVICE,
+                || Ok(()),
+            );
+            let streaming = Reader::open(Cursor::new(bytes), snapshot.geometry, DEVICE, || Ok(()));
+            assert_eq!(full.is_ok(), streaming.is_ok(), "mutation at {index}");
+        }
+    }
+    #[test]
+    fn cancellation_and_callback_failure_stop_and_can_restart_the_owned_reader() {
+        let snapshot = sample();
+        let bytes = encoded(&snapshot);
+        for limit in 0..7 {
+            let count = Cell::new(0);
+            let check = || {
+                let n = count.get();
+                count.set(n + 1);
+                if n >= limit {
+                    Err(crate::layout::Error::Cancelled)
+                } else {
+                    Ok(())
+                }
+            };
+            let result = Reader::open(Cursor::new(bytes.clone()), snapshot.geometry, DEVICE, check);
+            if limit < 5 {
+                assert!(result.is_err());
+            }
+        }
+        let mut reader =
+            Reader::open(Cursor::new(bytes), snapshot.geometry, DEVICE, || Ok(())).unwrap();
+        let drive = DriveLetter::new(b'C').unwrap();
+        let mut count = 0;
+        assert!(reader
+            .visit(
+                drive,
+                || Ok(()),
+                |_| {
+                    count += 1;
+                    Err(io::ErrorKind::Interrupted.into())
+                }
+            )
+            .is_err());
+        assert_eq!(count, 1);
+        let mut rows = vec![];
+        reader
+            .visit(
+                drive,
+                || Ok(()),
+                |row| {
+                    rows.push(row);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(reader
+            .visit(
+                drive,
+                || Err(crate::layout::Error::Cancelled),
+                |_| panic!("cancelled visitor")
+            )
+            .is_err());
+    }
+}

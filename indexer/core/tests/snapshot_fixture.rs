@@ -41,6 +41,53 @@ fn geometry() -> Geometry {
         serial: 1,
     }
 }
+
+#[cfg(feature = "cache")]
+#[test]
+fn verified_cache_stream_matches_the_public_image_after_journal_replay() {
+    use prism_ntfs_core::snapshot::codec::{self, streaming::Reader};
+    use std::io::Cursor;
+    let mut source = ChangingImage::new();
+    let mut snapshot = snapshot::collect(&mut source, geometry(), || Ok(()), |_| {}).unwrap();
+    let device = r"\Device\PublicCacheFixture";
+    let mut saved = Cursor::new(Vec::new());
+    codec::write(&snapshot, device, &mut saved, || Ok(())).unwrap();
+    let bytes = saved.into_inner();
+    let mut streaming =
+        Reader::open(Cursor::new(bytes.clone()), geometry(), device, || Ok(())).unwrap();
+    assert!(streaming.directory_count() < streaming.record_count());
+    for letter in *b"CDC" {
+        let drive = DriveLetter::new(letter).unwrap();
+        let mut expected = Vec::new();
+        snapshot
+            .catalog
+            .visit(drive, |row| {
+                expected.push(row);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        let mut actual = Vec::new();
+        streaming
+            .visit(
+                drive,
+                || Ok(()),
+                |row| {
+                    actual.push(row);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(actual, expected);
+    }
+    assert_eq!(streaming.checkpoint(), snapshot.checkpoint);
+    assert!(Reader::open(
+        Cursor::new(bytes),
+        geometry(),
+        r"\Device\OtherVolume",
+        || Ok(())
+    )
+    .is_err());
+}
 fn reference(number: u64, record: &[u8]) -> FileReference {
     FileReference(
         number | (u64::from(u16::from_le_bytes(record[16..18].try_into().unwrap())) << 48),

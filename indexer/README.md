@@ -70,6 +70,15 @@ Implemented:
   verification precedes catalog allocation. The Windows backend now loads this
   cache and replays the journal before serving a snapshot; incompatible caches
   and lost journals require a fresh scan.
+- `codec::streaming::Reader` verifies the same complete cache digest, metadata
+  and extension ownership before exposing a sequential visitor. Its index keeps
+  file references and directory metadata; other file names are decoded during
+  visitation. With a buffered immutable file input, this avoids retaining the
+  full file-metadata catalog. It uses the same path rules and unchanged cache
+  format. This core reader is not yet wired into the service's refresh/cache
+  writer: its checkpoint must be replayed before authoritative publication.
+  It does not enable results during a cold MFT scan or qualify the memory/time
+  target by itself.
 - Persistent metadata uses a fixed private service subdirectory, exact protected
   ownership/ACL checks and regular single-link files. Immutable read handles
   prevent changes during hash verification and decoding. Writes use a bounded

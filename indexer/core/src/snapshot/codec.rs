@@ -10,6 +10,16 @@ use std::{
     collections::HashMap,
     io::{self, Read, Seek, SeekFrom, Write},
 };
+pub mod streaming;
+
+struct CacheHeader {
+    geometry: Geometry,
+    checkpoint: Checkpoint,
+    length: u64,
+    records: usize,
+}
+type Owners = HashMap<u64, FileReference>;
+type Families = HashMap<FileReference, Vec<u64>>;
 
 const MAGIC: &[u8; 8] = b"PRSMNC01";
 const HEADER: u64 = 48;
@@ -244,13 +254,13 @@ pub fn write(
 /// rejects the cache; callers must rebuild rather than publish stale paths.
 /// The input must remain immutable across the digest and decoding passes;
 /// native callers retain an open file handle denying write/delete sharing.
-pub fn read(
-    input: &mut (impl Read + Seek),
+fn open_body<'a, R: Read + Seek>(
+    input: &'a mut R,
     expected: Geometry,
     device: &str,
-    check: impl Fn() -> super::layout::Result<()>,
-) -> io::Result<Snapshot> {
-    checked(&check)?;
+    check: &impl Fn() -> super::layout::Result<()>,
+) -> io::Result<(io::Take<&'a mut R>, CacheHeader)> {
+    checked(check)?;
     expected.validate().map_err(io::Error::other)?;
     if !valid_device_name(device) {
         return Err(invalid());
@@ -269,7 +279,7 @@ pub fn read(
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 65536];
     while remaining > 0 {
-        checked(&check)?;
+        checked(check)?;
         let take = remaining.min(buffer.len() as u64) as usize;
         input.read_exact(&mut buffer[..take])?;
         hash.update(&buffer[..take]);
@@ -320,6 +330,27 @@ pub fn read(
     if count > MAX_RECORDS || count as u64 > body.limit() / 42 {
         return Err(invalid());
     }
+    Ok((
+        body,
+        CacheHeader {
+            geometry,
+            checkpoint,
+            length,
+            records: count,
+        },
+    ))
+}
+
+/// Load the complete metadata catalog after validating the immutable cache.
+/// The caller must deny writes and deletion for the input's whole lifetime.
+pub fn read(
+    input: &mut (impl Read + Seek),
+    expected: Geometry,
+    device: &str,
+    check: impl Fn() -> super::layout::Result<()>,
+) -> io::Result<Snapshot> {
+    let (mut body, header) = open_body(input, expected, device, &check)?;
+    let count = header.records;
     let mut records = Records::with_capacity(count.min(65536));
     let mut previous = None;
     let mut bytes = Vec::new();
@@ -341,36 +372,12 @@ pub fn read(
         previous = Some(key);
         records.insert(key, record);
     }
-    let count = u32_value(&mut body)? as usize;
-    if count > MAX_RECORDS.saturating_sub(records.len()) || count as u64 > body.limit() / 16 {
-        return Err(invalid());
-    }
-    let mut owners = HashMap::with_capacity(count.min(65536));
-    let mut families: HashMap<FileReference, Vec<u64>> = HashMap::new();
-    previous = None;
-    for index in 0..count {
-        if index % 256 == 0 {
-            checked(&check)?;
-        }
-        let key = u64_value(&mut body)?;
-        let base = FileReference(u64_value(&mut body)?);
-        if key > 0x0000_ffff_ffff_ffff
-            || records.contains_key(&key)
-            || previous.is_some_and(|last| last >= key)
-            || !records
-                .get(&base.number())
-                .is_some_and(|record| record.reference == base)
-        {
-            return Err(invalid());
-        }
-        previous = Some(key);
-        owners.insert(key, base);
-        let members = families.entry(base).or_default();
-        if members.len() >= 65536 {
-            return Err(invalid());
-        }
-        members.push(key);
-    }
+    let (owners, families) = read_owners(
+        &mut body,
+        records.len(),
+        |number| records.get(&number).map(|record| record.reference),
+        &check,
+    )?;
     checked(&check)?;
     if body.limit() != 0 {
         return Err(invalid());
@@ -382,10 +389,47 @@ pub fn read(
             owners,
             families,
         },
-        geometry,
-        checkpoint,
+        geometry: header.geometry,
+        checkpoint: header.checkpoint,
         records_read: 0,
     })
+}
+
+fn read_owners(
+    body: &mut io::Take<impl Read>,
+    records: usize,
+    reference: impl Fn(u64) -> Option<FileReference>,
+    check: &impl Fn() -> super::layout::Result<()>,
+) -> io::Result<(Owners, Families)> {
+    let count = u32_value(body)? as usize;
+    if count > MAX_RECORDS.saturating_sub(records) || count as u64 > body.limit() / 16 {
+        return Err(invalid());
+    }
+    let mut owners = HashMap::with_capacity(count.min(65536));
+    let mut families: Families = HashMap::new();
+    let mut previous = None;
+    for index in 0..count {
+        if index % 256 == 0 {
+            checked(check)?;
+        }
+        let key = u64_value(body)?;
+        let base = FileReference(u64_value(body)?);
+        if key > 0x0000_ffff_ffff_ffff
+            || reference(key).is_some()
+            || previous.is_some_and(|last| last >= key)
+            || reference(base.number()) != Some(base)
+        {
+            return Err(invalid());
+        }
+        previous = Some(key);
+        owners.insert(key, base);
+        let members = families.entry(base).or_default();
+        if members.len() >= 65536 {
+            return Err(invalid());
+        }
+        members.push(key);
+    }
+    Ok((owners, families))
 }
 
 #[cfg(test)]
@@ -393,8 +437,8 @@ mod tests {
     use super::*;
     use crate::{layout::Error, CatalogBuilder};
     use std::{cell::Cell, io::Cursor};
-    const DEVICE: &str = r"\Device\CacheFixture";
-    fn sample() -> Snapshot {
+    pub(super) const DEVICE: &str = r"\Device\CacheFixture";
+    pub(super) fn sample() -> Snapshot {
         let geometry = Geometry {
             sector_size: 512,
             cluster_size: 512,
@@ -449,12 +493,12 @@ mod tests {
             },
         }
     }
-    fn encoded(snapshot: &Snapshot) -> Vec<u8> {
+    pub(super) fn encoded(snapshot: &Snapshot) -> Vec<u8> {
         let mut out = Cursor::new(Vec::new());
         write(snapshot, DEVICE, &mut out, || Ok(())).unwrap();
         out.into_inner()
     }
-    fn rehash(bytes: &mut [u8]) {
+    pub(super) fn rehash(bytes: &mut [u8]) {
         let digest = Sha256::digest(&bytes[HEADER as usize..]);
         bytes[16..48].copy_from_slice(&digest);
     }

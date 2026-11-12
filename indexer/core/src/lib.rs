@@ -607,36 +607,49 @@ impl Catalog {
         // Pages and replay entries already merge in MFT-number order. No second
         // whole-catalog pointer/sorting table is needed while sending records.
         for (&number, record) in self.records.iter() {
-            if record.base.is_some() || record.alias() || (number < 16 && number != 5) {
-                continue;
-            }
-            if number == 5 {
-                visit(FileRecord {
-                    path: drive.root(),
-                    is_dir: true,
-                    size: 0,
-                    modified_ms: record.modified_ms,
-                })?;
-                continue;
-            }
-            let is_dir = record.is_dir;
-            let Some(size) = record.size.or_else(|| record.is_dir.then_some(0)) else {
-                continue;
-            };
-            let modified_ms = record.modified_ms;
-            for name in &record.names {
-                if let Some(parent) =
-                    Self::parent_path(&self.records, &mut self.directories, drive, name.parent)
-                {
-                    let path = join_path(parent, &name.name);
-                    if drive.contains(&path) {
-                        visit(FileRecord {
-                            path,
-                            is_dir,
-                            size,
-                            modified_ms,
-                        })?;
-                    }
+            Self::visit_record(
+                &self.records,
+                &mut self.directories,
+                drive,
+                number,
+                record,
+                &mut visit,
+            )?;
+        }
+        Ok(())
+    }
+    fn visit_record<E>(
+        records: &Records,
+        directories: &mut HashMap<FileReference, Option<String>>,
+        drive: DriveLetter,
+        number: u64,
+        record: &MetadataRecord,
+        mut visit: impl FnMut(FileRecord) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
+        if record.base.is_some() || record.alias() || (number < 16 && number != 5) {
+            return Ok(());
+        }
+        if number == 5 {
+            return visit(FileRecord {
+                path: drive.root(),
+                is_dir: true,
+                size: 0,
+                modified_ms: record.modified_ms,
+            });
+        }
+        let Some(size) = record.size.or_else(|| record.is_dir.then_some(0)) else {
+            return Ok(());
+        };
+        for name in &record.names {
+            if let Some(parent) = Self::parent_path(records, directories, drive, name.parent) {
+                let path = join_path(parent, &name.name);
+                if drive.contains(&path) {
+                    visit(FileRecord {
+                        path,
+                        is_dir: record.is_dir,
+                        size,
+                        modified_ms: record.modified_ms,
+                    })?;
                 }
             }
         }

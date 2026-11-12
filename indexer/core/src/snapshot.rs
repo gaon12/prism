@@ -128,13 +128,7 @@ fn collect_using(
         });
     }
     check()?;
-    let current = source.checkpoint()?.validate()?;
-    if current.id != stop.id
-        || current.first.max(current.lowest) > stop.next
-        || current.next < stop.next
-    {
-        return Err(Error::JournalGap);
-    }
+    validate_replay_end(source, stop)?;
     let catalog = builder.finish()?;
     check()?;
     Ok(Snapshot {
@@ -157,16 +151,7 @@ pub fn refresh(
     mut progress: impl FnMut(Progress),
 ) -> layout::Result<Snapshot> {
     check()?;
-    geometry.validate()?;
-    let old = previous.geometry;
-    if old.serial != geometry.serial
-        || old.sector_size != geometry.sector_size
-        || old.cluster_size != geometry.cluster_size
-        || old.record_size != geometry.record_size
-        || old.volume_bytes != geometry.volume_bytes
-    {
-        return Err(Error::Changed);
-    }
+    validate_refresh_geometry(previous.geometry, geometry)?;
     let stop = source.checkpoint()?.validate()?;
     let changes = journal::collect(source, previous.checkpoint, stop, &check)?;
     let mut affected = BTreeSet::new();
@@ -194,6 +179,30 @@ pub fn refresh(
         });
     }
     check()?;
+    validate_replay_end(source, stop)?;
+    previous.checkpoint = changes.checkpoint;
+    previous.geometry = geometry;
+    previous.records_read = 0;
+    Ok(previous)
+}
+
+fn validate_refresh_geometry(old: Geometry, geometry: Geometry) -> layout::Result<()> {
+    geometry.validate()?;
+    if old.serial != geometry.serial
+        || old.sector_size != geometry.sector_size
+        || old.cluster_size != geometry.cluster_size
+        || old.record_size != geometry.record_size
+        || old.volume_bytes != geometry.volume_bytes
+    {
+        return Err(Error::Changed);
+    }
+    Ok(())
+}
+
+fn validate_replay_end(
+    source: &mut impl journal::Source,
+    stop: journal::Checkpoint,
+) -> layout::Result<()> {
     let current = source.checkpoint()?.validate()?;
     if current.id != stop.id
         || current.first.max(current.lowest) > stop.next
@@ -201,8 +210,5 @@ pub fn refresh(
     {
         return Err(Error::JournalGap);
     }
-    previous.checkpoint = changes.checkpoint;
-    previous.geometry = geometry;
-    previous.records_read = 0;
-    Ok(previous)
+    Ok(())
 }

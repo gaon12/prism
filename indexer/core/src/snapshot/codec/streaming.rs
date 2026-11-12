@@ -4,6 +4,8 @@
 //! including deletion, for this reader's lifetime (as the native cache does).
 use super::*;
 use prism_ntfs_protocol::{DriveLetter, FileRecord};
+use std::collections::BTreeMap;
+mod replay;
 
 pub struct Reader<R> {
     input: R,
@@ -12,6 +14,10 @@ pub struct Reader<R> {
     directories: Catalog,
     records_start: u64,
     records_bytes: u64,
+    // Only replayed families are retained; None hides a deleted/reused cached
+    // base. The reference index and serialized record region remain unchanged.
+    overrides: BTreeMap<u64, Option<MetadataRecord>>,
+    records: usize,
 }
 
 impl<R: Read + Seek> Reader<R> {
@@ -57,6 +63,7 @@ impl<R: Read + Seek> Reader<R> {
         if body.limit() != 0 {
             return Err(invalid());
         }
+        let count = references.len();
         Ok(Self {
             input,
             header,
@@ -69,6 +76,8 @@ impl<R: Read + Seek> Reader<R> {
             },
             records_start,
             records_bytes,
+            overrides: BTreeMap::new(),
+            records: count,
         })
     }
 
@@ -79,12 +88,15 @@ impl<R: Read + Seek> Reader<R> {
         self.header.checkpoint
     }
     pub fn record_count(&self) -> usize {
-        self.references.len()
+        self.records
     }
     pub fn directory_count(&self) -> usize {
         self.directories.records.len()
     }
     pub fn reference(&self, number: u64) -> Option<FileReference> {
+        if let Some(record) = self.overrides.get(&number) {
+            return record.as_ref().map(|record| record.reference);
+        }
         self.references
             .binary_search_by_key(&number, |reference| reference.number())
             .ok()
@@ -101,26 +113,28 @@ impl<R: Read + Seek> Reader<R> {
     }
 
     /// Restart from the verified record region on every call, also after a
-    /// visitor fails. At most one decoded file metadata record is retained.
+    /// visitor fails. At most one decoded unchanged file record is retained,
+    /// in addition to the changed-family overlay from any successful refresh.
     pub fn visit_metadata(
         &mut self,
         check: impl Fn() -> super::super::layout::Result<()>,
         visit: impl FnMut(MetadataRecord) -> io::Result<()>,
     ) -> io::Result<()> {
-        visit_records(
+        visit_merged(
             &mut self.input,
             &self.references,
             self.records_start,
             self.records_bytes,
+            &self.overrides,
             &check,
             visit,
         )
     }
 
     /// Same path, hard-link, alias and sequence rules as Catalog::visit. This
-    /// is the cached checkpoint, not a fresh journal-replayed service snapshot.
-    /// The service must replay current changes before publishing authoritative
-    /// results; adding this reader alone does not enable early cold MFT results.
+    /// initially reflects the cached checkpoint. Call consuming refresh before
+    /// publishing it as a current service snapshot. Neither operation enables
+    /// early results during a cold MFT scan.
     pub fn visit(
         &mut self,
         drive: DriveLetter,
@@ -129,11 +143,12 @@ impl<R: Read + Seek> Reader<R> {
     ) -> io::Result<()> {
         self.directories.directories.clear();
         let directories = &mut self.directories;
-        visit_records(
+        visit_merged(
             &mut self.input,
             &self.references,
             self.records_start,
             self.records_bytes,
+            &self.overrides,
             &check,
             |record| {
                 Catalog::visit_record(
@@ -147,6 +162,42 @@ impl<R: Read + Seek> Reader<R> {
             },
         )
     }
+}
+
+fn visit_merged(
+    input: &mut (impl Read + Seek),
+    references: &[FileReference],
+    start: u64,
+    length: u64,
+    overrides: &BTreeMap<u64, Option<MetadataRecord>>,
+    check: &impl Fn() -> super::super::layout::Result<()>,
+    mut visit: impl FnMut(MetadataRecord) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut changed = overrides.iter().peekable();
+    visit_records(input, references, start, length, check, |record| {
+        let number = record.reference.number();
+        while changed.peek().is_some_and(|(key, _)| **key < number) {
+            checked(check)?;
+            if let Some(record) = changed.next().unwrap().1 {
+                visit(record.clone())?;
+            }
+        }
+        if changed.peek().is_some_and(|(key, _)| **key == number) {
+            if let Some(record) = changed.next().unwrap().1 {
+                visit(record.clone())?;
+            }
+        } else {
+            visit(record)?;
+        }
+        Ok(())
+    })?;
+    for (_, record) in changed {
+        checked(check)?;
+        if let Some(record) = record {
+            visit(record.clone())?;
+        }
+    }
+    checked(check)
 }
 
 fn read_record(body: &mut io::Take<impl Read>, bytes: &mut Vec<u8>) -> io::Result<MetadataRecord> {

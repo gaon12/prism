@@ -400,6 +400,273 @@ fn extended_snapshot(source: &ChangingImage) -> snapshot::Snapshot {
     }
 }
 
+#[cfg(feature = "cache")]
+fn cached_pair(
+    snapshot: &snapshot::Snapshot,
+) -> (
+    snapshot::Snapshot,
+    snapshot::codec::streaming::Reader<std::io::Cursor<Vec<u8>>>,
+) {
+    use snapshot::codec::{self, streaming::Reader};
+    let mut saved = std::io::Cursor::new(Vec::new());
+    codec::write(snapshot, r"\Device\ReplayFixture", &mut saved, || Ok(())).unwrap();
+    let bytes = saved.into_inner();
+    let full = codec::read(
+        &mut std::io::Cursor::new(bytes.clone()),
+        geometry(),
+        r"\Device\ReplayFixture",
+        || Ok(()),
+    )
+    .unwrap();
+    let stream = Reader::open(
+        std::io::Cursor::new(bytes),
+        geometry(),
+        r"\Device\ReplayFixture",
+        || Ok(()),
+    )
+    .unwrap();
+    (full, stream)
+}
+
+#[cfg(feature = "cache")]
+fn compare_replayed(
+    full: &mut snapshot::Snapshot,
+    stream: &mut snapshot::codec::streaming::Reader<std::io::Cursor<Vec<u8>>>,
+) -> Vec<prism_ntfs_protocol::FileRecord> {
+    let mut last = Vec::new();
+    for letter in *b"CDC" {
+        let drive = DriveLetter::new(letter).unwrap();
+        let mut expected = Vec::new();
+        full.catalog
+            .visit(drive, |row| {
+                expected.push(row);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        let mut actual = Vec::new();
+        stream
+            .visit(
+                drive,
+                || Ok(()),
+                |row| {
+                    actual.push(row);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(actual, expected);
+        last = actual;
+    }
+    assert_eq!(stream.checkpoint(), full.checkpoint);
+    let mut references = Vec::new();
+    stream
+        .visit_metadata(
+            || Ok(()),
+            |record| {
+                references.push(record.reference);
+                Ok(())
+            },
+        )
+        .unwrap();
+    for reference in &references {
+        assert_eq!(stream.reference(reference.number()), Some(*reference));
+    }
+    assert_eq!(references.len(), stream.record_count());
+    assert!(references
+        .windows(2)
+        .all(|pair| pair[0].number() < pair[1].number()));
+    last
+}
+
+#[cfg(feature = "cache")]
+#[test]
+fn sequential_cache_replay_matches_full_across_renames_deletions_reuse_and_two_intervals() {
+    let mut initial = ChangingImage::new();
+    let first = snapshot::collect(&mut initial, geometry(), || Ok(()), |_| {}).unwrap();
+    let (full, stream) = cached_pair(&first);
+    let prepare = || {
+        let mut source = ChangingImage::new();
+        source.points = 1;
+        source.forbid_raw = true;
+        source.journal_from = first.checkpoint.next;
+        source.next = 2048;
+        source.changes();
+        for (number, name) in [(40, "new-file-000040"), (600, "new-file-000600")] {
+            let mut bytes = source.record(65);
+            rename(&mut bytes, "file-with-12345", name);
+            bytes[44..48].copy_from_slice(&(number as u32).to_le_bytes());
+            source.events.push(reference(number, &bytes));
+            source.driver.insert(number, Some(bytes));
+        }
+        source
+    };
+    let mut full_source = prepare();
+    let mut stream_source = prepare();
+    let mut full =
+        snapshot::refresh(full, &mut full_source, geometry(), || Ok(()), |_| {}).unwrap();
+    let mut progress = Vec::new();
+    let mut stream = stream
+        .refresh(
+            &mut stream_source,
+            geometry(),
+            || Ok(()),
+            |next| progress.push(next),
+        )
+        .unwrap();
+    let rows = compare_replayed(&mut full, &mut stream);
+    assert!(rows.iter().any(|row| row.path == "C:\\new-file-000040"));
+    assert!(rows.iter().any(|row| row.path == "C:\\new-file-000600"));
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.path.starts_with("C:\\more_subdirs\\"))
+            .count(),
+        512
+    );
+    assert!(!rows
+        .iter()
+        .any(|row| row.path == "C:\\empty-file" || row.path == "C:\\file-with-12345"));
+    assert_eq!(stream_source.record_reads, full_source.record_reads);
+    assert!(stream_source.record_reads <= 7);
+    assert!(matches!(
+        progress.last(),
+        Some(snapshot::Progress::Replay {
+            processed: 7,
+            total: 7
+        })
+    ));
+    for source in [&mut full_source, &mut stream_source] {
+        source.events.clear();
+        source.journal_from = 2048;
+        source.next = 3072;
+        let removed = reference(40, source.driver[&40].as_ref().unwrap());
+        source.events.push(removed);
+        source.driver.insert(40, None);
+        for number in [65, 68] {
+            let bytes = source.record(number);
+            source.events.push(reference(number, &bytes));
+            source.driver.insert(number, Some(bytes));
+        }
+        source.record_reads = 0;
+    }
+    full = snapshot::refresh(full, &mut full_source, geometry(), || Ok(()), |_| {}).unwrap();
+    stream = stream
+        .refresh(&mut stream_source, geometry(), || Ok(()), |_| {})
+        .unwrap();
+    let rows = compare_replayed(&mut full, &mut stream);
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row.path == "C:\\new-file-000040"
+                || row.path.starts_with("C:\\more_subdirs\\"))
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.path.starts_with("C:\\many_subdirs\\"))
+            .count(),
+        512
+    );
+    assert!(rows.iter().any(|row| row.path == "C:\\file-with-12345"));
+    assert_eq!(stream_source.record_reads, 3);
+    // An unchanged third interval keeps the overlay and performs no record or journal reads.
+    stream_source.record_reads = 0;
+    stream_source.journal_reads = 0;
+    stream = stream
+        .refresh(&mut stream_source, geometry(), || Ok(()), |_| {})
+        .unwrap();
+    assert_eq!(compare_replayed(&mut full, &mut stream), rows);
+    assert_eq!(
+        (stream_source.record_reads, stream_source.journal_reads),
+        (0, 0)
+    );
+}
+
+#[cfg(feature = "cache")]
+#[test]
+fn sequential_replay_keeps_old_extension_ownership_when_the_extension_is_deleted_or_reused() {
+    for reuse in [false, true] {
+        let first = extended_snapshot(&ChangingImage::new());
+        let (full, stream) = cached_pair(&first);
+        let prepare = || {
+            let mut source = ChangingImage::new();
+            source.points = 1;
+            source.forbid_raw = true;
+            if reuse {
+                let mut bytes = source.record(65);
+                rename(&mut bytes, "file-with-12345", "other-file-0000");
+                bytes[16..18].copy_from_slice(&10u16.to_le_bytes());
+                bytes[44..48].copy_from_slice(&42u32.to_le_bytes());
+                source.events.push(reference(42, &bytes));
+                source.driver.insert(42, Some(bytes));
+            } else {
+                source.events.push(FileReference((9 << 48) | 42));
+                source.driver.insert(42, None);
+            }
+            source
+        };
+        let mut full_source = prepare();
+        let mut stream_source = prepare();
+        let mut full =
+            snapshot::refresh(full, &mut full_source, geometry(), || Ok(()), |_| {}).unwrap();
+        let mut stream = stream
+            .refresh(&mut stream_source, geometry(), || Ok(()), |_| {})
+            .unwrap();
+        let rows = compare_replayed(&mut full, &mut stream);
+        assert!(rows.iter().any(|row| row.path == "C:\\file-with-12345"));
+        assert!(!rows.iter().any(|row| row.path == "C:\\extra.md"));
+        assert_eq!(
+            rows.iter().any(|row| row.path == "C:\\other-file-0000"),
+            reuse
+        );
+        assert_eq!(stream.owner(FileReference((9 << 48) | 42)), None);
+        assert_eq!(stream_source.record_reads, full_source.record_reads);
+    }
+}
+
+#[cfg(feature = "cache")]
+#[test]
+fn sequential_replay_returns_no_reader_on_cancel_gap_or_wrong_geometry() {
+    let mut initial = ChangingImage::new();
+    let first = snapshot::collect(&mut initial, geometry(), || Ok(()), |_| {}).unwrap();
+    for error in [Error::Cancelled, Error::TimedOut] {
+        let (_, stream) = cached_pair(&first);
+        let mut source = ChangingImage::new();
+        source.points = 1;
+        source.forbid_raw = true;
+        source.journal_from = first.checkpoint.next;
+        source.next = 2048;
+        source.changes();
+        let stop = Cell::new(false);
+        assert!(
+            matches!(stream.refresh(&mut source, geometry(), || if stop.get() { Err(error) } else { Ok(()) }, |_| stop.set(true)), Err(actual) if actual == error)
+        );
+        assert_eq!(
+            source.record_reads, 1,
+            "one private change precedes cancellation"
+        );
+    }
+    let (_, stream) = cached_pair(&first);
+    let mut source = ChangingImage::new();
+    source.points = 1;
+    source.forbid_raw = true;
+    source.wrap = true;
+    assert!(matches!(
+        stream.refresh(&mut source, geometry(), || Ok(()), |_| {}),
+        Err(Error::JournalGap)
+    ));
+    let (_, stream) = cached_pair(&first);
+    let mut source = ChangingImage::new();
+    let mut wrong = geometry();
+    wrong.serial += 1;
+    assert!(matches!(
+        stream.refresh(&mut source, wrong, || Ok(()), |_| {}),
+        Err(Error::Changed)
+    ));
+    assert_eq!(
+        (source.points, source.record_reads, source.journal_reads),
+        (0, 0, 0)
+    );
+}
+
 #[test]
 fn a_deleted_or_reused_extension_refreshes_its_old_surviving_base() {
     for reuse in [false, true] {

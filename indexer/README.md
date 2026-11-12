@@ -75,8 +75,11 @@ Implemented:
   file references and directory metadata; other file names are decoded during
   visitation. With a buffered immutable file input, this avoids retaining the
   full file-metadata catalog. It uses the same path rules and unchanged cache
-  format. This core reader is not yet wired into the service's refresh/cache
-  writer: its checkpoint must be replayed before authoritative publication.
+  format. Its consuming `refresh` replays the journal into a changed-family
+  overlay and updates the directory graph before returning; failure drops the
+  private reader. Unchanged file names remain in the serialized input. This
+  core path is not yet wired into the service or protected cache writer. A new
+  reader's cached checkpoint must be replayed before authoritative publication.
   It does not enable results during a cold MFT scan or qualify the memory/time
   target by itself.
 - Persistent metadata uses a fixed private service subdirectory, exact protected

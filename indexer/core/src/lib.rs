@@ -5,6 +5,8 @@
 
 use prism_ntfs_protocol::{DriveLetter, FileRecord};
 use std::collections::{HashMap, HashSet};
+mod records;
+use records::Records;
 pub mod journal;
 pub mod layout;
 pub mod snapshot;
@@ -292,7 +294,7 @@ fn parse_decoded(number: u64, bytes: &[u8]) -> Result<MetadataRecord> {
 /// number. Parent references are checked the same way to prevent handle reuse.
 #[derive(Default)]
 pub struct CatalogBuilder {
-    records: HashMap<u64, MetadataRecord>,
+    records: Records,
     families: HashMap<u64, Vec<u64>>,
 }
 impl CatalogBuilder {
@@ -447,7 +449,7 @@ fn deduplicate_names(record: &mut MetadataRecord) {
 }
 
 pub struct Catalog {
-    records: HashMap<u64, MetadataRecord>,
+    records: Records,
     directories: HashMap<FileReference, Option<String>>,
     // An extension's deletion can remove a name/size from its surviving base.
     // Keep this relationship after merging; journal deletion records cannot
@@ -524,7 +526,7 @@ impl Catalog {
         Ok(())
     }
     fn parent_path<'a>(
-        records: &HashMap<u64, MetadataRecord>,
+        records: &Records,
         directories: &'a mut HashMap<FileReference, Option<String>>,
         drive: DriveLetter,
         reference: FileReference,
@@ -581,18 +583,9 @@ impl Catalog {
         // Directory paths are drive-specific. A catalog may be reused after
         // Windows assigns another drive letter to the same volume.
         self.directories.clear();
-        // Copy each number beside its borrowed record before sorting. This
-        // preserves deterministic order without hashing the same number again
-        // for every emitted record. The catalog itself remains immutable.
-        // On 64-bit builds the temporary table adds one pointer per record;
-        // it is dropped on success and on callback failure, not retained.
-        let mut records: Vec<_> = self
-            .records
-            .iter()
-            .map(|(&number, record)| (number, record))
-            .collect();
-        records.sort_unstable_by_key(|(number, _)| *number);
-        for (number, record) in records {
+        // Pages and replay entries already merge in MFT-number order. No second
+        // whole-catalog pointer/sorting table is needed while sending records.
+        for (&number, record) in self.records.iter() {
             if record.base.is_some() || record.alias() || (number < 16 && number != 5) {
                 continue;
             }

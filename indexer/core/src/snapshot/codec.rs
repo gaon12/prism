@@ -3,7 +3,7 @@
 //! source volume to the expected physical kernel device. No payload bytes or
 //! derived absolute paths are persisted.
 use super::{Geometry, Snapshot};
-use crate::{journal::Checkpoint, Catalog, FileName, FileReference, MetadataRecord};
+use crate::{journal::Checkpoint, Catalog, FileName, FileReference, MetadataRecord, Records};
 use prism_ntfs_protocol::valid_device_name;
 use sha2::{Digest, Sha256};
 use std::{
@@ -208,14 +208,12 @@ pub fn write(
         body.put(&(device.len() as u16).to_le_bytes())?;
         body.put(device.as_bytes())?;
         body.put(&(snapshot.catalog.records.len() as u32).to_le_bytes())?;
-        let mut keys: Vec<_> = snapshot.catalog.records.keys().copied().collect();
-        keys.sort_unstable();
         let mut bytes = Vec::new();
-        for (index, key) in keys.into_iter().enumerate() {
+        for (index, (_, record)) in snapshot.catalog.records.iter().enumerate() {
             if index % 256 == 0 {
                 checked(&check)?;
             }
-            encode_record(&snapshot.catalog.records[&key], &mut bytes)?;
+            encode_record(record, &mut bytes)?;
             body.put(&(bytes.len() as u32).to_le_bytes())?;
             body.put(&bytes)?;
         }
@@ -321,7 +319,7 @@ pub fn read(
     if count > MAX_RECORDS || count as u64 > body.limit() / 42 {
         return Err(invalid());
     }
-    let mut records = HashMap::with_capacity(count.min(65536));
+    let mut records = Records::with_capacity(count.min(65536));
     let mut previous = None;
     let mut bytes = Vec::new();
     for index in 0..count {

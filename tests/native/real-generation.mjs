@@ -111,7 +111,7 @@ function assertFacts(text) {
   );
   assert(
     /예약[^\n]{0,80}(없|미정|미기재|기재되어있지|정해지지)/.test(compact),
-    'Do not invent the missing reservation number',
+    'Explicitly state that the reservation number is absent from the supplied material',
   );
   assert(!compact.includes('190000'), 'The distractor budget must not enter the answer');
 }
@@ -552,7 +552,28 @@ try {
     await main.getByRole('button', { name: '검토한 개요로 본문 생성', exact: true }).click();
     await waitOperation('body');
     result.body = await page();
+    await until(
+      async () => (await main.locator('.doc-block').count()) > 0,
+      'actual blocks rendered',
+    );
+    result.bodyTables = await main
+      .locator('.doc-block table')
+      .evaluateAll((tables) =>
+        tables.map((table) =>
+          Array.from(table.rows, (row) => Array.from(row.cells, (cell) => cell.textContent ?? '')),
+        ),
+      );
     assertFacts(result.body.revision.markdown);
+    assert(
+      result.bodyTables.some(
+        (rows) =>
+          rows.length >= 3 &&
+          rows.every((cells) => cells.length === 2) &&
+          rows.some((cells) => /347000원/.test(cells.join('').replace(/[\s,]/g, ''))) &&
+          rows.some((cells) => /7명/.test(cells.join('').replace(/\s/g, ''))),
+      ),
+      'The reviewed plan requires the original budget and attendance in a two-column table',
+    );
     assert.equal(result.body.revision.claimsVerified, false);
     assert(result.body.revision.provenance.length > 0);
     const sectionIds = new Set(result.reviewed.revision.plan.sections.map((section) => section.id));
@@ -586,10 +607,6 @@ try {
     });
     assertFacts(exported);
     await writeFile(join(evidence, 'actual-document.md'), exported);
-    await until(
-      async () => (await main.locator('.doc-block').count()) > 0,
-      'actual blocks rendered',
-    );
     await main.screenshot({ path: join(evidence, 'actual-document-body.png') });
     await main.setViewportSize({ width: 760, height: 900 });
     result.narrowLayout = await main.evaluate(() => ({

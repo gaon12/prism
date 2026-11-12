@@ -43,6 +43,12 @@ inline citation labels. Missing footnote references appear after the block,
 preserving table and code syntax. Existing inline references are not duplicated;
 unknown labels cannot acquire a source, and no claim becomes verified.
 
+Document generation distinguishes the user's writing request and reviewed plan
+from untrusted source and document text. Body instructions preserve each reviewed
+section's language, layout and requested missing-information notes. This is a
+prompting rule, not a guarantee of model quality: the actual-generation native
+gate checks the requested two-column table and the original factual assertions.
+
 Saved file-set retrieval uses path-key order for its bounded 256-file batches,
 independent of producer arrival order. SQLite regressions cover shuffled sets
 across batch boundaries, deselection, root filters and stale revisions while

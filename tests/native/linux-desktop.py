@@ -411,7 +411,11 @@ try:
             raise RuntimeError("Owned driver exited")
         try:
             return http("GET", "/status")
-        except (urllib.error.URLError, RuntimeError):
+        # While the native WebKitWebDriver is still starting, tauri-driver
+        # accepts the connection and then closes it without a response
+        # (RemoteDisconnected / reset, both ConnectionError). Keep waiting;
+        # a real driver exit is still raised above.
+        except (urllib.error.URLError, ConnectionError, RuntimeError):
             return False
 
     until(available, "native WebDriver status")

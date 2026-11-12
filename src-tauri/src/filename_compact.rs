@@ -26,8 +26,6 @@ use std::hash::{BuildHasher, RandomState};
 const NONE: u32 = u32::MAX;
 /// A deleted slot in an open-addressing table (keeps probe chains intact).
 const TOMB: u32 = u32::MAX - 1;
-/// `Node::modified` value meaning "unknown modification time".
-const NO_TIME: i64 = i64::MIN;
 
 // Node and directory flag bits.
 const IS_DIR: u8 = 1;
@@ -39,6 +37,14 @@ const DERIVED: u8 = 4;
 /// The entry sits under the sentinel root directory: its strings are not joined
 /// with a separator (for example the drive root `c:` itself).
 const TOP: u8 = 8;
+/// `Node::modified` holds a time. A separate bit (not a sentinel value) keeps
+/// every `Some(i64)` distinct from `None`, including `Some(i64::MIN)`.
+const HAS_TIME: u8 = 16;
+/// Parts of a stored block: key, search, initials, keyboard and (entries only)
+/// the entry's own display directory when it differs from the shared record.
+const PARTS: usize = 5;
+/// Block part index of an entry's own display directory.
+const OWN_DIR: usize = 4;
 
 /// Everything the index needs to (re)build one entry. All strings are whole
 /// paths, exactly as the original `Entry` stored or derived them.
@@ -92,9 +98,9 @@ struct Node {
     modified: i64,
 }
 
-/// Append up to four optional strings: u32 little-endian length (`NONE` when
+/// Append `PARTS` optional strings: u32 little-endian length (`NONE` when
 /// absent) followed by the bytes. Returns the block offset.
-fn put_block(text: &mut Vec<u8>, parts: [Option<&str>; 4]) -> u32 {
+fn put_block(text: &mut Vec<u8>, parts: [Option<&str>; PARTS]) -> u32 {
     let offset = u32::try_from(text.len()).expect("catalog text arena below 4 GiB");
     for part in parts {
         match part {
@@ -129,7 +135,7 @@ fn get_block(text: &[u8], offset: u32, index: usize) -> Option<&str> {
 }
 fn block_len(text: &[u8], offset: u32) -> usize {
     let mut at = offset as usize;
-    for _ in 0..4 {
+    for _ in 0..PARTS {
         let len = u32::from_le_bytes(text[at..at + 4].try_into().expect("4 bytes"));
         at += 4;
         if len != NONE {
@@ -411,6 +417,7 @@ impl Catalog {
                         parts[1].as_deref(),
                         parts[2].as_deref(),
                         parts[3].as_deref(),
+                        None,
                     ],
                 );
                 self.dirs[id as usize].extra = block;
@@ -431,7 +438,7 @@ impl Catalog {
         } else {
             put_block(
                 &mut self.text,
-                [Some(split.dir_key), search, initials, keyboard],
+                [Some(split.dir_key), search, initials, keyboard, None],
             )
         };
         let dir = Dir {
@@ -513,6 +520,11 @@ impl Catalog {
         );
         let split = Split::new(input);
         let dir = self.intern_dir(&split);
+        // The shared record keeps its first child's display directory. Windows
+        // keys are case-insensitive, so a sibling may spell the same directory
+        // differently (`c:\docs`, `C:/Docs`); keep that spelling per entry.
+        let own_dir =
+            (!split.top && self.dir_path(dir) != split.dir_path).then_some(split.dir_path);
         let name = u32::try_from(self.text.len()).expect("catalog text arena below 4 GiB");
         self.text.extend_from_slice(split.name_path.as_bytes());
         let mut flags = 0;
@@ -525,6 +537,9 @@ impl Catalog {
         if split.top {
             flags |= TOP;
         }
+        if input.modified_ms.is_some() {
+            flags |= HAS_TIME;
+        }
         // Derivable when the key name is the ASCII-lowercased display name and
         // nothing else differs from it (true for most Windows paths).
         let derived = split.name_path.is_ascii()
@@ -532,7 +547,8 @@ impl Catalog {
             && split.name_key == split.name_path.to_ascii_lowercase()
             && split.name_search.is_none()
             && split.name_initials.is_none()
-            && split.name_keyboard.is_none();
+            && split.name_keyboard.is_none()
+            && own_dir.is_none();
         let extra = if derived {
             flags |= DERIVED;
             NONE
@@ -544,6 +560,7 @@ impl Catalog {
                     split.name_search,
                     split.name_initials,
                     split.name_keyboard,
+                    own_dir,
                 ],
             )
         };
@@ -556,7 +573,7 @@ impl Catalog {
             flags,
             seen: input.seen as u32,
             size: input.size,
-            modified: input.modified_ms.unwrap_or(NO_TIME),
+            modified: input.modified_ms.unwrap_or(0),
         };
         let id = if self.free_nodes != NONE {
             let id = self.free_nodes;
@@ -609,7 +626,7 @@ impl Catalog {
             flags: 0,
             seen: 0,
             size: 0,
-            modified: NO_TIME,
+            modified: 0,
         };
         self.free_nodes = id;
         self.len -= 1;
@@ -640,7 +657,8 @@ impl Catalog {
     pub fn set_metadata(&mut self, id: u32, size: u64, modified_ms: Option<i64>, seen: u64) {
         let node = &mut self.nodes[id as usize];
         node.size = size;
-        node.modified = modified_ms.unwrap_or(NO_TIME);
+        node.modified = modified_ms.unwrap_or(0);
+        node.flags = (node.flags & !HAS_TIME) | if modified_ms.is_some() { HAS_TIME } else { 0 };
         node.seen = seen as u32;
     }
     pub fn set_seen(&mut self, id: u32, seen: u64) {
@@ -879,8 +897,8 @@ impl<'a> EntryRef<'a> {
         self.node().size
     }
     pub fn modified_ms(&self) -> Option<i64> {
-        let time = self.node().modified;
-        (time != NO_TIME).then_some(time)
+        let node = self.node();
+        (node.flags & HAS_TIME != 0).then_some(node.modified)
     }
     /// The stored sweep id (modulo 2^32).
     pub fn seen(&self) -> u32 {
@@ -925,7 +943,8 @@ impl<'a> EntryRef<'a> {
         let dir = if self.top() {
             ""
         } else {
-            self.catalog.dir_path(self.node().dir)
+            self.stored(OWN_DIR)
+                .unwrap_or_else(|| self.catalog.dir_path(self.node().dir))
         };
         self.join(buffer, dir, separator, self.display_name())
     }
@@ -1204,6 +1223,42 @@ mod tests {
         assert_eq!(catalog.nodes.len(), nodes, "a freed node slot is reused");
     }
 
+    /// Review counterexamples: sibling spellings of one directory key, and the
+    /// extreme modification time, must all come back exactly.
+    #[test]
+    fn sibling_directory_spellings_and_extreme_times_round_trip() {
+        let mut catalog = Catalog::new();
+        let mut entries = vec![
+            input(r"C:\Docs\one.txt", "c:/docs/one.txt"),
+            input(r"c:\docs\two.txt", "c:/docs/two.txt"),
+            input("C:/Docs/three.txt", "c:/docs/three.txt"),
+            input(r"C:\Docs/four.txt", "c:/docs/four.txt"),
+        ];
+        entries[1].modified_ms = Some(i64::MIN);
+        entries[2].modified_ms = Some(i64::MAX);
+        entries[3].modified_ms = None;
+        for entry in &entries {
+            catalog.insert(entry);
+        }
+        for entry in &entries {
+            assert_round_trip(&catalog, entry);
+        }
+        // Releasing the first spelling must not change the others.
+        assert!(catalog.remove("c:/docs/one.txt"));
+        for entry in &entries[1..] {
+            assert_round_trip(&catalog, entry);
+        }
+        // Metadata updates keep the presence of a time exact too.
+        let id = catalog.get("c:/docs/two.txt").unwrap().id();
+        catalog.set_metadata(id, 1, None, 2);
+        assert_eq!(catalog.get("c:/docs/two.txt").unwrap().modified_ms(), None);
+        catalog.set_metadata(id, 1, Some(i64::MIN), 2);
+        assert_eq!(
+            catalog.get("c:/docs/two.txt").unwrap().modified_ms(),
+            Some(i64::MIN)
+        );
+    }
+
     #[test]
     fn trailing_separator_roots_keep_their_siblings_paths() {
         let mut catalog = Catalog::new();
@@ -1288,8 +1343,15 @@ mod tests {
             let depth = 1 + next(3) as usize;
             let mut path = String::from("C:");
             for _ in 0..depth {
-                path.push('\\');
-                path.push_str(folders[next(folders.len() as u64) as usize]);
+                // The same directory key may be spelled with either separator
+                // and any case; each spelling must round trip per entry.
+                path.push(if next(4) == 0 { '/' } else { '\\' });
+                let folder = folders[next(folders.len() as u64) as usize];
+                if next(4) == 0 {
+                    path.push_str(&folder.to_lowercase());
+                } else {
+                    path.push_str(folder);
+                }
             }
             path.push('\\');
             path.push_str(names[next(names.len() as u64) as usize]);

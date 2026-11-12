@@ -220,9 +220,10 @@ def main():
     root = args.materialize.resolve() if args.materialize else None
     if root:
         root.mkdir(parents=True, exist_ok=False)
-    # Path ordering follows the host OS. Keep catalogs generated on Mac/Linux
-    # byte-identical to the authenticated Windows-generated reference order.
-    wheels = sorted(args.wheelhouse.glob("*.whl"), key=lambda path: (path.name.lower(), path.name))
+    # Path ordering follows the host OS. Preserve each authenticated catalog's
+    # existing order on every host: Linux is case-sensitive; Windows/Mac are not.
+    wheels = sorted(args.wheelhouse.glob("*.whl"),
+                    key=lambda path: (path.name if linux else path.name.lower(), path.name))
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         wheel_assets = list(pool.map(official_wheel, wheels))
     assets = [dict(kind="pythonTarGz" if unix else "python", path=args.python_archive.name,

@@ -159,11 +159,6 @@ class ManifestOrder(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp:
             temp = Path(temp)
-            archive = temp / assets.MACOS_PYTHON_NAME
-            with tarfile.open(archive, "w:gz") as output:
-                member = tarfile.TarInfo("python/bin/python3.13")
-                member.size = 3
-                output.addfile(member, io.BytesIO(b"abc"))
             wheels = []
             releases = []
             for name in ("PyYAML", "aiohappyeyeballs"):
@@ -177,30 +172,46 @@ class ManifestOrder(unittest.TestCase):
                                  "url": f"https://fixture.invalid/{wheel.name}"})
             models = temp / "models.json"
             models.write_text('{"files":[]}', encoding="utf-8")
-            catalogs = []
-            for flavor in (PureWindowsPath, PurePosixPath):
-                output = temp / f"{flavor.__name__}.json"
-                arguments = ["lock_assets.py", "--target", "macos-arm64",
-                             "--wheelhouse", str(temp), "--python-archive", str(archive),
-                             "--model-manifest", str(models), "--model-directory", str(temp),
-                             "--output", str(output)]
-                def fetch(url, timeout):
-                    self.assertTrue(url.startswith("https://pypi.org/pypi/"))
-                    self.assertEqual(timeout, 60)
-                    return io.BytesIO(json.dumps({"urls": releases}).encode())
-                with (patch("sys.argv", arguments),
-                      patch.object(HostPath, "flavor", flavor),
-                      patch.object(Path, "glob", return_value=iter(reversed(wheels))),
-                      patch.object(assets, "MACOS_PYTHON_BYTES", archive.stat().st_size),
-                      patch.object(assets, "MACOS_PYTHON_SHA256", assets.file_hash(archive)),
-                      patch.object(assets.urllib.request, "urlopen", fetch),
-                      redirect_stdout(io.StringIO())):
-                    assets.main()
-                catalogs.append(output.read_bytes())
-            self.assertEqual(catalogs[0], catalogs[1])
-            manifest = json.loads(catalogs[0])
-            self.assertEqual([item["package"] for item in manifest["assets"][1:]],
-                             ["aiohappyeyeballs", "PyYAML"])
+            for target, filename, prefix in (
+                ("macos-arm64", assets.MACOS_PYTHON_NAME, "MACOS_PYTHON"),
+                ("linux-x64", assets.LINUX_PYTHON_NAME, "LINUX_PYTHON"),
+                ("windows-x64", "fixture-python.zip", "PYTHON"),
+            ):
+                with self.subTest(target=target):
+                    archive = temp / filename
+                    if target == "windows-x64":
+                        with zipfile.ZipFile(archive, "w") as output:
+                            output.writestr("python.exe", b"abc")
+                    else:
+                        with tarfile.open(archive, "w:gz") as output:
+                            member = tarfile.TarInfo("python/bin/python3.13")
+                            member.size = 3
+                            output.addfile(member, io.BytesIO(b"abc"))
+                    catalogs = []
+                    for flavor in (PureWindowsPath, PurePosixPath):
+                        output = temp / f"{target}-{flavor.__name__}.json"
+                        arguments = ["lock_assets.py", "--target", target,
+                                     "--wheelhouse", str(temp), "--python-archive", str(archive),
+                                     "--model-manifest", str(models), "--model-directory", str(temp),
+                                     "--output", str(output)]
+                        def fetch(url, timeout):
+                            self.assertTrue(url.startswith("https://pypi.org/pypi/"))
+                            self.assertEqual(timeout, 60)
+                            return io.BytesIO(json.dumps({"urls": releases}).encode())
+                        with (patch("sys.argv", arguments),
+                              patch.object(HostPath, "flavor", flavor),
+                              patch.object(Path, "glob", return_value=iter(reversed(wheels))),
+                              patch.object(assets, prefix + "_BYTES", archive.stat().st_size),
+                              patch.object(assets, prefix + "_SHA256", assets.file_hash(archive)),
+                              patch.object(assets.urllib.request, "urlopen", fetch),
+                              redirect_stdout(io.StringIO())):
+                            assets.main()
+                        catalogs.append(output.read_bytes())
+                    self.assertEqual(catalogs[0], catalogs[1])
+                    manifest = json.loads(catalogs[0])
+                    expected = (["PyYAML", "aiohappyeyeballs"] if target == "linux-x64"
+                                else ["aiohappyeyeballs", "PyYAML"])
+                    self.assertEqual([item["package"] for item in manifest["assets"][1:]], expected)
 
 
 if __name__ == "__main__":

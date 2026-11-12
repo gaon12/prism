@@ -246,7 +246,6 @@ impl FileIndex {
 
     #[cfg(any(windows, test))]
     fn publish_first_batch(&self, generation: u64, entries: Vec<Entry>) -> io::Result<()> {
-        use std::collections::btree_map::Entry as Slot;
         let mut catalog = self
             .catalog
             .write()
@@ -258,27 +257,23 @@ impl FileIndex {
             ));
         }
         // The first scan has no prior metadata/projections to reuse. Prepare
-        // its bounded batch outside the lock, then use one tree lookup per row
-        // instead of a read lookup followed by a second insertion lookup.
+        // its bounded batch outside the lock; an unchanged stored row only
+        // gets its sweep id refreshed, anything else is stored or replaced.
         let mut changed = false;
+        let mut path = String::new();
         for entry in entries {
-            match catalog.entries.entry(entry.key.clone()) {
-                Slot::Vacant(slot) => {
-                    slot.insert(entry);
+            let unchanged = catalog.entries.get(&entry.key).and_then(|stored| {
+                (stored.is_dir() == entry.is_dir
+                    && stored.size() == entry.size
+                    && stored.modified_ms() == entry.modified_ms
+                    && stored.write_path(&mut path) == &*entry.path)
+                    .then(|| stored.id())
+            });
+            match unchanged {
+                Some(id) => catalog.entries.set_seen(id, entry.seen),
+                None => {
+                    catalog.entries.insert(&entry);
                     changed = true;
-                }
-                Slot::Occupied(mut slot) => {
-                    let previous = slot.get_mut();
-                    if previous.path == entry.path
-                        && previous.is_dir == entry.is_dir
-                        && previous.size == entry.size
-                        && previous.modified_ms == entry.modified_ms
-                    {
-                        previous.seen = entry.seen;
-                    } else {
-                        slot.insert(entry);
-                        changed = true;
-                    }
                 }
             }
         }
@@ -546,15 +541,15 @@ mod tests {
             .unwrap()
             .clone();
         // A row may appear after the initial-empty check but before this batch
-        // obtains its write lock. Its allocation and revision must be preserved.
+        // obtains its write lock. Its stored entry and revision must be kept:
+        // only the sweep id is refreshed, nothing is stored again.
+        let insertions = index.catalog.read().unwrap().entries.insertions();
         index.publish_first_batch(1, prepared(existing, 2)).unwrap();
         {
             let catalog = index.catalog.read().unwrap();
             assert_eq!(catalog.status.revision, 1);
-            assert!(Arc::ptr_eq(
-                &original_key,
-                catalog.entries.keys().next().unwrap()
-            ));
+            assert_eq!(catalog.entries.insertions(), insertions);
+            assert_eq!(&original_key, &catalog.entries.keys().next().unwrap());
             assert_eq!(catalog.entries.values().next().unwrap().seen, 2);
         }
         index

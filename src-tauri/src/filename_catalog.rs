@@ -1,10 +1,12 @@
-//! Prepare a first validated filename snapshot in private trees. Workers own
-//! their maps, so projections and tree insertion do not contend on the live
-//! catalog. Publication still belongs to the current generation and owner.
+//! Prepare a first validated filename snapshot in private catalogs. Workers
+//! own their compact catalogs, so projections and insertion do not contend on
+//! the live catalog. Publication still belongs to the current generation and
+//! owner.
 use super::*;
 use prism_ntfs_protocol::FileRecord;
 
-pub(super) type Prepared = BTreeMap<Arc<str>, Entry>;
+/// One worker's private compact catalog (the same storage as the live one).
+pub(super) type Prepared = Entries;
 
 pub(super) fn raw(record: FileRecord) -> Raw {
     Raw {
@@ -61,31 +63,29 @@ pub(super) fn join_all(
         Ok(maps)
     }
 }
-pub(super) fn insert(map: &mut Prepared, mut entry: Entry) {
-    use std::collections::btree_map::Entry as Slot;
-    match map.entry(entry.key.clone()) {
-        Slot::Vacant(slot) => {
-            slot.insert(entry);
-        }
-        Slot::Occupied(mut slot) => {
-            entry.key = slot.key().clone();
-            slot.insert(entry);
-        }
-    }
+/// Store a prepared entry; a repeated identity replaces the earlier one.
+pub(super) fn insert(map: &mut Prepared, entry: Entry) {
+    map.insert(&entry);
 }
-fn merge(mut left: Prepared, mut right: Prepared) -> Prepared {
-    let before = left.len() + right.len();
-    left.append(&mut right);
-    if left.len() < before {
-        // Duplicate identities are unusual in a real MFT stream. Preserve the
-        // shared key allocation even if append chooses a different equal key.
-        for (key, entry) in &mut left {
-            if !Arc::ptr_eq(key, &entry.key) {
-                entry.key = key.clone();
+/// Merge two private catalogs (the test-only per-worker preparation path).
+/// On a repeated identity `right` wins, like the previous `BTreeMap::append`.
+/// The smaller side is copied into the larger.
+#[cfg(test)]
+fn merge(left: Prepared, right: Prepared) -> Prepared {
+    if left.len() >= right.len() {
+        let mut left = left;
+        left.merge(right);
+        left
+    } else {
+        // Copy `left` under `right` without letting it win on equal keys.
+        let mut right = right;
+        for entry in left.into_entries() {
+            if !right.contains_key(&entry.key) {
+                right.insert(&entry);
             }
         }
+        right
     }
-    left
 }
 
 impl FileIndex {
@@ -156,6 +156,7 @@ impl FileIndex {
         self.merge_initial_maps(generation, maps, &stop)
     }
 
+    #[cfg(test)]
     pub(super) fn merge_initial_maps(
         &self,
         generation: u64,
@@ -228,6 +229,8 @@ impl FileIndex {
         }
         if catalog.entries.is_empty() {
             if !prepared.is_empty() {
+                let mut prepared = prepared;
+                prepared.shrink_to_fit();
                 catalog.entries = prepared;
                 catalog.status.revision += 1;
             }
@@ -239,7 +242,7 @@ impl FileIndex {
         // check. Retain those entries and unchanged identity allocations with
         // the existing bounded publication path, checking each batch again.
         drop(catalog);
-        let mut entries = prepared.into_values();
+        let mut entries = prepared.into_entries();
         loop {
             let batch: Vec<_> = entries.by_ref().take(512).collect();
             if batch.is_empty() {

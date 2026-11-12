@@ -255,6 +255,7 @@ fn measure_compact(rows: &[Row]) {
             search: None,
             initials: None,
             keyboard: None,
+            has_name: true,
             is_dir: row.is_dir,
             size: row.size,
             modified_ms: row.modified_ms,

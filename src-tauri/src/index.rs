@@ -18,8 +18,13 @@ use std::{
 };
 use unicode_normalization::UnicodeNormalization;
 use walkdir::WalkDir;
+#[path = "filename_compact.rs"]
+mod compact;
+#[path = "filename_entries.rs"]
+mod entries;
 #[path = "filename_service.rs"]
 mod service;
+use entries::{Entries, Scratch, View};
 
 fn normalized(value: &str) -> String {
     value
@@ -153,27 +158,7 @@ impl Entry {
     fn searchable(&self) -> &str {
         self.search.as_deref().unwrap_or(&self.key)
     }
-    fn name(&self) -> &str {
-        &self.searchable()[self.name_start as usize..]
-    }
-    fn initials_name(&self) -> Option<&str> {
-        self.initials_path
-            .as_deref()
-            .and_then(|initials| initials.get(self.name_start as usize..))
-    }
-    fn extension(&self) -> &str {
-        let name = self.name();
-        match name.rfind('.') {
-            Some(index) if index > 0 => &name[index + 1..],
-            _ => "",
-        }
-    }
-    fn unchanged(&self, raw: &Raw) -> bool {
-        self.is_dir == raw.is_dir
-            && self.size == raw.size
-            && self.modified_ms == raw.modified_ms
-            && self.path.as_ref() == raw.path
-    }
+    #[cfg(test)]
     fn result(&self) -> FileResult {
         let name = self
             .path
@@ -205,21 +190,6 @@ struct WalkJobs {
 struct WalkBatch {
     rows: Vec<Raw>,
     skipped: usize,
-}
-/// Entries at `root` and below it, using the sorted key order ('0' follows '/').
-fn subtree<'a>(
-    entries: &'a BTreeMap<Arc<str>, Entry>,
-    root: &str,
-) -> impl Iterator<Item = &'a Entry> + 'a {
-    let (low, high) = (format!("{root}/"), format!("{root}0"));
-    entries.get(root).into_iter().chain(
-        entries
-            .range::<str, _>((
-                std::ops::Bound::Included(low.as_str()),
-                std::ops::Bound::Excluded(high.as_str()),
-            ))
-            .map(|(_, entry)| entry),
-    )
 }
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -265,7 +235,8 @@ struct Root {
 }
 #[derive(Default)]
 struct Catalog {
-    entries: BTreeMap<Arc<str>, Entry>,
+    /// Compact storage: each directory once, each entry as a small record.
+    entries: Entries,
     roots: Vec<Root>,
     status: IndexStatus,
 }
@@ -807,7 +778,7 @@ impl FileIndex {
                     .collect();
                 let visited: Vec<_> = paths.iter().map(|path| path_key(path)).collect();
                 catalog.entries.retain(|key, entry| {
-                    entry.seen == sweep
+                    entry.is_seen(sweep)
                         || uncertain.contains(key)
                         // A still-configured offline parent must not hide a
                         // confirmed deletion in an available, visited child scope.
@@ -818,12 +789,19 @@ impl FileIndex {
             } else {
                 // Keep watch updates limited to their own subtrees, without
                 // re-scanning the whole catalog or erasing failed subtrees.
-                let stale: Vec<Arc<str>> = paths
+                let mut key = String::new();
+                let stale: Vec<String> = paths
                     .iter()
                     .flat_map(|path| {
-                        subtree(&catalog.entries, &path_key(path))
-                            .filter(|entry| entry.seen != sweep && !uncertain.contains(&entry.key))
-                            .map(|entry| entry.key.clone())
+                        let root = path_key(path);
+                        catalog
+                            .entries
+                            .subtree(&root)
+                            .filter_map(|entry| {
+                                let entry_key = entry.write_key(&mut key);
+                                (!entry.is_seen(sweep) && !uncertain.contains(entry_key))
+                                    .then(|| entry_key.to_string())
+                            })
                             .collect::<Vec<_>>()
                     })
                     .collect();
@@ -949,16 +927,19 @@ impl FileIndex {
             Replace(Entry),
         }
         let candidates: Vec<_> = match self.catalog.read() {
-            Ok(catalog) => batch
-                .drain(..)
-                .map(|raw| {
-                    let unchanged = catalog
-                        .entries
-                        .get(raw.key.as_str())
-                        .is_some_and(|entry| entry.unchanged(&raw));
-                    (raw, unchanged)
-                })
-                .collect(),
+            Ok(catalog) => {
+                let mut buffer = String::new();
+                batch
+                    .drain(..)
+                    .map(|raw| {
+                        let unchanged = catalog
+                            .entries
+                            .get(raw.key.as_str())
+                            .is_some_and(|entry| entries::unchanged(entry, &raw, &mut buffer));
+                        (raw, unchanged)
+                    })
+                    .collect()
+            }
             Err(_) => return,
         };
         // Derive Unicode search data outside the catalog lock. Search/status
@@ -981,12 +962,13 @@ impl FileIndex {
             for update in updates {
                 match update {
                     Update::Seen(key) => {
-                        if let Some(entry) = catalog.entries.get_mut(key.as_str()) {
-                            entry.seen = sweep;
+                        if let Some(id) = catalog.entries.get(key.as_str()).map(|entry| entry.id())
+                        {
+                            catalog.entries.set_seen(id, sweep);
                         }
                     }
                     Update::Replace(entry) => {
-                        catalog.entries.insert(entry.key.clone(), entry);
+                        catalog.entries.insert(&entry);
                         changed = true;
                     }
                 }
@@ -1020,20 +1002,27 @@ impl FileIndex {
         let query = Query::parse(query, extension)?;
         let catalog = self.catalog.read().map_err(|_| "File index unavailable.")?;
         let limit = limit.clamp(1, 500);
-        // A selected scope only walks its own key range instead of filtering every entry.
-        let candidates: Vec<&Entry> = match scope_id {
-            None => catalog.entries.values().collect(),
+        // A selected scope only scans its own directories' entries.
+        let candidates = match scope_id {
+            None => Candidates::All(catalog.entries.slots()),
             Some(id) => match catalog.roots.iter().find(|root| root.id == id) {
-                Some(root) => subtree(&catalog.entries, &root.key).collect(),
-                None => vec![],
+                Some(root) => Candidates::Ids(
+                    catalog
+                        .entries
+                        .subtree(&root.key)
+                        .map(|entry| entry.id())
+                        .collect(),
+                ),
+                None => Candidates::Ids(vec![]),
             },
         };
-        let (mut total, mut ranked) = top_matches(&candidates, limit, |entry| {
+        let entries = &catalog.entries;
+        let (mut total, mut ranked) = top_matches(entries, &candidates, limit, false, |entry| {
             query.matches(entry).then(|| query.rank(entry))
         });
         let mut keyboard_corrected = false;
         if total == 0 && allow_keyboard && query.keyboard_terms.iter().any(Option::is_some) {
-            (total, ranked) = top_matches(&candidates, limit, |entry| {
+            (total, ranked) = top_matches(entries, &candidates, limit, true, |entry| {
                 query.matches_keyboard(entry).then(|| {
                     if query.keyboard_name_matches(entry) {
                         6
@@ -1048,7 +1037,7 @@ impl FileIndex {
             keyboard_corrected,
             results: ranked
                 .into_iter()
-                .map(|ranked| ranked.entry.result())
+                .filter_map(|ranked| entries.entry(ranked.id).map(entries::result))
                 .collect(),
             total,
             status: catalog.status.clone(),
@@ -1090,28 +1079,35 @@ impl FileIndex {
             .scope_id
             .as_deref()
             .and_then(|id| catalog.roots.iter().find(|root| root.id == id));
-        let in_scope = |entry: &&Entry| {
-            search.scope_id.is_none() || root.is_some_and(|root| under(&entry.key, &root.key))
+        // Entries in the selected scope (none for an unknown scope id).
+        let scoped = || -> Box<dyn Iterator<Item = compact::EntryRef<'_>> + '_> {
+            match (&search.scope_id, root) {
+                (None, _) => Box::new(catalog.entries.refs()),
+                (Some(_), Some(root)) => Box::new(catalog.entries.subtree(&root.key)),
+                (Some(_), None) => Box::new(std::iter::empty()),
+            }
         };
-        let literal = catalog
-            .entries
-            .values()
-            .filter(in_scope)
-            .any(|entry| query.matches(entry));
+        let mut scratch = Scratch::default();
+        let literal =
+            scoped().any(|entry| query.matches(&entries::view(entry, &mut scratch, false)));
         let corrected =
             !literal && allow_keyboard && query.keyboard_terms.iter().any(Option::is_some);
-        for entry in catalog.entries.values().filter(in_scope) {
+        let mut path = String::new();
+        for entry in scoped() {
             if cancel.load(Ordering::Acquire) {
                 return Err(SnapshotError::Index("Search cancelled.".into()));
             }
-            if !entry.is_dir
-                && if corrected {
-                    query.matches_keyboard(entry)
-                } else {
-                    query.matches(entry)
-                }
-            {
-                visit(&entry.path).map_err(SnapshotError::Visitor)?;
+            if entry.is_dir() {
+                continue;
+            }
+            let view = entries::view(entry, &mut scratch, corrected);
+            let matched = if corrected {
+                query.matches_keyboard(&view)
+            } else {
+                query.matches(&view)
+            };
+            if matched {
+                visit(entry.write_path(&mut path)).map_err(SnapshotError::Visitor)?;
             }
         }
         Ok(catalog.status.scanning
@@ -1127,47 +1123,91 @@ fn display_path(path: &Path) -> String {
         value.strip_prefix(r"\\?\").unwrap_or(&value).to_string()
     }
 }
-struct Ranked<'a> {
+/// One ranked match. Name and key are copied only for matches that can
+/// enter the top list, so ties order exactly as before: (rank, name, key).
+struct Ranked {
     rank: u8,
-    entry: &'a Entry,
+    name: Box<str>,
+    key: Box<str>,
+    id: u32,
 }
-impl PartialEq for Ranked<'_> {
+impl PartialEq for Ranked {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == CmpOrdering::Equal
     }
 }
-impl Eq for Ranked<'_> {}
-impl PartialOrd for Ranked<'_> {
+impl Eq for Ranked {}
+impl PartialOrd for Ranked {
     fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
         Some(self.cmp(other))
     }
 }
-impl Ord for Ranked<'_> {
+impl Ord for Ranked {
     fn cmp(&self, other: &Self) -> CmpOrdering {
-        (self.rank, self.entry.name(), &self.entry.key).cmp(&(
-            other.rank,
-            other.entry.name(),
-            &other.entry.key,
-        ))
+        (self.rank, &self.name, &self.key).cmp(&(other.rank, &other.name, &other.key))
+    }
+}
+/// The entries a query scans: every slot, or a scope's collected ids.
+enum Candidates {
+    All(usize),
+    Ids(Vec<u32>),
+}
+impl Candidates {
+    fn len(&self) -> usize {
+        match self {
+            Self::All(slots) => *slots,
+            Self::Ids(ids) => ids.len(),
+        }
+    }
+    fn id(&self, position: usize) -> u32 {
+        match self {
+            Self::All(_) => position as u32,
+            Self::Ids(ids) => ids[position],
+        }
     }
 }
 /// Counts matches and keeps the best `limit` by rank. Large candidate sets are split across
-/// threads (the per-entry substring tests dominate search time).
-fn top_matches<'a>(
-    candidates: &[&'a Entry],
+/// threads (the per-entry substring tests dominate search time). `keyboard` also rebuilds
+/// the keyboard projection, which only the layout-correction pass reads.
+fn top_matches(
+    entries: &Entries,
+    candidates: &Candidates,
     limit: usize,
-    rank: impl Fn(&Entry) -> Option<u8> + Sync,
-) -> (usize, Vec<Ranked<'a>>) {
-    let scan = |chunk: &[&'a Entry]| {
-        let mut heap = BinaryHeap::with_capacity(limit + 1);
+    keyboard: bool,
+    rank: impl Fn(&View<'_>) -> Option<u8> + Sync,
+) -> (usize, Vec<Ranked>) {
+    let scan = |range: std::ops::Range<usize>| {
+        let mut heap: BinaryHeap<Ranked> = BinaryHeap::with_capacity(limit + 1);
         let mut total = 0;
-        for &entry in chunk {
-            if let Some(rank) = rank(entry) {
-                total += 1;
-                heap.push(Ranked { rank, entry });
-                if heap.len() > limit {
-                    heap.pop();
+        let mut scratch = Scratch::default();
+        let mut key = String::new();
+        for position in range {
+            let Some(entry) = entries.entry(candidates.id(position)) else {
+                continue;
+            };
+            let view = entries::view(entry, &mut scratch, keyboard);
+            let Some(rank) = rank(&view) else {
+                continue;
+            };
+            total += 1;
+            let name = view.name();
+            if heap.len() >= limit {
+                // Skip without copying when this match cannot beat the worst kept one.
+                let worst = heap.peek().expect("a full heap");
+                match (rank, name).cmp(&(worst.rank, &*worst.name)) {
+                    CmpOrdering::Greater => continue,
+                    CmpOrdering::Equal if entry.write_key(&mut key) >= &*worst.key => continue,
+                    _ => {}
                 }
+            }
+            heap.push(Ranked {
+                rank,
+                name: name.into(),
+                key: entry.write_key(&mut key).into(),
+                id: entry.id(),
+            });
+            if heap.len() > limit {
+                heap.pop();
             }
         }
         (total, heap)
@@ -1175,14 +1215,18 @@ fn top_matches<'a>(
     let threads = std::thread::available_parallelism()
         .map_or(1, |count| count.get())
         .min(8);
-    let (total, heap) = if candidates.len() < 20_000 || threads < 2 {
-        scan(candidates)
+    let count = candidates.len();
+    let (total, heap) = if count < 20_000 || threads < 2 {
+        scan(0..count)
     } else {
-        let size = candidates.len().div_ceil(threads);
+        let size = count.div_ceil(threads);
         std::thread::scope(|scope| {
-            let workers: Vec<_> = candidates
-                .chunks(size)
-                .map(|chunk| scope.spawn(move || scan(chunk)))
+            let workers: Vec<_> = (0..count)
+                .step_by(size)
+                .map(|start| {
+                    let scan = &scan;
+                    scope.spawn(move || scan(start..(start + size).min(count)))
+                })
                 .collect();
             let mut total = 0;
             let mut merged = BinaryHeap::with_capacity(limit * threads);
@@ -1282,26 +1326,26 @@ impl Query {
         }
         Ok(items)
     }
-    fn matches(&self, entry: &Entry) -> bool {
+    fn matches(&self, entry: &View<'_>) -> bool {
         self.terms
             .iter()
-            .all(|term| term.matches(entry.searchable(), entry.initials_path.as_deref()))
+            .all(|term| term.matches(entry.searchable(), entry.initials_path))
             && self.filters_match(entry)
     }
-    fn matches_keyboard(&self, entry: &Entry) -> bool {
+    fn matches_keyboard(&self, entry: &View<'_>) -> bool {
         self.filters_match(entry)
             && self
                 .terms
                 .iter()
                 .zip(&self.keyboard_terms)
                 .all(|(term, keyboard)| {
-                    term.matches(entry.searchable(), entry.initials_path.as_deref())
+                    term.matches(entry.searchable(), entry.initials_path)
                         || keyboard.as_ref().is_some_and(|pattern| {
-                            pattern.matches(entry.searchable(), entry.keyboard_path.as_deref())
+                            pattern.matches(entry.searchable(), entry.keyboard_path)
                         })
                 })
     }
-    fn keyboard_name_matches(&self, entry: &Entry) -> bool {
+    fn keyboard_name_matches(&self, entry: &View<'_>) -> bool {
         let projection = keyboard_projection(entry.name());
         self.terms
             .iter()
@@ -1313,7 +1357,7 @@ impl Query {
                         .is_some_and(|pattern| pattern.matches(entry.name(), projection.as_deref()))
             })
     }
-    fn filters_match(&self, entry: &Entry) -> bool {
+    fn filters_match(&self, entry: &View<'_>) -> bool {
         self.extensions
             .iter()
             .all(|set| !entry.is_dir && set.contains(entry.extension()))
@@ -1323,7 +1367,7 @@ impl Query {
                     .is_some_and(|time| time >= *start && time < *end)
             })
     }
-    fn rank(&self, entry: &Entry) -> u8 {
+    fn rank(&self, entry: &View<'_>) -> u8 {
         if entry.name() == self.exact {
             0
         } else if entry.name().starts_with(&self.exact) {
@@ -1813,8 +1857,9 @@ mod performance_tests {
             .read()
             .unwrap()
             .entries
-            .iter()
-            .map(|(key, entry)| (key.to_string(), (entry.is_dir, entry.size)))
+            .sorted()
+            .into_iter()
+            .map(|entry| (entry.key.to_string(), (entry.is_dir, entry.size)))
             .collect();
         assert_eq!(actual, expected);
         index.refresh(vec![scope()]);
@@ -1838,24 +1883,63 @@ mod performance_tests {
     #[test]
     fn entry_derives_name_extension_and_initials_from_one_string() {
         let entry = Entry::new(raw("C:/문서함/공문서 계획.HWPX", 1), 1);
-        assert_eq!(entry.name(), "공문서 계획.hwpx");
-        assert_eq!(entry.extension(), "hwpx");
-        assert_eq!(entry.initials_name(), Some("ㄱㅁㅅ ㄱㅎ.hwpx"));
+        assert_eq!(entry.view().name(), "공문서 계획.hwpx");
+        assert_eq!(entry.view().extension(), "hwpx");
+        assert_eq!(entry.view().initials_name(), Some("ㄱㅁㅅ ㄱㅎ.hwpx"));
         assert_eq!(entry.result().name, "공문서 계획.HWPX");
-        assert_eq!(Entry::new(raw("C:/a/.gitignore", 1), 1).extension(), "");
         assert_eq!(
-            Entry::new(raw("C:/a/archive.tar.gz", 1), 1).extension(),
+            Entry::new(raw("C:/a/.gitignore", 1), 1).view().extension(),
+            ""
+        );
+        assert_eq!(
+            Entry::new(raw("C:/a/archive.tar.gz", 1), 1)
+                .view()
+                .extension(),
             "gz"
         );
         let ascii = Entry::new(raw("C:/a/plain.txt", 1), 1);
         assert!(ascii.initials_path.is_none() && ascii.keyboard_path.is_none());
-        let mut entries = BTreeMap::new();
-        entries.insert(ascii.key.clone(), ascii);
-        let (key, entry) = entries.first_key_value().unwrap();
-        assert!(
-            Arc::ptr_eq(key, &entry.key),
-            "catalog keys must not duplicate every full path"
-        );
+        // Stored entries come back field for field, and a scan view of a stored
+        // entry reads exactly what the owned entry's view reads.
+        let mut entries = Entries::new();
+        let mut scratch = Scratch::default();
+        for owned in [entry, ascii] {
+            entries.insert(&owned);
+            let stored = entries.get(&owned.key).unwrap();
+            let copy = entries::owned(stored);
+            assert_eq!(
+                (
+                    copy.path.as_ref(),
+                    copy.key.as_ref(),
+                    copy.search.as_deref()
+                ),
+                (
+                    owned.path.as_ref(),
+                    owned.key.as_ref(),
+                    owned.search.as_deref()
+                )
+            );
+            assert_eq!(copy.name_start, owned.name_start);
+            assert_eq!(copy.initials_path, owned.initials_path);
+            assert_eq!(copy.keyboard_path, owned.keyboard_path);
+            let view = entries::view(stored, &mut scratch, true);
+            let expected = owned.view();
+            assert_eq!(
+                (
+                    view.searchable(),
+                    view.name(),
+                    view.initials_path,
+                    view.keyboard_path
+                ),
+                (
+                    expected.searchable(),
+                    expected.name(),
+                    expected.initials_path,
+                    expected.keyboard_path
+                )
+            );
+            assert_eq!(entries::result(stored).name, owned.result().name);
+        }
     }
     #[test]
     fn verbatim_path_keys_preserve_filesystem_identity_and_root_boundaries() {
@@ -1878,7 +1962,7 @@ mod performance_tests {
     }
     #[test]
     fn subtree_ranges_exclude_sibling_prefixes() {
-        let mut entries = BTreeMap::new();
+        let mut entries = Entries::new();
         for path in [
             "C:/a",
             "C:/a/x.txt",
@@ -1887,17 +1971,19 @@ mod performance_tests {
             "C:/a/deep/w.txt",
             "C:/ab",
         ] {
-            let entry = Entry::new(raw(path, 1), 1);
-            entries.insert(entry.key.clone(), entry);
+            entries.insert(&Entry::new(raw(path, 1), 1));
         }
-        let keys: Vec<_> = subtree(&entries, &path_key(Path::new("C:/a")))
-            .map(|entry| entry.result().name)
+        let root = path_key(Path::new("C:/a"));
+        let mut keys: Vec<_> = entries
+            .subtree(&root)
+            .map(|entry| entries::result(entry).name)
             .collect();
+        keys.sort();
         assert_eq!(keys, ["a", "w.txt", "x.txt"]);
     }
     #[test]
     fn parallel_top_matches_equal_a_full_sort() {
-        let entries: Vec<Entry> = (0..50_000)
+        let owned: Vec<Entry> = (0..50_000)
             .map(|index| {
                 Entry::new(
                     raw(
@@ -1908,28 +1994,31 @@ mod performance_tests {
                 )
             })
             .collect();
-        let candidates: Vec<&Entry> = entries.iter().collect();
-        let rank = |entry: &Entry| {
+        let mut entries = Entries::new();
+        for entry in &owned {
+            entries.insert(entry);
+        }
+        let rank = |entry: &View<'_>| {
             entry
                 .name()
                 .ends_with("-1.txt")
                 .then(|| entry.name().as_bytes()[2] % 4)
         };
-        let (total, top) = top_matches(&candidates, 50, rank);
-        let mut expected: Vec<Ranked> = candidates
+        let candidates = Candidates::All(entries.slots());
+        let (total, top) = top_matches(&entries, &candidates, 50, false, rank);
+        let mut expected: Vec<(u8, &str, &str)> = owned
             .iter()
-            .filter_map(|&entry| rank(entry).map(|rank| Ranked { rank, entry }))
+            .filter_map(|entry| {
+                let view = entry.view();
+                rank(&view).map(|rank| (rank, view.name(), entry.key.as_ref()))
+            })
             .collect();
         assert_eq!(total, expected.len());
         expected.sort();
         expected.truncate(50);
-        let names = |items: &[Ranked]| {
-            items
-                .iter()
-                .map(|item| item.entry.key.clone())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(names(&top), names(&expected));
+        let keys: Vec<&str> = top.iter().map(|item| item.key.as_ref()).collect();
+        let expected: Vec<&str> = expected.iter().map(|item| item.2).collect();
+        assert_eq!(keys, expected);
     }
     #[test]
     fn reconcile_keeps_unchanged_entries_without_revision_churn_and_drops_stale_ones() {
@@ -1957,14 +2046,8 @@ mod performance_tests {
             .map(|root| root.path.clone())
             .collect();
         let before = index.status().unwrap().revision;
-        let pointer = |index: &FileIndex| {
-            let catalog = index.catalog.read().unwrap();
-            catalog
-                .entries
-                .values()
-                .map(|entry| entry.path.as_ptr() as usize)
-                .collect::<Vec<_>>()
-        };
+        // Every stored (re)build counts as an insertion; refreshes do not.
+        let pointer = |index: &FileIndex| index.catalog.read().unwrap().entries.insertions();
         let original = pointer(&index);
         index.scan(generation, &roots, 1_000, true);
         assert_eq!(
@@ -1981,7 +2064,7 @@ mod performance_tests {
         {
             let mut catalog = index.catalog.write().unwrap();
             let ghost = Entry::new(raw(&roots[0].join("ghost.txt").to_string_lossy(), 1), 1_000);
-            catalog.entries.insert(ghost.key.clone(), ghost);
+            catalog.entries.insert(&ghost);
         }
         index.scan(generation, &roots, 1_001, true);
         let status = index.status().unwrap();
@@ -2006,14 +2089,8 @@ mod performance_tests {
         let index = FileIndex::new();
         index.configure(vec![scope(first.path(), "a"), scope(second.path(), "b")]);
         settle(&index, 4);
-        let pointer = |index: &FileIndex| {
-            let catalog = index.catalog.read().unwrap();
-            catalog
-                .entries
-                .values()
-                .find(|entry| entry.name() == "keep-me.txt")
-                .map(|entry| entry.path.as_ptr() as usize)
-        };
+        // Every stored (re)build counts as an insertion; keeping does not.
+        let pointer = |index: &FileIndex| index.catalog.read().unwrap().entries.insertions();
         let original = pointer(&index);
         // Removing scope b: its results disappear synchronously, a's stay without a rebuild.
         index.configure(vec![scope(first.path(), "a")]);

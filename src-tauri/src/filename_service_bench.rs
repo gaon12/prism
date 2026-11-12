@@ -47,10 +47,11 @@ fn row(number: usize) -> FileRecord {
         modified_ms: Some(1609459200000 + number as i64),
     }
 }
-fn checksum(entries: &BTreeMap<Arc<str>, Entry>) -> u64 {
+fn checksum(entries: &Entries) -> u64 {
     let mut state = DefaultHasher::new();
-    for (key, entry) in entries {
-        key.hash(&mut state);
+    // Owned copies in key order, so the checksum is independent of storage order.
+    for entry in entries.values() {
+        entry.key.hash(&mut state);
         entry.path.hash(&mut state);
         entry.search.hash(&mut state);
         entry.initials_path.hash(&mut state);
@@ -63,7 +64,7 @@ fn checksum(entries: &BTreeMap<Arc<str>, Entry>) -> u64 {
     }
     state.finish()
 }
-fn sharded(rows: Vec<Vec<FileRecord>>, workers: usize) -> BTreeMap<Arc<str>, Entry> {
+fn sharded(rows: Vec<Vec<FileRecord>>, workers: usize) -> Entries {
     let (index, _owner) = isolated();
     index.prepare_initial_catalog(1, rows, 1, workers).unwrap()
 }

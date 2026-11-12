@@ -40,6 +40,8 @@ const TOP: u8 = 8;
 /// `Node::modified` holds a time. A separate bit (not a sentinel value) keeps
 /// every `Some(i64)` distinct from `None`, including `Some(i64::MIN)`.
 const HAS_TIME: u8 = 16;
+/// The entry has no file name for ranking (`EntryInput::has_name` false).
+const NAMELESS: u8 = 32;
 /// Parts of a stored block: key, search, initials, keyboard and (entries only)
 /// the entry's own display directory when it differs from the shared record.
 const PARTS: usize = 5;
@@ -60,6 +62,9 @@ pub struct EntryInput<'a> {
     pub initials: Option<&'a str>,
     /// Keyboard (Korean 2-set) projection of the search text.
     pub keyboard: Option<&'a str>,
+    /// False for an entry that ranks by an empty name (a walked drive root
+    /// keeps its name; the service's `C:\` row does not). Stored as given.
+    pub has_name: bool,
     pub is_dir: bool,
     pub size: u64,
     pub modified_ms: Option<i64>,
@@ -218,6 +223,8 @@ impl Table {
     }
     /// Make room for `ids` live ids without further growth (inserts grow
     /// above 3/4 load; this keeps load at most 1/2).
+    // Only used by tools/catalog-qa through `Catalog::reserve`.
+    #[allow(dead_code)]
     fn reserve(&mut self, ids: usize, rehash: impl Fn(u32) -> u64) {
         self.rebuild(ids, rehash);
     }
@@ -244,6 +251,7 @@ impl Table {
             self.used += 1;
         }
     }
+    #[allow(dead_code)] // Only through `Catalog::heap_bytes` (tools/catalog-qa).
     fn bytes(&self) -> usize {
         self.slots.capacity() * 4 + self.tags.capacity()
     }
@@ -261,6 +269,9 @@ pub struct Catalog {
     key_table: Table,
     hasher: RandomState,
     len: usize,
+    /// Entries ever stored (new or replacement). Refreshing metadata or a
+    /// sweep id does not count, so callers can tell reuse from rebuilds.
+    insertions: u64,
     /// Bytes in `text` no longer referenced; compacted when large.
     garbage: usize,
 }
@@ -296,8 +307,13 @@ impl Catalog {
             key_table: Table::default(),
             hasher: RandomState::new(),
             len: 0,
+            insertions: 0,
             garbage: 0,
         }
+    }
+    #[allow(dead_code)] // Read by tests that check unchanged rows are not rebuilt.
+    pub fn insertions(&self) -> u64 {
+        self.insertions
     }
     pub fn len(&self) -> usize {
         self.len
@@ -308,6 +324,8 @@ impl Catalog {
     pub fn clear(&mut self) {
         *self = Self::new();
     }
+    // Also used by tools/catalog-qa (memory benchmark and diagnostics).
+    #[allow(dead_code)]
     /// Pre-size storage before a bulk build of `entries` rows whose display
     /// paths total about `path_bytes`, avoiding doubling slack.
     pub fn reserve(&mut self, entries: usize, path_bytes: usize) {
@@ -540,6 +558,9 @@ impl Catalog {
         if input.modified_ms.is_some() {
             flags |= HAS_TIME;
         }
+        if !input.has_name {
+            flags |= NAMELESS;
+        }
         // Derivable when the key name is the ASCII-lowercased display name and
         // nothing else differs from it (true for most Windows paths).
         let derived = split.name_path.is_ascii()
@@ -598,6 +619,7 @@ impl Catalog {
         });
         self.key_table = table;
         self.len += 1;
+        self.insertions += 1;
         id
     }
 
@@ -653,6 +675,7 @@ impl Catalog {
         }
     }
 
+    #[allow(dead_code)] // Kept for in-place updates; covered by the module tests.
     /// Update metadata of an existing entry in place.
     pub fn set_metadata(&mut self, id: u32, size: u64, modified_ms: Option<i64>, seen: u64) {
         let node = &mut self.nodes[id as usize];
@@ -665,6 +688,18 @@ impl Catalog {
         self.nodes[id as usize].seen = seen as u32;
     }
 
+    /// Number of entry slots (live or free). Ids are below this bound, so a
+    /// scan can split `0..slots()` between threads without collecting ids.
+    pub fn slots(&self) -> usize {
+        self.nodes.len()
+    }
+    /// The live entry with this id, or `None` for a free or unknown slot.
+    pub fn entry(&self, id: u32) -> Option<EntryRef<'_>> {
+        self.nodes
+            .get(id as usize)
+            .filter(|node| node.dir != NONE)
+            .map(|_| EntryRef { catalog: self, id })
+    }
     /// All live entries, in storage order.
     pub fn iter(&self) -> impl Iterator<Item = EntryRef<'_>> + '_ {
         (0..self.nodes.len() as u32)
@@ -718,6 +753,8 @@ impl Catalog {
         self.garbage = 0;
     }
 
+    // Also used by tools/catalog-qa (memory benchmark and diagnostics).
+    #[allow(dead_code)]
     /// Per-part memory breakdown for diagnostics and the memory benchmark.
     pub fn breakdown(&self) -> Vec<(&'static str, usize)> {
         vec![
@@ -743,6 +780,8 @@ impl Catalog {
             ("keyTableBytes", self.key_table.bytes()),
         ]
     }
+    // Also used by tools/catalog-qa (memory benchmark and diagnostics).
+    #[allow(dead_code)]
     /// Heap bytes owned by the catalog.
     pub fn heap_bytes(&self) -> usize {
         self.dirs.capacity() * std::mem::size_of::<Dir>()
@@ -884,11 +923,9 @@ impl<'a> EntryRef<'a> {
     pub fn id(&self) -> u32 {
         self.id
     }
-    /// False when the display path ends in a separator (`C:\`, `\\server\share\`):
-    /// such entries have an empty file name for ranking, like the original index.
+    /// Whether the entry ranks by its file name (`EntryInput::has_name`).
     pub fn has_name(&self) -> bool {
-        let name = self.display_name();
-        !name.is_empty() && !name.ends_with(['\\', '/'])
+        self.node().flags & NAMELESS == 0
     }
     pub fn is_dir(&self) -> bool {
         self.node().flags & IS_DIR != 0
@@ -1046,6 +1083,7 @@ mod tests {
             search: None,
             initials: None,
             keyboard: None,
+            has_name: !path.ends_with(['\\', '/']),
             is_dir: false,
             size: 7,
             modified_ms: Some(11),
@@ -1065,6 +1103,7 @@ mod tests {
         );
         assert_eq!(entry.write_initials(&mut buffer), expected.initials);
         assert_eq!(entry.write_keyboard(&mut buffer), expected.keyboard);
+        assert_eq!(entry.has_name(), expected.has_name);
         assert_eq!(entry.is_dir(), expected.is_dir);
         assert_eq!(entry.size(), expected.size);
         assert_eq!(entry.modified_ms(), expected.modified_ms);
@@ -1373,6 +1412,7 @@ mod tests {
                         search: search.as_deref(),
                         initials: initials.as_deref(),
                         keyboard: keyboard.as_deref(),
+                        has_name: true,
                         is_dir: false,
                         size,
                         modified_ms: None,
@@ -1398,6 +1438,7 @@ mod tests {
                         search: row.1.as_deref(),
                         initials: row.2.as_deref(),
                         keyboard: row.3.as_deref(),
+                        has_name: true,
                         is_dir: false,
                         size: row.4,
                         modified_ms: None,

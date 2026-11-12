@@ -58,9 +58,8 @@ fn prepare_before_producer_finishes(workers: usize) {
     });
     assert_eq!(index.status().unwrap().revision, 0);
     assert_eq!(prepared.len(), expected.len());
-    for ((key, actual), (expected_key, expected)) in prepared.iter().zip(&expected) {
-        assert_eq!(key, expected_key);
-        assert!(Arc::ptr_eq(key, &actual.key));
+    for (actual, expected) in prepared.values().zip(expected.values()) {
+        assert_eq!(actual.key, expected.key);
         assert_eq!(actual.path, expected.path);
         assert_eq!(actual.search, expected.search);
         assert_eq!(actual.initials_path, expected.initials_path);
@@ -87,6 +86,7 @@ fn full_bounded_queue_still_notices_generation_and_owner_revocation() {
                 generation: 1,
                 sender: Some(sender),
                 workers: vec![],
+                prepared: Arc::new(Mutex::new(Prepared::new())),
                 stop: Arc::new(AtomicBool::new(false)),
                 processed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
@@ -160,12 +160,13 @@ fn a_completed_stream_keeps_unchanged_allocations_on_the_next_sweep() {
             .unwrap();
         let catalog = index.catalog.read().unwrap();
         assert_eq!(catalog.entries.len(), input.len());
-        let first = catalog.entries.first_key_value().unwrap();
-        if let Some(original) = &original {
-            assert!(Arc::ptr_eq(first.0, original));
+        // An unchanged second sweep stores nothing again and keeps the revision.
+        let insertions = catalog.entries.insertions();
+        if let Some(original) = original {
+            assert_eq!(insertions, original);
             assert_eq!(catalog.status.revision, revision);
         } else {
-            original = Some(first.0.clone());
+            original = Some(insertions);
             revision = catalog.status.revision;
         }
         assert!(catalog.entries.values().all(|entry| entry.seen == sweep));

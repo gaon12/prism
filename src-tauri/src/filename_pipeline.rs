@@ -9,6 +9,10 @@ pub(super) struct Preparation<'scope> {
     generation: u64,
     sender: Option<mpsc::SyncSender<Vec<FileRecord>>>,
     workers: Vec<ScopedJoinHandle<'scope, io::Result<Prepared>>>,
+    /// The one private catalog all workers add their prepared batches to.
+    /// Unicode work runs in parallel outside the lock; only the cheap compact
+    /// insertion is serialized, and no whole-catalog merge remains at the end.
+    prepared: Arc<Mutex<Prepared>>,
     stop: Arc<AtomicBool>,
     #[cfg(test)]
     processed: Arc<std::sync::atomic::AtomicUsize>,
@@ -37,6 +41,7 @@ impl<'scope> Preparation<'scope> {
             generation,
             sender: Some(sender),
             workers: Vec::new(),
+            prepared: Arc::new(Mutex::new(Prepared::new())),
             stop: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             processed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -44,12 +49,13 @@ impl<'scope> Preparation<'scope> {
         for _ in 0..workers {
             let receiver = receiver.clone();
             let stop = preparation.stop.clone();
+            let shared = preparation.prepared.clone();
             #[cfg(test)]
             let processed = preparation.processed.clone();
             let worker = std::thread::Builder::new()
                 .name("prism-file-stream".into())
                 .spawn_scoped(scope, move || {
-                    let mut map = Prepared::new();
+                    let mut ready = Vec::new();
                     loop {
                         if !active(index, generation, &stop) {
                             return Err(cancelled());
@@ -65,12 +71,17 @@ impl<'scope> Preparation<'scope> {
                             if position % 512 == 0 && !active(index, generation, &stop) {
                                 return Err(cancelled());
                             }
-                            insert(&mut map, Entry::new(raw(record), sweep));
+                            ready.push(Entry::new(raw(record), sweep));
+                        }
+                        let mut map = shared.lock().unwrap_or_else(|error| error.into_inner());
+                        for entry in ready.drain(..) {
+                            insert(&mut map, entry);
                         }
                         #[cfg(test)]
                         processed.fetch_add(count, Ordering::Release);
                     }
-                    Ok(map)
+                    // Everything went to the shared catalog.
+                    Ok(Prepared::new())
                 })?;
             preparation.workers.push(worker);
         }
@@ -118,9 +129,18 @@ impl<'scope> Preparation<'scope> {
 
     pub(super) fn finish(mut self) -> io::Result<Prepared> {
         self.sender.take();
-        let maps = join_all(std::mem::take(&mut self.workers), &self.stop)?;
-        self.index
-            .merge_initial_maps(self.generation, maps, &self.stop)
+        join_all(std::mem::take(&mut self.workers), &self.stop)?;
+        // All workers are joined: nobody else holds the shared catalog lock.
+        let prepared = std::mem::take(
+            &mut *self
+                .prepared
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        if !active(self.index, self.generation, &self.stop) {
+            return Err(cancelled());
+        }
+        Ok(prepared)
     }
 }
 

@@ -75,16 +75,14 @@ fn private_trees_preserve_every_unicode_projection_and_metadata_field() {
             "preparation stays private"
         );
         assert_eq!(actual.len(), expected.len());
-        for ((key, entry), (expected_key, expected_entry)) in actual.iter().zip(&expected) {
-            assert_eq!(key, expected_key);
-            assert!(Arc::ptr_eq(key, &entry.key));
-            same(entry, expected_entry);
+        for (entry, expected_entry) in actual.values().zip(expected.values()) {
+            same(&entry, &expected_entry);
         }
     }
 }
 
 #[test]
-fn one_complete_publication_remains_searchable_and_unchanged_sweeps_reuse_identity() {
+fn one_complete_publication_remains_searchable_and_unchanged_sweeps_reuse_entries() {
     let root = tempfile::tempdir().unwrap();
     let input = rows(root.path(), 8192);
     let (index, _owner) = isolated();
@@ -99,25 +97,15 @@ fn one_complete_publication_remains_searchable_and_unchanged_sweeps_reuse_identi
     );
     assert!(index.search("한글", "txt", None, 20).unwrap().total > 1000);
     assert!(index.search("report", "md", None, 20).unwrap().total > 1000);
-    let original = index
-        .catalog
-        .read()
-        .unwrap()
-        .entries
-        .keys()
-        .next()
-        .unwrap()
-        .clone();
+    let original = index.catalog.read().unwrap().entries.insertions();
     let prepared = index
         .prepare_initial_catalog(1, batches(input), 2, 4)
         .unwrap();
     index.publish_initial_catalog(1, prepared).unwrap();
     let catalog = index.catalog.read().unwrap();
     assert_eq!(catalog.status.revision, 1);
-    assert!(Arc::ptr_eq(
-        &original,
-        catalog.entries.keys().next().unwrap()
-    ));
+    // Unchanged rows only get their sweep id refreshed; nothing is stored again.
+    assert_eq!(catalog.entries.insertions(), original);
     assert!(catalog.entries.values().all(|entry| entry.seen == 2));
 }
 
@@ -166,7 +154,7 @@ fn publication_rechecks_generation_and_owner_before_exposing_prepared_rows() {
 }
 
 #[test]
-fn racing_nonempty_catalog_preserves_other_entries_and_existing_key_allocations() {
+fn racing_nonempty_catalog_preserves_other_entries_and_unchanged_stored_rows() {
     let root = tempfile::tempdir().unwrap();
     let elsewhere = tempfile::tempdir().unwrap();
     let input = rows(root.path(), 1024);
@@ -183,25 +171,16 @@ fn racing_nonempty_catalog_preserves_other_entries_and_existing_key_allocations(
     index.publish_initial_catalog(1, prepared).unwrap();
     let catalog = index.catalog.read().unwrap();
     assert_eq!(catalog.entries.len(), 1025);
-    assert!(Arc::ptr_eq(
-        catalog
-            .entries
-            .get_key_value(original_key.as_ref())
-            .unwrap()
-            .0,
-        &original_key
-    ));
-    assert!(Arc::ptr_eq(
-        catalog.entries.get_key_value(other_key.as_ref()).unwrap().0,
-        &other_key
-    ));
-    assert_eq!(catalog.entries[&other_key].seen, 1);
-    assert_eq!(catalog.entries[&original_key].seen, 2);
+    // The unchanged racing row keeps its stored entry (refreshed sweep id);
+    // the other writer's row stays untouched.
+    let seen = |key: &str| catalog.entries.get(key).unwrap().seen();
+    assert_eq!(seen(&other_key), 1);
+    assert_eq!(seen(&original_key), 2);
     assert!(catalog.status.revision >= revision);
 }
 
 #[test]
-fn repeated_identities_keep_complete_metadata_and_share_the_map_key_after_merging() {
+fn repeated_identities_keep_complete_metadata_after_merging() {
     let root = tempfile::tempdir().unwrap();
     let original = rows(root.path(), 32);
     let mut repeated = Vec::new();
@@ -213,13 +192,12 @@ fn repeated_identities_keep_complete_metadata_and_share_the_map_key_after_mergin
         .prepare_initial_catalog(1, batches(repeated), 7, 8)
         .unwrap();
     assert_eq!(prepared.len(), original.len());
-    for (key, entry) in &prepared {
-        assert!(Arc::ptr_eq(key, &entry.key));
+    for entry in prepared.values() {
         let record = original
             .iter()
-            .find(|record| path_key_text(&record.path) == key.as_ref())
+            .find(|record| path_key_text(&record.path) == entry.key.as_ref())
             .unwrap();
-        same(entry, &Entry::new(raw(record.clone()), 7));
+        same(&entry, &Entry::new(raw(record.clone()), 7));
     }
 }
 

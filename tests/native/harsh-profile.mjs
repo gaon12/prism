@@ -65,21 +65,15 @@ await writeFile(
   }),
 );
 
-/** Start job-limit.ps1 for `pid`; resolves once the limits are applied. */
-function confine(pid) {
+/**
+ * Start job-limit.ps1 before the app exists: it compiles and creates the job
+ * with its limits first, so assigning the spawned app takes only milliseconds
+ * and the WebView processes the app starts later join the same job.
+ */
+function startJob() {
   const helper = spawn(
     'pwsh',
-    [
-      '-NoProfile',
-      '-File',
-      helperPath,
-      '-ProcessId',
-      String(pid),
-      '-Cpus',
-      String(cpus),
-      '-MemoryMB',
-      String(memoryMB),
-    ],
+    ['-NoProfile', '-File', helperPath, '-Cpus', String(cpus), '-MemoryMB', String(memoryMB)],
     { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
   );
   const lines = createInterface({ input: helper.stdout });
@@ -93,7 +87,13 @@ function confine(pid) {
       helper.once('exit', () => fail(new Error(`Job helper exited: ${stderr.trim()}`)));
     });
   return {
-    ready: next(),
+    prepared: next(),
+    /** Assign the app; resolves with the limits read back from the kernel. */
+    assign: (pid) => {
+      const answer = next();
+      helper.stdin.write(`assign ${pid}\n`);
+      return answer;
+    },
     report: () => {
       const answer = next();
       helper.stdin.write('report\n');
@@ -108,23 +108,28 @@ const result = {
   profile: { cpus, memoryMB, scope: scopePath },
   limitations: [
     'The installed NTFS service process is not confined (LocalSystem needs administrator rights).',
+    'The job limit covers the app and the processes it starts after assignment (WebView); see job.processIds.',
     'HDD seek/throughput is not emulated; the drive is the development NVMe SSD.',
   ],
 };
 let instance;
 let job;
+let assigned;
 let spawnedAt;
 try {
+  job = startJob();
+  await job.prepared;
   instance = await launch(profile, {
     executable,
     portable: true,
     productionPortable: true,
     onSpawn: (owned) => {
       spawnedAt = performance.now();
-      job = confine(owned.pid);
+      assigned = job.assign(owned.pid);
     },
   });
-  await job.ready;
+  result.limits = await assigned;
+  result.assignMs = Math.round(performance.now() - spawnedAt);
   const { invoke } = instance;
   const settings = await invoke('get_settings');
   assert(settings.scopes[0]?.id === scopeId, 'CDP must reach this fixture profile');

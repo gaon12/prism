@@ -1,17 +1,28 @@
 # Confine one owned process (and every child it starts afterwards) to a
-# low-end machine profile with a Windows Job Object, then report its peak usage.
+# low-end machine profile with a Windows Job Object, then report its usage.
 #
-#   pwsh -NoProfile -File job-limit.ps1 -ProcessId <pid> -Cpus 1 -MemoryMB 512
+#   pwsh -NoProfile -File job-limit.ps1 -Cpus 1 -MemoryMB 512
+#
+# Protocol (one JSON line per answer):
+# 1. On start the job is created and its limits applied before any process is
+#    known, and "prepared" is printed. Compiling the helper takes about a
+#    second, so do this before launching the app.
+# 2. "assign <pid>" on stdin assigns that process. Children it starts later
+#    join the job automatically. The answer echoes the limits read back from
+#    the kernel and the process ids in the job.
+# 3. "report" prints peak memory, CPU time and the processes in the job.
+# 4. "exit" (or EOF) ends the script. Closing the job handle does not kill
+#    the processes; their owner remains responsible.
 #
 # The limits are real kernel limits, not sampling:
-# - CPU affinity pins every process in the job to the first N logical CPUs.
-# - Per-process committed memory above MemoryMB fails the allocation, exactly as
-#   running out of memory on a small machine would.
-# The script prints one JSON line "ready" after assignment. Afterwards, each
-# "report" line on stdin prints peak usage, and "exit" (or EOF) ends the script.
-# Closing the job handle does not kill the process; its owner remains responsible.
+# - CPU affinity pins every process in the job to the first N CPUs this
+#   helper itself may run on (its own allowed mask, not assumed CPU numbers).
+# - Per-process AND whole-job committed memory above MemoryMB fail the
+#   allocation, as running out of memory on a small machine would. The job
+#   limit covers the app together with its WebView processes.
+# -ProcessId still assigns immediately for compatibility (prints "ready").
 param(
-  [Parameter(Mandatory = $true)][int]$ProcessId,
+  [int]$ProcessId = 0,
   [ValidateRange(1, 64)][int]$Cpus = 1,
   [ValidateRange(64, 65536)][int]$MemoryMB = 512
 )
@@ -19,6 +30,7 @@ $ErrorActionPreference = 'Stop'
 
 Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 public static class PrismJob {
@@ -48,8 +60,8 @@ public static class PrismJob {
     public uint TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses;
   }
 
-  const int ExtendedLimitInformation = 9, BasicAccountingInformation = 1;
-  const uint LimitAffinity = 0x10, LimitProcessMemory = 0x100;
+  const int BasicAccountingInformation = 1, BasicProcessIdList = 3, ExtendedLimitInformation = 9;
+  const uint LimitAffinity = 0x10, LimitProcessMemory = 0x100, LimitJobMemory = 0x200;
   const uint ProcessSetQuota = 0x0100, ProcessTerminate = 0x0001;
 
   [DllImport("kernel32.dll", SetLastError = true)]
@@ -61,23 +73,45 @@ public static class PrismJob {
   [DllImport("kernel32.dll", SetLastError = true)]
   static extern bool QueryInformationJobObject(IntPtr job, int infoClass, out Accounting info, int length, IntPtr returned);
   [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool QueryInformationJobObject(IntPtr job, int infoClass, IntPtr info, int length, IntPtr returned);
+  [DllImport("kernel32.dll", SetLastError = true)]
   static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
   [DllImport("kernel32.dll", SetLastError = true)]
   static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
   [DllImport("kernel32.dll", SetLastError = true)]
   static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll")]
+  static extern IntPtr GetCurrentProcess();
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool GetProcessAffinityMask(IntPtr process, out UIntPtr processMask, out UIntPtr systemMask);
 
   static IntPtr job;
 
-  public static void Confine(int pid, int cpus, long memoryBytes) {
+  /// Create the job with its limits. Affinity uses the lowest `cpus` CPUs of
+  /// this helper's own allowed mask, so a restricted host still gets valid CPUs.
+  public static void Prepare(int cpus, long memoryBytes) {
+    UIntPtr allowed, system;
+    if (!GetProcessAffinityMask(GetCurrentProcess(), out allowed, out system))
+      throw new System.ComponentModel.Win32Exception();
+    ulong mask = 0, remaining = allowed.ToUInt64();
+    for (int chosen = 0; chosen < cpus; chosen++) {
+      if (remaining == 0) throw new InvalidOperationException("Not enough allowed CPUs for this profile.");
+      ulong lowest = remaining & (~remaining + 1);
+      mask |= lowest;
+      remaining &= ~lowest;
+    }
     job = CreateJobObject(IntPtr.Zero, null);
     if (job == IntPtr.Zero) throw new System.ComponentModel.Win32Exception();
     var limit = new ExtendedLimit();
-    limit.Basic.LimitFlags = LimitAffinity | LimitProcessMemory;
-    limit.Basic.Affinity = new UIntPtr((1UL << cpus) - 1);
+    limit.Basic.LimitFlags = LimitAffinity | LimitProcessMemory | LimitJobMemory;
+    limit.Basic.Affinity = new UIntPtr(mask);
     limit.ProcessMemoryLimit = new UIntPtr((ulong)memoryBytes);
+    limit.JobMemoryLimit = new UIntPtr((ulong)memoryBytes);
     if (!SetInformationJobObject(job, ExtendedLimitInformation, ref limit, Marshal.SizeOf(limit)))
       throw new System.ComponentModel.Win32Exception();
+  }
+
+  public static void Assign(int pid) {
     var process = OpenProcess(ProcessSetQuota | ProcessTerminate, false, pid);
     if (process == IntPtr.Zero) throw new System.ComponentModel.Win32Exception();
     try {
@@ -85,6 +119,35 @@ public static class PrismJob {
     } finally {
       CloseHandle(process);
     }
+  }
+
+  /// Process ids currently in the job.
+  static string ProcessIds() {
+    // Header: two uint counts, then one ULONG_PTR per process.
+    int capacity = 256, size = 8 + capacity * IntPtr.Size;
+    IntPtr buffer = Marshal.AllocHGlobal(size);
+    try {
+      if (!QueryInformationJobObject(job, BasicProcessIdList, buffer, size, IntPtr.Zero))
+        throw new System.ComponentModel.Win32Exception();
+      int listed = Marshal.ReadInt32(buffer, 4);
+      var ids = new List<string>();
+      for (int index = 0; index < listed; index++)
+        ids.Add(Marshal.ReadIntPtr(buffer, 8 + index * IntPtr.Size).ToInt64().ToString());
+      return "[" + string.Join(",", ids) + "]";
+    } finally {
+      Marshal.FreeHGlobal(buffer);
+    }
+  }
+
+  /// Limits as the kernel reports them back, plus the job's processes.
+  public static string Limits() {
+    ExtendedLimit limit;
+    if (!QueryInformationJobObject(job, ExtendedLimitInformation, out limit, Marshal.SizeOf(typeof(ExtendedLimit)), IntPtr.Zero))
+      throw new System.ComponentModel.Win32Exception();
+    return string.Format(
+      "\"limitFlags\":{0},\"affinityMask\":{1},\"processMemoryLimitBytes\":{2},\"jobMemoryLimitBytes\":{3},\"processIds\":{4}",
+      limit.Basic.LimitFlags, limit.Basic.Affinity.ToUInt64(), limit.ProcessMemoryLimit.ToUInt64(),
+      limit.JobMemoryLimit.ToUInt64(), ProcessIds());
   }
 
   public static string Report() {
@@ -95,23 +158,32 @@ public static class PrismJob {
       throw new System.ComponentModel.Win32Exception();
     // Times are 100 ns units; report milliseconds.
     return string.Format(
-      "{{\"peakProcessMemoryBytes\":{0},\"peakJobMemoryBytes\":{1},\"cpuUserMs\":{2},\"cpuKernelMs\":{3},\"totalProcesses\":{4},\"activeProcesses\":{5},\"pageFaults\":{6}}}",
+      "{{\"peakProcessMemoryBytes\":{0},\"peakJobMemoryBytes\":{1},\"cpuUserMs\":{2},\"cpuKernelMs\":{3},\"totalProcesses\":{4},\"activeProcesses\":{5},\"pageFaults\":{6},{7}}}",
       limit.PeakProcessMemoryUsed, limit.PeakJobMemoryUsed,
       accounting.TotalUserTime / 10000, accounting.TotalKernelTime / 10000,
-      accounting.TotalProcesses, accounting.ActiveProcesses, accounting.TotalPageFaultCount);
+      accounting.TotalProcesses, accounting.ActiveProcesses, accounting.TotalPageFaultCount, Limits());
   }
 }
 '@
 
-$cpuCount = [Environment]::ProcessorCount
-if ($Cpus -gt $cpuCount) { throw "Requested $Cpus CPUs but this machine has $cpuCount." }
-[PrismJob]::Confine($ProcessId, $Cpus, [long]$MemoryMB * 1MB)
-[Console]::Out.WriteLine((@{ ready = $true; cpus = $Cpus; memoryMB = $MemoryMB } | ConvertTo-Json -Compress))
-[Console]::Out.Flush()
+function Write-Line([string]$text) {
+  [Console]::Out.WriteLine($text)
+  [Console]::Out.Flush()
+}
+
+[PrismJob]::Prepare($Cpus, [long]$MemoryMB * 1MB)
+if ($ProcessId -gt 0) {
+  [PrismJob]::Assign($ProcessId)
+  Write-Line ('{"ready":true,"cpus":' + $Cpus + ',"memoryMB":' + $MemoryMB + ',' + [PrismJob]::Limits() + '}')
+} else {
+  Write-Line ('{"prepared":true,"cpus":' + $Cpus + ',"memoryMB":' + $MemoryMB + '}')
+}
 while ($null -ne ($line = [Console]::In.ReadLine())) {
-  if ($line -eq 'report') {
-    [Console]::Out.WriteLine([PrismJob]::Report())
-    [Console]::Out.Flush()
+  if ($line -match '^assign (\d+)$') {
+    [PrismJob]::Assign([int]$Matches[1])
+    Write-Line ('{"ready":true,"cpus":' + $Cpus + ',"memoryMB":' + $MemoryMB + ',' + [PrismJob]::Limits() + '}')
+  } elseif ($line -eq 'report') {
+    Write-Line ([PrismJob]::Report())
   } elseif ($line -eq 'exit') {
     break
   }

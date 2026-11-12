@@ -72,17 +72,48 @@ pub struct EntryInput<'a> {
     pub seen: u64,
 }
 
-/// One directory, shared by all of its children. 16 bytes.
+/// One directory, shared by all of its children. 20 bytes.
+///
+/// Most directories store only their own name and point at their parent
+/// directory's record: the display path is the parent's display path, a
+/// separator and that name. Storing every directory's whole path repeated
+/// each ancestor's path (about 35 MB of a 2-million-entry system drive).
+/// A directory whose parent has no record, or whose parent is spelled
+/// differently in this path (Windows paths are case-insensitive), keeps its
+/// whole display path instead.
 #[derive(Clone, Copy, Default)]
 struct Dir {
-    /// Display path in `text`.
+    /// Stored path bytes in `text`: the own name when `parent` is set,
+    /// otherwise the whole display path.
     path: u32,
+    /// Length of the stored bytes, plus `DIR_BACKSLASH` when the separator
+    /// before the own name is a backslash (only meaningful with a parent).
     path_len: u32,
+    /// Parent directory record, or `NONE` when `path` is the whole path.
+    parent: u32,
     /// Stored key/search/initials/keyboard block in `text`, or `NONE` when the
     /// key is derived from the path and there is nothing else.
     extra: u32,
-    /// Live child entries; the record is released at zero. 0 = free slot.
+    /// Live child entries plus linked child directories; the record is
+    /// released at zero. 0 = free slot.
     children: u32,
+}
+
+/// `Dir::path_len` flag: the separator before a linked own name is a backslash.
+const DIR_BACKSLASH: u32 = 1 << 31;
+
+impl Dir {
+    /// Length of the stored path bytes.
+    fn stored_len(&self) -> usize {
+        (self.path_len & !DIR_BACKSLASH) as usize
+    }
+    fn separator(&self) -> u8 {
+        if self.path_len & DIR_BACKSLASH != 0 {
+            b'\\'
+        } else {
+            b'/'
+        }
+    }
 }
 
 /// One entry. 40 bytes; its name bytes live in `Catalog::text`.
@@ -492,6 +523,7 @@ impl Catalog {
             // It is never released (its child count starts above zero).
             dirs: vec![Dir {
                 children: 1,
+                parent: NONE,
                 ..Dir::default()
             }],
             free_dirs: Vec::new(),
@@ -562,9 +594,83 @@ impl Catalog {
 
     // ----- directories -----
 
-    fn dir_path(&self, id: u32) -> &str {
+    /// The bytes a directory record stores (its own name or whole path).
+    fn dir_stored(&self, id: u32) -> &str {
         let dir = &self.dirs[id as usize];
-        self.text_str(dir.path, dir.path_len as usize)
+        self.text_str(dir.path, dir.stored_len())
+    }
+    /// Append a directory's whole display path, rebuilt from its parent chain.
+    ///
+    /// Iterative, because a long Windows path can nest thousands of levels:
+    /// the total length is found first, then each stored part is copied into
+    /// its place from the end.
+    fn push_dir_path(&self, id: u32, buffer: &mut String) {
+        let mut total = 0;
+        let mut at = id;
+        loop {
+            let dir = &self.dirs[at as usize];
+            total += dir.stored_len();
+            if dir.parent == NONE {
+                break;
+            }
+            total += 1;
+            at = dir.parent;
+        }
+        let start = buffer.len();
+        let mut bytes = std::mem::take(buffer).into_bytes();
+        bytes.resize(start + total, 0);
+        let mut end = start + total;
+        let mut at = id;
+        loop {
+            let dir = &self.dirs[at as usize];
+            let part = self.dir_stored(at).as_bytes();
+            bytes[end - part.len()..end].copy_from_slice(part);
+            end -= part.len();
+            if dir.parent == NONE {
+                break;
+            }
+            end -= 1;
+            bytes[end] = dir.separator();
+            at = dir.parent;
+        }
+        // Every part is whole UTF-8 and separators are ASCII.
+        *buffer = String::from_utf8(bytes).expect("stored directory paths are UTF-8");
+    }
+    /// Whether a directory's display path is exactly `path`, without
+    /// rebuilding it: compare stored parts from the end.
+    fn dir_path_is(&self, id: u32, path: &str) -> bool {
+        let mut rest = path.as_bytes();
+        let mut at = id;
+        loop {
+            let dir = &self.dirs[at as usize];
+            let Some(head) = rest.strip_suffix(self.dir_stored(at).as_bytes()) else {
+                return false;
+            };
+            if dir.parent == NONE {
+                return head.is_empty();
+            }
+            let Some(head) = head.strip_suffix(&[dir.separator()]) else {
+                return false;
+            };
+            rest = head;
+            at = dir.parent;
+        }
+    }
+    /// Append a directory's derived key: its display path with backslashes
+    /// turned into `/` and ASCII lowercased (`derive_key`). Both keep the
+    /// length, so the rebuilt path is converted in place.
+    fn push_derived_dir_key(&self, id: u32, buffer: &mut String) {
+        let start = buffer.len();
+        self.push_dir_path(id, buffer);
+        let mut bytes = std::mem::take(buffer).into_bytes();
+        for byte in &mut bytes[start..] {
+            *byte = if *byte == b'\\' {
+                b'/'
+            } else {
+                byte.to_ascii_lowercase()
+            };
+        }
+        *buffer = String::from_utf8(bytes).expect("ASCII edits keep UTF-8");
     }
     /// Stored part `index` (0 key, 1 search, 2 initials, 3 keyboard) of a directory.
     fn dir_part(&self, id: u32, index: usize) -> Option<&str> {
@@ -578,7 +684,7 @@ impl Catalog {
         buffer.clear();
         match self.dir_part(id, 0) {
             Some(key) => buffer.push_str(key),
-            None => derive_key(self.dir_path(id), buffer),
+            None => self.push_derived_dir_key(id, buffer),
         }
         buffer.as_str()
     }
@@ -640,16 +746,28 @@ impl Catalog {
         let mut derived = String::with_capacity(split.dir_path.len());
         derive_key(split.dir_path, &mut derived);
         let key_derived = split.dir_path.is_ascii() && derived == split.dir_key;
-        let path = self.text.push(split.dir_path.as_bytes());
+        let (stored, parent, flag) = match self.parent_link(split.dir_path, split.dir_key) {
+            Some((parent, name, backslash)) => {
+                self.dirs[parent as usize].children += 1;
+                (name, parent, if backslash { DIR_BACKSLASH } else { 0 })
+            }
+            None => (split.dir_path, NONE, 0),
+        };
+        let path = self.text.push(stored.as_bytes());
         let extra = if key_derived && search.is_none() && initials.is_none() && keyboard.is_none() {
             NONE
         } else {
             self.text
                 .put_block([Some(split.dir_key), search, initials, keyboard, None])
         };
+        let stored_len = u32::try_from(stored.len())
+            .ok()
+            .filter(|len| len & DIR_BACKSLASH == 0)
+            .expect("a directory path below 2 GiB");
         let dir = Dir {
             path,
-            path_len: split.dir_path.len() as u32,
+            path_len: stored_len | flag,
+            parent,
             extra,
             children: 1,
         };
@@ -672,26 +790,51 @@ impl Catalog {
         self.dir_table = table;
         id
     }
+    /// The parent directory record a new directory can link to: `(parent id,
+    /// own name, backslash separator)`. Only when the parent already has a
+    /// record whose display path is exactly this path's prefix, so the
+    /// rebuilt path is always the original spelling.
+    fn parent_link<'p>(&self, dir_path: &'p str, dir_key: &str) -> Option<(u32, &'p str, bool)> {
+        let at = dir_path.rfind(['\\', '/'])?;
+        let name = &dir_path[at + 1..];
+        let key_at = dir_key.rfind('/')?;
+        if name.is_empty() || at == 0 || key_at == 0 {
+            return None;
+        }
+        let parent = self.find_dir(&dir_key[..key_at])?;
+        self.dir_path_is(parent, &dir_path[..at])
+            .then(|| (parent, name, dir_path.as_bytes()[at] == b'\\'))
+    }
+    /// Drop one reference to a directory. At zero its record is freed, which
+    /// also drops its reference to a linked parent (a loop, not recursion,
+    /// because chains can be thousands of directories deep).
     fn release_dir(&mut self, id: u32) {
-        self.dirs[id as usize].children -= 1;
-        if id == 0 || self.dirs[id as usize].children > 0 {
-            return;
+        let mut id = id;
+        loop {
+            self.dirs[id as usize].children -= 1;
+            if id == 0 || self.dirs[id as usize].children > 0 {
+                return;
+            }
+            let mut scratch = String::new();
+            let key = self.write_dir_key(id, &mut scratch).to_string();
+            let hash = self.hash(&key);
+            let at = self
+                .dir_table
+                .find(hash, |stored| stored == id)
+                .expect("a live directory is in its table");
+            self.dir_table.remove_at(at);
+            let dir = self.dirs[id as usize];
+            self.garbage += dir.stored_len();
+            if dir.extra != NONE {
+                self.garbage += block_len(self.text.from(dir.extra));
+            }
+            self.dirs[id as usize] = Dir::default();
+            self.free_dirs.push(id);
+            if dir.parent == NONE {
+                return;
+            }
+            id = dir.parent;
         }
-        let mut scratch = String::new();
-        let key = self.write_dir_key(id, &mut scratch).to_string();
-        let hash = self.hash(&key);
-        let at = self
-            .dir_table
-            .find(hash, |stored| stored == id)
-            .expect("a live directory is in its table");
-        self.dir_table.remove_at(at);
-        let dir = self.dirs[id as usize];
-        self.garbage += dir.path_len as usize;
-        if dir.extra != NONE {
-            self.garbage += block_len(self.text.from(dir.extra));
-        }
-        self.dirs[id as usize] = Dir::default();
-        self.free_dirs.push(id);
     }
 
     // ----- entries -----
@@ -730,7 +873,7 @@ impl Catalog {
         // keys are case-insensitive, so a sibling may spell the same directory
         // differently (`c:\docs`, `C:/Docs`); keep that spelling per entry.
         let own_dir =
-            (!split.top && self.dir_path(dir) != split.dir_path).then_some(split.dir_path);
+            (!split.top && !self.dir_path_is(dir, split.dir_path)).then_some(split.dir_path);
         let name = self.text.push(split.name_path.as_bytes());
         let mut flags = 0;
         if input.is_dir {
@@ -916,7 +1059,7 @@ impl Catalog {
         let mut text = Text::default();
         text.reserve(self.text.used.saturating_sub(self.garbage));
         for dir in self.dirs.iter_mut().skip(1).filter(|dir| dir.children > 0) {
-            dir.path = text.push(self.text.bytes(dir.path, dir.path_len as usize));
+            dir.path = text.push(self.text.bytes(dir.path, dir.stored_len()));
             if dir.extra != NONE {
                 dir.extra = text.push(self.text.block(dir.extra));
             }
@@ -1154,16 +1297,6 @@ impl<'a> EntryRef<'a> {
     fn top(&self) -> bool {
         self.node().flags & TOP != 0
     }
-    /// `dir` + separator + `name`, or just `name` for top-level entries.
-    fn join<'b>(&self, buffer: &'b mut String, dir: &str, separator: char, name: &str) -> &'b str {
-        buffer.clear();
-        if !self.top() {
-            buffer.push_str(dir);
-            buffer.push(separator);
-        }
-        buffer.push_str(name);
-        buffer.as_str()
-    }
     /// Write the display path, for example `C:\Docs\a.txt`.
     pub fn write_path<'b>(&self, buffer: &'b mut String) -> &'b str {
         let separator = if self.node().flags & BACKSLASH != 0 {
@@ -1171,13 +1304,16 @@ impl<'a> EntryRef<'a> {
         } else {
             '/'
         };
-        let dir = if self.top() {
-            ""
-        } else {
-            self.stored(OWN_DIR)
-                .unwrap_or_else(|| self.catalog.dir_path(self.node().dir))
-        };
-        self.join(buffer, dir, separator, self.display_name())
+        buffer.clear();
+        if !self.top() {
+            match self.stored(OWN_DIR) {
+                Some(dir) => buffer.push_str(dir),
+                None => self.catalog.push_dir_path(self.node().dir, buffer),
+            }
+            buffer.push(separator);
+        }
+        buffer.push_str(self.display_name());
+        buffer.as_str()
     }
     /// Append the directory key (when nested) and a `/`.
     fn push_dir_key(&self, buffer: &mut String) {
@@ -1187,7 +1323,7 @@ impl<'a> EntryRef<'a> {
         let dir = self.node().dir;
         match self.catalog.dir_part(dir, 0) {
             Some(key) => buffer.push_str(key),
-            None => derive_key(self.catalog.dir_path(dir), buffer),
+            None => self.catalog.push_derived_dir_key(dir, buffer),
         }
         buffer.push('/');
     }
@@ -1302,6 +1438,113 @@ mod tests {
         assert_eq!(entry.size(), expected.size);
         assert_eq!(entry.modified_ms(), expected.modified_ms);
         assert!(entry.is_seen(expected.seen));
+    }
+
+    /// The directory record that holds `key`'s entry.
+    fn dir_of(catalog: &Catalog, key: &str) -> Dir {
+        let (_, id) = catalog.find(key).expect("entry exists");
+        catalog.dirs[catalog.nodes[id as usize].dir as usize]
+    }
+
+    #[test]
+    fn directories_link_to_their_parent_and_rebuild_the_exact_spelling() {
+        let mut catalog = Catalog::new();
+        let entries = [
+            input(r"C:\Users", "c:/users"),
+            input(r"C:\Users\me", "c:/users/me"),
+            input(r"C:\Users\me\a.txt", "c:/users/me/a.txt"),
+            // A forward slash before the own name is kept per directory.
+            input(r"C:\Users\me/notes\b.md", "c:/users/me/notes/b.md"),
+            // Same parent key, different spelling: this directory keeps its
+            // whole path instead of linking to `C:\Users\me`.
+            input(r"C:\USERS\me\sub\c.md", "c:/users/me/sub/c.md"),
+        ];
+        for entry in &entries {
+            catalog.insert(entry);
+        }
+        for entry in &entries {
+            assert_round_trip(&catalog, entry);
+        }
+        // `C:\Users\me` stores only `me` under `C:\Users`.
+        let me = dir_of(&catalog, "c:/users/me/a.txt");
+        assert_ne!(me.parent, NONE);
+        assert_eq!(
+            catalog.text_str(me.path, me.stored_len()),
+            "me",
+            "a linked directory stores only its own name"
+        );
+        let notes = dir_of(&catalog, "c:/users/me/notes/b.md");
+        assert_eq!(notes.separator(), b'/');
+        assert_eq!(catalog.text_str(notes.path, notes.stored_len()), "notes");
+        let sub = dir_of(&catalog, "c:/users/me/sub/c.md");
+        assert_eq!(sub.parent, NONE);
+        assert_eq!(
+            catalog.text_str(sub.path, sub.stored_len()),
+            r"C:\USERS\me\sub"
+        );
+    }
+
+    #[test]
+    fn a_linked_parent_outlives_its_own_entries_and_every_record_is_released() {
+        let mut catalog = Catalog::new();
+        let entries = [
+            input(r"D:\a\one.txt", "d:/a/one.txt"),
+            input(r"D:\a\b\two.txt", "d:/a/b/two.txt"),
+            input(r"D:\a\b\c\three.txt", "d:/a/b/c/three.txt"),
+        ];
+        for entry in &entries {
+            catalog.insert(entry);
+        }
+        // `D:\a` has no entry left, but `D:\a\b` still links to it.
+        assert!(catalog.remove("d:/a/one.txt"));
+        assert!(catalog.remove("d:/a/b/two.txt"));
+        assert_round_trip(&catalog, &entries[2]);
+        // A new sibling directory reuses the surviving parent record.
+        let sibling = input(r"D:\a\b\d\four.txt", "d:/a/b/d/four.txt");
+        catalog.insert(&sibling);
+        assert_round_trip(&catalog, &sibling);
+        assert!(catalog.remove("d:/a/b/c/three.txt"));
+        assert!(catalog.remove("d:/a/b/d/four.txt"));
+        assert!(catalog.is_empty());
+        assert!(
+            catalog.dirs.iter().skip(1).all(|dir| dir.children == 0),
+            "the whole chain was released"
+        );
+        assert_eq!(catalog.dir_table.used, 0);
+        // Freed records are reused correctly afterwards.
+        for entry in &entries {
+            catalog.insert(entry);
+        }
+        for entry in &entries {
+            assert_round_trip(&catalog, entry);
+        }
+    }
+
+    #[test]
+    fn thousands_of_nested_directories_rebuild_and_release_without_recursion() {
+        let mut catalog = Catalog::new();
+        let depth = 3000;
+        let mut rows = Vec::with_capacity(depth);
+        let mut path = String::from("E:");
+        for level in 0..depth {
+            path.push(if level % 2 == 0 { '\\' } else { '/' });
+            path.push('d');
+            let key = path.replace('\\', "/").to_ascii_lowercase();
+            rows.push((path.clone(), key));
+        }
+        for (path, key) in &rows {
+            catalog.insert(&input(path, key));
+        }
+        let (path, key) = rows.last().unwrap();
+        assert_round_trip(&catalog, &input(path, key));
+        let deepest = dir_of(&catalog, key);
+        assert_ne!(deepest.parent, NONE);
+        assert_eq!(deepest.stored_len(), 1);
+        // Removing the top entries first leaves long linked chains to release.
+        for (_, key) in &rows {
+            assert!(catalog.remove(key));
+        }
+        assert!(catalog.dirs.iter().skip(1).all(|dir| dir.children == 0));
     }
 
     #[test]

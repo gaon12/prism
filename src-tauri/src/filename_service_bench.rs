@@ -230,6 +230,25 @@ fn live_streaming_installed_service_catalog() {
         // Where the stored catalog's heap goes (after the scan, not the peak).
         "catalogBreakdown": catalog.entries.breakdown().into_iter().collect::<std::collections::BTreeMap<_, _>>()})
     );
+    drop(catalog);
+    // Search cost over the whole catalog: an empty query ranks every entry
+    // (what the open main window does while indexing), the others are a
+    // common ASCII term and a Hangul term. Median of three runs each.
+    let mut searches = serde_json::Map::new();
+    for query in ["", "system32", "보고서"] {
+        let mut runs: Vec<u64> = (0..3)
+            .map(|_| {
+                let started = Instant::now();
+                index
+                    .search_with_keyboard(query, "", None, 200, false)
+                    .unwrap();
+                started.elapsed().as_millis() as u64
+            })
+            .collect();
+        runs.sort_unstable();
+        searches.insert(format!("query:{query}"), runs[1].into());
+    }
+    println!("{}", serde_json::json!({ "searchMedianMs": searches }));
 }
 
 #[cfg(windows)]

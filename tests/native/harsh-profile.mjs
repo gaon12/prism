@@ -1,0 +1,164 @@
+// Low-end machine filename-index measurement (Windows).
+//
+// The product baseline is a weak PC: 1 core / 1 thread, 512 MB RAM and an HDD.
+// The development PC is much faster, so this check confines the owned app (and
+// every WebView/child process it starts) to that CPU and memory budget with a
+// real Windows Job Object (support/job-limit.ps1), then measures how long the
+// whole-drive filename list takes to become ready.
+//
+// What it measures: app launch to a completed first filename sweep of the
+// selected drive, the app's own service-snapshot timing breakdown, and peak
+// committed memory. Run it twice in a row to see a "cached start": the
+// installed NTFS service keeps its USN cache between requests.
+//
+// What it does NOT confine: the installed NTFS service runs as LocalSystem and
+// needs administrator rights to join a job; HDD latency is not emulated here.
+// Both are recorded as explicit limitations in result.json.
+//
+//   $env:PRISM_TEST_EXECUTABLE = 'C:\path\to\portable\prism.exe'
+//   node tests/native/harsh-profile.mjs
+//
+// Optional: PRISM_HARSH_SCOPE (default C:\), PRISM_HARSH_CPUS (1),
+// PRISM_HARSH_MEMORY_MB (512), PRISM_HARSH_TIMEOUT_MS (600000).
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { copyFile, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
+import { launch, shutdown, until } from './harness.mjs';
+
+assert.equal(process.platform, 'win32', 'The Job Object profile is Windows-only');
+assert(process.env.PRISM_TEST_EXECUTABLE, 'Set PRISM_TEST_EXECUTABLE to a release prism.exe');
+const candidate = resolve(process.env.PRISM_TEST_EXECUTABLE);
+const scopePath = resolve(process.env.PRISM_HARSH_SCOPE ?? 'C:\\');
+const cpus = Number(process.env.PRISM_HARSH_CPUS ?? 1);
+const memoryMB = Number(process.env.PRISM_HARSH_MEMORY_MB ?? 512);
+const timeoutMs = Number(process.env.PRISM_HARSH_TIMEOUT_MS ?? 600_000);
+const helperPath = fileURLToPath(new URL('./support/job-limit.ps1', import.meta.url));
+
+// Own a fresh portable copy: the user's profile and the candidate stay untouched.
+const directory = await mkdtemp(join(tmpdir(), 'prism-harsh-profile-'));
+const application = join(directory, 'app');
+const profile = join(application, 'PrismData');
+const evidence = join(directory, 'evidence');
+await Promise.all([profile, evidence].map((path) => mkdir(path, { recursive: true })));
+const executable = join(application, 'prism.exe');
+await copyFile(candidate, executable);
+await writeFile(join(application, 'prism.portable'), '');
+const scopeId = `harsh_${Date.now()}`;
+await writeFile(
+  join(profile, 'settings.json'),
+  JSON.stringify({
+    onboardingVersion: 1,
+    startOnLogin: false,
+    updates: { autoCheck: false },
+    clipboard: { enabled: false, onboarded: true },
+    ocr: { enabled: false },
+    automaticSemantic: false,
+    hybridSearch: false,
+    // Filename-only: no document content is read during this measurement.
+    scopes: [
+      { id: scopeId, name: 'Drive', path: scopePath, filenameEnabled: true, contentEnabled: false },
+    ],
+  }),
+);
+
+/** Start job-limit.ps1 for `pid`; resolves once the limits are applied. */
+function confine(pid) {
+  const helper = spawn(
+    'pwsh',
+    [
+      '-NoProfile',
+      '-File',
+      helperPath,
+      '-ProcessId',
+      String(pid),
+      '-Cpus',
+      String(cpus),
+      '-MemoryMB',
+      String(memoryMB),
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
+  );
+  const lines = createInterface({ input: helper.stdout });
+  const pending = [];
+  lines.on('line', (line) => pending.shift()?.(JSON.parse(line)));
+  let stderr = '';
+  helper.stderr.on('data', (chunk) => (stderr += chunk));
+  const next = () =>
+    new Promise((done, fail) => {
+      pending.push(done);
+      helper.once('exit', () => fail(new Error(`Job helper exited: ${stderr.trim()}`)));
+    });
+  return {
+    ready: next(),
+    report: () => {
+      const answer = next();
+      helper.stdin.write('report\n');
+      return answer;
+    },
+    close: () => helper.stdin.end('exit\n'),
+  };
+}
+
+const result = {
+  passed: false,
+  profile: { cpus, memoryMB, scope: scopePath },
+  limitations: [
+    'The installed NTFS service process is not confined (LocalSystem needs administrator rights).',
+    'HDD seek/throughput is not emulated; the drive is the development NVMe SSD.',
+  ],
+};
+let instance;
+let job;
+let spawnedAt;
+try {
+  instance = await launch(profile, {
+    executable,
+    portable: true,
+    productionPortable: true,
+    onSpawn: (owned) => {
+      spawnedAt = performance.now();
+      job = confine(owned.pid);
+    },
+  });
+  await job.ready;
+  const { invoke } = instance;
+  const settings = await invoke('get_settings');
+  assert(settings.scopes[0]?.id === scopeId, 'CDP must reach this fixture profile');
+  result.runtime = await invoke('runtime_info');
+  assert.equal(result.runtime.installKind, 'portable');
+  result.service = await invoke('index_service_status').catch(() => null);
+  let status;
+  await until(
+    async () => {
+      status = await invoke('index_status');
+      return status.initialScanComplete && !status.scanning;
+    },
+    'first complete filename sweep',
+    timeoutMs,
+  );
+  result.readyMs = Math.round(performance.now() - spawnedAt);
+  result.count = status.count;
+  result.skipped = status.skipped;
+  const diagnostics = await invoke('diagnostics_snapshot');
+  result.lastServiceSnapshot = diagnostics?.filenameIndex?.lastServiceSnapshot ?? null;
+  // A search over the full catalog must also stay usable inside the budget.
+  const searchStart = performance.now();
+  const search = await invoke('search_files', { query: 'readme', extension: '', scopeId });
+  result.searchMs = Math.round(performance.now() - searchStart);
+  result.searchTotal = search.total;
+  result.job = await job.report();
+  result.passed = true;
+} catch (error) {
+  result.error = String(error?.stack ?? error);
+  if (job) result.job = await job.report().catch(() => null);
+} finally {
+  if (instance) await shutdown(instance).catch(() => {});
+  job?.close();
+  await writeFile(join(evidence, 'result.json'), JSON.stringify(result, null, 2));
+  console.log(JSON.stringify({ evidence, ...result }, null, 2));
+}
+if (!result.passed) process.exitCode = 1;

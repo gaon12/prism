@@ -251,6 +251,12 @@ fn parse_decoded(number: u64, bytes: &[u8]) -> Result<MetadataRecord> {
                     // Root record 5 has the special name "."; it is constructed
                     // as a drive root rather than joined to a parent below.
                     if name != "." && name != ".." {
+                        // Most records have one Win32 name, sometimes with a
+                        // DOS alias. Avoid Vec's four-slot first allocation;
+                        // larger hard-link sets retain normal geometric growth.
+                        if record.names.len() < 2 {
+                            record.names.reserve_exact(1);
+                        }
                         record.names.push(FileName {
                             parent: FileReference(u64_at(value, 0)?),
                             name,
@@ -435,6 +441,9 @@ fn deduplicate_names(record: &mut MetadataRecord) {
             .names
             .retain(|name| seen.insert((name.parent, name.name.clone())));
     }
+    // Filtering DOS/duplicate names must also release their unused slots;
+    // keeping that capacity multiplies across a multi-million-file catalog.
+    record.names.shrink_to_fit();
 }
 
 pub struct Catalog {

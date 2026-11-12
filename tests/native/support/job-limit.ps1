@@ -139,6 +139,23 @@ public static class PrismJob {
     }
   }
 
+  /// Per-process name, private (committed) bytes and working set, for the
+  /// processes still running in the job. Exited processes are skipped.
+  static string ProcessUsage() {
+    var rows = new List<string>();
+    foreach (var text in ProcessIds().Trim('[', ']').Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)) {
+      try {
+        using (var process = System.Diagnostics.Process.GetProcessById(int.Parse(text))) {
+          rows.Add(string.Format("{{\"pid\":{0},\"name\":\"{1}\",\"privateBytes\":{2},\"workingSetBytes\":{3}}}",
+            text, process.ProcessName.Replace("\\", "").Replace("\"", ""), process.PrivateMemorySize64, process.WorkingSet64));
+        }
+      } catch (ArgumentException) {
+      } catch (InvalidOperationException) {
+      }
+    }
+    return "[" + string.Join(",", rows) + "]";
+  }
+
   /// Limits as the kernel reports them back, plus the job's processes.
   public static string Limits() {
     ExtendedLimit limit;
@@ -158,10 +175,11 @@ public static class PrismJob {
       throw new System.ComponentModel.Win32Exception();
     // Times are 100 ns units; report milliseconds.
     return string.Format(
-      "{{\"peakProcessMemoryBytes\":{0},\"peakJobMemoryBytes\":{1},\"cpuUserMs\":{2},\"cpuKernelMs\":{3},\"totalProcesses\":{4},\"activeProcesses\":{5},\"pageFaults\":{6},{7}}}",
+      "{{\"peakProcessMemoryBytes\":{0},\"peakJobMemoryBytes\":{1},\"cpuUserMs\":{2},\"cpuKernelMs\":{3},\"totalProcesses\":{4},\"activeProcesses\":{5},\"pageFaults\":{6},{7},\"processes\":{8}}}",
       limit.PeakProcessMemoryUsed, limit.PeakJobMemoryUsed,
       accounting.TotalUserTime / 10000, accounting.TotalKernelTime / 10000,
-      accounting.TotalProcesses, accounting.ActiveProcesses, accounting.TotalPageFaultCount, Limits());
+      accounting.TotalProcesses, accounting.ActiveProcesses, accounting.TotalPageFaultCount, Limits(),
+      ProcessUsage());
   }
 }
 '@

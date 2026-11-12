@@ -998,6 +998,7 @@ mod tests {
                 modified_ms: None,
                 attributes: 0,
                 reparse_tag: None,
+                name_budget: 0,
             })
             .unwrap();
         builder.insert(family[0].clone()).unwrap();

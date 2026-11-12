@@ -135,6 +135,7 @@ fn decode_record(bytes: &[u8]) -> io::Result<MetadataRecord> {
         attributes,
         reparse_tag: has_tag.then_some(tag),
         names,
+        name_budget: 0,
     })
 }
 struct Body<'a, W> {
@@ -411,6 +412,7 @@ mod tests {
             modified_ms: None,
             attributes: 0,
             reparse_tag: None,
+            name_budget: 0,
         };
         let base = MetadataRecord {
             reference: FileReference((2 << 48) | 18),
@@ -425,6 +427,7 @@ mod tests {
             modified_ms: Some(-12345),
             attributes: 0,
             reparse_tag: None,
+            name_budget: 0,
         };
         let mut extra = base.clone();
         extra.reference = FileReference((3 << 48) | 42);

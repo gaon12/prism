@@ -222,6 +222,7 @@ mod tests {
             modified_ms: (!marker.is_multiple_of(11)).then_some(i64::MIN + marker as i64),
             attributes: marker as u32,
             reparse_tag: marker.is_multiple_of(13).then_some(marker as u32),
+            name_budget: (marker % 17) as u16,
         }
     }
 
@@ -237,7 +238,8 @@ mod tests {
                     left.size,
                     left.modified_ms,
                     left.attributes,
-                    left.reparse_tag
+                    left.reparse_tag,
+                    left.name_budget
                 ),
                 (
                     right.reference,
@@ -247,7 +249,8 @@ mod tests {
                     right.size,
                     right.modified_ms,
                     right.attributes,
-                    right.reparse_tag
+                    right.reparse_tag,
+                    right.name_budget
                 ),
             ),
             _ => panic!("metadata membership differs"),

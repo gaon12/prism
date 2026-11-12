@@ -50,8 +50,14 @@ pub struct MetadataRecord {
     pub modified_ms: Option<i64>,
     attributes: u32,
     reparse_tag: Option<u32>,
+    // Pre-trim names for the existing complete-family limit. Zero means the
+    // current names are untrimmed; this transient budget is never serialized.
+    name_budget: u16,
 }
 impl MetadataRecord {
+    fn original_name_count(&self) -> usize {
+        self.names.len().max(usize::from(self.name_budget))
+    }
     fn alias(&self) -> bool {
         // Name-surrogate reparses (including junctions and symlinks) redirect
         // path resolution. Cloud placeholders have no such bit and can supply
@@ -194,6 +200,7 @@ fn parse_decoded(number: u64, bytes: &[u8]) -> Result<MetadataRecord> {
         modified_ms: None,
         attributes: 0,
         reparse_tag: None,
+        name_budget: 0,
     };
     let mut offset = first;
     loop {
@@ -298,12 +305,17 @@ pub struct CatalogBuilder {
     families: HashMap<u64, Vec<u64>>,
 }
 impl CatalogBuilder {
-    pub fn insert(&mut self, record: MetadataRecord) -> Result<()> {
+    pub fn insert(&mut self, mut record: MetadataRecord) -> Result<()> {
         if self.records.len() >= 10_000_000
             && !self.records.contains_key(&record.reference.number())
         {
             return Err(ParseError::Limit);
         }
+        // Discard aliases/duplicates while each decoded record is still small,
+        // instead of retaining them for every file until the bulk scan ends.
+        // 4097 is sufficient to preserve an already-over-budget input too.
+        record.name_budget = record.names.len().min(4097) as u16;
+        deduplicate_names(&mut record);
         self.remove_number(record.reference.number());
         if let Some(base) = record.base {
             self.families
@@ -415,9 +427,13 @@ impl CatalogBuilder {
 }
 
 fn merge_extension(base: &mut MetadataRecord, extension: MetadataRecord) -> Result<()> {
-    if base.names.len().saturating_add(extension.names.len()) > 4096 {
+    let names = base
+        .original_name_count()
+        .saturating_add(extension.original_name_count());
+    if names > 4096 {
         return Err(ParseError::Limit);
     }
+    base.name_budget = names as u16;
     base.names.extend(extension.names);
     if base.size.is_none() {
         base.size = extension.size;
@@ -483,6 +499,11 @@ impl Catalog {
         }
     }
     pub(crate) fn replace_family(&mut self, mut family: Vec<MetadataRecord>) -> Result<()> {
+        // This API receives a fresh complete family, not previously trimmed
+        // builder records. Its original budget comes from the supplied names.
+        for record in &mut family {
+            record.name_budget = 0;
+        }
         let reference = family
             .first()
             .filter(|record| record.base.is_none())
@@ -656,6 +677,7 @@ mod tests {
             modified_ms: Some(42),
             attributes: 0,
             reparse_tag: None,
+            name_budget: 0,
         }
     }
     fn catalog(records: Vec<MetadataRecord>) -> Catalog {
@@ -664,6 +686,47 @@ mod tests {
             builder.insert(record).unwrap();
         }
         builder.finish().unwrap()
+    }
+
+    #[test]
+    fn builder_releases_dos_and_duplicate_names_before_the_full_scan_finishes() {
+        let mut file = record(18, 5, "document.md", false);
+        file.names.push(FileName {
+            parent: reference(5, 1),
+            name: "DOCUME~1.MD".into(),
+            namespace: 2,
+        });
+        file.names.push(file.names[0].clone());
+        let mut builder = CatalogBuilder::default();
+        builder.insert(file).unwrap();
+        let stored = &builder.records[&18];
+        assert_eq!(stored.names.len(), 1);
+        assert_eq!(stored.names[0].name, "document.md");
+        assert_eq!(stored.original_name_count(), 3);
+    }
+
+    #[test]
+    fn early_trimming_does_not_relax_the_original_family_name_budget() {
+        for original_names in [4095, 4096] {
+            let mut base = record(18, 5, "document.md", false);
+            base.names = vec![base.names[0].clone(); original_names];
+            let mut extension = record(20, 5, "linked.md", false);
+            extension.base = Some(base.reference);
+            let mut builder = CatalogBuilder::default();
+            builder.insert(record(5, 5, ".", true)).unwrap();
+            builder.insert(base).unwrap();
+            builder.insert(extension).unwrap();
+            assert_eq!(builder.records[&18].names.len(), 1);
+            if original_names == 4096 {
+                assert!(matches!(builder.finish(), Err(ParseError::Limit)));
+            } else {
+                let mut catalog = builder.finish().unwrap();
+                assert_eq!(
+                    paths(&mut catalog, b'C'),
+                    ["C:\\", "C:\\document.md", "C:\\linked.md"]
+                );
+            }
+        }
     }
     fn paths(catalog: &mut Catalog, drive: u8) -> Vec<String> {
         let mut paths = vec![];

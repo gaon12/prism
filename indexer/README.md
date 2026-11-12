@@ -24,6 +24,9 @@ Implemented:
   resident/nonresident data sizes, and parent-sequence checks. Junctions and
   symlinks are excluded; cloud placeholders can contribute names. Deleted,
   corrupt, orphaned, and reused references cannot invent live paths.
+  Redundant DOS/duplicate names are released as each record enters the builder,
+  so a cold scan does not retain them for the complete volume. A separate
+  transient name count preserves the original complete-family validation limit.
   Metadata is stored in ordered, fixed-size pages. Sequential MFT/cache records
   append without a large hash table or whole-table reallocation; out-of-order
   replay uses a small ordered overlay. Removed slots and large overlays are

@@ -283,3 +283,7 @@ mark {
     animation: none;
   }
 }
+/* End-of-rows marker: when it nears the view, the list draws another page. */
+.results-more {
+  height: 1px;
+}

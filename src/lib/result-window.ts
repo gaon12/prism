@@ -22,9 +22,3 @@ export function drawnRows(total: number, shown: number, selected: number): numbe
   const forSelection = selected >= 0 ? selected + 1 + SELECTION_MARGIN : 0;
   return Math.max(0, Math.min(total, Math.max(shown, forSelection)));
 }
-
-/** Whether a list scrolled this far should draw another page. */
-export function nearEnd(scrollTop: number, clientHeight: number, scrollHeight: number): boolean {
-  // Start drawing before the very end so scrolling does not hit a wall.
-  return scrollTop + clientHeight >= scrollHeight - Math.max(200, clientHeight);
-}

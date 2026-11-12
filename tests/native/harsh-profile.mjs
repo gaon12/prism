@@ -198,6 +198,16 @@ try {
     await session.send('Performance.enable');
     const { metrics } = await session.send('Performance.getMetrics');
     await session.detach();
+    // How many result rows the window draws, and whether it is laid out at all.
+    const layout = await page.evaluate(() => {
+      const list = document.querySelector('.file-result-list');
+      return {
+        visibility: document.visibilityState,
+        resultRows: document.querySelectorAll('.file-result-row').length,
+        listClientHeight: list?.clientHeight ?? null,
+        listScrollHeight: list?.scrollHeight ?? null,
+      };
+    });
     const value = (key) => metrics.find((metric) => metric.name === key)?.value ?? null;
     result.pages[name] = {
       jsHeapUsedBytes: value('JSHeapUsedSize'),
@@ -205,6 +215,7 @@ try {
       domNodes: value('Nodes'),
       documents: value('Documents'),
       jsEventListeners: value('JSEventListeners'),
+      ...layout,
     };
   }
   result.job = await job.report();

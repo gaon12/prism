@@ -18,7 +18,7 @@ import { providerNames } from '../lib/utilities';
 import type { SearchController } from '../lib/use-search';
 import { EmptyState } from '../components/EmptyState';
 import { IndexProgress } from '../components/IndexProgress';
-import { drawnRows, nearEnd, RESULT_PAGE } from '../lib/result-window';
+import { drawnRows, RESULT_PAGE } from '../lib/result-window';
 import './results.css';
 
 export function UtilityResult({ search }: { search: SearchController }) {
@@ -151,6 +151,7 @@ export function FileResults({
 }) {
   const { t, data, selected, error, loading, status, session, language } = search;
   const list = useRef<HTMLDivElement>(null);
+  const end = useRef<HTMLDivElement>(null);
   // Rows opened by scrolling (see result-window.ts). A new query starts from
   // one page again; a refresh of the same query keeps what was opened.
   const [shown, setShown] = useState(RESULT_PAGE);
@@ -161,17 +162,23 @@ export function FileResults({
     shown,
     results.findIndex((file) => file.path === selected?.path),
   );
-  const more = () => {
-    const element = list.current;
-    if (
-      element &&
-      drawn < results.length &&
-      nearEnd(element.scrollTop, element.clientHeight, element.scrollHeight)
-    )
-      setShown(drawn + RESULT_PAGE);
-  };
-  // A tall window may show every drawn row without any scrolling: fill it.
-  useEffect(more);
+  // Draw another page when the end of the drawn rows comes within a screen
+  // of view. Watching visibility, not one element's scroll position, works
+  // whichever container scrolls: the main window scrolls an outer pane, the
+  // quick window the list itself. A new observer reports at once, so a tall
+  // window is filled page by page until its end is out of view.
+  useEffect(() => {
+    const element = end.current;
+    if (!element || drawn >= results.length || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) setShown(drawn + RESULT_PAGE);
+      },
+      { rootMargin: '0px 0px 100% 0px' },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [drawn, results.length]);
   useEffect(() => {
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
   }, [selected?.path]);
@@ -255,7 +262,6 @@ export function FileResults({
         aria-activedescendant={search.selectedId}
         tabIndex={0}
         onKeyDown={search.keyDown}
-        onScroll={more}
         ref={list}
       >
         {data.results.slice(0, drawn).map((file, index) => (
@@ -294,6 +300,9 @@ export function FileResults({
             ) : null}
           </div>
         ))}
+        {drawn < data.results.length ? (
+          <div ref={end} className="results-more" aria-hidden="true" />
+        ) : null}
       </div>
       {data.total > data.results.length ? <p className="results-limit">{t('showLimit')}</p> : null}
     </div>

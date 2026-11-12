@@ -20,12 +20,22 @@ function readDraft(): Draft {
     return { title: '', body: '' };
   }
 }
-function LocalDraft({ onGenerated }: { onGenerated: () => void }) {
+function LocalDraft({
+  onGenerated,
+  onDirtyChange,
+}: {
+  onGenerated: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
   const { settings } = useClient();
   const t = (key: Parameters<typeof translate>[1]) => translate(settings.language, key);
   const [draft, setDraft] = useState(readDraft);
   const [saving, setSaving] = useState(false);
   const [draftSaved, setDraftSaved] = useState(true);
+  useEffect(() => {
+    onDirtyChange?.(!draftSaved);
+    return () => onDirtyChange?.(false);
+  }, [draftSaved, onDirtyChange]);
   useEffect(() => {
     try {
       localStorage.setItem(draftKey, JSON.stringify(draft));
@@ -109,6 +119,6 @@ export function DocumentsView({ onDirtyChange }: { onDirtyChange?: (dirty: boole
       onDirtyChange={onDirtyChange}
     />
   ) : (
-    <LocalDraft onGenerated={() => setGenerated(true)} />
+    <LocalDraft onGenerated={() => setGenerated(true)} onDirtyChange={onDirtyChange} />
   );
 }

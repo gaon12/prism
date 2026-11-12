@@ -310,6 +310,43 @@ test('edits, persists and exports a real Markdown draft', async ({ page }) => {
   await page.screenshot({ path: join(evidence, 'documents.png') });
 });
 
+test('keeps an unsaved local draft open after storage failure and permits navigation after recovery', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (key === 'prism.draft.v1' && sessionStorage.getItem('prism.test.fail-draft') === '1')
+        throw new DOMException('Fixture storage quota exceeded', 'QuotaExceededError');
+      return setItem.call(this, key, value);
+    };
+  });
+  await page.goto('/');
+  const tabs = page.getByRole('navigation', { name: 'Prism', exact: true });
+  await tabs.getByRole('button', { name: '문서', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Markdown', exact: true });
+  await editor.fill('Saved draft');
+  await expect
+    .poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('prism.draft.v1')!).body))
+    .toBe('Saved draft');
+  await page.evaluate(() => sessionStorage.setItem('prism.test.fail-draft', '1'));
+  await editor.fill('Unsaved work must survive');
+  await expect(page.locator('.editor-toolbar')).toContainText('초안을 저장하지 못했어요');
+  await expect(page.getByRole('button', { name: 'AI 문서', exact: true })).toBeDisabled();
+  await tabs.getByRole('button', { name: '채팅', exact: true }).click();
+  await expect(editor).toBeVisible();
+  await expect(editor).toHaveValue('Unsaved work must survive');
+  await expect(page.getByRole('status')).toContainText('작성 중인 문서를 먼저 저장');
+
+  await page.evaluate(() => sessionStorage.removeItem('prism.test.fail-draft'));
+  await editor.fill('Recovered draft');
+  await expect(page.getByRole('button', { name: 'AI 문서', exact: true })).toBeEnabled();
+  await tabs.getByRole('button', { name: '채팅', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '문서와 대화', exact: true })).toBeVisible();
+  await tabs.getByRole('button', { name: '문서', exact: true }).click();
+  await expect(editor).toHaveValue('Recovered draft');
+});
+
 test('does not retain search history when disabled', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '설정', exact: true }).click();

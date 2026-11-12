@@ -13,6 +13,7 @@ import { useDictionary } from './dictionary';
 import { useContentSearch } from './content';
 import { automaticBodyEligible } from './automatic-search';
 import { useIndexActivity } from './index-activity';
+import { useScanRefreshRevision } from './scan-refresh';
 
 const emptyStatus: IndexStatus = {
   scanning: false,
@@ -38,6 +39,8 @@ export function useSearch(quick = false) {
   const activity = useIndexActivity();
   const [localStatus, setStatus] = useState(emptyStatus);
   const status = activity?.files ?? localStatus;
+  // The revision filename results follow; throttled while the index scans.
+  const refreshRevision = useScanRefreshRevision(status.revision, status.scanning);
   const [response, setResponse] = useState<{ key: string; data: SearchResponse } | null>(null);
   const [failure, setFailure] = useState<{ key: string; message: string } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -136,7 +139,7 @@ export function useSearch(quick = false) {
     scopesKey,
     session.extension,
     session.scopeId,
-    status.revision,
+    refreshRevision,
     quick,
     session.mode,
   ]);

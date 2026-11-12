@@ -1,11 +1,51 @@
 //! Link bound document sources without rewriting literal Markdown or link targets.
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
-use std::{collections::HashSet, ops::Range};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use std::{borrow::Cow, collections::HashSet, ops::Range};
+
+/// A block may validly end with an unfinished fenced code block. When more
+/// Markdown is concatenated, its next block and source definitions must stay
+/// outside that code. Let the same parser determine whether an unindented
+/// continuation would still belong to a fence, including container boundaries.
+/// Only append a matching closing fence; leave every original byte intact.
+fn close_trailing_fence(markdown: &str) -> Cow<'_, str> {
+    let mut probe = String::with_capacity(markdown.len() + 24);
+    probe.push_str(markdown);
+    probe.push_str("\n\nprism-block-boundary");
+    let boundary = markdown.len() + 2;
+    let open = Parser::new_ext(&probe, Options::ENABLE_FOOTNOTES)
+        .into_offset_iter()
+        .find_map(|(event, range)| match event {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(_)))
+                if range.start < markdown.len() && range.end > boundary =>
+            {
+                Some(range.start)
+            }
+            _ => None,
+        });
+    let Some(start) = open else {
+        return Cow::Borrowed(markdown);
+    };
+    let marker = markdown.as_bytes()[start];
+    let length = markdown.as_bytes()[start..]
+        .iter()
+        .take_while(|byte| **byte == marker)
+        .count();
+    probe.truncate(markdown.len());
+    if !probe.ends_with('\n') {
+        probe.push('\n');
+    }
+    probe.extend(std::iter::repeat_n(char::from(marker), length));
+    Cow::Owned(probe)
+}
 
 pub(super) fn link_sources(markdown: &str, labels: &[&str]) -> String {
+    // Even a block with no bound sources can otherwise swallow a later block's
+    // references. This function is called only for source-inclusive exports.
+    let markdown = close_trailing_fence(markdown);
     if labels.is_empty() {
-        return markdown.to_owned();
+        return markdown.into_owned();
     }
+    let markdown = markdown.as_ref();
     let bound: HashSet<_> = labels.iter().copied().collect();
     let mut visible: Vec<Range<usize>> = Vec::new();
     let mut opaque_depth = 0usize;
@@ -96,6 +136,35 @@ pub(super) fn link_sources(markdown: &str, labels: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_fences_and_container_terminated_fences_need_no_added_markup() {
+        for markdown in [
+            "Plain 한글 `inline`",
+            "```text\ncode\n```",
+            "~~~text\ncode\n~~~~   ",
+            "> ```text\n> code",
+            "- ```text\n  code",
+            "    indented code",
+        ] {
+            assert_eq!(link_sources(markdown, &[]), markdown);
+        }
+    }
+
+    #[test]
+    fn unfinished_fences_keep_the_original_bytes_and_close_with_the_opening_marker() {
+        for (markdown, closing) in [
+            ("```", "\n```"),
+            ("```text\n한글", "\n```"),
+            ("  ~~~~~text\r\ncode\r\n~~~", "\n~~~~~"),
+            ("   ````text\ncode\n", "````"),
+            // The pinned renderer parser accepts closing-fence spaces, but
+            // not a trailing tab. Its actual block boundary is authoritative.
+            ("```text\ncode\n```\t", "\n```"),
+        ] {
+            assert_eq!(link_sources(markdown, &[]), format!("{markdown}{closing}"));
+        }
+    }
 
     #[test]
     fn literal_lookalikes_do_not_hide_or_duplicate_a_visible_source_reference() {

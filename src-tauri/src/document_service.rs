@@ -1962,6 +1962,10 @@ mod tests {
                 "```text\nliteral [S1]\n```",
                 "Literal `[^S1]` code",
                 "```text\nliteral [^S1]\n```",
+                "```text\nliteral [S1]",
+                "~~~~text\nliteral [^S1]\n~~~",
+                "```",
+                "   ```text\n한글 [S1]\n",
                 "    literal [S1] in indented code",
                 "<span data-id=\"[S1]\">literal HTML attribute</span>",
                 r"Literal \[S1] text",
@@ -2014,6 +2018,53 @@ mod tests {
                     revision.markdown
                 );
             }
+        });
+    }
+    #[test]
+    fn an_unbound_unfinished_fence_cannot_hide_the_next_blocks_bound_source() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            let literal = "````text\n한글 literal [S1]\n```";
+            f.transport.push(
+                serde_json::json!({"blocks":[
+                    {"id":"literal","sectionId":"summary","kind":"userInput",
+                     "markdown":literal,"sourceLabels":[]},
+                    {"id":"sourced","sectionId":"summary","kind":"fact",
+                     "markdown":"A sourced statement [S1]","sourceLabels":["[S1]"]}
+                ]})
+                .to_string(),
+            );
+            let revision = f
+                .service
+                .generate_body(request(&page, "unfinished_boundary"))
+                .await
+                .unwrap();
+            let exported = f
+                .service
+                .export_markdown(&page.document.id, None, true, false)
+                .unwrap();
+            let mut html = String::new();
+            pulldown_cmark::html::push_html(
+                &mut html,
+                pulldown_cmark::Parser::new_ext(
+                    &exported,
+                    pulldown_cmark::Options::ENABLE_FOOTNOTES,
+                ),
+            );
+            assert_eq!(
+                html.matches("class=\"footnote-reference\"").count(),
+                1,
+                "an earlier block must not swallow a later source: {exported}"
+            );
+            assert!(exported.contains(literal));
+            assert_eq!(revision.blocks[0].markdown, literal);
+            assert_eq!(
+                f.service
+                    .export_markdown(&page.document.id, None, false, false)
+                    .unwrap(),
+                revision.markdown
+            );
         });
     }
     #[test]

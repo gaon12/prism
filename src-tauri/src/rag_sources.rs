@@ -155,7 +155,6 @@ fn current_sha(path: &Path, cancel: &AtomicBool) -> RagResult<Option<String>> {
 mod tests {
     use super::*;
     use crate::rag_service::{GenerationPreferences, RagScope};
-    #[cfg(windows)]
     #[test]
     fn document_requirements_do_not_break_keyword_or_unavailable_embedding_fallback() {
         use crate::{rag_service::RetrievalMode, settings::SearchScope};
@@ -231,6 +230,7 @@ mod tests {
                 .is_empty());
         }
     }
+    #[cfg(windows)]
     #[test]
     fn real_short_source_alias_preserves_hash_and_chunk_identity_guards() {
         use crate::settings::SearchScope;

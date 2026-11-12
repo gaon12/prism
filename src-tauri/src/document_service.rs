@@ -1088,28 +1088,7 @@ fn remap_model_citations(
             .iter()
             .filter_map(|label| labels.get(label).cloned())
             .collect();
-        let mut text = String::new();
-        let mut rest = block.markdown.as_str();
-        while let Some(start) = rest.find("[S").into_iter().chain(rest.find("[E")).min() {
-            text.push_str(&rest[..start]);
-            rest = &rest[start..];
-            if let Some(end) = rest.find(']') {
-                let token = &rest[..=end];
-                if source_label(token) {
-                    if let Some(bound) = labels.get(token) {
-                        text.push_str(bound);
-                    } else {
-                        text.push_str(&format!("[unbound {}]", &token[1..token.len() - 1]));
-                    }
-                    rest = &rest[end + 1..];
-                    continue;
-                }
-            }
-            text.push_str(&rest[..2]);
-            rest = &rest[2..];
-        }
-        text.push_str(rest);
-        block.markdown = text;
+        block.markdown = markdown_sources::remap_sources(&block.markdown, &labels);
     }
 }
 fn retrieval_query(title: &str, purpose: &str, instruction: &str) -> DocumentResult<String> {
@@ -2281,6 +2260,52 @@ mod tests {
             assert_eq!(blocks[0].source_labels, vec!["[S2]"]);
             assert!(blocks[0].markdown.contains("[S2]"));
             assert!(blocks[0].markdown.contains("[unbound S77]"));
+        });
+    }
+    #[test]
+    fn citation_remapping_preserves_literal_markdown_when_the_source_number_changes() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            f.transport.push(body("base", "Original [S1]"));
+            let base = f
+                .service
+                .generate_body(request(&page, "literal_remap_base"))
+                .await
+                .unwrap();
+            let mut incoming = base.citations[0].clone();
+            incoming.source.chunk_id = "different-chunk".into();
+            incoming.source.sha256 = "b".repeat(64);
+            incoming.label = "S1".into();
+            for literal in [
+                "`literal [S1] and [S77]`",
+                "```text\nliteral [S1] and [S77]\n```",
+                "    literal [S1] in indented code",
+                r"Escaped \[S1] and \[S77]",
+                "[S1](https://example.invalid/[S77])",
+                "![S1](https://example.invalid/[S77].png)",
+                "<https://example.invalid/[S1]>",
+                "<span data-id=\"[S1]\">literal HTML attribute</span>",
+                "[link]: https://example.invalid/[S1]\n\nA [link] link",
+                "[^custom]: literal [S1] footnote text\n\nA note[^custom]",
+            ] {
+                let mut saved = base.citations.clone();
+                // Start from an actual generated block: the manual-save
+                // helper intentionally supplies a forged verified flag.
+                let mut generated = base.blocks[0].clone();
+                generated.id = "new".into();
+                generated.markdown = format!("Visible [S1], unknown [S77].\n\n{literal}");
+                let mut blocks = vec![generated];
+                remap_model_citations(&mut blocks, &mut saved, std::slice::from_ref(&incoming));
+                assert_eq!(
+                    blocks[0].markdown,
+                    format!("Visible [S2], unknown [unbound S77].\n\n{literal}")
+                );
+                assert_eq!(blocks[0].source_labels, ["[S2]"]);
+                assert_eq!(saved[0].source, base.citations[0].source);
+                assert_eq!(saved.len(), 2);
+                assert!(!blocks[0].claims_verified);
+            }
         });
     }
     #[test]

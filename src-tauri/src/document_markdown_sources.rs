@@ -1,6 +1,10 @@
-//! Link bound document sources without rewriting literal Markdown or link targets.
+//! Link or rebind document sources without rewriting literal Markdown or link targets.
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-use std::{borrow::Cow, collections::HashSet, ops::Range};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    ops::Range,
+};
 
 /// A block may validly end with an unfinished fenced code block. When more
 /// Markdown is concatenated, its next block and source definitions must stay
@@ -38,15 +42,10 @@ fn close_trailing_fence(markdown: &str) -> Cow<'_, str> {
     Cow::Owned(probe)
 }
 
-pub(super) fn link_sources(markdown: &str, labels: &[&str]) -> String {
-    // Even a block with no bound sources can otherwise swallow a later block's
-    // references. This function is called only for source-inclusive exports.
-    let markdown = close_trailing_fence(markdown);
-    if labels.is_empty() {
-        return markdown.into_owned();
-    }
-    let markdown = markdown.as_ref();
-    let bound: HashSet<_> = labels.iter().copied().collect();
+fn replace_visible_labels(
+    markdown: &str,
+    mut replacement: impl FnMut(&str) -> Option<String>,
+) -> String {
     let mut visible: Vec<Range<usize>> = Vec::new();
     let mut opaque_depth = 0usize;
     for (event, range) in Parser::new_ext(markdown, Options::ENABLE_FOOTNOTES).into_offset_iter() {
@@ -79,7 +78,6 @@ pub(super) fn link_sources(markdown: &str, labels: &[&str]) -> String {
         }
     }
     let mut output = String::with_capacity(markdown.len());
-    let mut referenced = HashSet::new();
     let mut copied = 0;
     for range in visible {
         output.push_str(&markdown[copied..range.start]);
@@ -105,10 +103,8 @@ pub(super) fn link_sources(markdown: &str, labels: &[&str]) -> String {
                 {
                     let end = start + length;
                     let token = &markdown[start + 1..end];
-                    let label = token.strip_prefix('^').unwrap_or(token);
-                    if let Some(label) = bound.get(label) {
-                        output.push_str(&format!("[^{label}]"));
-                        referenced.insert(*label);
+                    if let Some(value) = replacement(token) {
+                        output.push_str(&value);
                         cursor = end + 1;
                         continue;
                     }
@@ -121,6 +117,39 @@ pub(super) fn link_sources(markdown: &str, labels: &[&str]) -> String {
         copied = range.end;
     }
     output.push_str(&markdown[copied..]);
+    output
+}
+
+pub(super) fn remap_sources(markdown: &str, labels: &HashMap<String, String>) -> String {
+    replace_visible_labels(markdown, |inner| {
+        let token = format!("[{inner}]");
+        if !super::source_label(&token) {
+            return None;
+        }
+        Some(
+            labels
+                .get(&token)
+                .cloned()
+                .unwrap_or_else(|| format!("[unbound {inner}]")),
+        )
+    })
+}
+
+pub(super) fn link_sources(markdown: &str, labels: &[&str]) -> String {
+    // Even a block with no bound sources can otherwise swallow a later block's
+    // references. This function is called only for source-inclusive exports.
+    let markdown = close_trailing_fence(markdown);
+    if labels.is_empty() {
+        return markdown.into_owned();
+    }
+    let bound: HashSet<_> = labels.iter().copied().collect();
+    let mut referenced = HashSet::new();
+    let mut output = replace_visible_labels(&markdown, |token| {
+        let label = token.strip_prefix('^').unwrap_or(token);
+        let label = *bound.get(label)?;
+        referenced.insert(label);
+        Some(format!("[^{label}]"))
+    });
     let missing: Vec<_> = labels
         .iter()
         .filter(|label| referenced.insert(**label))
@@ -136,6 +165,20 @@ pub(super) fn link_sources(markdown: &str, labels: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stable_remapping_keeps_external_and_local_literals_and_bounds_unmatched_brackets() {
+        let labels = HashMap::from([
+            ("[S1]".into(), "[S12]".into()),
+            ("[E1]".into(), "[E8]".into()),
+        ]);
+        let prefix = "[".repeat(64 * 1024);
+        let markdown = format!("{prefix}\n한글 [S1], [E1], unknown [E77], `literal [S1] [E1]`.");
+        assert_eq!(
+            remap_sources(&markdown, &labels),
+            format!("{prefix}\n한글 [S12], [E8], unknown [unbound E77], `literal [S1] [E1]`.")
+        );
+    }
 
     #[test]
     fn complete_fences_and_container_terminated_fences_need_no_added_markup() {

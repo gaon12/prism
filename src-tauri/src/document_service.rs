@@ -1187,6 +1187,7 @@ fn render(revision: &DocumentRevision, sources: bool, types: bool) -> String {
         }
         let mut markdown = block.markdown.clone();
         if sources {
+            let mut missing = Vec::new();
             for citation in &revision.citations {
                 if block
                     .source_labels
@@ -1196,7 +1197,18 @@ fn render(revision: &DocumentRevision, sources: bool, types: bool) -> String {
                         &format!("[{}]", citation.label),
                         &format!("[^{}]", citation.label),
                     );
+                    let reference = format!("[^{}]", citation.label);
+                    if !markdown.contains(&reference) {
+                        missing.push(reference);
+                    }
                 }
+            }
+            // Models may bind a source in metadata without an inline label.
+            // Definitions alone are invisible in rendered Markdown. Put the
+            // missing references in their own paragraph so tables/code survive.
+            if !missing.is_empty() {
+                markdown.push_str("\n\n");
+                markdown.push_str(&missing.join(" "));
             }
         }
         result.push_str(&markdown);
@@ -1870,6 +1882,50 @@ mod tests {
                 r#"{"title":"x","sections":[],"extra":1}"#
             )
             .is_err());
+        });
+    }
+    #[test]
+    fn export_links_bound_block_sources_when_the_model_omits_inline_labels() {
+        run(async {
+            for (index, markdown) in [
+                "A sourced statement",
+                "| item | amount |\n|---|---|\n| planned | 123.4500 |",
+                "```text\nliteral statement\n```",
+                "A sourced statement [S1]",
+                "A sourced statement [^S1]",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let f = fixture();
+                let page = reviewed(&f);
+                f.transport.push(body("b1", markdown));
+                let revision = f
+                    .service
+                    .generate_body(request(&page, &format!("bound_source_{index}")))
+                    .await
+                    .unwrap();
+                assert_eq!(revision.blocks[0].source_labels, ["[S1]"]);
+                let exported = f
+                    .service
+                    .export_markdown(&page.document.id, None, true, false)
+                    .unwrap();
+                let (content, definition) = exported.split_once("[^S1]:").unwrap();
+                assert_eq!(content.matches("[^S1]").count(), 1, "{exported}");
+                assert!(definition.contains("claim not verified"));
+                if !markdown.contains("[S1]") {
+                    assert!(content.contains(markdown), "block content is preserved");
+                }
+                assert_eq!(revision.blocks[0].markdown, markdown);
+                assert!(!revision.claims_verified);
+                assert_eq!(
+                    f.service
+                        .export_markdown(&page.document.id, None, false, false)
+                        .unwrap(),
+                    revision.markdown,
+                    "disabling sources preserves the stored body"
+                );
+            }
         });
     }
     #[test]

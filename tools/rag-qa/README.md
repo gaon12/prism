@@ -38,6 +38,11 @@ connection limit and cancellation polling remain separate. HTTP regressions cove
 delayed headers, a stalled body, oversized responses and the total deadline;
 actual model behavior still needs the native generation tests.
 
+Document Markdown exports link sources bound to a block even when a model omits
+inline citation labels. Missing footnote references appear after the block,
+preserving table and code syntax. Existing inline references are not duplicated;
+unknown labels cannot acquire a source, and no claim becomes verified.
+
 Saved file-set retrieval uses path-key order for its bounded 256-file batches,
 independent of producer arrival order. SQLite regressions cover shuffled sets
 across batch boundaries, deselection, root filters and stale revisions while

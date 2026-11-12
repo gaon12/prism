@@ -130,7 +130,9 @@ impl FileIndex {
                         } else {
                             row_count = row_count.saturating_add(records.len());
                             rows.push(records);
-                            if initial && threads > 1 && row_count >= 4096 {
+                            // A single-core host also needs bounded raw rows;
+                            // its one preparation worker drains a one-slot queue.
+                            if initial && row_count >= 4096 {
                                 preparation = Some(pipeline::Preparation::start(
                                     scope, self, generation, sweep, threads,
                                 )?);

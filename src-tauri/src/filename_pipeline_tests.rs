@@ -33,6 +33,12 @@ fn wait(check: impl Fn() -> bool) {
 
 #[test]
 fn real_workers_prepare_before_the_producer_finishes_and_keep_all_fields_private() {
+    for workers in [1, 4] {
+        prepare_before_producer_finishes(workers);
+    }
+}
+
+fn prepare_before_producer_finishes(workers: usize) {
     let root = tempfile::tempdir().unwrap();
     let input = rows(root.path(), 0, 8192);
     let (index, _owner) = isolated();
@@ -40,7 +46,7 @@ fn real_workers_prepare_before_the_producer_finishes_and_keep_all_fields_private
         .prepare_initial_catalog(1, vec![input.clone()], 9, 4)
         .unwrap();
     let prepared = std::thread::scope(|scope| {
-        let preparation = Preparation::start(scope, &index, 1, 9, 4).unwrap();
+        let preparation = Preparation::start(scope, &index, 1, 9, workers).unwrap();
         // Inject a batch larger than a wire frame to also exercise bounded
         // splitting; the production wire decoder already caps each frame.
         preparation.send(input[..4096].to_vec()).unwrap();

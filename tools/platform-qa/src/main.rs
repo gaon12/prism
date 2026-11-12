@@ -163,7 +163,8 @@ fn fixture() -> Option<i32> {
             // to exercise actual language failure and public Auto fallback.
             #[cfg(target_os = "macos")]
             language: "zz-PrismUnavailable".into(),
-            ..Default::default()
+            #[cfg(target_os = "linux")]
+            language: "auto".into(),
         };
         #[cfg(target_os = "linux")]
         let expected_absence = ocr::Code::Unavailable;

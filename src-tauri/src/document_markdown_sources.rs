@@ -42,10 +42,7 @@ fn close_trailing_fence(markdown: &str) -> Cow<'_, str> {
     Cow::Owned(probe)
 }
 
-fn replace_visible_labels(
-    markdown: &str,
-    mut replacement: impl FnMut(&str) -> Option<String>,
-) -> String {
+fn visible_ranges(markdown: &str) -> Vec<Range<usize>> {
     let mut visible: Vec<Range<usize>> = Vec::new();
     let mut opaque_depth = 0usize;
     for (event, range) in Parser::new_ext(markdown, Options::ENABLE_FOOTNOTES).into_offset_iter() {
@@ -77,22 +74,32 @@ fn replace_visible_labels(
             _ => {}
         }
     }
+    visible
+}
+
+fn escaped(markdown: &str, start: usize) -> bool {
+    markdown.as_bytes()[..start]
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'\\')
+        .count()
+        % 2
+        != 0
+}
+
+fn replace_visible_labels(
+    markdown: &str,
+    mut replacement: impl FnMut(&str) -> Option<String>,
+) -> String {
     let mut output = String::with_capacity(markdown.len());
     let mut copied = 0;
-    for range in visible {
+    for range in visible_ranges(markdown) {
         output.push_str(&markdown[copied..range.start]);
         let mut cursor = range.start;
         while let Some(offset) = markdown[cursor..range.end].find('[') {
             let start = cursor + offset;
             output.push_str(&markdown[cursor..start]);
-            let escaped = markdown.as_bytes()[..start]
-                .iter()
-                .rev()
-                .take_while(|byte| **byte == b'\\')
-                .count()
-                % 2
-                != 0;
-            if !escaped {
+            if !escaped(markdown, start) {
                 // A bound label is at most 12 bytes including its brackets;
                 // an existing footnote reference adds one caret. Bound the
                 // scan so a paragraph of unmatched '[' cannot be quadratic.
@@ -135,7 +142,94 @@ pub(super) fn remap_sources(markdown: &str, labels: &HashMap<String, String>) ->
     })
 }
 
-pub(super) fn link_sources(markdown: &str, labels: &[&str]) -> String {
+fn footnote_key(label: &str) -> String {
+    // Generated IDs use ASCII only. Upper-then-lower conservatively reserves
+    // Unicode variants such as long s as well as ordinary case differences.
+    label
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_uppercase()
+        .to_lowercase()
+}
+
+pub(super) struct SourceNotes {
+    ids: HashMap<String, String>,
+    defined: HashSet<String>,
+}
+impl SourceNotes {
+    pub(super) fn id<'a>(&'a self, label: &'a str) -> &'a str {
+        self.ids.get(label).map_or(label, String::as_str)
+    }
+}
+
+pub(super) fn source_notes<'a>(
+    blocks: impl IntoIterator<Item = (&'a str, &'a [String])>,
+    labels: &[&str],
+) -> SourceNotes {
+    if labels.is_empty() {
+        return SourceNotes {
+            ids: HashMap::new(),
+            defined: HashSet::new(),
+        };
+    }
+    let blocks: Vec<_> = blocks.into_iter().collect();
+    let mut defined = HashSet::new();
+    for (markdown, _) in &blocks {
+        for event in Parser::new_ext(markdown, Options::ENABLE_FOOTNOTES) {
+            if let Event::Start(Tag::FootnoteDefinition(label)) = event {
+                defined.insert(footnote_key(&label));
+            }
+        }
+    }
+    let mut occupied = defined.clone();
+    for (markdown, bound) in blocks {
+        for range in visible_ranges(markdown) {
+            let mut cursor = range.start;
+            while let Some(offset) = markdown[cursor..range.end].find("[^") {
+                let start = cursor + offset;
+                cursor = start + 2;
+                if escaped(markdown, start) {
+                    continue;
+                }
+                // Generated S/E IDs and namespaced alternatives fit in 64
+                // bytes. Bound this scan even for dense unmatched brackets.
+                if let Some(length) = markdown.as_bytes()[cursor..range.end]
+                    .iter()
+                    .take(64)
+                    .position(|byte| *byte == b']')
+                {
+                    let label = &markdown[cursor..cursor + length];
+                    let token = format!("[{label}]");
+                    if !bound.contains(&token) {
+                        occupied.insert(footnote_key(label));
+                    }
+                }
+            }
+        }
+    }
+    let mut ids = HashMap::new();
+    for &label in labels {
+        if ids.contains_key(label) {
+            continue;
+        }
+        let mut id = label.to_owned();
+        if occupied.contains(&footnote_key(&id)) {
+            id = format!("prism-source-{label}");
+            let base = id.clone();
+            let mut suffix = 2;
+            while occupied.contains(&footnote_key(&id)) {
+                id = format!("{base}-{suffix}");
+                suffix += 1;
+            }
+        }
+        occupied.insert(footnote_key(&id));
+        ids.insert(label.to_owned(), id);
+    }
+    SourceNotes { ids, defined }
+}
+
+pub(super) fn link_sources(markdown: &str, labels: &[&str], notes: &SourceNotes) -> String {
     // Even a block with no bound sources can otherwise swallow a later block's
     // references. This function is called only for source-inclusive exports.
     let markdown = close_trailing_fence(markdown);
@@ -146,14 +240,17 @@ pub(super) fn link_sources(markdown: &str, labels: &[&str]) -> String {
     let mut referenced = HashSet::new();
     let mut output = replace_visible_labels(&markdown, |token| {
         let label = token.strip_prefix('^').unwrap_or(token);
+        if token.starts_with('^') && notes.defined.contains(&footnote_key(label)) {
+            return None;
+        }
         let label = *bound.get(label)?;
         referenced.insert(label);
-        Some(format!("[^{label}]"))
+        Some(format!("[^{}]", notes.id(label)))
     });
     let missing: Vec<_> = labels
         .iter()
         .filter(|label| referenced.insert(**label))
-        .map(|label| format!("[^{label}]"))
+        .map(|label| format!("[^{}]", notes.id(label)))
         .collect();
     if !missing.is_empty() {
         output.push_str("\n\n");
@@ -165,6 +262,35 @@ pub(super) fn link_sources(markdown: &str, labels: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn link_sources(markdown: &str, labels: &[&str]) -> String {
+        let bound: Vec<_> = labels.iter().map(|label| format!("[{label}]")).collect();
+        let notes = source_notes([(markdown, bound.as_slice())], labels);
+        super::link_sources(markdown, labels, &notes)
+    }
+
+    #[test]
+    fn source_note_ids_reserve_authored_and_unbound_names_without_touching_literals() {
+        let unbound: Vec<String> = vec![];
+        for (markdown, expected) in [
+            ("`literal [^S1]`", "S1"),
+            (r"Escaped \[^S1]", "S1"),
+            ("Undefined [^S1]", "prism-source-S1"),
+            ("Undefined [^S1] [^prism-source-S1]", "prism-source-S1-2"),
+            ("[^s1]: unused authored note", "prism-source-S1"),
+            ("[^ſ1]: Unicode authored note", "prism-source-S1"),
+            (
+                "[^S1]: one\n[^prism-source-S1]: two\n[^PRISM-SOURCE-S1-2]: three",
+                "prism-source-S1-3",
+            ),
+        ] {
+            let notes = source_notes([(markdown, unbound.as_slice())], &["S1"]);
+            assert_eq!(notes.id("S1"), expected, "{markdown}");
+        }
+        let dense = format!("{} [S1]", "[^".repeat(64 * 1024));
+        let notes = source_notes([(dense.as_str(), unbound.as_slice())], &["S1"]);
+        assert_eq!(notes.id("S1"), "S1");
+    }
 
     #[test]
     fn stable_remapping_keeps_external_and_local_literals_and_bounds_unmatched_brackets() {

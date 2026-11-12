@@ -1174,6 +1174,27 @@ mod markdown_sources;
 
 fn render(revision: &DocumentRevision, sources: bool, types: bool) -> String {
     let mut result = format!("# {}\n\n", revision.plan.title.replace(['\r', '\n'], " "));
+    let source_notes = sources.then(|| {
+        let labels: Vec<_> = revision
+            .citations
+            .iter()
+            .filter(|citation| {
+                revision.blocks.iter().any(|block| {
+                    block
+                        .source_labels
+                        .contains(&format!("[{}]", citation.label))
+                })
+            })
+            .map(|citation| citation.label.as_str())
+            .collect();
+        markdown_sources::source_notes(
+            revision
+                .blocks
+                .iter()
+                .map(|block| (block.markdown.as_str(), block.source_labels.as_slice())),
+            &labels,
+        )
+    });
     for block in &revision.blocks {
         if types {
             let kind = match block.kind {
@@ -1185,7 +1206,7 @@ fn render(revision: &DocumentRevision, sources: bool, types: bool) -> String {
             result.push_str(&format!("<!-- prism:{kind}; verified=false -->\n"));
         }
         let mut markdown = block.markdown.clone();
-        if sources {
+        if let Some(notes) = &source_notes {
             let bound: Vec<_> = revision
                 .citations
                 .iter()
@@ -1196,7 +1217,7 @@ fn render(revision: &DocumentRevision, sources: bool, types: bool) -> String {
                 })
                 .map(|citation| citation.label.as_str())
                 .collect();
-            markdown = markdown_sources::link_sources(&markdown, &bound);
+            markdown = markdown_sources::link_sources(&markdown, &bound, notes);
         }
         result.push_str(&markdown);
         result.push_str("\n\n");
@@ -1206,7 +1227,7 @@ fn render(revision: &DocumentRevision, sources: bool, types: bool) -> String {
             result.push_str(&format!("## {}\n\n", section.heading));
         }
     }
-    if sources {
+    if let Some(notes) = &source_notes {
         for citation in &revision.citations {
             if revision.blocks.iter().any(|block| {
                 block
@@ -1216,7 +1237,7 @@ fn render(revision: &DocumentRevision, sources: bool, types: bool) -> String {
                 let path = citation.source.file_path.replace(['\r', '\n'], " ");
                 result.push_str(&format!(
                     "[^{}]: {}{}{}; source state: {:?}; claim not verified\n",
-                    citation.label,
+                    notes.id(&citation.label),
                     path,
                     citation
                         .source
@@ -2044,6 +2065,182 @@ mod tests {
                     .unwrap(),
                 revision.markdown
             );
+        });
+    }
+    #[test]
+    fn source_notes_do_not_rebind_authored_footnotes_with_the_same_label() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            f.transport.push(body("base", "Sourced statement [S1]"));
+            let base = f
+                .service
+                .generate_body(request(&page, "authored_note_base"))
+                .await
+                .unwrap();
+            let mut expected = base.id.clone();
+            for (index, (reference, definitions)) in [
+                ("S1", "[^S1]: AUTHOR_NOTE_CANARY"),
+                ("s1", "[^s1]: AUTHOR_NOTE_CANARY"),
+                ("ſ1", "[^ſ1]: AUTHOR_NOTE_CANARY"),
+                (
+                    "S1",
+                    "[^S1]: AUTHOR_NOTE_CANARY\n[^prism-source-S1]: OTHER_AUTHOR_NOTE",
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut literal = base.blocks[0].clone();
+                literal.id = "authored-note".into();
+                literal.source_labels.clear();
+                literal.markdown = format!("Authored note[^{reference}].\n\n{definitions}");
+                let blocks = vec![literal.clone(), base.blocks[0].clone()];
+                // A real saved revision, not a modified renderer-only fixture.
+                let saved = f
+                    .service
+                    .save_manual(&page.document.id, &expected, blocks, None)
+                    .unwrap();
+                let exported = f
+                    .service
+                    .export_markdown(&page.document.id, Some(&saved.id), true, false)
+                    .unwrap();
+                let mut html = String::new();
+                pulldown_cmark::html::push_html(
+                    &mut html,
+                    pulldown_cmark::Parser::new_ext(
+                        &exported,
+                        pulldown_cmark::Options::ENABLE_FOOTNOTES,
+                    ),
+                );
+                assert_eq!(
+                    html.matches("class=\"footnote-reference\"").count(),
+                    2,
+                    "{exported}"
+                );
+                let referenced: HashSet<_> = pulldown_cmark::Parser::new_ext(
+                    &exported,
+                    pulldown_cmark::Options::ENABLE_FOOTNOTES,
+                )
+                .filter_map(|event| match event {
+                    pulldown_cmark::Event::FootnoteReference(label) => {
+                        Some(label.to_uppercase().to_lowercase())
+                    }
+                    _ => None,
+                })
+                .collect();
+                assert_eq!(
+                    referenced.len(),
+                    2,
+                    "source and authored references must remain distinct: {exported}"
+                );
+                let mut authored_html = String::new();
+                pulldown_cmark::html::push_html(
+                    &mut authored_html,
+                    pulldown_cmark::Parser::new_ext(
+                        &literal.markdown,
+                        pulldown_cmark::Options::ENABLE_FOOTNOTES,
+                    ),
+                );
+                assert_eq!(html.matches("class=\"footnote-definition\"").count(),
+                    authored_html.matches("class=\"footnote-definition\"").count() + 1,
+                    "source and authored note must have distinct definitions, case {index}: {exported}");
+                assert!(html.contains("AUTHOR_NOTE_CANARY") && html.contains("claim not verified"));
+                assert!(exported.contains(&literal.markdown));
+                assert_eq!(
+                    f.service
+                        .get(&page.document.id, Some(&saved.id))
+                        .unwrap()
+                        .revision
+                        .blocks[0]
+                        .markdown,
+                    literal.markdown
+                );
+                assert_eq!(
+                    f.service
+                        .export_markdown(&page.document.id, Some(&saved.id), false, false)
+                        .unwrap(),
+                    saved.markdown
+                );
+                // Restore the unchanged original as the base for the next case.
+                let restored = f
+                    .service
+                    .restore(&page.document.id, &saved.id, &base.id)
+                    .unwrap();
+                expected = restored.id;
+            }
+        });
+    }
+    #[test]
+    fn an_unbound_footnote_lookalike_stays_literal_when_another_block_has_sources() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            f.transport.push(body("base", "Sourced [S1]"));
+            let base = f
+                .service
+                .generate_body(request(&page, "unbound_note_base"))
+                .await
+                .unwrap();
+            let mut literal = base.blocks[0].clone();
+            literal.id = "authored".into();
+            literal.source_labels.clear();
+            literal.markdown = "Placeholder [^S1] and [^prism-source-S1]".into();
+            let saved = f
+                .service
+                .save_manual(
+                    &page.document.id,
+                    &base.id,
+                    vec![literal.clone(), base.blocks[0].clone()],
+                    None,
+                )
+                .unwrap();
+            let exported = f
+                .service
+                .export_markdown(&page.document.id, Some(&saved.id), true, false)
+                .unwrap();
+            let mut html = String::new();
+            pulldown_cmark::html::push_html(
+                &mut html,
+                pulldown_cmark::Parser::new_ext(
+                    &exported,
+                    pulldown_cmark::Options::ENABLE_FOOTNOTES,
+                ),
+            );
+            assert_eq!(
+                html.matches("class=\"footnote-reference\"").count(),
+                1,
+                "{exported}"
+            );
+            assert!(
+                html.contains(&literal.markdown),
+                "unbound placeholders must remain literal"
+            );
+            assert!(exported.contains("[^prism-source-S1-2]:"));
+        });
+    }
+    #[test]
+    fn a_bound_block_keeps_its_authored_footnote_separate_from_its_source() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            let markdown =
+                "Authored note[^S1].\n\n[^S1]: AUTHOR_NOTE_CANARY\n\nSourced statement [S1]";
+            f.transport.push(body("both", markdown));
+            let revision = f
+                .service
+                .generate_body(request(&page, "bound_authored_note"))
+                .await
+                .unwrap();
+            let exported = f
+                .service
+                .export_markdown(&page.document.id, None, true, false)
+                .unwrap();
+            assert!(exported.contains("Authored note[^S1]."));
+            assert!(exported.contains("Sourced statement [^prism-source-S1]"));
+            assert!(exported.contains("[^S1]: AUTHOR_NOTE_CANARY"));
+            assert!(exported.contains("[^prism-source-S1]:"));
+            assert_eq!(revision.blocks[0].markdown, markdown);
         });
     }
     #[test]

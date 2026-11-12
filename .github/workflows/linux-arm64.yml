@@ -1,0 +1,67 @@
+# Linux ARM64 qualification (dispatch only, no release artifacts).
+#
+# Release builds ship x86_64 Linux only. This compiles and runs the same native
+# app library and platform-QA suites on a real ARM64 Linux runner, so ARM-only
+# build or runtime regressions surface before ARM packaging is considered.
+name: Linux ARM64 qualification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: linux-arm64-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux-arm64:
+    name: Test native library on Linux ARM64
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Confirm the runner architecture
+        run: |
+          uname -m
+          test "$(uname -m)" = aarch64
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: |
+            src-tauri
+            tools/platform-qa
+          key: linux-arm64
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: '34.1'
+          repo-token: ${{ github.token }}
+      - name: Install Linux system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libclang-dev libssl-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - run: npm ci
+      - name: Check the client on ARM64 Node
+        run: |
+          npm run check
+          npm test
+      - name: Test the exact runtime and credential platform modules
+        run: |
+          cargo test --manifest-path tools/platform-qa/Cargo.toml --locked
+          cargo clippy --manifest-path tools/platform-qa/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Build the web bundle the app library embeds
+        run: npm run build
+      - name: Test the native app library
+        run: cargo test --manifest-path src-tauri/Cargo.toml --release --lib --locked

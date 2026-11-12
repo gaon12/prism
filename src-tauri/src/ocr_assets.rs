@@ -9,23 +9,15 @@ pub const PIPELINE: &str = "PaddleOCR-VL-1.6";
 pub const WORKER: &[u8] = include_bytes!("../../tools/ocr-runtime/worker.py");
 const WINDOWS: &str = include_str!("../../tools/ocr-runtime/windows-x64.lock.json");
 const LINUX: &str = include_str!("../../tools/ocr-runtime/linux-x64.lock.json");
-// This reference is available only for explicit native qualification. Release
-// builds keep the existing unsupported result until actual Mac validation.
-#[cfg(any(
-    test,
-    all(debug_assertions, target_os = "macos", target_arch = "aarch64")
-))]
+// The exact reference catalog is shared with native qualification. Mac ARM64
+// release registration requires the successful native lifetime run recorded
+// in tools/ocr-runtime/README.md; Intel remains unsupported.
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 const MAC_REFERENCE: &str = include_str!("../../tools/ocr-runtime/macos-arm64.reference.lock.json");
-#[cfg(any(
-    test,
-    all(debug_assertions, target_os = "macos", target_arch = "aarch64")
-))]
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 const MAC_REFERENCE_INFO: &str =
     include_str!("../../tools/ocr-runtime/macos-arm64.inventory-reference.json");
-#[cfg(any(
-    test,
-    all(debug_assertions, target_os = "macos", target_arch = "aarch64")
-))]
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 const MAC_SOURCES: &str = include_str!("../../tools/ocr-runtime/macos-arm64.sources.lock.json");
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -104,12 +96,9 @@ pub fn for_target(target: &str) -> Result<Catalog> {
     let raw = match target {
         "windows-x64" => WINDOWS,
         "linux-x64" => LINUX,
-        #[cfg(all(
-            any(test, debug_assertions),
-            target_os = "macos",
-            target_arch = "aarch64"
-        ))]
-        "macos-arm64" if std::env::var("PRISM_DEV_PADDLE_REFERENCE").as_deref() == Ok("1") => {
+        // The pinned numpy/scipy/torch wheels require macOS 14 or newer.
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        "macos-arm64" if objc2::available!(macos = 14.0) => {
             return macos_reference_catalog();
         }
         _ => return Err(error(Code::Unavailable)),
@@ -161,17 +150,11 @@ fn parse_catalog(raw: &str, target: &str) -> Result<Catalog> {
     }
     Ok(catalog)
 }
-#[cfg(any(
-    test,
-    all(debug_assertions, target_os = "macos", target_arch = "aarch64")
-))]
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) fn macos_reference_catalog() -> Result<Catalog> {
     checked_macos_reference(MAC_REFERENCE)
 }
-#[cfg(any(
-    test,
-    all(debug_assertions, target_os = "macos", target_arch = "aarch64")
-))]
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 fn checked_macos_reference(raw: &str) -> Result<Catalog> {
     let expected: serde_json::Value =
         serde_json::from_str(MAC_REFERENCE_INFO).map_err(|_| error(Code::Failed))?;
@@ -261,7 +244,7 @@ impl Catalog {
 mod tests {
     use super::*;
     #[test]
-    fn macos_reference_is_bound_to_the_verified_sources_and_not_a_release_target() {
+    fn macos_reference_is_bound_to_the_verified_sources() {
         let catalog = macos_reference_catalog().unwrap();
         let sources: serde_json::Value = serde_json::from_str(MAC_SOURCES).unwrap();
         assert_eq!(
@@ -287,6 +270,37 @@ mod tests {
         assert_eq!(
             for_target("macos-arm64").unwrap_err().code,
             Code::Unavailable
+        );
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn macos_catalog_needs_a_supported_os_and_no_qualification_flag() {
+        const CHILD: &str = "PRISM_TEST_MAC_CATALOG_CHILD";
+        if std::env::var(CHILD).as_deref() == Ok("1") {
+            assert_eq!(
+                for_target("macos-arm64").is_ok(),
+                objc2::available!(macos = 14.0),
+            );
+            assert_eq!(for_target("macos-x64").unwrap_err().code, Code::Unavailable);
+            return;
+        }
+        // Check our own test child without mutating this process's environment,
+        // even when a qualification workflow still supplies the old flag.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "ocr_assets::tests::macos_catalog_needs_a_supported_os_and_no_qualification_flag",
+                "--exact",
+                "--nocapture",
+            ])
+            .env_remove("PRISM_DEV_PADDLE_REFERENCE")
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "catalog child failed: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
         );
     }
     #[test]

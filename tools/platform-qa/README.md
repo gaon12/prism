@@ -176,26 +176,28 @@ Expensive or OS-dependent checks are opt-in:
   substitute. It does not require `PRISM_TEST_SUPERVISOR` because the parent is
   already the QA binary with the proper dispatcher.
 - `real_paddle_install_recognition_and_cancellation`: Windows x64, Linux x64 or
-  staged Mac ARM64 debug/test qualification;
+  macOS 14+ ARM64;
   set `PRISM_TEST_PADDLE_OFFLINE` to the exact artifact directory in the
   [runtime guide](../ocr-runtime/README.md), or explicitly set
   `PRISM_TEST_PADDLE_NETWORK=1` to download the full package. Runs installation,
   complete inventory verification, real Korean image/PDF recognition, process
   reuse and cancellation. Unix needs `PRISM_TEST_LAUNCHER` pointing to the built
-  QA binary. Mac also needs `PRISM_DEV_PADDLE_REFERENCE=1`; release Mac runtime
-  availability is unchanged. It retains a Windows process handle, Linux pidfd or
+  QA binary. Mac no longer needs `PRISM_DEV_PADDLE_REFERENCE`. It retains a
+  Windows process handle, Linux pidfd or
   Mac kernel exit notification to prove exit. The explicit Mac runs
   `43180553078` and `43186709347` passed this installation/recognition/cancellation
-  check. Their separate parent-lifetime check failed before SIGKILL and remains
-  unqualified.
+  check. Their separate parent-lifetime check failed before SIGKILL. The later
+  [run 43297322002](https://github.com/gaon12/prism/actions/runs/43297322002)
+  passed both checks (196.07s and 250.49s) with the identical catalog, enabling
+  the macOS 14+ ARM64 catalog in release builds; Intel remains unavailable.
 - `real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill`: Linux x64 or
-  staged Mac ARM64 debug/test qualification;
+  macOS 14+ ARM64;
   set `PRISM_TEST_PADDLE_INSTALLED` to the authenticated prepared runtime. The
   test copies it to a temporary profile, recognizes real text through Automatic
   dispatch, and proves the exact worker exits after SIGKILL of its own parent.
   It also checks the actual extractor's mixed PDF page order, blank-page omission,
   AES-256 user/owner passwords, raw fingerprints and original-file preservation.
-  Mac requires the explicit reference flag and an actual materialized Mac seed,
+  Mac requires an actual materialized Mac seed,
   then exercises real OS language unavailability before Auto fallback. The worker
   exit observer attaches before parent termination. Each fixed progress stage has
   the production 180-second OCR allowance, and the complete fixture has a
@@ -204,7 +206,8 @@ Expensive or OS-dependent checks are opt-in:
   On Mac run `43186709347`, the image completed in 112.439s and mixed extraction
   in 62.784s; the old aggregate 180-second bound killed the next request at
   `encrypted-user-extraction`. This measured result motivates separate operation
-  budgets; it does not qualify the remaining extraction or SIGKILL assertions.
+  budgets. Run `43297322002` subsequently passed the complete extraction and
+  SIGKILL assertions; see the qualification record in the runtime guide.
   See the [runtime guide](../ocr-runtime/README.md)
   for exact native commands. Compilation does not establish native execution.
 - `native_store_roundtrip_replacement_isolation_and_delete`: on macOS or Linux,

@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "nativeValidated": true,
+  "target": "macos-arm64",
+  "minimumMacOS": "14.0",
+  "sourceCommit": "ee2118a2ffa2c609860522d3dd1d87dfce334356",
+  "runId": 43297322002,
+  "jobId": 131458986580,
+  "runUrl": "https://github.com/gaon12/prism/actions/runs/43297322002",
+  "artifactId": 13980827513,
+  "artifactSha256": "93ce0f24a74eba3e1045db93b18e3f961906dc19f6442a11bddb4a4a1516ebaa",
+  "catalogSha256": "ce4b11a9a200ff0729013efe071491fdf6086983c32f0693585c5f2b3a07af63",
+  "sourceLockSha256": "fe3ddb83e9f111e1cacc0766de388937f4902c46566ded6f35ed6a244c7650ac",
+  "inventorySha256": "f0dfb429b5a4baeef1512c8005fb0412453c15f7100feb67f23d5989a45835da",
+  "workerSha256": "d3eb127c4d87497782eeb300eceb458e469d4a1bfc92fff24bcb615196530783",
+  "fileCount": 36322,
+  "expandedBytes": 3256648939,
+  "host": {
+    "os": "macOS",
+    "version": "26.7.2",
+    "architecture": "arm64",
+    "builderPython": "Python 3.15.2"
+  },
+  "checks": {
+    "nativeCatalogByteIdentical": true,
+    "actualInstallRecognitionReuseCancellation": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 196.07,
+      "logSha256": "8c5901e9d7e70adfaa1e3a7f122f37d548616bb712fdb03b62828f3a63ae1c34"
+    },
+    "actualAutoFallbackAndAppParentSigkillWorkerExit": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 250.49,
+      "postKillDeadlineSeconds": 8,
+      "logSha256": "639447d003c5b9950c8908ede069b0a3a854e5ea32c0f85ff9510ee899b33ec4"
+    }
+  },
+  "scope": "Native platform QA using the production installer/worker and staged reference. This does not establish Mac desktop installation UI, Intel support or execution on every supported OS version.",
+  "pinnedRuntimePython": "3.13.18"
+}

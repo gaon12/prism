@@ -3,11 +3,13 @@
 Prism uses the official **PaddleOCR-VL-1.6** pipeline, including
 **PP-DocLayoutV3** layout detection, region crops, reading order, VLM recognition
 and result assembly. It does not substitute a whole-page language-model prompt.
-Runtime locks cover Windows x64 and Linux x64 CPU. macOS and Linux ARM64 remain
-work in progress; full Linux desktop integration is separate from the WSL runtime checks.
+Runtime locks cover Windows x64, Linux x64 and macOS 14+ ARM64 CPU. Intel macOS
+and Linux ARM64 remain unavailable; full desktop integration is separate from
+the native runtime and WSL checks.
 
 The application downloads only the fixed official artifacts in
-`windows-x64.lock.json` and `linux-x64.lock.json`: private Python,
+`windows-x64.lock.json`, `linux-x64.lock.json` and the unchanged
+`macos-arm64.reference.lock.json`: private Python,
 PaddleOCR 3.7.0/PaddleX 3.7.2, the CPU
 framework and dependencies, and both model inventories. Archives and installed
 files have pinned byte lengths and SHA-256 hashes. The compiled inventory digest
@@ -117,17 +119,19 @@ in the app. Users never run these tools or install Python themselves.
 `macos-arm64.inventory-reference.json` records the data-only reference generated
 from all 129 authenticated inputs: 36,322 expected installed files, 3,256,648,939
 expanded bytes and the inventory/catalog hashes. It is not a runtime catalog and
-is not registered in the app. Compare an actual Mac build against these fields
+is not itself the app's runtime catalog. Compare an actual Mac build against these fields
 before native qualification. Windows archive parsing does not establish Mac
 filesystem, import, recognition, cancellation or process-lifetime behavior.
 
 `macos-arm64.reference.lock.json` is that complete, byte-pinned reference catalog.
-An explicit **Mac ARM64 debug/test-only** route selects it when
-`PRISM_DEV_PADDLE_REFERENCE=1`. The source plan, reference catalog and worker are
-checked against their compiled hashes. Release builds ignore this flag and keep
-the existing unavailable result. Ordinary tests do not enable it or download a
-runtime. This staging route is for native qualification, not a claim of Mac
-Paddle support.
+After the successful [native qualification](https://github.com/gaon12/prism/actions/runs/43297322002),
+the app selects this same catalog on macOS 14+ ARM64 in debug and release builds,
+without `PRISM_DEV_PADDLE_REFERENCE`. Intel and older macOS versions remain
+unavailable. The source plan, reference catalog and worker are checked against
+their compiled hashes. The historical `inventory-reference.json` still describes
+its original data-only generation; `macos-arm64.qualification.json` records the
+subsequent native evidence, exact catalog and artifact hashes. Ordinary tests do
+not download or execute this runtime.
 
 The ignored Rust check
 `actual_macos_reference_extracts_and_authenticates_every_installed_file` can
@@ -151,7 +155,6 @@ On an actual macOS 14+ ARM64 machine with the prepared, authenticated artifacts,
 run the complete production installer and image/PDF/cancellation test:
 
 ```sh
-export PRISM_DEV_PADDLE_REFERENCE=1
 export PRISM_TEST_PADDLE_OFFLINE=/absolute/path/to/new-mac-sources
 cargo build --manifest-path tools/platform-qa/Cargo.toml --locked --bin prism-platform-qa
 export PRISM_TEST_LAUNCHER="$PWD/tools/platform-qa/target/debug/prism-platform-qa"
@@ -166,11 +169,13 @@ a kernel `NOTE_EXIT` notification while the owned worker is alive and waits on
 that retained queue after cancellation; it does not infer exit from a later PID
 lookup. A separate small native test exercises this observer using its own
 `/bin/sleep` child. Cross-compilation alone does not establish either result.
-The [Mac ARM64 run on 2026-11-12](https://github.com/gaon12/prism/actions/runs/43180553078)
-matched the unchanged reference catalog and passed actual installation, image/PDF
-recognition, process reuse and cancellation. Its separate parent-lifetime test
-hit the unchanged 180-second readiness deadline before reaching the parent kill.
-That gate remains unverified, and release builds still keep Mac Paddle unavailable.
+The [Mac ARM64 run](https://github.com/gaon12/prism/actions/runs/43297322002)
+matched the unchanged reference catalog byte for byte and passed actual
+installation, image/PDF recognition, process reuse and cancellation (196.07s).
+Its separate Automatic fallback, mixed/encrypted extraction and app-parent
+SIGKILL/worker-exit test also passed (250.49s), retaining the eight-second worker
+exit deadline. The host was macOS 26.7.2 ARM64. This qualifies the native runtime;
+it does not establish desktop installation UI or every supported OS version.
 The parent fixture records fixed stage names and elapsed times in its own log
 and beside its readiness file. On failure, the test emits the last phase and at
 most 16 KiB from the end of `fixture.log` after cleaning up its owned parent and
@@ -207,20 +212,18 @@ may Automatic fall back to the installed full Paddle pipeline.
 
 The same fixture exercises document extraction for mixed typed/scanned pages,
 blank-page omission and AES-256 user/owner passwords, retaining original source
-hashes and bytes without writing a decrypted PDF. On Mac ARM64, retain the debug
-reference flag from the previous commands and use the actual materialized Mac
-runtime as the seed:
+hashes and bytes without writing a decrypted PDF. On macOS 14+ ARM64, use the
+actual materialized Mac runtime as the seed; no reference flag is needed:
 
 ```sh
-export PRISM_DEV_PADDLE_REFERENCE=1
 export PRISM_TEST_PADDLE_INSTALLED=/absolute/path/to/new-private-runtime
 cargo test --manifest-path tools/platform-qa/Cargo.toml --locked --test paddle_lifetime real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill -- --ignored --nocapture
 ```
 
 This separate test builds its own QA host and does not require
 `PRISM_TEST_LAUNCHER`. A compilation result does not qualify the actual model,
-source extraction or parent-death behavior. Mac native execution is still
-required before the reference can become a release runtime.
+source extraction or parent-death behavior. The linked native run supplies that
+evidence for the unchanged catalog; future runtime changes need new qualification.
 
 For the real Windows WebView regression, set `PRISM_TEST_PADDLE_RUNTIME` to the
 materialized QA directory and run `npm run test:paddle-ocr`. It clicks the actual

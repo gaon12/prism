@@ -24,9 +24,8 @@ jobs:
     defaults:
       run:
         shell: bash
-    env:
-      # Selects the authenticated reference catalog in debug/test builds only.
-      PRISM_DEV_PADDLE_REFERENCE: '1'
+    # No qualification flag: since feeeac6 the qualified reference catalog is
+    # the product catalog on macOS 14+ ARM64, so this checks what users get.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

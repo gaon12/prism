@@ -1,30 +1,61 @@
 // Actual document/RAG/source/storage services. Generation is a synthetic local
 // server; documents, revisions and source files are all isolated fixtures.
 import assert from 'node:assert/strict';
+import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { createServer } from 'node:http';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, toNamespacedPath } from 'node:path';
 import { launch, shutdown, until } from './harness.mjs';
 import { inspectPdf } from './pdf-inspect.mjs';
 import { inspectHwpx } from './hwpx-inspect.mjs';
 
 const directory = await mkdtemp(join(tmpdir(), 'prism-documents-'));
-const evidence = join(tmpdir(), 'prism-ui-evidence');
+const evidence = join(directory, 'evidence');
 await mkdir(evidence, { recursive: true });
+const portable = Boolean(process.env.PRISM_TEST_EXECUTABLE);
+const application = join(directory, 'app');
+const profile = portable ? join(application, 'PrismData') : directory;
+await mkdir(profile, { recursive: true });
+const scopeId = `document_fixture_${randomUUID()}`;
+const pathKey = (value) =>
+  process.platform === 'win32' ? toNamespacedPath(value).toLowerCase() : value;
+const sha = async (path) => {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest('hex');
+};
+let executable, executableSha256;
+if (portable) {
+  assert.equal(process.platform, 'win32', 'This portable native fixture uses Windows WebView2');
+  const original = resolve(process.env.PRISM_TEST_EXECUTABLE);
+  assert((await stat(original)).isFile());
+  executableSha256 = await sha(original);
+  if (process.env.PRISM_TEST_APP_SHA256)
+    assert.equal(executableSha256, process.env.PRISM_TEST_APP_SHA256.toLowerCase());
+  executable = join(application, 'prism.exe');
+  await copyFile(original, executable);
+  await writeFile(join(application, 'prism.portable'), '');
+  assert.equal(await sha(executable), executableSha256);
+}
+const launchOptions = portable ? { executable, portable: true, productionPortable: true } : {};
 const folder = join(directory, 'source-documents');
 await mkdir(folder);
 const source = join(folder, '원본.md');
 await writeFile(source, 'shared 제주 출장 경비 120000원. 표와 일정 검토.');
 await writeFile(
-  join(directory, 'settings.json'),
+  join(profile, 'settings.json'),
   JSON.stringify({
+    onboardingVersion: 1,
+    language: 'ko',
+    theme: 'light',
     shortcut: 'Ctrl+Alt+Shift+F6',
     startOnLogin: false,
     clipboard: { enabled: false, onboarded: true },
     scopes: [
       {
-        id: 'source',
+        id: scopeId,
         name: '문서 근거',
         path: folder,
         filenameEnabled: true,
@@ -38,6 +69,10 @@ const calls = [],
   sockets = new Set();
 let behavior = 'normal';
 let releaseUiBody;
+const literalMarkdown =
+  '모델 분류 예시\n\n`CODE_LITERAL_S1 [S1]` · `CODE_LITERAL_FOOTNOTE [^S1]`\n\n' +
+  '```text\nFENCED_LITERAL [S1]\n```\n\n' +
+  '[링크](https://example.invalid/[S1])\n\nEscaped \\[S1]';
 const server = createServer((request, response) => {
   const buffers = [];
   request.on('data', (chunk) => buffers.push(chunk));
@@ -95,8 +130,8 @@ const server = createServer((request, response) => {
                   id: 'classified',
                   sectionId: 'summary',
                   kind: 'userInput',
-                  markdown: '모델 분류 예시',
-                  sourceLabels: [],
+                  markdown: literalMarkdown,
+                  sourceLabels: ['[S1]'],
                 },
               ],
             };
@@ -121,12 +156,38 @@ server.on('connection', (socket) => {
 });
 await new Promise((done) => server.listen(0, '127.0.0.1', done));
 let instance;
+let verifiedProfile = false;
+let runtime, surface;
+const warnings = [];
+async function verifyProfile(current) {
+  const settings = await current.invoke('get_settings');
+  assert.equal(settings.scopes.length, 1);
+  assert.equal(settings.scopes[0].id, scopeId, 'CDP must reach the fresh fixture profile');
+  assert.equal(pathKey(settings.scopes[0].path), pathKey(folder));
+  const info = await current.invoke('runtime_info');
+  if (portable) assert.equal(info.installKind, 'portable');
+  if (process.env.PRISM_TEST_EXPECT_RELEASE === '1') assert.equal(info.development, false);
+  verifiedProfile = true;
+  for (const page of [current.main, current.quick])
+    page.on('console', (entry) => {
+      if (entry.type() === 'warning') warnings.push(entry.text());
+    });
+  return info;
+}
 try {
-  instance = await launch(
-    directory,
-    process.env.PRISM_TEST_EXECUTABLE ? { executable: process.env.PRISM_TEST_EXECUTABLE } : {},
-  );
+  instance = await launch(profile, launchOptions);
+  runtime = await verifyProfile(instance);
   const { invoke, main } = instance;
+  assert.equal((await invoke('doc_list', { query: '', limit: 100 })).length, 0);
+  await main.setViewportSize({ width: 1280, height: 840 });
+  surface = {
+    url: main.url(),
+    title: await main.title(),
+    viewport: main.viewportSize(),
+    browserVersion: await instance.browser.version(),
+  };
+  assert.equal(await main.locator('vite-error-overlay').count(), 0);
+  await main.screenshot({ path: join(evidence, 'documents-initial-native.png') });
   const result = (command, args) =>
     main.evaluate(
       async ({ command, args }) => {
@@ -161,10 +222,10 @@ try {
     },
   });
   const created = await invoke('doc_create', {
-    input: { title: 'shared', purpose: 'shared', scopeIds: ['source'], templateMarkdown: null },
+    input: { title: 'shared', purpose: 'shared', scopeIds: [scopeId], templateMarkdown: null },
   });
   const id = created.document.id;
-  const request = (revision, scopeIds = ['source']) => ({
+  const request = (revision, scopeIds = [scopeId]) => ({
     documentId: id,
     expectedRevisionId: revision.id,
     requestId: crypto.randomUUID(),
@@ -272,6 +333,7 @@ try {
   assert(
     exported.includes('120000원') && exported.includes('prism:fact') && exported.includes('[^S1]'),
   );
+  assert(exported.includes(literalMarkdown), 'Code, escapes and link targets must remain literal');
   assert(calls.every(({ packet }) => !JSON.stringify(packet).includes(directory)));
 
   // PDF uses this same real saved revision and its authenticated RAG citation
@@ -291,6 +353,12 @@ try {
     const inspected = inspectPdf(path);
     assert.equal(result.pages, inspected.pages);
     assert(inspected.text.includes('120000원'));
+    for (const literal of [
+      'CODE_LITERAL_S1[S1]',
+      'CODE_LITERAL_FOOTNOTE[^S1]',
+      'FENCED_LITERAL[S1]',
+    ])
+      assert(inspected.text.replace(/\s+/g, '').includes(literal), `PDF literal: ${literal}`);
     assert.equal(
       inspected.text.includes('원본.md'),
       sources,
@@ -308,6 +376,13 @@ try {
     });
     const hwpx = inspectHwpx(hwpxPath);
     assert(hwpx.text.includes('120000원'));
+    for (const literal of [
+      'CODE_LITERAL_S1[S1]',
+      'CODE_LITERAL_FOOTNOTE[^S1]',
+      'FENCED_LITERAL[S1]',
+    ])
+      assert(hwpx.text.replace(/\s+/g, '').includes(literal), `HWPX literal: ${literal}`);
+    assert.equal(hwpx.footnotes, sources ? 2 : 0, 'Only rendered references create source notes');
     assert.equal(
       hwpx.text.includes('원본.md'),
       sources,
@@ -490,6 +565,10 @@ try {
   await main.locator('.doc-edit-scroll').evaluate((element) => (element.scrollTop = 0));
   await main.screenshot({ path: join(evidence, 'documents-body-native.png') });
   assert.equal(await main.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await main.setViewportSize({ width: 760, height: 760 });
+  assert.equal(await main.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await main.screenshot({ path: join(evidence, 'documents-body-760-native.png') });
+  await main.setViewportSize({ width: 1280, height: 840 });
   await main.locator('.doc-history > summary').click();
   await main.getByRole('button', { name: '이전 버전으로 실행 취소', exact: true }).click();
   await until(
@@ -525,10 +604,9 @@ try {
   assert.equal(calls.length, count, 'Stale derived input must not be sent to the provider');
   assert.deepEqual(instance.errors, []);
   await shutdown(instance);
-  instance = await launch(
-    directory,
-    process.env.PRISM_TEST_EXECUTABLE ? { executable: process.env.PRISM_TEST_EXECUTABLE } : {},
-  );
+  verifiedProfile = false;
+  instance = await launch(profile, launchOptions);
+  await verifyProfile(instance);
   assert.equal(
     (await instance.invoke('doc_get', { id, revisionId: null })).revision.id,
     restored.id,
@@ -537,22 +615,44 @@ try {
   await instance.invoke('doc_delete', { id });
   assert.equal((await instance.invoke('doc_list', { query: '', limit: 100 })).length, 0);
   assert.deepEqual(instance.errors, []);
+  assert.deepEqual(warnings, []);
+  if (portable) assert.equal(await sha(executable), executableSha256);
   console.log(
     JSON.stringify({
       passed: true,
       directory,
+      evidence,
+      pdfDirectory,
+      runtime,
+      surface,
+      executableSha256,
+      warnings,
+      errors: instance.errors,
       generation: 'synthetic loopback fixture',
       externalCalls: 0,
     }),
   );
 } catch (error) {
+  if (!verifiedProfile) throw new Error('Document fixture profile was not verified');
   console.error(JSON.stringify({ directory }));
   if (instance) {
-    console.error((await instance.main.locator('.doc-editor').innerText()).slice(0, 1600));
+    try {
+      const editor = instance.main.locator('.doc-editor');
+      if (await editor.count())
+        console.error((await editor.innerText({ timeout: 1000 })).slice(0, 1600));
+    } catch {
+      // A diagnostic read must never replace the original assertion/IPC error.
+    }
   }
   throw error;
 } finally {
-  if (instance) await shutdown(instance);
+  if (instance) {
+    if (verifiedProfile) await shutdown(instance);
+    else {
+      await instance.browser?.close().catch(() => {});
+      instance.child?.kill();
+    }
+  }
   for (const socket of sockets) socket.destroy();
   await new Promise((done) => server.close(done));
 }

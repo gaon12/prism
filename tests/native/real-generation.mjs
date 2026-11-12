@@ -354,8 +354,8 @@ try {
       '--poll',
       '0',
       '--jinja',
-      '--chat-template-kwargs',
-      '{"enable_thinking":false}',
+      '--reasoning',
+      'off',
     ];
     const environment = Object.fromEntries(
       Object.entries(process.env).filter(([key]) => !/^(LLAMA_|GGML_|HF_|HUGGINGFACE_)/.test(key)),

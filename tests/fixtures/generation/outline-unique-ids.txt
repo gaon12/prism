@@ -1,0 +1,30 @@
+{
+  "title": "은하 워크숍 안내문",
+  "sections": [
+    {
+      "id": "section_1",
+      "heading": "# 은하 워크숍 확정 계획",
+      "instruction": "은하 워크숍의 일정, 장소, 예산, 및 참가 인원을 원문 그대로 안내하고 출처를 표시합니다."
+    },
+    {
+      "id": "section_2",
+      "heading": "참가 인원",
+      "instruction": "참가 인원: 7명 [S1]"
+    },
+    {
+      "id": "section_3",
+      "heading": "개최일",
+      "instruction": "개최일: 2026년 12월 5일 [S2]"
+    },
+    {
+      "id": "section_4",
+      "heading": "장소",
+      "instruction": "장소: 부산 해운대 [S4]"
+    },
+    {
+      "id": "section_5",
+      "heading": "예산 총액",
+      "instruction": "예산 총액: 347000원 [S3]"
+    }
+  ]
+}

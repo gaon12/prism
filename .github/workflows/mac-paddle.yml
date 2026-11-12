@@ -1,0 +1,109 @@
+# Actual Mac ARM64 PaddleOCR-VL runtime qualification (dispatch only, evidence only).
+name: Mac Paddle qualification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mac-paddle-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Actual Mac ARM64 PaddleOCR-VL qualification. This runs the staged debug/test-only reference
+  # runtime on a real Apple Silicon runner: native install, imports, recognition, cancellation and
+  # app-parent termination. It is separate from `build` so its ~12 GB of runtime copies never
+  # compete with the universal app build for disk. It is its own workflow so it can be re-run without
+  # waiting behind the release concurrency group, and no release ever depends on it.
+  # Release builds keep Mac Paddle unavailable until this evidence is reviewed.
+  mac-paddle:
+    name: Qualify Mac ARM64 Paddle runtime
+    runs-on: macos-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Selects the authenticated reference catalog in debug/test builds only.
+      PRISM_DEV_PADDLE_REFERENCE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Use a temp folder without aliases
+        # Same reason as the build job: macOS TMPDIR lives under the /var symlink.
+        # The runner context is unavailable in job-level env, so the paths are exported here.
+        run: |
+          SOURCES="$RUNNER_TEMP/mac-paddle-sources"
+          RUNTIME="$RUNNER_TEMP/mac-paddle-runtime"
+          EVIDENCE="$RUNNER_TEMP/mac-paddle-evidence"
+          echo "SOURCES=$SOURCES" >> "$GITHUB_ENV"
+          echo "RUNTIME=$RUNTIME" >> "$GITHUB_ENV"
+          echo "EVIDENCE=$EVIDENCE" >> "$GITHUB_ENV"
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          mkdir -p "$EVIDENCE"
+          { uname -m; sw_vers; df -h "$RUNNER_TEMP"; } | tee "$EVIDENCE/host.txt"
+          test "$(uname -m)" = arm64
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: tools/platform-qa
+          key: mac-paddle
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: '34.1'
+          repo-token: ${{ github.token }}
+      - name: Check the runtime builders before using them
+        # Python 3.13+ matches the pinned runtime interpreter; older stdlib HTTP clients differ.
+        run: |
+          python3 --version | tee "$EVIDENCE/python.txt"
+          python3 -B -m unittest discover -s tools/ocr-runtime/tests -v 2>&1 | tee "$EVIDENCE/builder-tests.log"
+      - name: Prepare the pinned Mac sources as verified data
+        # Streams all 129 official sources and checks every size and SHA before publication.
+        timeout-minutes: 30
+        run: |
+          python3 -B tools/ocr-runtime/prepare_sources.py --output "$SOURCES" | tee "$EVIDENCE/prepare.json"
+          cp "$SOURCES/status.json" "$EVIDENCE/prepare-status.json" || true
+      - name: Materialize the runtime and compare it with the reference catalog
+        # The native lock must equal the committed Windows-generated reference byte for byte.
+        timeout-minutes: 20
+        run: |
+          python3 -B tools/ocr-runtime/lock_assets.py --target macos-arm64 \
+            --wheelhouse "$SOURCES/wheels" \
+            --python-archive "$SOURCES/cpython-3.13.18+20261026-aarch64-apple-darwin-install_only_stripped.tar.gz" \
+            --model-manifest "$SOURCES/model-files.json" \
+            --model-directory "$SOURCES/models" \
+            --output "$EVIDENCE/macos-arm64.lock.json" \
+            --materialize "$RUNTIME" | tee "$EVIDENCE/materialize.json"
+          shasum -a 256 "$EVIDENCE/macos-arm64.lock.json" tools/ocr-runtime/macos-arm64.reference.lock.json | tee "$EVIDENCE/lock-compare.txt"
+          cmp "$EVIDENCE/macos-arm64.lock.json" tools/ocr-runtime/macos-arm64.reference.lock.json
+      - name: Build the QA launcher
+        run: cargo build --manifest-path tools/platform-qa/Cargo.toml --locked --bin prism-platform-qa
+      - name: Verify actual install, recognition, reuse and cancellation
+        timeout-minutes: 30
+        env:
+          PRISM_TEST_PADDLE_OFFLINE: ${{ runner.temp }}/mac-paddle-sources
+        run: |
+          export PRISM_TEST_LAUNCHER="$GITHUB_WORKSPACE/tools/platform-qa/target/debug/prism-platform-qa"
+          cargo test --manifest-path tools/platform-qa/Cargo.toml --locked real_paddle_install_recognition_and_cancellation -- --ignored --nocapture --test-threads=1 2>&1 | tee "$EVIDENCE/install-recognition.log"
+      - name: Verify Automatic fallback and worker exit after app-parent SIGKILL
+        timeout-minutes: 20
+        env:
+          PRISM_TEST_PADDLE_INSTALLED: ${{ runner.temp }}/mac-paddle-runtime
+        run: |
+          cargo test --manifest-path tools/platform-qa/Cargo.toml --locked --test paddle_lifetime real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill -- --ignored --nocapture --test-threads=1 2>&1 | tee "$EVIDENCE/parent-lifetime.log"
+      - name: Keep Mac Paddle evidence on success or failure
+        # Evidence only: never the sources, runtime or models.
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: mac-paddle-qualification
+          path: ${{ runner.temp }}/mac-paddle-evidence/**
+          if-no-files-found: warn
+          compression-level: 0

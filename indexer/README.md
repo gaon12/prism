@@ -183,6 +183,15 @@ separate the server's internal cache/MFT/replay work. Compare the first observed
 request and an immediate repeat separately; neither is a controlled cold-start
 measurement, and service transfer timing excludes the app's search-catalog work.
 
+For a constrained client comparison, add `--wait-for-start`. The probe prints
+`{"waitingForStart":true}` and waits for one ASCII `G` byte on stdin before any
+service interaction. A controller must assign the owned probe to its prepared
+Job and verify CPU/memory limits before sending that byte. EOF or another byte
+fails without requesting a snapshot. `receiveCallbackMs` measures the probe's
+record counting and path-byte summation, within the reported total; it builds
+no application catalog. The final record includes `startGateUsed`. Limiting
+this client does not limit the installed service or emulate HDD latency.
+
 The app's user-requested diagnostic report also includes
 `filenameIndex.lastServiceSnapshot` for the latest successfully validated NTFS
 snapshot in the current configured generation. It contains only numeric timing,

@@ -20,14 +20,32 @@ fn main() {
 fn run() -> std::io::Result<()> {
     use prism_ntfs_protocol::{stream::Event, DriveLetter, VERSION};
     use prism_ntfs_windows::{administration, client, scm};
-    use std::{io, path::Path, sync::atomic::AtomicBool, sync::Arc, time::Instant};
+    use std::{
+        io::{self, Read, Write},
+        path::Path,
+        sync::atomic::AtomicBool,
+        sync::Arc,
+        time::{Duration, Instant},
+    };
 
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 2 || args[0] != "--drive" || args[1].len() != 1 {
-        eprintln!("Usage: service_timing --drive C");
+    let gated = args.len() == 3 && args[2] == "--wait-for-start";
+    if !(args.len() == 2 || gated) || args[0] != "--drive" || args[1].len() != 1 {
+        eprintln!("Usage: service_timing --drive C [--wait-for-start]");
         return Err(io::ErrorKind::InvalidInput.into());
     }
     let drive = DriveLetter::new(args[1].as_bytes()[0])?;
+    if gated {
+        // A controller can apply and read back a Job's CPU/memory limits before
+        // any service interaction. EOF or anything except G starts no request.
+        println!("{{\"waitingForStart\":true}}");
+        io::stdout().flush()?;
+        let mut byte = [0];
+        io::stdin().lock().read_exact(&mut byte)?;
+        if byte[0] != b'G' {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+    }
     if administration::is_elevated()? {
         eprintln!("Use an ordinary, unelevated shell for this client measurement.");
         return Err(io::ErrorKind::PermissionDenied.into());
@@ -43,6 +61,7 @@ fn run() -> std::io::Result<()> {
     let mut records = 0u64;
     let mut path_bytes = 0u64;
     let mut progress_events = 0u64;
+    let mut callback = Duration::ZERO;
     client::snapshot(
         Path::new(&drive.root()),
         Arc::new(AtomicBool::new(false)),
@@ -50,8 +69,10 @@ fn run() -> std::io::Result<()> {
             match event {
                 Event::Records(batch) => {
                     first.get_or_insert_with(|| start.elapsed());
+                    let callback_start = Instant::now();
                     records += batch.len() as u64;
                     path_bytes += batch.iter().map(|row| row.path.len() as u64).sum::<u64>();
+                    callback += callback_start.elapsed();
                     last = Some(start.elapsed());
                 }
                 Event::Progress { .. } => progress_events += 1,
@@ -75,7 +96,8 @@ fn run() -> std::io::Result<()> {
         |last| (total - last).as_millis().to_string(),
     );
     println!(
-        "{{\"ordinaryClient\":true,\"protocolVersion\":{VERSION},\"records\":{records},\"pathBytes\":{path_bytes},\"progressEvents\":{progress_events},\"firstRecordsMs\":{first_ms},\"transferWindowMs\":{transfer_ms},\"afterRecordsMs\":{after_ms},\"totalMs\":{}}}",
+        "{{\"ordinaryClient\":true,\"protocolVersion\":{VERSION},\"records\":{records},\"pathBytes\":{path_bytes},\"progressEvents\":{progress_events},\"firstRecordsMs\":{first_ms},\"transferWindowMs\":{transfer_ms},\"afterRecordsMs\":{after_ms},\"receiveCallbackMs\":{},\"startGateUsed\":{gated},\"totalMs\":{}}}",
+        callback.as_millis(),
         total.as_millis(),
     );
     Ok(())

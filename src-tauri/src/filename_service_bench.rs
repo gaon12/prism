@@ -194,14 +194,18 @@ fn live_streaming_installed_service_catalog() {
         .unwrap();
     let total = start.elapsed();
     let catalog = index.catalog.read().unwrap();
+    // Stream the stored rows: the aggregate is order-independent, and building
+    // every owned Entry at once would itself exceed a 512 MB job limit.
     let mut stored = (0u64, 0u64);
-    for row in catalog.entries.values() {
+    let mut path = String::new();
+    for row in catalog.entries.refs() {
+        let row_path = row.write_path(&mut path);
         add_metadata(
             &mut stored,
-            &row.path,
-            row.is_dir,
-            row.size,
-            row.modified_ms,
+            row_path,
+            row.is_dir(),
+            row.size(),
+            row.modified_ms(),
         );
     }
     assert_eq!(received, catalog.entries.len());

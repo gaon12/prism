@@ -103,25 +103,32 @@ struct Node {
     modified: i64,
 }
 
-/// Append `PARTS` optional strings: u32 little-endian length (`NONE` when
-/// absent) followed by the bytes. Returns the block offset.
-fn put_block(text: &mut Vec<u8>, parts: [Option<&str>; PARTS]) -> u32 {
-    let offset = u32::try_from(text.len()).expect("catalog text arena below 4 GiB");
+// ----- stored blocks -----
+//
+// A block holds `PARTS` optional strings, each written as a u32 little-endian
+// length (`NONE` when absent) followed by the bytes. The functions below read
+// a block from a slice that starts at the block (see `Text::from`).
+
+/// Bytes a block of these parts takes.
+fn block_size(parts: &[Option<&str>; PARTS]) -> usize {
+    parts.iter().map(|part| 4 + part.map_or(0, str::len)).sum()
+}
+fn write_block(out: &mut Vec<u8>, parts: [Option<&str>; PARTS]) {
     for part in parts {
         match part {
             Some(value) => {
-                text.extend_from_slice(&(value.len() as u32).to_le_bytes());
-                text.extend_from_slice(value.as_bytes());
+                out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+                out.extend_from_slice(value.as_bytes());
             }
-            None => text.extend_from_slice(&NONE.to_le_bytes()),
+            None => out.extend_from_slice(&NONE.to_le_bytes()),
         }
     }
-    offset
 }
-fn get_block(text: &[u8], offset: u32, index: usize) -> Option<&str> {
-    let mut at = offset as usize;
+/// Part `index` of the block at the start of `block`.
+fn get_block(block: &[u8], index: usize) -> Option<&str> {
+    let mut at = 0;
     for current in 0..=index {
-        let len = u32::from_le_bytes(text[at..at + 4].try_into().expect("4 bytes"));
+        let len = u32::from_le_bytes(block[at..at + 4].try_into().expect("4 bytes"));
         at += 4;
         if len == NONE {
             if current == index {
@@ -132,22 +139,210 @@ fn get_block(text: &[u8], offset: u32, index: usize) -> Option<&str> {
         let end = at + len as usize;
         if current == index {
             // Only valid UTF-8 slices of caller strings are ever stored.
-            return Some(std::str::from_utf8(&text[at..end]).expect("stored UTF-8"));
+            return Some(std::str::from_utf8(&block[at..end]).expect("stored UTF-8"));
         }
         at = end;
     }
     None
 }
-fn block_len(text: &[u8], offset: u32) -> usize {
-    let mut at = offset as usize;
+/// Length of the block at the start of `block`.
+fn block_len(block: &[u8]) -> usize {
+    let mut at = 0;
     for _ in 0..PARTS {
-        let len = u32::from_le_bytes(text[at..at + 4].try_into().expect("4 bytes"));
+        let len = u32::from_le_bytes(block[at..at + 4].try_into().expect("4 bytes"));
         at += 4;
         if len != NONE {
             at += len as usize;
         }
     }
-    at - offset as usize
+    at
+}
+
+// ----- chunked storage -----
+//
+// Why chunks: a single growing `Vec` reallocates by doubling, and while it
+// copies, the old and the new buffer exist together. On a 2-million-entry
+// drive the entry records and the text each passed through such a copy, and
+// the build briefly needed more than twice the finished catalog (423 MB
+// peak for a 190 MB result), which alone broke a 512 MB machine. Chunks never
+// move, so the peak stays close to the finished size.
+
+/// A text chunk holds 4 MiB.
+const TEXT_CHUNK_BITS: u32 = 22;
+const TEXT_CHUNK: usize = 1 << TEXT_CHUNK_BITS;
+const TEXT_POSITION: u32 = (1 << TEXT_CHUNK_BITS) - 1;
+
+/// Append-only bytes for names, directory paths and blocks, in 4 MiB chunks.
+///
+/// Every item is placed inside one chunk, so a reader always gets one
+/// contiguous slice, and an offset stays a `u32`: the chunk number in the high
+/// bits and the position inside it in the low 22 bits. An item larger than a
+/// chunk (impossible for real paths, but handled) gets a chunk of its own at
+/// position 0. The first chunk starts small and doubles up to 4 MiB, so a
+/// small catalog stays small.
+#[derive(Default)]
+struct Text {
+    chunks: Vec<Vec<u8>>,
+    /// Bytes written, including bytes that later became garbage. Unused chunk
+    /// tails are not counted.
+    used: usize,
+}
+impl Text {
+    /// Make room for one `len`-byte item. Returns its offset and the chunk to
+    /// append it to.
+    fn place(&mut self, len: usize) -> (u32, &mut Vec<u8>) {
+        // Append to the last chunk only when the whole item fits and starts
+        // strictly inside the chunk (a full chunk has no position left).
+        let fits = self
+            .chunks
+            .last()
+            .is_some_and(|chunk| chunk.len() < TEXT_CHUNK && chunk.len() + len <= TEXT_CHUNK);
+        if !fits {
+            // Later chunks are only needed by big catalogs: allocate them whole.
+            let capacity = if len > TEXT_CHUNK {
+                len
+            } else if self.chunks.is_empty() {
+                0
+            } else {
+                TEXT_CHUNK
+            };
+            self.chunks.push(Vec::with_capacity(capacity));
+        }
+        let number = u32::try_from(self.chunks.len() - 1)
+            .ok()
+            .filter(|number| *number < 1 << (32 - TEXT_CHUNK_BITS))
+            .expect("catalog text arena below 4 GiB");
+        let chunk = self.chunks.last_mut().expect("a chunk was just ensured");
+        if chunk.capacity() - chunk.len() < len {
+            // Only the first, still small chunk grows; it stops at 4 MiB.
+            let target = (chunk.capacity() * 2)
+                .max(chunk.len() + len)
+                .max(256)
+                .min(TEXT_CHUNK.max(chunk.len() + len));
+            chunk.reserve_exact(target - chunk.len());
+        }
+        let offset = number << TEXT_CHUNK_BITS | chunk.len() as u32;
+        (offset, chunk)
+    }
+    /// Store bytes; returns their offset.
+    fn push(&mut self, bytes: &[u8]) -> u32 {
+        let (offset, chunk) = self.place(bytes.len());
+        chunk.extend_from_slice(bytes);
+        self.used += bytes.len();
+        offset
+    }
+    /// Store a block of `PARTS` optional strings; returns its offset.
+    fn put_block(&mut self, parts: [Option<&str>; PARTS]) -> u32 {
+        let size = block_size(&parts);
+        let (offset, chunk) = self.place(size);
+        write_block(chunk, parts);
+        self.used += size;
+        offset
+    }
+    /// The chunk holding `offset` and the position of `offset` inside it.
+    fn locate(&self, offset: u32) -> (&[u8], usize) {
+        let chunk = &self.chunks[(offset >> TEXT_CHUNK_BITS) as usize];
+        (chunk, (offset & TEXT_POSITION) as usize)
+    }
+    fn bytes(&self, offset: u32, len: usize) -> &[u8] {
+        let (chunk, at) = self.locate(offset);
+        &chunk[at..at + len]
+    }
+    /// Everything from `offset` to the end of its chunk (for block readers).
+    fn from(&self, offset: u32) -> &[u8] {
+        let (chunk, at) = self.locate(offset);
+        &chunk[at..]
+    }
+    /// Bytes of the stored block at `offset`.
+    fn block(&self, offset: u32) -> &[u8] {
+        let block = self.from(offset);
+        &block[..block_len(block)]
+    }
+    fn reserve(&mut self, bytes: usize) {
+        self.chunks.reserve(bytes / TEXT_CHUNK + 1);
+    }
+    /// Release the spare room of the last chunk (earlier chunks are full).
+    fn shrink_to_fit(&mut self) {
+        if let Some(last) = self.chunks.last_mut() {
+            last.shrink_to_fit();
+        }
+        self.chunks.shrink_to_fit();
+    }
+    fn capacity(&self) -> usize {
+        self.chunks.iter().map(Vec::capacity).sum::<usize>()
+            + self.chunks.capacity() * std::mem::size_of::<Vec<u8>>()
+    }
+}
+
+/// Entry records per chunk: 65,536 records, 2.5 MiB.
+const NODE_CHUNK_BITS: u32 = 16;
+const NODE_CHUNK: usize = 1 << NODE_CHUNK_BITS;
+
+/// Entry records in fixed chunks, indexed like a `Vec` (`nodes[id]`).
+#[derive(Default)]
+struct Nodes {
+    chunks: Vec<Vec<Node>>,
+    len: usize,
+}
+impl Nodes {
+    fn len(&self) -> usize {
+        self.len
+    }
+    fn push(&mut self, node: Node) {
+        if self.len.is_multiple_of(NODE_CHUNK) {
+            // A second chunk means a big catalog: allocate it whole.
+            let capacity = if self.chunks.is_empty() {
+                0
+            } else {
+                NODE_CHUNK
+            };
+            self.chunks.push(Vec::with_capacity(capacity));
+        }
+        let chunk = self.chunks.last_mut().expect("a chunk was just ensured");
+        if chunk.len() == chunk.capacity() {
+            // Only the first chunk grows; it stops at one full chunk.
+            let target = (chunk.capacity() * 2).clamp(16, NODE_CHUNK);
+            chunk.reserve_exact(target - chunk.len());
+        }
+        chunk.push(node);
+        self.len += 1;
+    }
+    fn get(&self, index: usize) -> Option<&Node> {
+        self.chunks
+            .get(index >> NODE_CHUNK_BITS)?
+            .get(index & (NODE_CHUNK - 1))
+    }
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut Node> {
+        self.chunks.iter_mut().flatten()
+    }
+    fn reserve(&mut self, additional: usize) {
+        self.chunks.reserve(additional / NODE_CHUNK + 1);
+    }
+    /// Release the spare room of the last chunk (earlier chunks are full).
+    fn shrink_to_fit(&mut self) {
+        if let Some(last) = self.chunks.last_mut() {
+            last.shrink_to_fit();
+        }
+        self.chunks.shrink_to_fit();
+    }
+    fn capacity_bytes(&self) -> usize {
+        self.chunks
+            .iter()
+            .map(|chunk| chunk.capacity() * std::mem::size_of::<Node>())
+            .sum::<usize>()
+            + self.chunks.capacity() * std::mem::size_of::<Vec<Node>>()
+    }
+}
+impl std::ops::Index<usize> for Nodes {
+    type Output = Node;
+    fn index(&self, index: usize) -> &Node {
+        &self.chunks[index >> NODE_CHUNK_BITS][index & (NODE_CHUNK - 1)]
+    }
+}
+impl std::ops::IndexMut<usize> for Nodes {
+    fn index_mut(&mut self, index: usize) -> &mut Node {
+        &mut self.chunks[index >> NODE_CHUNK_BITS][index & (NODE_CHUNK - 1)]
+    }
 }
 
 /// Lowercase ASCII and turn `\` into `/`: how Windows derives identity keys.
@@ -262,10 +457,10 @@ pub struct Catalog {
     dirs: Vec<Dir>,
     free_dirs: Vec<u32>,
     dir_table: Table,
-    nodes: Vec<Node>,
+    nodes: Nodes,
     free_nodes: u32,
     /// Names, directory paths and stored blocks.
-    text: Vec<u8>,
+    text: Text,
     key_table: Table,
     hasher: RandomState,
     len: usize,
@@ -301,9 +496,9 @@ impl Catalog {
             }],
             free_dirs: Vec::new(),
             dir_table: Table::default(),
-            nodes: Vec::new(),
+            nodes: Nodes::default(),
             free_nodes: NONE,
-            text: Vec::new(),
+            text: Text::default(),
             key_table: Table::default(),
             hasher: RandomState::new(),
             len: 0,
@@ -331,8 +526,8 @@ impl Catalog {
     pub fn reserve(&mut self, entries: usize, path_bytes: usize) {
         self.nodes.reserve(entries);
         // Names plus directory paths measured 35% of whole-path bytes on a
-        // real 2-million-entry system drive; 2/5 leaves headroom without a
-        // doubling reallocation (which would briefly hold both copies).
+        // real 2-million-entry system drive. Storage grows in chunks, so this
+        // only sizes the chunk lists.
         self.text.reserve(path_bytes / 5 * 2);
         // Size the key table once, instead of growing through every doubling.
         if self.key_table.slots.len() < (self.len + entries) * 2 {
@@ -362,8 +557,7 @@ impl Catalog {
         self.hasher.hash_one(key)
     }
     fn text_str(&self, offset: u32, len: usize) -> &str {
-        let start = offset as usize;
-        std::str::from_utf8(&self.text[start..start + len]).expect("stored UTF-8")
+        std::str::from_utf8(self.text.bytes(offset, len)).expect("stored UTF-8")
     }
 
     // ----- directories -----
@@ -376,7 +570,7 @@ impl Catalog {
     fn dir_part(&self, id: u32, index: usize) -> Option<&str> {
         let dir = &self.dirs[id as usize];
         (dir.extra != NONE)
-            .then(|| get_block(&self.text, dir.extra, index))
+            .then(|| get_block(self.text.from(dir.extra), index))
             .flatten()
     }
     /// Write a directory's identity key.
@@ -422,22 +616,19 @@ impl Catalog {
                 ];
                 let old = self.dirs[id as usize].extra;
                 if old != NONE {
-                    self.garbage += block_len(&self.text, old);
+                    self.garbage += block_len(self.text.from(old));
                 }
                 // A stored block always carries the key, so derivation is off.
                 let key = parts[0]
                     .clone()
                     .unwrap_or_else(|| split.dir_key.to_string());
-                let block = put_block(
-                    &mut self.text,
-                    [
-                        Some(&key),
-                        parts[1].as_deref(),
-                        parts[2].as_deref(),
-                        parts[3].as_deref(),
-                        None,
-                    ],
-                );
+                let block = self.text.put_block([
+                    Some(&key),
+                    parts[1].as_deref(),
+                    parts[2].as_deref(),
+                    parts[3].as_deref(),
+                    None,
+                ]);
                 self.dirs[id as usize].extra = block;
             }
             return id;
@@ -449,15 +640,12 @@ impl Catalog {
         let mut derived = String::with_capacity(split.dir_path.len());
         derive_key(split.dir_path, &mut derived);
         let key_derived = split.dir_path.is_ascii() && derived == split.dir_key;
-        let path = u32::try_from(self.text.len()).expect("catalog text arena below 4 GiB");
-        self.text.extend_from_slice(split.dir_path.as_bytes());
+        let path = self.text.push(split.dir_path.as_bytes());
         let extra = if key_derived && search.is_none() && initials.is_none() && keyboard.is_none() {
             NONE
         } else {
-            put_block(
-                &mut self.text,
-                [Some(split.dir_key), search, initials, keyboard, None],
-            )
+            self.text
+                .put_block([Some(split.dir_key), search, initials, keyboard, None])
         };
         let dir = Dir {
             path,
@@ -500,7 +688,7 @@ impl Catalog {
         let dir = self.dirs[id as usize];
         self.garbage += dir.path_len as usize;
         if dir.extra != NONE {
-            self.garbage += block_len(&self.text, dir.extra);
+            self.garbage += block_len(self.text.from(dir.extra));
         }
         self.dirs[id as usize] = Dir::default();
         self.free_dirs.push(id);
@@ -543,8 +731,7 @@ impl Catalog {
         // differently (`c:\docs`, `C:/Docs`); keep that spelling per entry.
         let own_dir =
             (!split.top && self.dir_path(dir) != split.dir_path).then_some(split.dir_path);
-        let name = u32::try_from(self.text.len()).expect("catalog text arena below 4 GiB");
-        self.text.extend_from_slice(split.name_path.as_bytes());
+        let name = self.text.push(split.name_path.as_bytes());
         let mut flags = 0;
         if input.is_dir {
             flags |= IS_DIR;
@@ -574,16 +761,13 @@ impl Catalog {
             flags |= DERIVED;
             NONE
         } else {
-            put_block(
-                &mut self.text,
-                [
-                    Some(split.name_key),
-                    split.name_search,
-                    split.name_initials,
-                    split.name_keyboard,
-                    own_dir,
-                ],
-            )
+            self.text.put_block([
+                Some(split.name_key),
+                split.name_search,
+                split.name_initials,
+                split.name_keyboard,
+                own_dir,
+            ])
         };
         let node = Node {
             dir,
@@ -636,7 +820,7 @@ impl Catalog {
         let node = self.nodes[id as usize];
         self.garbage += node.name_len as usize;
         if node.extra != NONE {
-            self.garbage += block_len(&self.text, node.extra);
+            self.garbage += block_len(self.text.from(node.extra));
         }
         self.release_dir(node.dir);
         self.nodes[id as usize] = Node {
@@ -652,7 +836,7 @@ impl Catalog {
         };
         self.free_nodes = id;
         self.len -= 1;
-        if self.garbage > 64 * 1024 && self.garbage > self.text.len() / 2 {
+        if self.garbage > 64 * 1024 && self.garbage > self.text.used / 2 {
             self.compact();
         }
     }
@@ -729,24 +913,18 @@ impl Catalog {
 
     /// Rewrite the text arena without removed names, paths and blocks.
     fn compact(&mut self) {
-        let mut text = Vec::with_capacity(self.text.len().saturating_sub(self.garbage));
-        let copy = |text: &mut Vec<u8>, old: &[u8], offset: u32, len: usize| -> u32 {
-            let start = text.len() as u32;
-            text.extend_from_slice(&old[offset as usize..offset as usize + len]);
-            start
-        };
+        let mut text = Text::default();
+        text.reserve(self.text.used.saturating_sub(self.garbage));
         for dir in self.dirs.iter_mut().skip(1).filter(|dir| dir.children > 0) {
-            dir.path = copy(&mut text, &self.text, dir.path, dir.path_len as usize);
+            dir.path = text.push(self.text.bytes(dir.path, dir.path_len as usize));
             if dir.extra != NONE {
-                let len = block_len(&self.text, dir.extra);
-                dir.extra = copy(&mut text, &self.text, dir.extra, len);
+                dir.extra = text.push(self.text.block(dir.extra));
             }
         }
         for node in self.nodes.iter_mut().filter(|node| node.dir != NONE) {
-            node.name = copy(&mut text, &self.text, node.name, node.name_len as usize);
+            node.name = text.push(self.text.bytes(node.name, node.name_len as usize));
             if node.extra != NONE {
-                let len = block_len(&self.text, node.extra);
-                node.extra = copy(&mut text, &self.text, node.extra, len);
+                node.extra = text.push(self.text.block(node.extra));
             }
         }
         self.text = text;
@@ -771,10 +949,7 @@ impl Catalog {
                 "dirRecordBytes",
                 self.dirs.capacity() * std::mem::size_of::<Dir>(),
             ),
-            (
-                "nodeBytes",
-                self.nodes.capacity() * std::mem::size_of::<Node>(),
-            ),
+            ("nodeBytes", self.nodes.capacity_bytes()),
             ("textBytes", self.text.capacity()),
             ("dirTableBytes", self.dir_table.bytes()),
             ("keyTableBytes", self.key_table.bytes()),
@@ -786,7 +961,7 @@ impl Catalog {
     pub fn heap_bytes(&self) -> usize {
         self.dirs.capacity() * std::mem::size_of::<Dir>()
             + self.free_dirs.capacity() * 4
-            + self.nodes.capacity() * std::mem::size_of::<Node>()
+            + self.nodes.capacity_bytes()
             + self.text.capacity()
             + self.dir_table.bytes()
             + self.key_table.bytes()
@@ -954,7 +1129,7 @@ impl<'a> EntryRef<'a> {
     fn stored(&self, index: usize) -> Option<&'a str> {
         let node = self.node();
         (node.flags & DERIVED == 0)
-            .then(|| get_block(&self.catalog.text, node.extra, index))
+            .then(|| get_block(self.catalog.text.from(node.extra), index))
             .flatten()
     }
     fn top(&self) -> bool {
@@ -1111,6 +1286,86 @@ mod tests {
     }
 
     #[test]
+    fn text_items_never_straddle_chunks_and_oversized_items_get_their_own_chunk() {
+        let mut text = Text::default();
+        // Fill past several 4 MiB chunks with odd-sized items so some items
+        // would cross a boundary if placement allowed it.
+        let mut stored = Vec::new();
+        let mut total = 0usize;
+        let mut number = 0usize;
+        while total < 3 * TEXT_CHUNK + 12_345 {
+            let item = format!("item-{number}-{}", "x".repeat(number % 997));
+            stored.push((text.push(item.as_bytes()), item.clone()));
+            total += item.len();
+            number += 1;
+        }
+        // A zero-length item and an item larger than a chunk.
+        stored.push((text.push(b""), String::new()));
+        let huge = "가".repeat(TEXT_CHUNK / 3 + 7);
+        assert!(huge.len() > TEXT_CHUNK);
+        stored.push((text.push(huge.as_bytes()), huge.clone()));
+        let block = text.put_block([Some("key"), None, Some("초성"), Some(""), None]);
+        stored.push((text.push(b"after"), "after".to_string()));
+        assert!(text.chunks.len() >= 5);
+        for chunk in &text.chunks {
+            assert!(chunk.len() <= TEXT_CHUNK || chunk.len() == huge.len());
+        }
+        for (offset, expected) in &stored {
+            assert_eq!(text.bytes(*offset, expected.len()), expected.as_bytes());
+        }
+        let read = text.from(block);
+        assert_eq!(get_block(read, 0), Some("key"));
+        assert_eq!(get_block(read, 1), None);
+        assert_eq!(get_block(read, 2), Some("초성"));
+        assert_eq!(get_block(read, 3), Some(""));
+        assert_eq!(
+            text.block(block).len(),
+            block_size(&[Some("key"), None, Some("초성"), Some(""), None])
+        );
+        // Shrinking keeps every item readable.
+        text.shrink_to_fit();
+        for (offset, expected) in &stored {
+            assert_eq!(text.bytes(*offset, expected.len()), expected.as_bytes());
+        }
+    }
+
+    #[test]
+    fn many_entries_span_node_and_text_chunks_and_still_round_trip() {
+        let mut catalog = Catalog::new();
+        // 150,000 entries: three node chunks and more than one text chunk.
+        let count = 2 * NODE_CHUNK + 18_000;
+        let rows: Vec<(String, String)> = (0..count)
+            .map(|index| {
+                let path = format!(
+                    r"C:\Volume\폴더{}\깊은-경로-{}\파일-{index:07}-이름이-조금-긴-문서.txt",
+                    index % 211,
+                    index % 7
+                );
+                let key = path.replace('\\', "/").to_lowercase();
+                (path, key)
+            })
+            .collect();
+        for (path, key) in &rows {
+            catalog.insert_new(&input(path, key));
+        }
+        assert!(catalog.nodes.chunks.len() == 3);
+        assert!(catalog.text.chunks.len() > 1);
+        for (path, key) in rows.iter().step_by(97) {
+            assert_round_trip(&catalog, &input(path, key));
+        }
+        catalog.shrink_to_fit();
+        // Removing more than half compacts the text; survivors still round trip.
+        for (_, key) in rows.iter().step_by(2) {
+            assert!(catalog.remove(key));
+        }
+        // Odd indices survived; an even step keeps the sample on them.
+        for (path, key) in rows.iter().skip(1).step_by(54) {
+            assert_round_trip(&catalog, &input(path, key));
+        }
+        assert_eq!(catalog.len(), count / 2);
+    }
+
+    #[test]
     fn windows_ascii_paths_round_trip_and_share_their_directory() {
         let mut catalog = Catalog::new();
         let entries = [
@@ -1253,7 +1508,7 @@ mod tests {
             assert!(catalog.remove(key));
         }
         // More than half the names were garbage: the arena has been compacted.
-        assert!(catalog.text.len() < 20_000 * 16);
+        assert!(catalog.text.used < 20_000 * 16);
         for (path, key) in paths.iter().skip(1).step_by(2) {
             assert_round_trip(&catalog, &input(path, key));
         }

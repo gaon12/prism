@@ -779,9 +779,13 @@ impl<'a> Split<'a> {
             };
         };
         // The display path splits at its last separator. Display and key name
-        // the same components, so this is the same boundary.
+        // the same components, so this is the same boundary. Keys never end in
+        // a separator, but a display path may (`\\server\share\`): ignore those
+        // trailing separators so the directory part matches the key's, and keep
+        // them in the name part so the display path is still rebuilt exactly.
         let path_at = input
             .path
+            .trim_end_matches(['\\', '/'])
             .rfind(['\\', '/'])
             .expect("a nested key has a separated display path");
         let backslash = input.path.as_bytes()[path_at] == b'\\';
@@ -861,6 +865,12 @@ impl<'a> EntryRef<'a> {
     }
     pub fn id(&self) -> u32 {
         self.id
+    }
+    /// False when the display path ends in a separator (`C:\`, `\\server\share\`):
+    /// such entries have an empty file name for ranking, like the original index.
+    pub fn has_name(&self) -> bool {
+        let name = self.display_name();
+        !name.is_empty() && !name.ends_with(['\\', '/'])
     }
     pub fn is_dir(&self) -> bool {
         self.node().flags & IS_DIR != 0
@@ -1192,6 +1202,39 @@ mod tests {
         let nodes = catalog.nodes.len();
         catalog.insert(&input(&paths[0].0, &paths[0].1));
         assert_eq!(catalog.nodes.len(), nodes, "a freed node slot is reused");
+    }
+
+    #[test]
+    fn trailing_separator_roots_keep_their_siblings_paths() {
+        let mut catalog = Catalog::new();
+        let entries = [
+            input(r"\\server\share\", "//server/share"),
+            input(r"\\server\other", "//server/other"),
+            input(r"\\server\share\a.txt", "//server/share/a.txt"),
+            input(r"C:\", "c:"),
+            input("/srv/data/", "/srv/data"),
+            input("/srv/logs", "/srv/logs"),
+        ];
+        // Insert in both orders: the first child decides the directory record.
+        for order in [true, false] {
+            catalog.clear();
+            let list: Vec<_> = if order {
+                entries.iter().collect()
+            } else {
+                entries.iter().rev().collect()
+            };
+            for entry in list {
+                catalog.insert(entry);
+            }
+            for entry in &entries {
+                assert_round_trip(&catalog, entry);
+            }
+        }
+        let names: Vec<bool> = entries
+            .iter()
+            .map(|entry| catalog.get(entry.key).unwrap().has_name())
+            .collect();
+        assert_eq!(names, [false, true, true, false, false, true]);
     }
 
     #[test]

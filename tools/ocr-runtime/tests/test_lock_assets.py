@@ -1,9 +1,10 @@
 """Maintainer inventory tests; no network, package execution or model stand-ins."""
 import hashlib
+from contextlib import redirect_stdout
 import importlib.util
 import io
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import tarfile
 import tempfile
 import unittest
@@ -143,6 +144,63 @@ class WheelAuthority(unittest.TestCase):
                     verified = assets.official_wheel(wheel)
                 self.assertEqual(verified["url"], url)
                 self.assertEqual(verified["sha256"], assets.file_hash(wheel))
+
+
+class ManifestOrder(unittest.TestCase):
+    def test_complete_catalog_bytes_do_not_depend_on_host_path_order(self):
+        # Preserve real host comparison semantics while reading inert local ZIPs.
+        # The Mac qualification failed because Windows sorts PyYAML after aio*,
+        # whereas PosixPath sorts that capital P before the lowercase packages.
+        class HostPath(type(Path())):
+            flavor = PurePosixPath
+
+            def __lt__(self, other):
+                return self.flavor(self.name) < self.flavor(other.name)
+
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            archive = temp / assets.MACOS_PYTHON_NAME
+            with tarfile.open(archive, "w:gz") as output:
+                member = tarfile.TarInfo("python/bin/python3.13")
+                member.size = 3
+                output.addfile(member, io.BytesIO(b"abc"))
+            wheels = []
+            releases = []
+            for name in ("PyYAML", "aiohappyeyeballs"):
+                wheel = temp / f"{name}-1.0-py3-none-any.whl"
+                with zipfile.ZipFile(wheel, "w") as output:
+                    output.writestr(f"{name}.dist-info/METADATA",
+                                     f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n")
+                wheels.append(HostPath(wheel))
+                releases.append({"filename": wheel.name, "size": wheel.stat().st_size,
+                                 "digests": {"sha256": assets.file_hash(wheel)},
+                                 "url": f"https://fixture.invalid/{wheel.name}"})
+            models = temp / "models.json"
+            models.write_text('{"files":[]}', encoding="utf-8")
+            catalogs = []
+            for flavor in (PureWindowsPath, PurePosixPath):
+                output = temp / f"{flavor.__name__}.json"
+                arguments = ["lock_assets.py", "--target", "macos-arm64",
+                             "--wheelhouse", str(temp), "--python-archive", str(archive),
+                             "--model-manifest", str(models), "--model-directory", str(temp),
+                             "--output", str(output)]
+                def fetch(url, timeout):
+                    self.assertTrue(url.startswith("https://pypi.org/pypi/"))
+                    self.assertEqual(timeout, 60)
+                    return io.BytesIO(json.dumps({"urls": releases}).encode())
+                with (patch("sys.argv", arguments),
+                      patch.object(HostPath, "flavor", flavor),
+                      patch.object(Path, "glob", return_value=iter(reversed(wheels))),
+                      patch.object(assets, "MACOS_PYTHON_BYTES", archive.stat().st_size),
+                      patch.object(assets, "MACOS_PYTHON_SHA256", assets.file_hash(archive)),
+                      patch.object(assets.urllib.request, "urlopen", fetch),
+                      redirect_stdout(io.StringIO())):
+                    assets.main()
+                catalogs.append(output.read_bytes())
+            self.assertEqual(catalogs[0], catalogs[1])
+            manifest = json.loads(catalogs[0])
+            self.assertEqual([item["package"] for item in manifest["assets"][1:]],
+                             ["aiohappyeyeballs", "PyYAML"])
 
 
 if __name__ == "__main__":

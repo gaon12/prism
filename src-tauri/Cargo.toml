@@ -63,6 +63,7 @@ hwpforge-core = "=0.19.1"
 hwpforge-foundation = "=0.19.1"
 msoffice-crypto = { version = "=0.1.0-rc.13", default-features = false, features = ["crypto-ops"] }
 pulldown-cmark = { version = "=0.13.6", default-features = false, features = ["html"] }
+unicase = "=2.10.0"
 zeroize = "1"
 prism-ntfs-protocol = { path = "../indexer/protocol" }
 

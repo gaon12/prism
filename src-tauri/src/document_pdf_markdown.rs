@@ -4,6 +4,7 @@
 use super::{Code, Result};
 use pulldown_cmark::{Alignment, Event, Options, Parser, Tag, TagEnd};
 use std::collections::{HashMap, HashSet};
+use unicase::UniCase;
 
 pub(super) struct Body {
     pub source: String,
@@ -28,10 +29,10 @@ pub(super) fn string(value: &str) -> String {
 }
 struct Context<'a> {
     language: &'static str,
-    notes: HashMap<String, Vec<Event<'a>>>,
-    note_ids: HashMap<String, usize>,
-    rendered_notes: HashSet<String>,
-    active_notes: HashSet<String>,
+    notes: HashMap<UniCase<String>, Vec<Event<'a>>>,
+    note_ids: HashMap<UniCase<String>, usize>,
+    rendered_notes: HashSet<UniCase<String>>,
+    active_notes: HashSet<UniCase<String>>,
     omitted_images: usize,
 }
 pub(super) fn convert(input: &str, language: &str) -> Result<Body> {
@@ -63,7 +64,7 @@ pub(super) fn convert(input: &str, language: &str) -> Result<Body> {
         if let Event::Start(Tag::FootnoteDefinition(label)) = &events[i] {
             let end = find_end(&events, i, TagEnd::FootnoteDefinition)?;
             ctx.notes
-                .insert(label.to_string(), events[i + 1..end].to_vec());
+                .insert(UniCase::new(label.to_string()), events[i + 1..end].to_vec());
             i = end + 1;
         } else {
             main.push(events[i].clone());
@@ -208,13 +209,16 @@ fn render(events: &[Event<'_>], ctx: &mut Context<'_>, depth: usize) -> Result<S
                 text(&mut out, if *checked { "[x] " } else { "[ ] " })
             }
             Event::FootnoteReference(label) => {
-                if !ctx.active_notes.insert(label.to_string()) {
+                // Match the parser's Unicode case folding for definitions,
+                // repeated references and recursion detection alike.
+                let key = UniCase::new(label.to_string());
+                if !ctx.active_notes.insert(key.clone()) {
                     return Err(Code::Input);
                 }
                 let n = ctx.note_ids.len() + 1;
-                let number = *ctx.note_ids.entry(label.to_string()).or_insert(n);
-                if ctx.rendered_notes.insert(label.to_string()) {
-                    if let Some(mut contents) = ctx.notes.get(label.as_ref()).cloned() {
+                let number = *ctx.note_ids.entry(key.clone()).or_insert(n);
+                if ctx.rendered_notes.insert(key.clone()) {
+                    if let Some(mut contents) = ctx.notes.get(&key).cloned() {
                         // Keep the first paragraph inline with Typst's note
                         // marker. A block paragraph would strand that marker
                         // on its own line above the actual footnote text.
@@ -232,7 +236,7 @@ fn render(events: &[Event<'_>], ctx: &mut Context<'_>, depth: usize) -> Result<S
                 } else {
                     out.push_str(&format!("#footnote(<prism-note-{number}>)"));
                 }
-                ctx.active_notes.remove(label.as_ref());
+                ctx.active_notes.remove(&key);
             }
             _ => {}
         }
@@ -357,6 +361,28 @@ fn table(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn footnote_labels_follow_the_parsers_case_folding() {
+        for (reference, definition) in [("s1", "S1"), ("STRASSE", "Straße")] {
+            let input = format!(
+                "First[^{reference}], again[^{definition}].\n\n[^{definition}]: AUTHOR_NOTE_CANARY\n"
+            );
+            let body = convert(&input, "en").unwrap();
+            assert!(body.source.contains("AUTHOR_NOTE_CANARY"), "{reference}");
+            assert_eq!(body.source.matches("#footnote[").count(), 1);
+            assert_eq!(body.source.matches("#footnote(<prism-note-1>)").count(), 1);
+            assert!(!body.source.contains("prism-note-2"));
+        }
+    }
+
+    #[test]
+    fn case_folded_footnote_cycles_are_rejected() {
+        assert_eq!(
+            convert("Loop[^a].\n\n[^A]: next[^b]\n\n[^B]: back[^a]\n", "en").err(),
+            Some(Code::Input)
+        );
+    }
+
     #[test]
     fn code_html_paths_and_network_images_are_only_literals() {
         let input="#eval(\"read(secret)\")\n\n<script src=\"https://private.invalid\"></script>\n\n[bad](javascript:alert(1)) ![alt](file:///private.png)";

@@ -337,6 +337,7 @@ dependencies = [
  "pulldown-cmark",
  "roxmltree",
  "tempfile",
+ "unicase",
  "zip",
 ]
 

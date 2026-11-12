@@ -18,6 +18,9 @@ references for monospace formatting and column alignment, empty cells, unused no
 references, cancellation, deadlines, depth/input limits and repeated-note
 expansion bounds. The generated package is also decoded by the codec. A decoder
 round trip alone does not prove compatibility with a native word processor.
+Footnote reachability and expansion accounting use the Markdown parser's Unicode
+case folding. Package checks cover differently cased references and definitions;
+cyclic references remain rejected under the same identity rule.
 
 The adapter uses HwpForge 0.19.1 (source revision
 `27547f4499a515be4b039079d4a5355dea8d39f7`) with exact codec/core/foundation

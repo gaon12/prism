@@ -357,6 +357,31 @@ mod tests {
         text
     }
     #[test]
+    fn actual_package_keeps_case_folded_footnote_references() {
+        let cancel = AtomicBool::new(false);
+        for (reference, definition) in [("s1", "S1"), ("STRASSE", "Straße")] {
+            let source = format!(
+                "First[^{reference}], again[^{definition}].\n\n[^{definition}]: AUTHOR_NOTE_CANARY\n"
+            );
+            let output = render("Notes", &source, "en", &control(&cancel)).unwrap();
+            let body = part(&output, "Contents/section0.xml");
+            let tree = roxmltree::Document::parse(&body).unwrap();
+            let notes = tree
+                .descendants()
+                .filter(|node| node.tag_name().name() == "footNote")
+                .map(|note| {
+                    note.descendants()
+                        .filter(|node| node.is_text())
+                        .filter_map(|node| node.text())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(notes.len(), 2, "{reference}");
+            assert!(notes.iter().all(|note| note.contains("AUTHOR_NOTE_CANARY")));
+        }
+    }
+
+    #[test]
     fn actual_package_keeps_code_tables_notes_and_visible_classification() {
         let cancel = AtomicBool::new(false);
         let source = "# 보고서\n\n<!-- prism:fact; verified=false -->\n\n한국어 中文 日本語 English 😀 `exact <code>`\n\n근거[^s], 다시[^s].\n\n[^s]: 원본.md `note code`\n\n| 항목 | 수치 |\n|---|---:|\n| `cell code` | 120000원 |\n";
@@ -505,6 +530,16 @@ mod tests {
         );
         assert_eq!(
             render("a", "loop[^a]\n\n[^a]: loop[^a]", "en", &control(&cancel)).err(),
+            Some(Code::Input)
+        );
+        assert_eq!(
+            render(
+                "a",
+                "loop[^a]\n\n[^A]: next[^b]\n\n[^B]: back[^a]",
+                "en",
+                &control(&cancel)
+            )
+            .err(),
             Some(Code::Input)
         );
     }

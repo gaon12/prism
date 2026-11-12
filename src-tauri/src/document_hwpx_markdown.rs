@@ -4,13 +4,16 @@ use super::{Code, Control, Result};
 use pulldown_cmark::{Alignment, Event, Options, Parser, Tag, TagEnd};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use unicase::UniCase;
 
-type Note = (usize, usize, Vec<String>);
+// Apply the parser's identity rule to both reachability and expansion limits.
+type NoteLabel = UniCase<String>;
+type Note = (usize, usize, Vec<NoteLabel>);
 fn note_cost(
-    name: &str,
-    notes: &HashMap<String, Note>,
-    memo: &mut HashMap<String, (usize, usize)>,
-    active: &mut HashSet<String>,
+    name: &NoteLabel,
+    notes: &HashMap<NoteLabel, Note>,
+    memo: &mut HashMap<NoteLabel, (usize, usize)>,
+    active: &mut HashSet<NoteLabel>,
 ) -> Result<(usize, usize)> {
     if let Some(cost) = memo.get(name) {
         return Ok(*cost);
@@ -18,7 +21,7 @@ fn note_cost(
     if active.len() >= 16 {
         return Err(Code::Limit);
     }
-    if !active.insert(name.into()) {
+    if !active.insert(name.clone()) {
         return Err(Code::Input);
     }
     let (bytes, events, refs) = notes.get(name).ok_or(Code::Input)?;
@@ -32,13 +35,13 @@ fn note_cost(
         }
     }
     active.remove(name);
-    memo.insert(name.into(), cost);
+    memo.insert(name.clone(), cost);
     Ok(cost)
 }
 fn bound_notes(
     events: &[(Event<'_>, Range<usize>)],
     control: &Control<'_>,
-) -> Result<HashSet<String>> {
+) -> Result<HashSet<NoteLabel>> {
     let mut notes = HashMap::new();
     let mut main_refs = Vec::new();
     let mut i = 0;
@@ -54,19 +57,19 @@ fn bound_notes(
                     .iter()
                     .filter_map(|(event, _)| {
                         if let Event::FootnoteReference(label) = event {
-                            Some(label.to_string())
+                            Some(UniCase::new(label.to_string()))
                         } else {
                             None
                         }
                     })
                     .collect();
                 notes.insert(
-                    name.to_string(),
+                    UniCase::new(name.to_string()),
                     (events[last].1.end - events[i].1.start, last - i + 1, refs),
                 );
                 i = last;
             }
-            Event::FootnoteReference(name) => main_refs.push(name.to_string()),
+            Event::FootnoteReference(name) => main_refs.push(UniCase::new(name.to_string())),
             _ => {}
         }
         i += 1;
@@ -253,7 +256,9 @@ pub(super) fn prepare(input: &str, language: &str, control: &Control<'_>) -> Res
         control.check()?;
         let (event, range) = &events[i];
         match event {
-            Event::Start(Tag::FootnoteDefinition(name)) if !used_notes.contains(name.as_ref()) => {
+            Event::Start(Tag::FootnoteDefinition(name))
+                if !used_notes.contains(&UniCase::new(name.to_string())) =>
+            {
                 let last = end(&events, i, TagEnd::FootnoteDefinition)?;
                 edits.push(Edit {
                     range: range.start..events[last].1.end,

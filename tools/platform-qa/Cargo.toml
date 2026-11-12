@@ -41,6 +41,9 @@ typst-pdf = "=0.15.1"
 typst-layout = "=0.15.1"
 msoffice-crypto = { version = "=0.1.0-rc.13", default-features = false, features = ["crypto-ops"] }
 pulldown-cmark = { version = "=0.13.6", default-features = false, features = ["html"] }
+# Footnote labels match case-insensitively in the shared PDF/HWPX Markdown
+# code (same pin as the app).
+unicase = "=2.10.0"
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 keyring-core = "=1.0.1"

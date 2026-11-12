@@ -3231,6 +3231,7 @@ dependencies = [
  "typst",
  "typst-layout",
  "typst-pdf",
+ "unicase",
  "unicode-normalization",
  "walkdir",
  "windows",

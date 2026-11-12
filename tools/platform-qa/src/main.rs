@@ -149,10 +149,12 @@ fn fixture() -> Option<i32> {
         let phase_path = PathBuf::from(&args[2]).with_extension("phase");
         let started = std::time::Instant::now();
         let phase = |stage: &str| {
+            let elapsed = started.elapsed().as_millis();
+            eprintln!("paddle-parent phase={stage} elapsed_ms={elapsed}");
             fs::write(
                 &phase_path,
                 serde_json::to_vec(&serde_json::json!({
-                    "phase": stage, "elapsedMs": started.elapsed().as_millis(),
+                    "phase": stage, "elapsedMs": elapsed,
                 }))
                 .unwrap(),
             )

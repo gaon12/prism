@@ -15,9 +15,12 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+#[path = "support/paddle_diagnostics.rs"]
+mod diagnostics;
 #[cfg(target_os = "macos")]
 #[path = "support/macos_exit.rs"]
 mod macos_exit;
+use diagnostics::{last_phase, FailureDiagnostics};
 
 struct Cleanup(Child);
 impl Drop for Cleanup {
@@ -56,12 +59,6 @@ fn seed(source: &Path, data: &Path) {
     .unwrap();
 }
 
-fn last_phase(ready: &Path) -> String {
-    // Only fixed stage names and elapsed time from our own fixture are written
-    // here. Keep that diagnostic in the failure log before TempDir is removed.
-    fs::read_to_string(ready.with_extension("phase")).unwrap_or_else(|_| "unavailable".into())
-}
-
 #[test]
 #[ignore = "Requires PRISM_TEST_PADDLE_INSTALLED, the pinned complete native CPU runtime; Mac ARM64 also requires the explicit debug reference flag"]
 fn real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill() {
@@ -71,7 +68,12 @@ fn real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill() {
     let directory = tempfile::tempdir().unwrap();
     seed(&source, directory.path());
     let ready = directory.path().join("ready.json");
-    let stderr = fs::File::create(directory.path().join("fixture.log")).unwrap();
+    let log = directory.path().join("fixture.log");
+    let stderr = fs::File::create(&log).unwrap();
+    let _diagnostics = FailureDiagnostics {
+        ready: &ready,
+        log: &log,
+    };
     let mut parent = Cleanup(
         Command::new(env!("CARGO_BIN_EXE_prism-platform-qa"))
             .arg("--fixture-paddle-parent")

@@ -171,11 +171,14 @@ matched the unchanged reference catalog and passed actual installation, image/PD
 recognition, process reuse and cancellation. Its separate parent-lifetime test
 hit the unchanged 180-second readiness deadline before reaching the parent kill.
 That gate remains unverified, and release builds still keep Mac Paddle unavailable.
-The parent fixture now records its fixed stage name and elapsed time beside its
-readiness file; failures include that phase in the CI log before temporary files
-are removed. This diagnostic does not extend the deadline or skip extraction
-and original-file checks. Windows reference generation cannot replace these
-native checks.
+The parent fixture records fixed stage names and elapsed times in its own log
+and beside its readiness file. On failure, the test emits the last phase and at
+most 16 KiB from the end of `fixture.log` after cleaning up its owned parent and
+before removing temporary files. The existing `parent-lifetime.log` capture
+retains these diagnostics without an extra environment variable or a runtime
+directory upload. This diagnostic does not extend the deadline or skip
+extraction and original-file checks. Windows reference generation cannot replace
+these native checks.
 
 The Rust exact-source harness has a separate opt-in production installation,
 real image/PDF recognition and cancellation test. It needs about 3 GiB of free

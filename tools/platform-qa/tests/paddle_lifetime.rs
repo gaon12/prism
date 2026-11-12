@@ -56,6 +56,12 @@ fn seed(source: &Path, data: &Path) {
     .unwrap();
 }
 
+fn last_phase(ready: &Path) -> String {
+    // Only fixed stage names and elapsed time from our own fixture are written
+    // here. Keep that diagnostic in the failure log before TempDir is removed.
+    fs::read_to_string(ready.with_extension("phase")).unwrap_or_else(|_| "unavailable".into())
+}
+
 #[test]
 #[ignore = "Requires PRISM_TEST_PADDLE_INSTALLED, the pinned complete native CPU runtime; Mac ARM64 also requires the explicit debug reference flag"]
 fn real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill() {
@@ -86,12 +92,14 @@ fn real_paddle_auto_fallback_is_reaped_after_app_parent_sigkill() {
         }
         assert!(
             parent.0.try_wait().unwrap().is_none(),
-            "Actual Paddle parent exited before readiness; inspect {}",
+            "Actual Paddle parent exited before readiness; phase={}; inspect {}",
+            last_phase(&ready),
             directory.path().display()
         );
         assert!(
             Instant::now() < deadline,
-            "Actual Paddle recognition exceeded its bounded deadline"
+            "Actual Paddle recognition exceeded its bounded deadline; phase={}",
+            last_phase(&ready)
         );
         thread::sleep(Duration::from_millis(50));
     };

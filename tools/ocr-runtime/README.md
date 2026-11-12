@@ -166,9 +166,16 @@ a kernel `NOTE_EXIT` notification while the owned worker is alive and waits on
 that retained queue after cancellation; it does not infer exit from a later PID
 lookup. A separate small native test exercises this observer using its own
 `/bin/sleep` child. Cross-compilation alone does not establish either result.
-Mac parent-app termination and actual filesystem/import behavior remain pending
-until their respective native tests run; Windows reference generation cannot
-close those requirements.
+The [Mac ARM64 run on 2026-11-12](https://github.com/gaon12/prism/actions/runs/43180553078)
+matched the unchanged reference catalog and passed actual installation, image/PDF
+recognition, process reuse and cancellation. Its separate parent-lifetime test
+hit the unchanged 180-second readiness deadline before reaching the parent kill.
+That gate remains unverified, and release builds still keep Mac Paddle unavailable.
+The parent fixture now records its fixed stage name and elapsed time beside its
+readiness file; failures include that phase in the CI log before temporary files
+are removed. This diagnostic does not extend the deadline or skip extraction
+and original-file checks. Windows reference generation cannot replace these
+native checks.
 
 The Rust exact-source harness has a separate opt-in production installation,
 real image/PDF recognition and cancellation test. It needs about 3 GiB of free

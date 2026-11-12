@@ -146,6 +146,19 @@ fn fixture() -> Option<i32> {
     {
         use prism_platform_qa::{ocr, ocr_runtime};
         use std::sync::atomic::AtomicBool;
+        let phase_path = PathBuf::from(&args[2]).with_extension("phase");
+        let started = std::time::Instant::now();
+        let phase = |stage: &str| {
+            fs::write(
+                &phase_path,
+                serde_json::to_vec(&serde_json::json!({
+                    "phase": stage, "elapsedMs": started.elapsed().as_millis(),
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        phase("initializing");
         let runtime = ocr_runtime::initialize(
             PathBuf::from(&args[1]).as_path(),
             &std::env::current_exe().unwrap(),
@@ -170,6 +183,7 @@ fn fixture() -> Option<i32> {
         let expected_absence = ocr::Code::Unavailable;
         #[cfg(target_os = "macos")]
         let expected_absence = ocr::Code::LanguageUnavailable;
+        phase("system-language");
         assert_eq!(
             ocr::recognize(ocr::Input::Image(bytes), &system, &limits, &cancel)
                 .unwrap_err()
@@ -180,6 +194,7 @@ fn fixture() -> Option<i32> {
             engine: ocr::Engine::Auto,
             ..system
         };
+        phase("auto-image");
         let pages = ocr::recognize(ocr::Input::Image(bytes), &automatic, &limits, &cancel).unwrap();
         let recognized =
             pages.len() == 1 && pages[0].text.contains("프리즘") && pages[0].text.contains("74829");
@@ -196,6 +211,7 @@ fn fixture() -> Option<i32> {
         let mixed_bytes = include_bytes!("../../../tests/fixtures/ocr/mixed.pdf");
         let mixed_path = sources.join("mixed.pdf");
         fs::write(&mixed_path, mixed_bytes).unwrap();
+        phase("mixed-extraction");
         let document = extract::extract_document(&mixed_path, &options, &cancel).unwrap();
         assert!(document.sections[0]
             .text
@@ -215,7 +231,11 @@ fn fixture() -> Option<i32> {
         let encrypted = include_bytes!("../../../tests/fixtures/ocr/scan-locked.pdf");
         let encrypted_path = sources.join("scan-locked.pdf");
         fs::write(&encrypted_path, encrypted).unwrap();
-        for password in ["ocr-fixture-password", "ocr-fixture-owner"] {
+        for (password, stage) in [
+            ("ocr-fixture-password", "encrypted-user-extraction"),
+            ("ocr-fixture-owner", "encrypted-owner-extraction"),
+        ] {
+            phase(stage);
             let document = extract::extract_document_with_password(
                 &encrypted_path,
                 &options,
@@ -229,6 +249,7 @@ fn fixture() -> Option<i32> {
             assert_eq!(document.fingerprint.sha256, ocr_assets::digest(encrypted));
             assert_eq!(fs::read(&encrypted_path).unwrap(), encrypted);
         }
+        phase("rejected-password");
         assert_eq!(
             extract::extract_document_with_password(&encrypted_path, &options, &cancel, "wrong")
                 .unwrap_err()
@@ -240,6 +261,7 @@ fn fixture() -> Option<i32> {
             2,
             "no decrypted PDF file may be written"
         );
+        phase("ready");
         fs::write(&args[2], serde_json::to_vec(&serde_json::json!({
             "pid": runtime.status().pid.unwrap(), "autoFallback": true, "actualKorean": recognized,
             "sourceExtractionVerified": true,

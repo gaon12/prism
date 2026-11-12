@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   Search,
@@ -20,14 +20,9 @@ import {
 } from 'lucide-react';
 import { Brand } from './components/Brand';
 import { Sidebar } from './components/Sidebar';
-import { SettingsDialog } from './components/SettingsDialog';
 import type { SettingsTab } from './components/SettingsDialog';
 import { RecommendedDialog } from './components/RecommendedDialog';
 import { SearchView } from './features/SearchView';
-import { ChatView } from './features/ChatView';
-import { DocumentsView } from './features/DocumentsView';
-import { CollectionsView } from './features/collections/CollectionsView';
-import { Onboarding } from './features/onboarding/Onboarding';
 import { QuickWindow } from './features/QuickWindow';
 import { ClipboardNotice } from './features/clipboard/ClipboardPanel';
 import { UpdateBanner } from './features/updates/UpdatePanel';
@@ -51,6 +46,24 @@ import { IndexActivityProvider } from './lib/index-activity';
 import { IndexingStatus, IndexingTasks } from './components/IndexingTasks';
 import { workspaceText } from './components/workspace-messages';
 import type { ChatSelection } from './lib/rag';
+
+// Screens only the main window shows, loaded on first use. The quick search
+// window renders from the same bundle, and on small (512 MB) machines every
+// WebView renderer pays to parse and keep the code it loads. Search, the
+// default tab, and the quick window stay in the main bundle so they open at once.
+const ChatView = lazy(() => import('./features/ChatView').then((m) => ({ default: m.ChatView })));
+const DocumentsView = lazy(() =>
+  import('./features/DocumentsView').then((m) => ({ default: m.DocumentsView })),
+);
+const CollectionsView = lazy(() =>
+  import('./features/collections/CollectionsView').then((m) => ({ default: m.CollectionsView })),
+);
+const Onboarding = lazy(() =>
+  import('./features/onboarding/Onboarding').then((m) => ({ default: m.Onboarding })),
+);
+const SettingsDialog = lazy(() =>
+  import('./components/SettingsDialog').then((m) => ({ default: m.SettingsDialog })),
+);
 
 function useQuickMode() {
   const nativeQuick = native && getCurrentWindow().label === 'quick';
@@ -477,32 +490,34 @@ export default function App() {
                   </div>
                 ) : null}
                 {!needsOnboarding ? <ClipboardNotice /> : null}
-                {tab === 'search' ? (
-                  <SearchView
-                    recent={recent}
-                    onRecent={setRecent}
-                    onAddFolder={add}
-                    onRecommended={chooseRecommended}
-                    onSettings={() => setSettingsTab('scopes')}
-                    onContextChange={contextChanged}
-                    onChat={(selection) => void openSearchChat(selection)}
-                    creatingChat={creatingSearchChat}
-                    onCancelChat={() => {
-                      tabIntent.current++;
-                      if (creationRequest.current)
-                        void content.cancel(creationRequest.current).catch(() => {});
-                    }}
-                  />
-                ) : tab === 'chat' ? (
-                  <ChatView
-                    initialConversationId={initialChat}
-                    onSettings={() => setSettingsTab('scopes')}
-                  />
-                ) : tab === 'collections' ? (
-                  <CollectionsView />
-                ) : (
-                  <DocumentsView onDirtyChange={setDocumentDirty} />
-                )}
+                <Suspense fallback={<span className="loading-dot" />}>
+                  {tab === 'search' ? (
+                    <SearchView
+                      recent={recent}
+                      onRecent={setRecent}
+                      onAddFolder={add}
+                      onRecommended={chooseRecommended}
+                      onSettings={() => setSettingsTab('scopes')}
+                      onContextChange={contextChanged}
+                      onChat={(selection) => void openSearchChat(selection)}
+                      creatingChat={creatingSearchChat}
+                      onCancelChat={() => {
+                        tabIntent.current++;
+                        if (creationRequest.current)
+                          void content.cancel(creationRequest.current).catch(() => {});
+                      }}
+                    />
+                  ) : tab === 'chat' ? (
+                    <ChatView
+                      initialConversationId={initialChat}
+                      onSettings={() => setSettingsTab('scopes')}
+                    />
+                  ) : tab === 'collections' ? (
+                    <CollectionsView />
+                  ) : (
+                    <DocumentsView onDirtyChange={setDocumentDirty} />
+                  )}
+                </Suspense>
               </div>
               {tasksOpen ? <IndexingTasks onClose={() => setTasksOpen(false)} /> : null}
             </main>
@@ -548,26 +563,29 @@ export default function App() {
           </footer>
         </div>
       )}
-      {!quick && needsOnboarding ? (
-        <Onboarding
-          settings={settings}
-          allowStartOnLogin={runtime.installKind !== 'portable'}
-          loadRecommended={bridge.recommendedFolders}
-          pickFolders={bridge.chooseFolders}
-          onFinish={(next) => saveSettings({ ...next, onboardingVersion: 1 })}
-          onSkip={() => saveSettings({ ...settings, onboardingVersion: 1 })}
-        />
-      ) : null}
-      {settingsTab ? (
-        <SettingsDialog
-          initialTab={settingsTab}
-          onClose={() => setSettingsTab(null)}
-          allowUpdateInstall={!documentDirty}
-        />
-      ) : null}
-      {recommended ? (
-        <RecommendedDialog folders={recommended} onClose={() => setRecommended(null)} />
-      ) : null}
+      {/* Dialogs render nothing until their code arrives (a local chunk). */}
+      <Suspense fallback={null}>
+        {!quick && needsOnboarding ? (
+          <Onboarding
+            settings={settings}
+            allowStartOnLogin={runtime.installKind !== 'portable'}
+            loadRecommended={bridge.recommendedFolders}
+            pickFolders={bridge.chooseFolders}
+            onFinish={(next) => saveSettings({ ...next, onboardingVersion: 1 })}
+            onSkip={() => saveSettings({ ...settings, onboardingVersion: 1 })}
+          />
+        ) : null}
+        {settingsTab ? (
+          <SettingsDialog
+            initialTab={settingsTab}
+            onClose={() => setSettingsTab(null)}
+            allowUpdateInstall={!documentDirty}
+          />
+        ) : null}
+        {recommended ? (
+          <RecommendedDialog folders={recommended} onClose={() => setRecommended(null)} />
+        ) : null}
+      </Suspense>
       {state.toast ? (
         <div className="toast" role="status">
           <Check size={16} />

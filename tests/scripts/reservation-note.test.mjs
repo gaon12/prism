@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { copyFile, mkdtemp, readFile, readdir, rmdir, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { hasReservationAbsenceStatement } from '../native/support/reservation-note.mjs';
 
@@ -66,4 +70,79 @@ test('the runner retains all its original fact checks and rejects the captured e
 test('empty and non-text values cannot satisfy the note assertion', () => {
   for (const value of [null, undefined, 0, {}, '', '예약 번호를 만들지 마세요.'])
     assert.equal(hasReservationAbsenceStatement(value), false);
+});
+
+test('native evidence freezes the exact bytes of every directly imported local helper', async (t) => {
+  const moduleUrl = new URL('../native/real-generation.mjs', import.meta.url);
+  const source = await readFile(moduleUrl, 'utf8');
+  const begin = '\n  for (const path of [\n    fileURLToPath(import.meta.url),';
+  assert.equal(source.split(begin).length, 2);
+  const start = source.indexOf(begin) + 1;
+  const end = source.indexOf('\n  if (!verifyOnly) {', start);
+  assert(end > start);
+  const code = source.slice(start, end).replaceAll('import.meta.url', 'moduleUrl');
+  const frozen = await mkdtemp(join(tmpdir(), 'prism-generation-input-evidence-'));
+  t.after(async () => {
+    for (const name of await readdir(frozen)) {
+      const path = join(frozen, name);
+      assert.equal(dirname(path), frozen);
+      await unlink(path);
+    }
+    await rmdir(frozen);
+  });
+  const originals = [];
+  const inspect = async (path, pin) => {
+    const bytes = await readFile(path);
+    const result = {
+      path,
+      bytes: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    };
+    if (pin) {
+      assert.equal(result.bytes, pin.bytes);
+      assert.equal(result.sha256, pin.sha256);
+    }
+    return result;
+  };
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const capture = new AsyncFunction(
+    'moduleUrl',
+    'fileURLToPath',
+    'fixtures',
+    'inspect',
+    'originals',
+    'join',
+    'frozen',
+    'basename',
+    'copyFile',
+    code,
+  );
+  await capture(
+    moduleUrl,
+    fileURLToPath,
+    fileURLToPath(new URL('../fixtures/generation/', import.meta.url)),
+    inspect,
+    originals,
+    join,
+    frozen,
+    basename,
+    copyFile,
+  );
+  const imports = [...source.matchAll(/^import\s+[^;]*?\s+from\s+(['"])(\.\/[^'"]+)\1;/gm)].map(
+    (match) => match[2],
+  );
+  assert(imports.length >= 5, 'Expected the runner local helper imports');
+  for (const specifier of imports) {
+    const path = fileURLToPath(new URL(specifier, moduleUrl));
+    assert(
+      originals.some((record) => record.path === path),
+      `Missing original hash: ${specifier}`,
+    );
+    const snapshot = join(frozen, basename(path));
+    assert(
+      originals.some((record) => record.path === snapshot),
+      `Missing frozen hash: ${specifier}`,
+    );
+    assert.deepEqual(await readFile(snapshot), await readFile(path));
+  }
 });

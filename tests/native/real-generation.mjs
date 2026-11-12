@@ -147,6 +147,7 @@ try {
     fileURLToPath(new URL('./support/generation-evidence.mjs', import.meta.url)),
     fileURLToPath(new URL('./hwpx-inspect.mjs', import.meta.url)),
     fileURLToPath(new URL('./support/table-headers.mjs', import.meta.url)),
+    fileURLToPath(new URL('./support/reservation-note.mjs', import.meta.url)),
     ...['pins.json', '은하 워크숍.md', '별빛 세미나.md', '독서 동호회.md'].map((name) =>
       join(fixtures, name),
     ),

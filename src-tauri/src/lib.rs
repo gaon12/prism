@@ -519,6 +519,8 @@ pub fn run() {
             windows::capture_paste_target(app.handle());
             windows::build_main(app.handle())?;
             windows::build_quick(app.handle())?;
+            // The quick search starts hidden; keep its WebView lean until used.
+            windows::set_memory_target(app.handle(), "quick", false);
             if let Ok(updates)=&app.state::<AppState>().updates {updates.start();}
             let open = MenuItem::with_id(app, "open", "Prism 열기", true, None::<&str>)?;
             let quick = MenuItem::with_id(app, "quick", "빠른 검색", true, None::<&str>)?;
@@ -555,6 +557,7 @@ pub fn run() {
             if std::env::args().any(|argument| argument == "--background") {
                 if let Some(window) = app.get_webview_window("main") {
                     window.hide()?;
+                    windows::set_memory_target(app.handle(), "main", false);
                 }
             }
             Ok(())
@@ -578,8 +581,13 @@ pub fn run() {
                     }
                 }
             }
-            WindowEvent::Focused(false) if window.label() == "quick" => {
-                let _ = window.hide();
+            WindowEvent::Focused(focused) => {
+                // Inactive windows (hidden or behind other apps) trim WebView
+                // memory; the active one gets full speed back.
+                windows::set_memory_target(window.app_handle(), window.label(), *focused);
+                if !*focused && window.label() == "quick" {
+                    let _ = window.hide();
+                }
             }
             _ => {}
         })

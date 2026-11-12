@@ -7432,6 +7432,7 @@ dependencies = [
  "typst-pdf",
  "unicode-normalization",
  "walkdir",
+ "webview2-com",
  "windows",
  "windows-future",
  "windows-sys 0.61.2",

@@ -17,6 +17,43 @@ pub fn build_main(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Tell a window's WebView2 how hard to hold on to memory.
+///
+/// WebView2 keeps caches and freed JavaScript memory around for speed. When a
+/// window is inactive (hidden in the tray, the quick search waiting for its
+/// hotkey, or just behind another app) the "low" target asks it to trim them,
+/// which matters on small (512 MB) machines. Activating the window restores
+/// the normal target. Microsoft documents exactly this inactive/active use.
+/// Other platforms have no equivalent switch, so this does nothing there.
+pub fn set_memory_target(app: &AppHandle, label: &str, active: bool) {
+    #[cfg(windows)]
+    if let Some(window) = app.get_webview_window(label) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+        };
+        use windows::core::Interface;
+        let level = if active {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+        } else {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+        };
+        // Runs on the UI thread. An older WebView2 runtime without the
+        // interface (before 1.0.1774) simply keeps its default behavior.
+        let _ = window.with_webview(move |webview| unsafe {
+            if let Ok(core) = webview
+                .controller()
+                .CoreWebView2()
+                .and_then(|core| core.cast::<ICoreWebView2_19>())
+            {
+                let _ = core.SetMemoryUsageTargetLevel(level);
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = (app, label, active);
+}
+
 pub fn build_quick(app: &AppHandle) -> tauri::Result<()> {
     let font_size = app
         .state::<AppState>()

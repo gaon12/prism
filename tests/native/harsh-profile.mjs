@@ -21,13 +21,36 @@
 // Optional: PRISM_HARSH_SCOPE (default C:\), PRISM_HARSH_CPUS (1),
 // PRISM_HARSH_MEMORY_MB (512), PRISM_HARSH_TIMEOUT_MS (600000).
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { copyFile, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { launch, shutdown, until } from './harness.mjs';
+
+/**
+ * Add each WebView process's role (`--type=renderer`, `gpu-process`, ...;
+ * none for the browser process) from its command line, so memory growth can
+ * be attributed. Read-only; a failed lookup just leaves the roles out.
+ */
+function labelProcesses(processes) {
+  if (!processes?.length) return;
+  try {
+    const ids = processes.map((row) => Number(row.pid)).filter(Number.isInteger);
+    const script = `Get-CimInstance Win32_Process -Filter "${ids.map((id) => `ProcessId=${id}`).join(' OR ')}" | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }`;
+    const lines = execFileSync('powershell', ['-NoProfile', '-Command', script], {
+      encoding: 'utf8',
+      windowsHide: true,
+    }).split(/\r?\n/);
+    for (const row of processes) {
+      const line = lines.find((entry) => entry.startsWith(`${row.pid} `)) ?? '';
+      row.role = /--type=([\w-]+)/.exec(line)?.[1] ?? (line ? 'main' : 'unknown');
+    }
+  } catch {
+    // Diagnostics only.
+  }
+}
 
 assert.equal(process.platform, 'win32', 'The Job Object profile is Windows-only');
 assert(process.env.PRISM_TEST_EXECUTABLE, 'Set PRISM_TEST_EXECUTABLE to a release prism.exe');
@@ -185,6 +208,7 @@ try {
     };
   }
   result.job = await job.report();
+  labelProcesses(result.job.processes);
   result.passed = true;
 } catch (error) {
   result.error = String(error?.stack ?? error);

@@ -236,7 +236,7 @@ impl GenerationCancellation {
 #[derive(Clone)]
 pub struct GenerationRuntime {
     connect_timeout: Duration,
-    read_timeout: Duration,
+    body_read_timeout: Duration,
     total_timeout: Duration,
     // Passive clock observation for tests; absent from every app build.
     #[cfg(test)]
@@ -251,7 +251,7 @@ impl GenerationRuntime {
     pub fn new() -> Self {
         Self {
             connect_timeout: Duration::from_secs(4),
-            read_timeout: Duration::from_secs(45),
+            body_read_timeout: Duration::from_secs(45),
             total_timeout: Duration::from_secs(180),
             #[cfg(test)]
             deadline_started: None,
@@ -311,6 +311,9 @@ impl GenerationRuntime {
         if let Some(observer) = &self.deadline_started {
             let _ = observer.send(deadline - self.total_timeout);
         }
+        // A non-streaming model may send no headers until inference finishes.
+        // The existing total budget governs that wait, rather than the shorter
+        // idle limit used while receiving an already started response body.
         let mut response = wait(request.send(), cancellation, deadline).await?;
         let status = response.status();
         // These statuses need no error body. In particular never expose server echoes.
@@ -324,7 +327,11 @@ impl GenerationRuntime {
             return Err(error(GenerationErrorCode::Malformed));
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) = wait(response.chunk(), cancellation, deadline).await? {
+        loop {
+            let body_deadline = deadline.min(Instant::now() + self.body_read_timeout);
+            let Some(chunk) = wait(response.chunk(), cancellation, body_deadline).await? else {
+                break;
+            };
             if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
                 return Err(error(GenerationErrorCode::Malformed));
             }
@@ -346,7 +353,6 @@ impl GenerationRuntime {
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .connect_timeout(self.connect_timeout)
-            .read_timeout(self.read_timeout)
             .timeout(self.total_timeout)
             .user_agent("Prism/0.1 generation");
         let url = Url::parse(&endpoint.completion_url)
@@ -585,6 +591,19 @@ mod tests {
         mpsc::Receiver<(String, Value)>,
         thread::JoinHandle<()>,
     ) {
+        fixture_with_header_delay(status, body, stall, body_stall, Duration::ZERO)
+    }
+    fn fixture_with_header_delay(
+        status: u16,
+        body: String,
+        stall: bool,
+        body_stall: bool,
+        header_delay: Duration,
+    ) -> (
+        String,
+        mpsc::Receiver<(String, Value)>,
+        thread::JoinHandle<()>,
+    ) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
         let (sender, receiver) = mpsc::channel();
@@ -624,6 +643,9 @@ mod tests {
             if stall {
                 thread::sleep(Duration::from_millis(500));
                 return;
+            }
+            if !header_delay.is_zero() {
+                thread::sleep(header_delay);
             }
             let location = if (300..400).contains(&status) {
                 "Location: http://127.0.0.1:9/should-not-connect\r\n"
@@ -860,8 +882,8 @@ mod tests {
                 ))
                 .unwrap_err();
             assert_eq!(failure.code, GenerationErrorCode::Cancelled);
-            // The stall would otherwise last until the 45 s read timeout, so a quick return
-            // here can only come from cancellation.
+            // Cancellation stays prompt during the response-header wait and
+            // the body's 45 s idle timeout, before the stalled fixture ends.
             let pressed = cancelled.recv().unwrap();
             assert!(pressed.elapsed() < Duration::from_millis(450));
             cancel_worker.join().unwrap();
@@ -915,6 +937,25 @@ mod tests {
         assert!(full_elapsed >= delay);
     }
     #[test]
+    fn non_streaming_generation_waits_for_headers_within_total_budget() {
+        let _fixture = fixture_gate();
+        let (endpoint, receiver, worker) =
+            fixture_with_header_delay(200, answer(), false, false, Duration::from_millis(350));
+        let mut transport = GenerationRuntime::new();
+        transport.body_read_timeout = Duration::from_millis(125);
+        transport.total_timeout = Duration::from_secs(2);
+        let response = runtime().block_on(transport.complete(
+            &config(endpoint),
+            &messages(),
+            None,
+            &GenerationCancellation::new(),
+        ));
+        let (_, request) = receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+        assert_eq!(request["stream"], false);
+        assert_eq!(response.unwrap().text, "합성 응답입니다.");
+    }
+    #[test]
     fn response_limit_read_and_total_timeouts_are_enforced() {
         let _fixture = fixture_gate();
         let (endpoint, receiver, worker) =
@@ -932,7 +973,7 @@ mod tests {
         assert_eq!(failure.code, GenerationErrorCode::Malformed);
         let (endpoint, receiver, worker) = fixture(200, answer(), false, true);
         let mut transport = GenerationRuntime::new();
-        transport.read_timeout = Duration::from_millis(150);
+        transport.body_read_timeout = Duration::from_millis(150);
         let failure = runtime()
             .block_on(transport.complete(
                 &config(endpoint),

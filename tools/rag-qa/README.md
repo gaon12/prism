@@ -31,6 +31,13 @@ explicitly ignored unless selected with their documented environment opt-in.
 The Windows process-job tests start and terminate only their own windowless
 loopback ping children.
 
+Non-streaming generation can finish inference before sending response headers.
+The transport keeps its 180-second total request budget for that wait, then
+applies the 45-second idle limit to each response-body chunk. The four-second
+connection limit and cancellation polling remain separate. HTTP regressions cover
+delayed headers, a stalled body, oversized responses and the total deadline;
+actual model behavior still needs the native generation tests.
+
 Saved file-set retrieval uses path-key order for its bounded 256-file batches,
 independent of producer arrival order. SQLite regressions cover shuffled sets
 across batch boundaries, deselection, root filters and stale revisions while

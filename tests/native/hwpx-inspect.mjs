@@ -16,8 +16,14 @@ with zipfile.ZipFile(sys.argv[1]) as package:
     assert sections and 'Contents/header.xml' in names
     nodes=[n for s in sections for n in s.iter()]
     local=lambda n:n.tag.rsplit('}',1)[-1]
+    tables=[n for n in nodes if local(n)=='tbl']
+    table_rows=[[
+        [''.join(n.text or '' for n in cell.iter() if local(n)=='t')
+         for cell in row if local(cell)=='tc']
+        for row in table if local(row)=='tr'
+    ] for table in tables]
     result={'text':'\\n'.join(n.text or '' for n in nodes if local(n)=='t'),
-            'parts':len(parts),'tables':sum(local(n)=='tbl' for n in nodes),
+            'parts':len(parts),'tables':len(tables),'tableRows':table_rows,
             'notes':sum(local(n)=='footNote' for n in nodes),
             'images':sum(local(n)=='pic' for n in nodes)}
     print(json.dumps(result,ensure_ascii=True))

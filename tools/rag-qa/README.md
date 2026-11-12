@@ -48,6 +48,10 @@ from untrusted source and document text. Body instructions preserve each reviewe
 section's language, layout and requested missing-information notes. This is a
 prompting rule, not a guarantee of model quality: the actual-generation native
 gate checks the requested two-column table and the original factual assertions.
+The document editor displays Markdown in textareas. The gate compares those
+values with the saved revision and checks actual table cells in an HWPX export
+through an independent ZIP/XML reader, rather than expecting an HTML table in
+the editor. This developer-only inspection uses Python's standard library.
 
 Document semantic retrieval combines the topic with the user's writing
 instruction within the existing 512-byte UTF-8 bound. Keyword retrieval keeps the

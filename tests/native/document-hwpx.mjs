@@ -100,10 +100,22 @@ try {
   assert.equal(settingsBefore.scopes[0].id, scopeId, 'CDP must reach the fresh fixture profile');
   assert.equal(pathKey(settingsBefore.scopes[0].path), pathKey(sourceDirectory));
   verifiedProfile = true;
+  const warnings = [];
+  for (const page of [main, quick])
+    page.on('console', (entry) => {
+      if (entry.type() === 'warning') warnings.push(entry.text());
+    });
   const runtime = await invoke('runtime_info');
   if (portable) assert.equal(runtime.installKind, 'portable');
   if (process.env.PRISM_TEST_EXPECT_RELEASE === '1') assert.equal(runtime.development, false);
   assert.equal((await invoke('doc_list', { query: '', limit: 100 })).length, 0);
+  const surface = {
+    url: main.url(),
+    title: await main.title(),
+    viewport: main.viewportSize(),
+    browserVersion: await instance.browser.version(),
+  };
+  await main.screenshot({ path: join(directory, 'initial-ko-light.png') });
   const created = await invoke('doc_create', {
     input: {
       title: '다국어 HWPX',
@@ -279,6 +291,11 @@ try {
   );
   assert(!result.text.includes('`literal code`'));
   assert.equal(result.tables, 1);
+  assert.deepEqual(
+    result.tableRows.map((rows) => rows.map((cells) => cells.length)),
+    [[2, 2]],
+  );
+  assert(result.tableRows[0][1][1].includes('120000원'));
   assert(result.notes >= 1);
   assert.equal(result.images, 0);
   assert.equal(network, 0);
@@ -341,10 +358,12 @@ try {
   await main.screenshot({ path: join(directory, 'export-en-dark760.png') });
   assert(!(await readdir(outputs)).some((name) => name.startsWith('.prism-export-')));
   assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
   console.log(
     JSON.stringify({
       directory,
       runtime,
+      surface,
       verifiedProfile,
       executableSha256,
       parts: result.parts,
@@ -355,6 +374,7 @@ try {
       sourcePreserved: true,
       network,
       errors: 0,
+      warnings,
     }),
   );
 } finally {

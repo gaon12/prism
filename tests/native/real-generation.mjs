@@ -21,6 +21,7 @@ import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launch, shutdown, until } from './harness.mjs';
 import { documentFailureEvidence } from './support/generation-evidence.mjs';
+import { inspectHwpx } from './hwpx-inspect.mjs';
 
 assert.equal(process.platform, 'win32', 'This actual WebView2/model gate requires Windows');
 assert.equal(process.arch, 'x64', 'Use the pinned Windows x64 CPU runtime');
@@ -142,6 +143,7 @@ try {
     fileURLToPath(import.meta.url),
     fileURLToPath(new URL('./harness.mjs', import.meta.url)),
     fileURLToPath(new URL('./support/generation-evidence.mjs', import.meta.url)),
+    fileURLToPath(new URL('./hwpx-inspect.mjs', import.meta.url)),
     ...['pins.json', '은하 워크숍.md', '별빛 세미나.md', '독서 동호회.md'].map((name) =>
       join(fixtures, name),
     ),
@@ -552,17 +554,24 @@ try {
     await main.getByRole('button', { name: '검토한 개요로 본문 생성', exact: true }).click();
     await waitOperation('body');
     result.body = await page();
-    await until(
-      async () => (await main.locator('.doc-block').count()) > 0,
-      'actual blocks rendered',
-    );
-    result.bodyTables = await main
-      .locator('.doc-block table')
-      .evaluateAll((tables) =>
-        tables.map((table) =>
-          Array.from(table.rows, (row) => Array.from(row.cells, (cell) => cell.textContent ?? '')),
-        ),
-      );
+    const expectedBlockText = result.body.revision.blocks.map((block) => block.markdown);
+    await until(async () => {
+      const editorText = await main
+        .locator('.doc-block textarea')
+        .evaluateAll((inputs) => inputs.map((input) => input.value));
+      return JSON.stringify(editorText) === JSON.stringify(expectedBlockText);
+    }, 'actual generated Markdown displayed in the block editors');
+    const hwpxPath = join(evidence, 'actual-document.hwpx');
+    await invoke('doc_export_hwpx', {
+      id,
+      revision: result.body.revision.id,
+      path: hwpxPath,
+      request: randomUUID(),
+      includeSources: true,
+      includeTypeMarkers: true,
+    });
+    result.bodyHwpx = inspectHwpx(hwpxPath);
+    result.bodyTables = result.bodyHwpx.tableRows;
     assertFacts(result.body.revision.markdown);
     assert(
       result.bodyTables.some(

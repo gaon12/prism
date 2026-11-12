@@ -456,7 +456,10 @@ try {
     await main
       .getByRole('checkbox', { name: '로컬 문서 생성에 JSON 스키마 사용', exact: true })
       .check();
-    await main.getByRole('button', { name: '설정 저장', exact: true }).click();
+    await main
+      .locator('.settings-modal')
+      .getByRole('button', { name: '저장', exact: true })
+      .click();
     await main.locator('.settings-modal').waitFor({ state: 'hidden' });
     assert.equal((await invoke('get_settings')).generation.localStructuredDocuments, true);
     stage = 'actual model document outline';

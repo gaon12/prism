@@ -71,6 +71,9 @@ impl UpdateRuntime {
         let record = state.record();
         let reason = if location.kind == InstallKind::Packaged {
             Some("packaged")
+        } else if location.kind == InstallKind::Flatpak {
+            // Flatpak owns the read-only `/app` copy and updates it itself.
+            Some("flatpak")
         } else if location.kind == InstallKind::Portable {
             Some("portable")
         } else if isolated {

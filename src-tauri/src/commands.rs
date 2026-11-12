@@ -79,6 +79,9 @@ pub(crate) fn apply_autostart(
     if location.kind == crate::app_paths::InstallKind::Packaged {
         return crate::packaged_startup::set(enabled);
     }
+    if location.kind == crate::app_paths::InstallKind::Flatpak {
+        return crate::flatpak_startup::set(enabled);
+    }
     if !location.allows_autostart() {
         return Ok(());
     }

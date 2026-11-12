@@ -34,6 +34,7 @@ mod embedding_assets;
 mod embedding_package;
 mod embedding_runtime;
 mod filename_pattern;
+mod flatpak_startup;
 mod foreground_tracker;
 mod form_fill;
 mod form_fill_commands;
@@ -233,7 +234,7 @@ pub fn run() {
                     package_context::data_directory(&local, family)
                 }).transpose()?;
                 let installed_dir = app.path().app_config_dir().map_err(|error| error.to_string())?;
-                app_paths::resolve(&exe, installed_dir, override_dir.clone(), packaged_dir)
+                app_paths::resolve(&exe, installed_dir, override_dir.clone(), packaged_dir, app_paths::in_flatpak())
             })
                 .and_then(|location| {
                     if matches!(location.kind, app_paths::InstallKind::Portable | app_paths::InstallKind::Packaged)
@@ -313,7 +314,9 @@ pub fn run() {
                 .then(clipboard_history::MemoryClipboard::default);
             // Keep large local caches out of the roaming settings profile. Tests always use
             // their explicit isolated directory for every service and model asset.
-            let asset_dir = if location.kind != app_paths::InstallKind::Installed {
+            // A Flatpak, like an installation, keeps caches in its local data
+            // folder (inside the sandbox: `~/.var/app/<id>/data`).
+            let asset_dir = if !matches!(location.kind, app_paths::InstallKind::Installed | app_paths::InstallKind::Flatpak) {
                 data_dir.clone()
             } else {
                 app.path().app_local_data_dir()?
@@ -340,7 +343,9 @@ pub fn run() {
                 },
             ) };
             if let Ok(content) = &content {
-                if matches!(location.kind, app_paths::InstallKind::Portable | app_paths::InstallKind::Packaged) {
+                // A Flatpak may index the whole host, which includes its own
+                // `~/.var/app/<id>` data and config.
+                if matches!(location.kind, app_paths::InstallKind::Portable | app_paths::InstallKind::Packaged | app_paths::InstallKind::Flatpak) {
                     content.exclude_paths(&[data_dir.clone()]);
                 }
                 content.exclude_paths(&[

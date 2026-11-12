@@ -104,7 +104,7 @@ export interface RuntimeInfo {
   platform?: string;
   native: boolean;
   development: boolean;
-  installKind: 'installed' | 'portable' | 'packaged' | 'isolated' | null;
+  installKind: 'installed' | 'portable' | 'packaged' | 'isolated' | 'flatpak' | null;
   shortcutError: string | null;
   startupError: string | null;
 }

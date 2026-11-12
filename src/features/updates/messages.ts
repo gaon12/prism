@@ -7,6 +7,13 @@ const messages = {
     '請透過Microsoft Store或安裝時使用的Windows發佈來源更新MSIX版本。',
     'MSIX版はMicrosoft Store、またはインストールに使ったWindowsの配布元から更新してください。',
   ],
+  flatpak: [
+    'Flatpak 버전은 소프트웨어 센터 또는 `flatpak update` 명령으로 업데이트하세요.',
+    'Update the Flatpak version through your software center or with `flatpak update`.',
+    '请通过软件中心或 `flatpak update` 命令更新 Flatpak 版本。',
+    '請透過軟體中心或 `flatpak update` 指令更新 Flatpak 版本。',
+    'Flatpak版はソフトウェアセンター、または `flatpak update` コマンドで更新してください。',
+  ],
   changed: [
     '확인하던 업데이트가 바뀌었습니다. 새 버전 정보를 확인한 뒤 다시 선택하세요.',
     'The selected update changed. Review the new version and select it again.',

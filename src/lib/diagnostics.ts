@@ -9,7 +9,7 @@ export interface DiagnosticSnapshot {
     os: string;
     architecture: string;
     development: boolean;
-    distribution: 'installed' | 'portable' | 'packaged' | 'isolated';
+    distribution: 'installed' | 'portable' | 'packaged' | 'isolated' | 'flatpak';
   };
   settings: {
     filenameScopeCount: number;

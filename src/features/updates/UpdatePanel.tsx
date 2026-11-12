@@ -100,10 +100,20 @@ function DownloadAction() {
     </button>
   );
 }
+/** Which package manager owns updates for this copy, if any. */
+function managedBy(
+  installKind: string | null,
+  reason: string | null | undefined,
+): 'packaged' | 'flatpak' | null {
+  if (installKind === 'packaged' || reason === 'packaged') return 'packaged';
+  if (installKind === 'flatpak' || reason === 'flatpak') return 'flatpak';
+  return null;
+}
 export function UpdateBanner({ blocked = false }: { blocked?: boolean }) {
   const { settings, runtime } = useClient();
   const { view } = useUpdates();
-  const packaged = runtime.installKind === 'packaged' || view?.installDisabledReason === 'packaged';
+  // MSIX and Flatpak copies are updated by their package manager, not by Prism.
+  const managed = managedBy(runtime.installKind, view?.installDisabledReason);
   const t = (key: Parameters<typeof updateText>[1]) => updateText(settings.language, key);
   if (!native || blocked || !view?.available || view.dismissedVersion === view.available.version)
     return null;
@@ -113,8 +123,8 @@ export function UpdateBanner({ blocked = false }: { blocked?: boolean }) {
         {t('available')} · {view.available.version}
       </strong>
       <div className="update-actions">
-        {packaged ? (
-          <span>{t('packaged')}</span>
+        {managed ? (
+          <span>{t(managed)}</span>
         ) : view.canInstall ? (
           <InstallAction />
         ) : (
@@ -143,7 +153,8 @@ export function UpdatePanel({
 }) {
   const { settings, runtime } = useClient();
   const { view, error } = useUpdates();
-  const packaged = runtime.installKind === 'packaged' || view?.installDisabledReason === 'packaged';
+  // MSIX and Flatpak copies are updated by their package manager, not by Prism.
+  const managed = managedBy(runtime.installKind, view?.installDisabledReason);
   const t = (key: Parameters<typeof updateText>[1]) => updateText(settings.language, key);
   const [busy, setBusy] = useState(false);
   const [checked, setChecked] = useState<'ok' | 'failed' | null>(null);
@@ -179,7 +190,7 @@ export function UpdatePanel({
         />
       </label>
       <p className="setting-footnote">{t('schedule')}</p>
-      {packaged ? <p className="setting-footnote">{t('packaged')}</p> : null}
+      {managed ? <p className="setting-footnote">{t(managed)}</p> : null}
       {!native ? <p className="muted">{translate(settings.language, 'nativeOnly')}</p> : null}
       {error || view?.stateError ? (
         <p className="inline-error" role="alert">
@@ -206,7 +217,7 @@ export function UpdatePanel({
             </strong>
           </p>
           <p className="update-notes">{view.available.notes}</p>
-          {!view.canInstall && !packaged ? <p className="muted">{t('manual')}</p> : null}
+          {!view.canInstall && !managed ? <p className="muted">{t('manual')}</p> : null}
         </>
       ) : null}
       <div className="update-actions">
@@ -219,7 +230,7 @@ export function UpdatePanel({
           <RefreshCw size={15} />
           {busy || view?.checking ? t('checking') : t('check')}
         </button>
-        {packaged ? null : view?.available ? (
+        {managed ? null : view?.available ? (
           view.canInstall ? (
             <InstallAction blocked={installBlocked} />
           ) : (

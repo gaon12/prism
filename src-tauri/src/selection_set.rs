@@ -233,7 +233,10 @@ impl RagStore {
             return Ok(None);
         };
         let (total,selected_count): (u64,u64)=tx.query_row("SELECT count(*),COALESCE(sum(selected),0) FROM search_set_files WHERE conversation_id=?1", [id], |r| Ok((r.get(0)?,r.get(1)?))).map_err(storage)?;
-        let mut statement=tx.prepare("SELECT ordinal,file_path,selected FROM search_set_files WHERE conversation_id=?1 ORDER BY ordinal LIMIT ?2 OFFSET ?3").map_err(storage)?;
+        // Display order is independent of durable IDs. A compact catalog may
+        // arrive in storage order; checkbox edits still address its original
+        // ordinal rather than the row's position on this page.
+        let mut statement=tx.prepare("SELECT ordinal,file_path,selected FROM search_set_files WHERE conversation_id=?1 ORDER BY path_key LIMIT ?2 OFFSET ?3").map_err(storage)?;
         let files = statement
             .query_map(params![id, limit as u64, offset], read_file)
             .map_err(storage)?
@@ -312,6 +315,57 @@ impl RagStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn file_selection_pages_sort_paths_without_reassigning_selection_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RagStore::open(dir.path()).unwrap();
+        let chat = store
+            .create_file_set("all matches", |emit| {
+                for path in [
+                    "/fixture/z.md",
+                    "/fixture/a.md",
+                    "/fixture/a.md",
+                    "/fixture/m.md",
+                ] {
+                    emit(path)?;
+                }
+                Ok(false)
+            })
+            .unwrap();
+        let page = store.selection_page(&chat.id, 0, 50).unwrap().unwrap();
+        assert_eq!(
+            page.files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            ["/fixture/a.md", "/fixture/m.md", "/fixture/z.md"]
+        );
+        assert_eq!(
+            page.files.iter().map(|file| file.id).collect::<Vec<_>>(),
+            [2, 3, 1]
+        );
+        assert_eq!((page.total, page.selected_count), (3, 3));
+        assert_eq!(
+            store.selection_page(&chat.id, 1, 1).unwrap().unwrap().files[0].id,
+            3
+        );
+        store
+            .edit_file_set(&chat.id, 1, &[(3, false)], None)
+            .unwrap();
+        let reopened = RagStore::open(dir.path()).unwrap();
+        let page = reopened.selection_page(&chat.id, 0, 50).unwrap().unwrap();
+        assert_eq!(
+            page.files
+                .iter()
+                .map(|file| (file.id, file.selected))
+                .collect::<Vec<_>>(),
+            [(2, true), (3, false), (1, true)]
+        );
+        assert_eq!((page.total, page.selected_count), (3, 2));
+        let set = reopened.saved_selection(&chat.id).unwrap().unwrap();
+        assert!(!set.contains("/fixture/m.md").unwrap());
+        assert!(set.contains("/fixture/z.md").unwrap());
+    }
     fn path_batches(set: &SavedSelection, roots: &[String]) -> Vec<Vec<String>> {
         let mut result = Vec::new();
         let mut after = String::new();
@@ -327,7 +381,7 @@ mod tests {
         result
     }
     #[test]
-    fn retrieval_pages_are_identical_across_producer_orders_and_keep_ui_ordinals() {
+    fn retrieval_pages_are_identical_across_producer_orders_and_keep_selection_ids() {
         let dir = tempfile::tempdir().unwrap();
         let store = RagStore::open(dir.path()).unwrap();
         let paths: Vec<_> = (0..769)
@@ -362,7 +416,8 @@ mod tests {
                 })
                 .unwrap();
             let before = store.selection_page(&chat.id, 0, 50).unwrap().unwrap();
-            assert_eq!(before.files[0].path, paths[order[0]]);
+            assert_eq!(before.files[0].path, "/fixture-sibling/outside.md");
+            assert_eq!(before.files[0].id, 770);
             let changes: Vec<_> = [1, 256, 513]
                 .iter()
                 .map(|&i| {

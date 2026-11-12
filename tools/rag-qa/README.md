@@ -36,6 +36,9 @@ independent of producer arrival order. SQLite regressions cover shuffled sets
 across batch boundaries, deselection, root filters and stale revisions while
 preserving the stored UI ordinals. The retrieval cursor uses a selected/path-key
 index; it does not allocate another complete list of paths.
+The file-set selection UI also displays path-key order while its checkbox IDs
+retain their original ordinals. Ranked natural-language selections use their
+separate stored result order.
 
 The search-engine adapters in rag_search_snapshot.rs remain part of the full
 app. This crate does **not** qualify their linkage, filesystem indexing, vector

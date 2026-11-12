@@ -2991,7 +2991,7 @@ mod tests {
         assert!(f.transport.calls.lock().unwrap()[0].schema.is_none());
     }
     #[test]
-    fn streamed_search_snapshot_rolls_back_and_retains_order_and_partial_state() {
+    fn streamed_search_snapshot_rolls_back_and_keeps_path_identity_and_partial_state() {
         let f = fixture();
         let error = f
             .service
@@ -3024,12 +3024,12 @@ mod tests {
         // Paths are case-insensitive only on Windows (chat_selection::path_key), so a
         // differently cased path is the same file there and a different file elsewhere.
         #[cfg(windows)]
-        let expected = vec![r"C:\approved\b.md", r"C:\approved\a.md"];
+        let expected = vec![r"C:\approved\a.md", r"C:\approved\b.md"];
         #[cfg(not(windows))]
         let expected = vec![
-            r"C:\approved\b.md",
-            r"C:\approved\a.md",
             r"C:\APPROVED\b.md",
+            r"C:\approved\a.md",
+            r"C:\approved\b.md",
         ];
         let count = expected.len() as u64;
         assert_eq!((page.total, page.selected_count), (count, count));
@@ -3039,6 +3039,16 @@ mod tests {
                 .map(|file| file.path.as_str())
                 .collect::<Vec<_>>(),
             expected
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            page.files.iter().map(|file| file.id).collect::<Vec<_>>(),
+            [2, 1]
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            page.files.iter().map(|file| file.id).collect::<Vec<_>>(),
+            [3, 2, 1]
         );
         // Creating a snapshot selects files; it neither reads their text nor
         // sends a generation request.

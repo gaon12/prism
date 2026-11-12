@@ -25,6 +25,8 @@ with zipfile.ZipFile(sys.argv[1]) as package:
     result={'text':'\\n'.join(n.text or '' for n in nodes if local(n)=='t'),
             'parts':len(parts),'tables':len(tables),'tableRows':table_rows,
             'notes':sum(local(n)=='footNote' for n in nodes),
+            'noteTexts':[''.join(t.text or '' for t in note.iter() if local(t)=='t')
+                         for note in nodes if local(note)=='footNote'],
             'images':sum(local(n)=='pic' for n in nodes)}
     print(json.dumps(result,ensure_ascii=True))
 `;

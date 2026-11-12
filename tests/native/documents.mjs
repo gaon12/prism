@@ -73,6 +73,7 @@ const literalMarkdown =
   '모델 분류 예시\n\n`CODE_LITERAL_S1 [S1]` · `CODE_LITERAL_FOOTNOTE [^S1]`\n\n' +
   '```text\nFENCED_LITERAL [S1]\n```\n\n' +
   '[링크](https://example.invalid/[S1])\n\nEscaped \\[S1]\n\n' +
+  'Authored note[^S1].\n\n[^S1]: AUTHOR_NOTE_CANARY\n\n' +
   '````text\nUNFINISHED_LITERAL [S1]\n```';
 const server = createServer((request, response) => {
   const buffers = [];
@@ -354,6 +355,7 @@ try {
     const inspected = inspectPdf(path);
     assert.equal(result.pages, inspected.pages);
     assert(inspected.text.includes('120000원'));
+    assert(inspected.text.includes('AUTHOR_NOTE_CANARY'), 'PDF must retain the authored note');
     for (const literal of [
       'CODE_LITERAL_S1[S1]',
       'CODE_LITERAL_FOOTNOTE[^S1]',
@@ -385,7 +387,17 @@ try {
       'UNFINISHED_LITERAL[S1]',
     ])
       assert(hwpx.text.replace(/\s+/g, '').includes(literal), `HWPX literal: ${literal}`);
-    assert.equal(hwpx.notes, sources ? 2 : 0, 'Only rendered references create source notes');
+    assert.equal(hwpx.notes, sources ? 3 : 1, 'Authored notes survive the source option');
+    assert.equal(
+      hwpx.noteTexts.filter((text) => text.includes('AUTHOR_NOTE_CANARY')).length,
+      1,
+      'The authored reference must keep its own note content',
+    );
+    assert.equal(
+      hwpx.noteTexts.filter((text) => text.includes('원본.md')).length,
+      sources ? 2 : 0,
+      'Only source references may receive source-file note content',
+    );
     assert.equal(
       hwpx.text.includes('원본.md'),
       sources,
@@ -393,6 +405,8 @@ try {
     );
     assert.equal(hwpx.text.replace(/\s+/g, '').includes('검증되지않음'), sources);
   }
+  assert(exported.includes('[^prism-source-S1]:'));
+  assert(exported.includes('[^S1]: AUTHOR_NOTE_CANARY'));
   assert.equal(calls.length, beforePdf);
 
   // Rendered UI calls the same real IPC. Creating/reviewing/saving remains explicit.

@@ -6,7 +6,7 @@ import json
 import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
-ORIGINAL_TEST_SHA256 = "f26d7b28bde57da5de574d4607069c0415b8b38d718cc737af6ac2d877426cd3"
+ORIGINAL_TEST_SHA256 = "e9eced744d7ce52ea7504852c586d76d1219d251309b4a08676a5be2d94c5de7"
 PROFILE = "qwen3-4b-official-thinking-no-repack-seed42"
 MODEL = {
     "filename": "Qwen3-4B-Q4_K_M.gguf",

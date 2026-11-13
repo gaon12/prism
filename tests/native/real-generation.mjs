@@ -548,11 +548,59 @@ try {
       await row.locator('input').fill(heading);
       await row.locator('textarea').fill(instruction);
     }
-    await main.locator('.doc-outline input[type=checkbox]').check();
+    // The user reviews the field/layout contract. Only requested field names,
+    // extraction instructions and presentation go here, never expected values.
+    await main.getByRole('checkbox', { name: '항목·표로 구성', exact: true }).check();
+    const sections = main.locator('.doc-outline > ol > li');
+    for (const [label, instruction] of [
+      ['개최일', '행사 개최일. 원문에 있는 연도를 포함한 전체 날짜를 유지한다.'],
+      ['장소', '행사 개최 장소를 원문 그대로 유지한다.'],
+    ]) {
+      await sections.nth(0).getByRole('button', { name: '항목 추가', exact: true }).click();
+      const field = sections.nth(0).locator('.doc-assembly-field').last();
+      await field.getByLabel('항목 이름', { exact: true }).fill(label);
+      await field.getByLabel('자료에서 찾을 내용', { exact: true }).fill(instruction);
+    }
+    const details = sections.nth(1);
+    await details.getByRole('button', { name: '두 열 표 추가', exact: true }).click();
+    const table = details.locator('.doc-assembly-table');
+    for (const [index, label, instruction] of [
+      [0, '예산 총액', '원문의 예산 총액. 숫자와 단위를 유지한다.'],
+      [1, '참가 인원', '원문의 참가 인원. 숫자와 단위를 유지한다.'],
+    ]) {
+      if (index > 0) await table.getByRole('button', { name: '행 추가', exact: true }).click();
+      const field = table.locator('.doc-assembly-field').nth(index);
+      await field.getByLabel('항목 이름', { exact: true }).fill(label);
+      await field.getByLabel('자료에서 찾을 내용', { exact: true }).fill(instruction);
+    }
+    await details.getByRole('button', { name: '항목 추가', exact: true }).click();
+    const reservationField = details.locator('.doc-assembly-field').last();
+    await reservationField.getByLabel('항목 이름', { exact: true }).fill('예약 번호');
+    await reservationField
+      .getByLabel('자료에서 찾을 내용', { exact: true })
+      .fill('원문에 실제로 기재된 예약 식별값이 있는 경우만 제공한다.');
+    await reservationField
+      .getByRole('checkbox', { name: '값을 찾지 못하면 안내 표시', exact: true })
+      .check();
+    await main.getByRole('checkbox', { name: '개요를 검토했습니다.', exact: true }).check();
     await main.getByRole('button', { name: '검토한 개요 저장', exact: true }).click();
     await until(async () => (await page()).revision.outlineReviewed, 'explicit review saved');
     result.reviewed = await page();
     assert.equal(result.reviewed.revision.plan.sections.length, 2);
+    const assembly = result.reviewed.revision.plan.assembly;
+    assert(assembly, 'The actual editor must save the reviewed layout');
+    assert.equal(assembly.noticeLanguage, 'ko');
+    assert.equal(assembly.fields.length, 5);
+    assert.deepEqual(
+      assembly.fields.map((field) => field.label),
+      ['개최일', '장소', '예산 총액', '참가 인원', '예약 번호'],
+    );
+    assert.deepEqual(
+      assembly.sections.map((section) => section.sectionId),
+      result.reviewed.revision.plan.sections.map((section) => section.id),
+    );
+    assert.deepEqual(assembly.sections[1].elements[0].columns, ['항목', '값']);
+    assert.equal(assembly.fields[4].missingDisplay, 'notice');
     stage = 'actual schema-constrained body';
     await main.getByRole('tab', { name: '본문 블록', exact: true }).click();
     await main.getByRole('button', { name: '검토한 개요로 본문 생성', exact: true }).click();

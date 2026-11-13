@@ -164,7 +164,13 @@ was not adopted in production and does not qualify the actual native gate.
 
 ## Separate experimental 4B qualification
 
-The original 1.7B greedy gate and its failures remain unchanged. A separate
+The required 1.7B greedy checks and preserved failed runs remain unchanged. The
+native program now reviews the structured layout through the actual editor;
+facts, tables, missing-information, export and reopen assertions are retained.
+The optional profile preparer pins this reviewed canonical program, and its
+configuration-only reversal and JavaScript syntax checks pass. Earlier 4B
+qualification results describe their recorded source revision; they do not
+qualify this new editor flow. A separate
 opt-in profile can be prepared with Python 3.11 or newer, without downloading
 assets or launching a model:
 

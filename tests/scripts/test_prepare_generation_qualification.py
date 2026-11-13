@@ -3,6 +3,7 @@ from pathlib import Path
 import importlib.util
 import json
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -45,6 +46,16 @@ class PreparationTests(unittest.TestCase):
         self.assertNotEqual(mutated, original)
         with self.assertRaisesRegex(ValueError, "Original gate changed"):
             profile.transform(mutated)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is needed for syntax-only checking")
+    def test_generated_profile_is_valid_javascript_without_executing_it(self):
+        base = Path(tempfile.mkdtemp(prefix="generation-profile-syntax-", dir=ROOT / ".dev"))
+        original = ROOT / "tests/native/real-generation.mjs"
+        variant = base / "variant.mjs"
+        variant.write_text(profile.transform(original.read_text(encoding="utf8")), encoding="utf8")
+        for path in [original, variant]:
+            checked = subprocess.run([shutil.which("node"), "--check", str(path)], capture_output=True, text=True, timeout=15)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
 
     def test_windows_checkout_line_endings_keep_original_bytes_and_make_same_program(self):
         base = Path(tempfile.mkdtemp(prefix="generation-profile-test-", dir=ROOT / ".dev"))

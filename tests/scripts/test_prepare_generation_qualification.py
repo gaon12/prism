@@ -2,8 +2,10 @@
 from pathlib import Path
 import importlib.util
 import json
+import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("generation_profile", ROOT / "scripts/prepare-generation-qualification.py")
@@ -43,6 +45,25 @@ class PreparationTests(unittest.TestCase):
         self.assertNotEqual(mutated, original)
         with self.assertRaisesRegex(ValueError, "Original gate changed"):
             profile.transform(mutated)
+
+    def test_windows_checkout_line_endings_keep_original_bytes_and_make_same_program(self):
+        base = Path(tempfile.mkdtemp(prefix="generation-profile-test-", dir=ROOT / ".dev"))
+        reference = profile.prepare(base / "reference")
+        fake_root = base / "windows-checkout"
+        for name in reference["originalInputsUnchanged"]:
+            target = fake_root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, target)
+        original_path = fake_root / "tests/native/real-generation.mjs"
+        windows_bytes = original_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        original_path.write_bytes(windows_bytes)
+        with patch.object(profile, "ROOT", fake_root):
+            prepared = profile.prepare(fake_root / ".dev" / "case")
+        generated_path = Path(prepared["tree"]) / "tests/native/real-generation.mjs"
+        reference_path = Path(reference["tree"]) / "tests/native/real-generation.mjs"
+        self.assertEqual(generated_path.read_bytes(), reference_path.read_bytes())
+        self.assertNotIn(b"\r\n", generated_path.read_bytes())
+        self.assertEqual(original_path.read_bytes(), windows_bytes)
 
     def test_existing_output_and_original_source_are_untouched(self):
         base = Path(tempfile.mkdtemp(prefix="generation-profile-test-", dir=ROOT / ".dev"))

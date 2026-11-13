@@ -201,6 +201,19 @@ reviewed, scoped notice or blank. Matching normalizes whitespace without joining
 separate words or digits and rejects zero or multiple excerpt matches. This
 checks literal support, not field meaning or claim truth.
 
+An offline negative probe found that plain substring matching accepted `7명`
+inside an excerpt containing only `17명`. The renderer now rejects values or
+quotes clipped inside an ASCII digit run, both when checking a value against its
+quote and when locating evidence in an excerpt. It still permits a later full
+occurrence and ordinary Korean date suffixes; it does not interpret dates, units
+or field meaning. RAG QA passed 131 tests, and the external-provider fixture's two
+offline tests and both strict Clippy checks passed. The compiled new resolver
+rejects that preserved negative case and renders the earlier positive actual
+response identically; the decoder request is unchanged. This is captured-response
+regression evidence, not a new inference or native app pass. Evidence:
+`.dev/document-numeric-span-probe-20261114/qualification.json`, SHA-256
+`4f4ed817e90b7d72d638cbe85fa07f8b97227dbcfa1636df967e359c6cca9d16`.
+
 Only structured full-body generation receives the trusted citation-ownership
 system specialization, and its length counts against the context budget. Exact
 redacted/truncated excerpts remain ephemeral, excluded from API serialization,

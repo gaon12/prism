@@ -130,6 +130,21 @@ fn short_text(value: &str, max_chars: usize, max_bytes: usize) -> bool {
         && !value.chars().any(char::is_control)
 }
 
+// A copied span must not turn 17 into 7 or 512000 into 51200. Other
+// linguistic boundaries remain unverified; do not interpret dates or units.
+fn literal_match(source: &str, value: &str) -> bool {
+    let Some(first) = value.chars().next() else {
+        return false;
+    };
+    let last = value.chars().next_back().unwrap();
+    source.match_indices(value).any(|(start, _)| {
+        let before = source[..start].chars().next_back();
+        let after = source[start + value.len()..].chars().next();
+        !(first.is_ascii_digit() && before.is_some_and(|c| c.is_ascii_digit())
+            || last.is_ascii_digit() && after.is_some_and(|c| c.is_ascii_digit()))
+    })
+}
+
 impl AssemblyPlan {
     pub(crate) fn render_with_sources(
         &self,
@@ -193,7 +208,7 @@ impl AssemblyPlan {
             let quote = compact(&field.quote);
             let needle = match field.state {
                 FieldState::Provided
-                    if !text.is_empty() && (quote.is_empty() || quote.contains(&text)) =>
+                    if !text.is_empty() && (quote.is_empty() || literal_match(&quote, &text)) =>
                 {
                     if quote.is_empty() {
                         text
@@ -214,7 +229,7 @@ impl AssemblyPlan {
             } else {
                 let matches: Vec<_> = sources
                     .iter()
-                    .filter(|(_, source)| source.contains(&needle))
+                    .filter(|(_, source)| literal_match(source, &needle))
                     .collect();
                 if matches.len() != 1 {
                     return Err("No unique current literal match");
@@ -770,5 +785,42 @@ mod tests {
         assert!(plan()
             .render_with_sources(&input.to_string(), &context)
             .is_err());
+    }
+
+    #[test]
+    fn provided_values_cannot_clip_adjacent_digits_in_excerpts_or_quotes() {
+        let mut context = sources();
+        context[1].1 = "Attendees: 17명".into();
+        for quote in ["", "Attendees: 17명"] {
+            assert!(plan()
+                .render_with_sources(&payload("provided", "7명", quote).to_string(), &context)
+                .is_err());
+        }
+        assert!(plan()
+            .render_with_sources(&payload("provided", "17명", "").to_string(), &context)
+            .is_ok());
+        // An invalid first occurrence must not hide a later complete match.
+        context[1].1 = "Earlier: 17명. Current: 7명.".into();
+        assert!(plan()
+            .render_with_sources(&payload("provided", "7명", "").to_string(), &context)
+            .is_ok());
+        let mut body = payload("notFound", "", "");
+        body["values"][0]["text"] = "51200".into();
+        context[0].1 = "Amount: 512000".into();
+        assert!(plan()
+            .render_with_sources(&body.to_string(), &context)
+            .is_err());
+        context[0].1 = "Amount: 51200".into();
+        assert!(plan()
+            .render_with_sources(&body.to_string(), &context)
+            .is_ok());
+        let mut natural_sources = sources();
+        natural_sources[1].1 = "2026년 12월 5일에 개최합니다.".into();
+        assert!(plan()
+            .render_with_sources(
+                &payload("provided", "2026년 12월 5일", "").to_string(),
+                &natural_sources,
+            )
+            .is_ok());
     }
 }

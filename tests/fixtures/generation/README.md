@@ -16,6 +16,15 @@ qualification stays opt-in; its success does not satisfy or replace that require
 gate. This policy applies to test fixtures. Product profiles continue to require
 the user's server and model configuration.
 
+The required [Windows CI run 43377675738](https://github.com/gaon12/prism/actions/runs/43377675738)
+at `c8bec76` remains red for actual Qwen3-1.7B generation. Its body preserved the
+workshop date, location, budget and attendance in four fact paragraphs, but
+produced no table and omitted the requested reservation-absence note. The six
+supplied excerpts included paragraph 9, which explicitly records that absence;
+this failure therefore persists after retrieving the relevant evidence. The
+actual HWPX contained zero tables. The original assertions and failure remain
+preserved; this is separate from the synthetic document/export smoke test.
+
 `outline-duplicate-ids.txt` retains the assistant's JSON content captured from
 Qwen3-1.7B Q8 with the pinned b11960 CPU runtime on 2026-11-12. The direct wire
 probe used the workshop document's paragraphs 6, 3, 5, 4, 1 and 9, separately

@@ -155,3 +155,12 @@ terminates its process groups and removes its temporary keyring before success.
 Evidence retains source/binary hashes and logs, never the keyring or its random
 password. A cleanup failure makes the result fail. Missing system-prompt warnings
 are expected during the intentionally locked headless phase and remain in the logs.
+
+The committed probe/controller at `ef2cc9a` passed under WSL Ubuntu 26.04 with
+GNOME Keyring 50.0. The original native test passed once and all four additional
+phases passed, with source/binary integrity, committed-input hashes and cleanup
+verified. Separate full-core checks passed 129 Linux tests (one opt-in ignored)
+and 132 Windows tests, plus strict all-target Clippy on both. Earlier probe
+compilation, controller-unlock and missing-Node fixture failures are preserved.
+Evidence: `.dev/linux-secret-service-20261114/qualification.json`, SHA-256
+`39ab8a9bfb750dc406dc5305ca8cff62e1c0a93c50071e09d0aa46e3200052ec`.

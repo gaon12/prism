@@ -81,6 +81,16 @@ All five official archives have passed extraction and installed-file verificatio
 
 RAG chat connects a user-run OpenAI-compatible local server or an external HTTPS provider; Prism does not download or start a generative model. Defaults are local, with external questions and fallback disabled. External RAG requires both question opt-in and separate permission for each folder's content. Provider changes and fallback cannot expand those permissions. Credentials are bound to the profile, provider slot and API base. Storage uses Windows user-bound DPAPI, the macOS user Keychain, or the Linux login session's Secret Service (for example GNOME Keyring or KWallet). Start/unlock that service and refresh the key status if it is unavailable. Failures preserve existing entries and return an error without saving plaintext. A real disposable GNOME Keyring session and native Apple Silicon/Intel Mac Keychain tests passed credential roundtrip, replacement, isolation and deletion. The [Mac qualification](https://github.com/gaon12/prism/actions/runs/43381277889) also verified temporary-Keychain isolation and restoration of runner preferences. Full macOS desktop prompting/signing and locked-login behavior remain unverified.
 
+The explicit [Linux Secret Service check](tools/rag-qa/README.md#disposable-linux-secret-service-check)
+at `ef2cc9a` also verified locked-store failures with the current production
+credential modules under WSL and a private GNOME Keyring 50.0 session. Locked
+read/write/delete operations returned storage errors; the replacement key survived
+restarting and unlocking only the owned daemon, then deletion and repeated deletion
+passed. Source/binary hashes remained unchanged, no profile fallback directory
+appeared, and private processes/keyring files were removed. Interactive desktop
+unlock dialogs, KWallet, Flatpak and the complete application remain separate
+verification scopes.
+
 For a loopback server that needs no authentication, open **Settings → AI & models → Local server** and select **Connect to the local server without an API key**, then save. This explicit choice skips the system keychain and preserves saved keys; clear it to use or manage those keys again. It is off by default for existing profiles. Keychain errors never automatically downgrade an authenticated connection, and external providers still require their own key and transmission permissions.
 
 Each provider attempt rechecks current policy and source hashes. Both history roles retain hidden/uncited provenance, so revoked, changed, deleted or out-of-scope evidence is omitted rather than replayed. Document questions with no evidence do not silently become general chat. Source links and model citations are unverified references; unknown labels remain unlinked, and reported usage is never estimated. Conversations support search, rename/delete, paging, explicit cancellation and Markdown export. Tests exercise the actual native RAG/source/SQLite/DPAPI path with a synthetic loopback completion server; actual external generation is not verified by that fixture.

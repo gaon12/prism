@@ -11,6 +11,11 @@ generative server. The native tests launch their own owned server and explicitly
 configure their private app profile. Changing a qualification fixture therefore
 does not change user settings or introduce a managed product model.
 
+Qwen3-1.7B Q8 remains the fixture for the required CI generation gate. The 4B
+qualification stays opt-in; its success does not satisfy or replace that required
+gate. This policy applies to test fixtures. Product profiles continue to require
+the user's server and model configuration.
+
 `outline-duplicate-ids.txt` retains the assistant's JSON content captured from
 Qwen3-1.7B Q8 with the pinned b11960 CPU runtime on 2026-11-12. The direct wire
 probe used the workshop document's paragraphs 6, 3, 5, 4, 1 and 9, separately

@@ -222,7 +222,7 @@ Document revision citation-use flags reflect the assembled blocks; raw provider
 turns retain their own citation metadata. Ordinary chat, legacy free-form plans,
 outline generation and partial rewrites retain their existing paths.
 
-On 2026-11-14, the current production prompt, schema and renderer passed a fresh
+On 2026-11-14, the `4371494` production prompt, schema and renderer passed a fresh
 actual 1.7B request with the same UUIDs and excerpts. The request messages matched
 the successful prototype; the only decoder-schema difference was an explicit
 `type: string` on the state enum. Original facts/table checks, all five app-assigned
@@ -238,6 +238,34 @@ retrieval, PDF/HWPX export or reopen pass. The required native gate remains open
 Evidence is in
 `.dev/document-quote-production-inference-attempt2-20261114/qualification.json`, SHA-256
 `0b9443b4b3735553c34f2c29ea579b8866c223d699cbd57e73ee97178f117c2b`.
+
+A subsequent full native run of `42ee308` did not pass. The four recorded values
+were correct, but the model used `explicitlyUnavailable` with a nonempty `text`
+and empty `quote`. The renderer rejected this contradictory state and preserved
+the reviewed revision. It was a normal model stop (1708 prompt / 361 completion
+tokens), with no memory/deadline stop or console errors/warnings. Source, app and
+asset hashes remained unchanged. The exact response is preserved in
+`body-unavailability-in-text.txt` for regression tests only, never as a model
+input. The failed native qualification is recorded in
+`.dev/native-numeric-42ee308-resume-20261114/native-failed-qualification.json`, SHA-256
+`bbac46c2cd6f08279fe2b58b346d11226b7e83cd3000182bfac46a910cfcdab7`.
+
+The decoder schema now expresses the existing state rules as three disjoint
+`anyOf` object variants. A provided value needs nonempty `text`; explicit
+unavailability requires empty `text` and nonempty `quote`; not-found requires
+both strings empty. The backend continues to reject the original malformed
+response, without moving its text into another field. Prompt wording, response
+keys, source matching, plan/storage formats and provider defaults are unchanged.
+The pinned [b11960 converter](https://github.com/ggml-org/llama.cpp/blob/b11960/common/json-schema-to-grammar.cpp)
+has union and constant grammar rules. Offline JSON Schema validation confirms
+that the earlier flat schema admitted this exact native response and the new
+schema rejects it. Synthetic valid protocol examples render identically in both
+compiled renderers; these examples are not new model responses or inference
+inputs. RAG QA passed 132 tests; external-provider offline tests passed two, and
+both strict Clippy checks passed. This grammar refinement still needs a new
+actual native run. Evidence:
+`.dev/document-state-schema-compare-20261114/qualification.json`, SHA-256
+`bbd2aa41639169d83a34cbb01ec0f0d996a32bced5a838e8481938709456e2ef`.
 
 Rejecting an output that violates a structured plan is a useful intermediate
 behavior, but it does not satisfy the positive native generation gate. The

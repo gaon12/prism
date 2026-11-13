@@ -255,18 +255,37 @@ impl AssemblyPlan {
 
     pub(crate) fn response_schema(&self) -> serde_json::Value {
         let fields: Vec<_> = self.fields.iter().map(|field| &field.id).collect();
-        serde_json::json!({
-            "type":"object","additionalProperties":false,"required":["values"],
-            "properties":{"values":{"type":"array","minItems":fields.len(),"maxItems":fields.len(),"items":{
+        let variant = |state: &str, text: serde_json::Value, quote: serde_json::Value| {
+            serde_json::json!({
                 "type":"object","additionalProperties":false,
                 "required":["fieldId","state","text","quote"],
                 "properties":{
                     "fieldId":{"type":"string","enum":fields},
-                    "state":{"type":"string","enum":["provided","explicitlyUnavailable","notFound"]},
-                    "text":{"type":"string","maxLength":512,"pattern":"^[^\\r\\n]*$"},
-                    "quote":{"type":"string","maxLength":512}
+                    "state":{"type":"string","enum":[state]},
+                    "text":text,"quote":quote
                 }
-            }}}
+            })
+        };
+        let empty = serde_json::json!({"type":"string","const":""});
+        // Keep the decoder's state combinations consistent with resolve_values.
+        // A source statement belongs in quote, never in a fabricated value slot.
+        let variants = [
+            variant(
+                "provided",
+                serde_json::json!({"type":"string","minLength":1,"maxLength":512,"pattern":"^[^\\r\\n]*$"}),
+                serde_json::json!({"type":"string","maxLength":512}),
+            ),
+            variant(
+                "explicitlyUnavailable",
+                empty.clone(),
+                serde_json::json!({"type":"string","minLength":1,"maxLength":512}),
+            ),
+            variant("notFound", empty.clone(), empty),
+        ];
+        serde_json::json!({
+            "type":"object","additionalProperties":false,"required":["values"],
+            "properties":{"values":{"type":"array","minItems":fields.len(),"maxItems":fields.len(),
+                "items":{"anyOf":variants}}}
         })
     }
 
@@ -687,9 +706,16 @@ mod tests {
         let schema = layout.response_schema();
         assert!(serde_json::to_vec(&schema).unwrap().len() < 64 * 1024);
         assert_eq!(schema["properties"]["values"]["minItems"], 64);
-        let properties = &schema["properties"]["values"]["items"]["properties"];
-        for owned in ["sourceLabels", "markdown", "claimsVerified", "userEdited"] {
-            assert!(properties.get(owned).is_none());
+        let variants = schema["properties"]["values"]["items"]["anyOf"]
+            .as_array()
+            .unwrap();
+        assert_eq!(variants.len(), 3);
+        for variant in variants {
+            let properties = &variant["properties"];
+            assert_eq!(properties["fieldId"]["enum"].as_array().unwrap().len(), 64);
+            for owned in ["sourceLabels", "markdown", "claimsVerified", "userEdited"] {
+                assert!(properties.get(owned).is_none());
+            }
         }
         let prompt = layout.extraction_prompt("A purpose", "An instruction");
         assert!(prompt.contains("text=\"\""));
@@ -701,6 +727,55 @@ mod tests {
         let old = include_str!("../../tests/fixtures/generation/body-wrong-field-source.txt");
         assert!(serde_json::from_str::<ModelBody>(old).is_err());
         assert!(plan().render_with_sources(old, &sources()).is_err());
+    }
+
+    #[test]
+    fn unavailability_cannot_put_a_statement_in_the_value_slot() {
+        let raw = include_str!("../../tests/fixtures/generation/body-unavailability-in-text.txt");
+        let body: ModelBody = serde_json::from_str(raw).unwrap();
+        let mut layout = plan();
+        layout.fields = body
+            .values
+            .iter()
+            .map(|value| AssemblyField {
+                id: value.field_id.clone(),
+                label: "Field".into(),
+                instruction: String::new(),
+                missing_display: MissingDisplay::Notice,
+            })
+            .collect();
+        layout.sections[0].elements = vec![AssemblyElement::FieldTable {
+            columns: ["Field", "Value"].map(String::from),
+            fields: layout.fields.iter().map(|field| field.id.clone()).collect(),
+        }];
+        let context = [
+            ("[S1]", "2026년 12월 5일"),
+            ("[S2]", "부산 해운대"),
+            ("[S3]", "347000원"),
+            ("[S4]", "7명"),
+        ]
+        .map(|(label, text)| (label.into(), text.into()));
+        assert_eq!(
+            layout.resolve_values(raw, &context).err(),
+            Some("Field state contradicts its value or quote")
+        );
+        let schema = layout.response_schema();
+        let variants = schema["properties"]["values"]["items"]["anyOf"]
+            .as_array()
+            .unwrap();
+        let find = |state: &str| {
+            variants
+                .iter()
+                .find(|v| v["properties"]["state"]["enum"] == serde_json::json!([state]))
+                .unwrap()
+        };
+        let absent = &find("explicitlyUnavailable")["properties"];
+        assert_eq!(absent["text"]["const"], "");
+        assert_eq!(absent["quote"]["minLength"], 1);
+        let missing = &find("notFound")["properties"];
+        assert_eq!(missing["text"]["const"], "");
+        assert_eq!(missing["quote"]["const"], "");
+        assert_eq!(find("provided")["properties"]["text"]["minLength"], 1);
     }
 
     #[test]

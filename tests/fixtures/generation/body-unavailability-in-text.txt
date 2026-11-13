@@ -1,0 +1,34 @@
+{
+  "values": [
+    {
+      "fieldId": "749d9999-0c96-40f2-919e-02b30f3b8e03",
+      "state": "provided",
+      "text": "2026년 12월 5일",
+      "quote": ""
+    },
+    {
+      "fieldId": "a90c4ea2-8439-416f-b44b-ac3caa24025f",
+      "state": "provided",
+      "text": "부산 해운대",
+      "quote": ""
+    },
+    {
+      "fieldId": "2ed103c9-d9a1-4783-9a49-0b2fcbd80478",
+      "state": "provided",
+      "text": "347000원",
+      "quote": ""
+    },
+    {
+      "fieldId": "25a97c50-eb5c-4aa9-a65f-90dfe805dc80",
+      "state": "provided",
+      "text": "7명",
+      "quote": ""
+    },
+    {
+      "fieldId": "b66402f6-a8f4-4ff3-b731-8d772b1593b5",
+      "state": "explicitlyUnavailable",
+      "text": "정해지지 않았으며 이 자료에 기재되어 있지 않다.",
+      "quote": ""
+    }
+  ]
+}

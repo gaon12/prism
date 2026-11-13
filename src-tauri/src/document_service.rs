@@ -1951,13 +1951,17 @@ mod tests {
             let schemas = f.transport.schemas.lock().unwrap();
             let schema = schemas.last().unwrap().as_ref().unwrap();
             assert!(schema["properties"].get("blocks").is_none());
-            assert!(schema["properties"]["values"]["items"]["properties"]
-                .get("sourceLabels")
-                .is_none());
-            assert_eq!(
-                schema["properties"]["values"]["items"]["properties"]["fieldId"]["enum"],
-                serde_json::json!(["cost"])
-            );
+            let variants = schema["properties"]["values"]["items"]["anyOf"]
+                .as_array()
+                .unwrap();
+            assert_eq!(variants.len(), 3);
+            for variant in variants {
+                assert!(variant["properties"].get("sourceLabels").is_none());
+                assert_eq!(
+                    variant["properties"]["fieldId"]["enum"],
+                    serde_json::json!(["cost"])
+                );
+            }
         });
     }
     fn request(page: &DocumentPage, id: &str) -> DocumentGenerateRequest {

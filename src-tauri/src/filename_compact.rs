@@ -1063,13 +1063,13 @@ impl Catalog {
                     && under(self.write_dir_key(id, &mut scratch), root)
             })
             .collect();
-        self.iter().filter(move |entry| {
-            if inside[entry.node().dir as usize] {
-                return true;
-            }
-            // The root entry itself lives in its parent directory.
-            entry.write_key(&mut scratch) == root
-        })
+        // The root entry itself lives in its parent directory. Look it up by
+        // key once instead of rebuilding the key of every entry outside the
+        // subtree: on a 2.2 million entry drive that rebuild cost about 0.3 s
+        // of one CPU for each scoped search and each refreshed folder.
+        let root_id = self.find(root).map(|(_, id)| id);
+        self.iter()
+            .filter(move |entry| inside[entry.node().dir as usize] || Some(entry.id) == root_id)
     }
 
     /// Rewrite the text arena without removed names, paths and blocks.
@@ -1875,6 +1875,53 @@ mod tests {
         catalog.retain(|entry| entry.size() != 99);
         assert!(!catalog.contains_key("c:/a/x.txt"));
         assert_eq!(catalog.len(), 2);
+    }
+
+    #[test]
+    fn a_subtree_holds_its_root_entry_and_everything_below_it() {
+        let mut catalog = Catalog::new();
+        for (path, key) in [
+            (r"C:\a", "c:/a"),
+            (r"C:\a\x.txt", "c:/a/x.txt"),
+            (r"C:\a\b", "c:/a/b"),
+            (r"C:\a\b\y.txt", "c:/a/b/y.txt"),
+            (r"C:\ab\z.txt", "c:/ab/z.txt"),
+            (r"C:\top.txt", "c:/top.txt"),
+            (r"C:\gone\only.txt", "c:/gone/only.txt"),
+        ] {
+            catalog.insert(&input(path, key));
+        }
+        // The same result as testing every entry's key against the root.
+        let reference = |root: &str| {
+            let mut buffer = String::new();
+            let mut keys: Vec<String> = catalog
+                .iter()
+                .map(|entry| entry.write_key(&mut buffer).to_string())
+                .filter(|key| under(key, root))
+                .collect();
+            keys.sort();
+            keys
+        };
+        let mut buffer = String::new();
+        for root in [
+            "c:/a",
+            "c:/a/b",
+            "c:/a/x.txt",
+            "c:/top.txt",
+            // A folder without an entry of its own, and an unknown path.
+            "c:/gone",
+            "c:/none",
+            "c:/a/b/y.txt/deeper",
+        ] {
+            let mut keys: Vec<String> = catalog
+                .subtree(root)
+                .map(|entry| entry.write_key(&mut buffer).to_string())
+                .collect();
+            keys.sort();
+            assert_eq!(keys, reference(root), "subtree of {root}");
+        }
+        assert_eq!(catalog.subtree("c:/gone").count(), 1);
+        assert_eq!(catalog.subtree("c:/none").count(), 0);
     }
 
     #[test]

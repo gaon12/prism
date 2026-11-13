@@ -1022,10 +1022,12 @@ impl FileIndex {
                         catalog
                             .entries
                             .subtree(&root)
+                            // Rewalked entries are seen: skip them before
+                            // building a key (most of a refreshed subtree).
+                            .filter(|entry| !entry.is_seen(sweep))
                             .filter_map(|entry| {
                                 let entry_key = entry.write_key(&mut key);
-                                (!entry.is_seen(sweep) && !uncertain.contains(entry_key))
-                                    .then(|| entry_key.to_string())
+                                (!uncertain.contains(entry_key)).then(|| entry_key.to_string())
                             })
                             .collect::<Vec<_>>()
                     })

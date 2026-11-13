@@ -51,7 +51,6 @@
 }
 .clipboard-row[aria-selected='true'] {
   background: var(--accent-soft);
-  box-shadow: inset 2px 0 var(--accent);
 }
 .clipboard-snippet {
   overflow: hidden;

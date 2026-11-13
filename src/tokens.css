@@ -1,13 +1,14 @@
 /* Design tokens: every colour, shadow, radius and curve the app uses.
  *
- * The look follows the user's reference (benji.org/stageshow, see .dev/docs/design-direction.md):
- * - Quiet, neutral surfaces on a warm off-white ground. The neutrals have no green tint, so the
- *   one accent colour (Prism green) is the only colour on screen.
- * - Hairlines instead of outlines: borders are translucent ink, so they read as soft separators
- *   on any surface, light or dark.
- * - Depth comes from a thin ring plus a soft shadow, not from heavy borders.
- * Values are taken from the stageshow kit (kit/stage.css) and mapped onto Prism's token names,
- * so every existing component picks them up without changes. */
+ * Direction (see .dev/docs/design-direction.md):
+ * - Calm, solid surfaces and restrained colour. One blue accent carries meaning by role:
+ *   --accent for focus and the selected row's mark, --accent-strong for filled primary
+ *   buttons and accent text (it keeps 4.5:1 on white), --accent-soft for selected fills.
+ * - Rounded geometry: rows 8px, fields 12px, cards and popovers 20px, large panels 26px,
+ *   buttons 18px.
+ * - Depth by role: a dim behind a dialog, or a soft shadow under a floating card, never both.
+ * - Motion stays between 100 and 500 ms on one curve: a quick start, then a long, soft settle.
+ * - Dark theme uses a near-black ground, and both themes are always checked. */
 :root {
   font-family:
     'Segoe UI Variable',
@@ -25,28 +26,30 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 
-  /* Surfaces: white content on a warm off-white ground. */
+  /* Surfaces: white content on a cool off-white ground. */
   --surface: #ffffff;
-  --sidebar: #f7f6f5; /* the ground: sidebar, quiet panels */
-  --subtle: #f4f3f2; /* wells: inputs at rest, toolbars, hover on white */
+  --sidebar: #f4f5f7; /* the ground: sidebar, quiet panels */
+  --subtle: #f0f1f4; /* wells: inputs at rest, toolbars */
 
   /* Text: neutral greys. --faint is for hints and placeholders. */
-  --text: #262628;
-  --muted: #76767a;
-  --faint: #9a9a9d;
+  --text: #1c1c1e;
+  --muted: #6b6b70;
+  --faint: #8e8e93;
 
   /* Lines: translucent ink, so a separator is equally soft on white and on the ground. */
   --border: rgba(0, 0, 0, 0.07);
   --border-strong: rgba(0, 0, 0, 0.12);
-  --hover: rgba(0, 0, 0, 0.045);
+  --hover: rgba(0, 0, 0, 0.04);
 
-  /* The one accent: Prism green. Use it for the primary action, selection and focus only. */
-  --accent: #426557;
-  --accent-hover: #345647;
-  --accent-soft: #e7eeea;
-  --accent-text: #305244;
+  /* The one accent, by role. --accent-strong also serves filled buttons (4.9:1 under white). */
+  --accent: #0381fe;
+  --accent-strong: #0072de;
+  --accent-hover: #0063c2;
+  --accent-soft: #e3f0ff;
+  --accent-text: #0066c7;
   --on-accent: #fff;
-  --danger: #b4403d;
+  --danger: #c4312c;
+  --danger-soft: #fdecea;
 
   /* Depth: a hairline ring plus a soft, slightly cool drop (kit: shadow-card / -float). */
   --shadow-card: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
@@ -60,36 +63,39 @@
     0 0 0 1px rgba(0, 0, 0, 0.06), 0 14px 32px -8px rgba(50, 50, 93, 0.24),
     0 4px 10px -4px rgba(0, 0, 0, 0.1);
 
-  /* Shape: a row, a field, a popover, a window. */
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 10px;
-  --radius-xl: 12px;
+  /* Shape: small marks, rows and fields, cards and popovers, large panels, buttons. */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --radius-xl: 26px;
+  --radius-button: 18px;
 
-  /* Motion: things arrive fast and settle softly (kit curve "settle"). Keep moves 150-250 ms. */
-  --ease-settle: cubic-bezier(0.05, 0.85, 0.3, 1);
-  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  /* Motion: a quick start and a long, soft settle. Keep every move within 100-500 ms. */
+  --ease-settle: cubic-bezier(0.22, 0.25, 0, 1);
+  --ease-standard: cubic-bezier(0.22, 0.25, 0, 1);
 
   color: var(--text);
   background: var(--surface);
   color-scheme: light;
 }
 :root[data-theme='dark'] {
-  --surface: #1a1a1d;
-  --sidebar: #141416;
-  --subtle: #222225;
-  --text: #ececee;
-  --muted: #a0a0a5;
-  --faint: #6c6c70;
+  --surface: #161618;
+  --sidebar: #080808;
+  --subtle: #202023;
+  --text: #fafafa;
+  --muted: #a1a1a6;
+  --faint: #6e6e73;
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.14);
   --hover: rgba(255, 255, 255, 0.06);
-  --accent: #6a9d81;
-  --accent-hover: #80af96;
-  --accent-soft: #24332b;
-  --accent-text: #bdd7c7;
-  --on-accent: #10251a;
-  --danger: #f19d9d;
+  --accent: #3e91ff;
+  --accent-strong: #3e91ff;
+  --accent-hover: #64a7ff;
+  --accent-soft: #14273f;
+  --accent-text: #8cc0ff;
+  --on-accent: #fff;
+  --danger: #ff8a84;
+  --danger-soft: #3a1c1b;
   --shadow-card: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-float:
     0 0 0 1px rgba(255, 255, 255, 0.08), 0 4px 16px rgba(0, 0, 0, 0.4),

@@ -171,7 +171,8 @@ section.feature-view.chat-view {
   overflow-wrap: anywhere;
 }
 .chat-failure {
-  border-left: 2px solid var(--danger);
+  background: var(--danger-soft);
+  border-radius: var(--radius-sm);
   padding: 8px 10px;
   margin: 12px 0;
   font-size: 0.8rem;

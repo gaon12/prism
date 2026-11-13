@@ -57,77 +57,108 @@
   gap: 12px;
   color: var(--muted);
   font-size: 0.85rem;
-  border-bottom: 1px solid var(--border);
 }
 .result-actions {
   display: flex;
   gap: 4px;
 }
+/* The filename list is a plain, dense table: one line per file, aligned columns, no cards and
+   no edge marks. Rows are told apart by whitespace and a faint hover. The selected row is one
+   solid, rounded fill: blue while the list has focus, grey otherwise. */
+.file-result-columns,
+.file-result-row {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr) 84px 96px;
+  align-items: center;
+  gap: 16px;
+  padding: 0 12px;
+}
+.compact-results .file-result-columns,
+.compact-results .file-result-row {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.file-result-columns {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 30px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+.file-result-columns > span:nth-child(n + 3),
+.file-result-size,
+.file-result-date {
+  text-align: right;
+}
 .file-result-list {
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+  padding: 4px 0;
+  outline: none;
 }
-/* Result rows: separated by hairlines. Hover is a faint ink wash. The selected row gets a soft
-   accent fill and a slim accent mark on its leading edge, drawn inside the row so nothing shifts. */
 .file-result-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 11px 12px;
-  border-bottom: 1px solid var(--border);
-  cursor: default;
+  min-height: 32px;
   border-radius: var(--radius-sm);
+  cursor: default;
   transition: background 120ms var(--ease-standard);
 }
 .file-result-row:hover {
   background: var(--hover);
 }
 .file-result-row[aria-selected='true'] {
+  background: var(--subtle);
+}
+.file-result-list:focus .file-result-row[aria-selected='true'] {
   background: var(--accent-soft);
-  box-shadow: inset 2px 0 0 var(--accent);
 }
-.file-icon {
-  flex-shrink: 0;
-  color: var(--muted);
-}
-.file-result-row[aria-selected='true'] .file-icon {
-  color: var(--accent-text);
+/* Keyboard focus also shows as a ring around the list, never by colour alone. */
+.file-result-list:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+  border-radius: var(--radius-md);
 }
 .file-result-name {
   display: flex;
-  flex-direction: column;
-  gap: 5px;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
-  flex: 1;
 }
-.file-result-name strong {
-  font-size: 0.94rem;
-  font-weight: 500;
-  overflow-wrap: anywhere;
-}
-.file-result-name > span {
+.file-icon {
+  flex-shrink: 0;
   color: var(--faint);
-  font-size: 0.78rem;
-  text-overflow: ellipsis;
+}
+.file-result-list:focus .file-result-row[aria-selected='true'] .file-icon {
+  color: var(--accent-text);
+}
+.file-result-title,
+.file-result-folder {
+  min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
-.file-result-details {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
-  font-size: 0.77rem;
+.file-result-title {
+  font-size: 0.9rem;
+}
+.file-result-folder,
+.file-result-size,
+.file-result-date {
   color: var(--muted);
+  font-size: 0.8rem;
   white-space: nowrap;
 }
-/* A match is the one place real emphasis lands in a row: a soft accent highlight behind the text. */
+.file-result-size,
+.file-result-date {
+  font-variant-numeric: tabular-nums;
+}
+/* The matched part of a name is bold accent text: weight, not only colour, marks it. */
 mark {
   color: var(--accent-text);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  border-radius: 3px;
-  padding: 0 1px;
+  background: none;
+  font-weight: 600;
 }
 .results-limit {
   padding: 10px;
@@ -250,9 +281,6 @@ mark {
   min-height: 0;
   flex: 1;
 }
-.compact-results .file-result-row {
-  padding: 10px 8px;
-}
 .compact-results .results-heading {
   min-height: 38px;
 }
@@ -265,7 +293,14 @@ mark {
   min-height: 0;
 }
 @media (max-width: 580px) {
-  .file-result-details {
+  /* A narrow window keeps name and folder; size and date drop out. */
+  .file-result-columns,
+  .file-result-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .file-result-columns > span:nth-child(n + 3),
+  .file-result-size,
+  .file-result-date {
     display: none;
   }
   .utility-result {

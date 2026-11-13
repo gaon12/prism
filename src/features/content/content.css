@@ -141,8 +141,9 @@
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--surface);
-  border-left: 3px solid var(--accent);
+  /* A notice is a quiet filled panel, not a box with a coloured edge. */
+  background: var(--accent-soft);
+  border-radius: var(--radius-md);
 }
 .content-scroll:has(.content-candidate-warning) .content-result-row {
   scroll-margin-top: 8rem;
@@ -236,16 +237,14 @@
   align-items: flex-start;
   gap: 12px;
   padding: 13px 12px;
-  border-bottom: 1px solid var(--border);
-  border-left: 3px solid transparent;
+  border-radius: var(--radius-md);
   cursor: default;
 }
 .content-result-row:hover {
-  background: var(--subtle);
+  background: var(--hover);
 }
 .content-result-row[aria-selected='true'] {
   background: var(--accent-soft);
-  border-left-color: var(--accent);
 }
 .content-file-icon {
   margin-top: 2px;

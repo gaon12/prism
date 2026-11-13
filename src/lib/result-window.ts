@@ -22,3 +22,15 @@ export function drawnRows(total: number, shown: number, selected: number): numbe
   const forSelection = selected >= 0 ? selected + 1 + SELECTION_MARGIN : 0;
   return Math.max(0, Math.min(total, Math.max(shown, forSelection)));
 }
+
+/**
+ * The folder that holds a result: its path without the name, so the folder column shows only
+ * what the name column does not and a row stays on one line. A drive or file-system root keeps
+ * its separator (`C:\`, `/`).
+ */
+export function parentFolder(path: string, name: string): string {
+  if (!name || !path.endsWith(name)) return path;
+  const rest = path.slice(0, path.length - name.length);
+  const folder = rest.replace(/[\\/]+$/, '');
+  return !folder || /^[A-Za-z]:$/.test(folder) ? rest : folder;
+}

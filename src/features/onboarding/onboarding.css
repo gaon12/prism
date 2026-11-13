@@ -95,8 +95,8 @@
   font-variant-numeric: tabular-nums;
 }
 .onboarding-rail li.current .onboarding-dot {
-  border-color: var(--accent);
-  background: var(--accent);
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
   color: var(--on-accent);
 }
 .onboarding-rail li.done .onboarding-dot {

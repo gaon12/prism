@@ -370,6 +370,8 @@ const messages = {
   copyPath: ['경로 복사', 'Copy path', '复制路径', '複製路徑', 'パスをコピー'],
   modified: ['수정일', 'Modified', '修改日期', '修改日期', '更新日時'],
   folder: ['폴더', 'Folder', '文件夹', '資料夾', 'フォルダー'],
+  columnName: ['이름', 'Name', '名称', '名稱', '名前'],
+  columnSize: ['크기', 'Size', '大小', '大小', 'サイズ'],
   typeToSearch: [
     '파일명을 입력하세요',
     'Type a filename',

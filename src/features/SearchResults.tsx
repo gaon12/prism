@@ -18,7 +18,7 @@ import { providerNames } from '../lib/utilities';
 import type { SearchController } from '../lib/use-search';
 import { EmptyState } from '../components/EmptyState';
 import { IndexProgress } from '../components/IndexProgress';
-import { drawnRows, RESULT_PAGE } from '../lib/result-window';
+import { drawnRows, parentFolder, RESULT_PAGE } from '../lib/result-window';
 import './results.css';
 
 export function UtilityResult({ search }: { search: SearchController }) {
@@ -254,6 +254,17 @@ export function FileResults({
           {t('keyboardCorrectedNotice')}
         </p>
       ) : null}
+      {/* Column names. Hidden from assistive technology: each option is read as a whole. */}
+      <div className="file-result-columns" aria-hidden="true">
+        <span>{t('columnName')}</span>
+        <span>{t('folder')}</span>
+        {!quick ? (
+          <>
+            <span>{t('columnSize')}</span>
+            <span>{t('modified')}</span>
+          </>
+        ) : null}
+      </div>
       <div
         id={search.listId}
         className="file-result-list"
@@ -281,22 +292,26 @@ export function FileResults({
             }}
             onDoubleClick={() => search.openFile(file.path)}
           >
-            {file.isDir ? (
-              <Folder className="file-icon" size={quick ? 22 : 25} strokeWidth={1.5} />
-            ) : (
-              <FileText className="file-icon" size={quick ? 22 : 25} strokeWidth={1.5} />
-            )}
-            <div className="file-result-name">
-              <strong>{highlight(file.name, session.query)}</strong>
-              <span title={file.path}>{file.path}</span>
-            </div>
+            <span className="file-result-name">
+              {file.isDir ? (
+                <Folder className="file-icon" size={16} strokeWidth={1.6} />
+              ) : (
+                <FileText className="file-icon" size={16} strokeWidth={1.6} />
+              )}
+              <span className="file-result-title">{highlight(file.name, session.query)}</span>
+            </span>
+            <span className="file-result-folder" title={file.path}>
+              {parentFolder(file.path, file.name)}
+            </span>
             {!quick ? (
-              <div className="file-result-details">
-                <span>{file.isDir ? t('folder') : formatSize(file.size)}</span>
-                <time>
+              <>
+                <span className="file-result-size">
+                  {file.isDir ? t('folder') : formatSize(file.size)}
+                </span>
+                <time className="file-result-date">
                   {file.modifiedMs ? new Date(file.modifiedMs).toLocaleDateString(language) : '—'}
                 </time>
-              </div>
+              </>
             ) : null}
           </div>
         ))}

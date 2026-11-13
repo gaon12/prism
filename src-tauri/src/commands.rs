@@ -241,9 +241,17 @@ pub fn resize_quick(app: AppHandle, expanded: bool) -> Result<(), String> {
     windows::resize_quick(&app, expanded)
 }
 
+/// Not a plain `fn` command: Tauri runs those on the main thread, which also
+/// drives every window. Reading the status waits for the catalog lock, and
+/// while a first collection publishes or a long search holds it the window
+/// froze; the UI asks every 400 ms while scanning. The wait now happens on a
+/// blocking-pool thread instead (as `search_files` does).
 #[tauri::command]
-pub fn index_status(state: State<'_, AppState>) -> Result<crate::index::IndexStatus, String> {
-    state.index.status()
+pub async fn index_status(state: State<'_, AppState>) -> Result<crate::index::IndexStatus, String> {
+    let index = state.index.clone();
+    tauri::async_runtime::spawn_blocking(move || index.status())
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -266,16 +274,20 @@ pub async fn search_files(
     .map_err(|error| error.to_string())?
 }
 
+/// Off the main thread for the same reason as `index_status`: a refresh takes
+/// the catalog write lock.
 #[tauri::command]
-pub fn refresh_index(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn refresh_index(state: State<'_, AppState>) -> Result<(), String> {
     let scopes = state
         .settings
         .lock()
         .map_err(|_| "Settings unavailable.")?
         .scopes
         .clone();
-    state.index.refresh(scopes);
-    Ok(())
+    let index = state.index.clone();
+    tauri::async_runtime::spawn_blocking(move || index.refresh(scopes))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Serialize)]

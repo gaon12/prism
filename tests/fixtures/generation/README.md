@@ -25,9 +25,35 @@ this failure therefore persists after retrieving the relevant evidence. The
 actual HWPX contained zero tables. The original assertions and failure remain
 preserved; this is separate from the synthetic document/export smoke test.
 
+A separate direct-model control on 2026-11-13 moved only the existing
+product-owned document rules from the final user message to the system message.
+It used the pinned 1.7B Q8 model and b11960 CPU runtime, temperature 0, reasoning
+off, 8192 context and 2048 output tokens. Each request used a fresh server with
+zero cached prompt tokens. The reviewed input, six excerpts, prior turns and
+JSON schema were otherwise identical; reversing the placement reproduced the
+baseline request exactly.
+
+| Rule placement     | HTTP seconds | Prompt / completion tokens | Blocks | Tables | Reservation-absence note |
+| ------------------ | -----------: | -------------------------: | -----: | -----: | ------------------------ |
+| Final user message |       41.609 |                 1683 / 372 |      4 |      0 | Absent                   |
+| System message     |       37.562 |                 1683 / 249 |      2 |      0 | Absent                   |
+
+Both responses matched the requested JSON schema, covered the reviewed sections
+and used known source labels, but failed the unchanged facts/table assertions.
+Both stopped normally without truncation. The pair completed in 86.28 seconds,
+with minimum available memory 1.64 GiB, no resource/deadline stop and unchanged
+inputs, model, archive and runtime files. The earlier controller attempt that
+failed its 4 GiB preflight started no model and is retained separately; it is
+not a model-quality result.
+
+This is a controlled earlier request/history with current product rule
+literals, not an exact current CI wire capture or a native-app qualification.
+It shows that relocating these rules alone does not fix this frozen input. The
+failed responses are preserved, and no production role change is adopted.
+
 ### Decision if rule placement does not resolve the failure
 
-The prepared direct-model control changes only the placement of existing
+The direct-model control changes only the placement of existing
 product-owned document rules from the final user message into the system
 message. Source excerpts, user-reviewed input, previous turns, JSON schema,
 model/runtime pins and decoding settings remain unchanged. A successful single

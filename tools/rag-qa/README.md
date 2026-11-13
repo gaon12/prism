@@ -31,6 +31,34 @@ explicitly ignored unless selected with their documented environment opt-in.
 The Windows process-job tests start and terminate only their own windowless
 loopback ping children.
 
+The existing ignored native credential test can be selected through
+`scripts/qualify-macos-keychain.py` on a **disposable GitHub-hosted macOS runner**
+with Python 3.11 or newer:
+
+```sh
+python3 -B scripts/qualify-macos-keychain.py --output "$RUNNER_TEMP/prism-keychain-evidence"
+```
+
+The script first compiles this crate's actual test binary with locked application
+dependency versions. It then creates a private temporary Keychain, selects it as
+the User-domain default and sole search entry, and verifies that selection before
+running exactly `native_store_roundtrip_replacement_isolation_and_delete`.
+The test executes the production native credential provider with random service
+names and synthetic keys. Compilation is bounded to 15 minutes and the selected
+test to 60 seconds. The original default and search list are restored and checked
+even when the test or Keychain creation fails. The temporary Keychain is deleted
+only after restoration is verified. No login password or real API key is needed.
+Apple's [security tool source](https://github.com/apple-oss-distributions/Security/blob/main/SecurityTool/macOS/security.c)
+documents the User-domain default and search-list operations used here.
+
+The output directory must be new and inside `RUNNER_TEMP`. Upload only that
+directory's logs and `result.json`; the Keychain itself is outside it. A successful
+result requires the exact test to pass once, unchanged source/binary hashes,
+restoration and cleanup. The script refuses local and self-hosted machines before
+creating output or changing settings. Unit checks use modeled preference calls
+and do not prove macOS API behavior. Actual hosted-Mac execution remains pending;
+this check does not establish desktop prompting, signing or locked-login UX.
+
 Non-streaming generation can finish inference before sending response headers.
 The transport keeps its 180-second total request budget for that wait, then
 applies the 45-second idle limit to each response-body chunk. The four-second

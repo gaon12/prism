@@ -42,6 +42,16 @@ fn entry(id: &str) -> String {
     )
 }
 
+struct Pending(Option<PathBuf>);
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 /// Write or remove `<dir>/<id>.desktop`. Writing goes through a temporary file
 /// and a rename, so a crash never leaves a half-written entry.
 fn apply(dir: &Path, id: &str, enabled: bool) -> io::Result<()> {
@@ -53,12 +63,31 @@ fn apply(dir: &Path, id: &str, enabled: bool) -> io::Result<()> {
         };
     }
     fs::create_dir_all(dir)?;
-    let temporary = dir.join(format!(".{id}.desktop.tmp"));
-    let mut file = fs::File::create(&temporary)?;
+    let mut nonce = [0; 16];
+    getrandom::fill(&mut nonce).map_err(|_| io::Error::other("Cannot prepare startup entry."))?;
+    let temporary = dir.join(format!(
+        ".prism-autostart-{:032x}.tmp",
+        u128::from_le_bytes(nonce)
+    ));
+    // Never truncate or clean up a pre-existing entry, including a linked one.
+    // Declaring the guard first also closes the file before cleanup on errors.
+    let mut pending = Pending(None);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary)?;
+    pending.0 = Some(temporary.clone());
     file.write_all(entry(id).as_bytes())?;
     file.sync_all()?;
     drop(file);
-    fs::rename(&temporary, &path)
+    fs::rename(&temporary, &path)?;
+    // Publication consumed this name; a later file at it does not belong to us.
+    pending.0 = None;
+    Ok(())
 }
 
 pub fn set(enabled: bool) -> Result<(), String> {
@@ -122,5 +151,77 @@ mod tests {
         apply(&dir, DEFAULT_ID, false).unwrap();
         assert!(!path.exists());
         apply(&dir, DEFAULT_ID, false).unwrap();
+    }
+
+    #[test]
+    fn stale_staging_hardlink_cannot_rewrite_another_file() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("autostart");
+        fs::create_dir(&dir).unwrap();
+        let original = root.path().join("unrelated-settings.json");
+        let contents = b"preserve unrelated settings";
+        fs::write(&original, contents).unwrap();
+        let old_staging = dir.join(format!(".{DEFAULT_ID}.desktop.tmp"));
+        fs::hard_link(&original, &old_staging).unwrap();
+
+        apply(&dir, DEFAULT_ID, true).unwrap();
+
+        assert_eq!(fs::read(&original).unwrap(), contents);
+        assert_eq!(fs::read(&old_staging).unwrap(), contents);
+        assert_eq!(
+            fs::read_to_string(dir.join(format!("{DEFAULT_ID}.desktop"))).unwrap(),
+            entry(DEFAULT_ID)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_staging_symlink_cannot_rewrite_another_file() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("autostart");
+        fs::create_dir(&dir).unwrap();
+        let original = root.path().join("unrelated-settings.json");
+        let contents = b"preserve unrelated settings";
+        fs::write(&original, contents).unwrap();
+        let old_staging = dir.join(format!(".{DEFAULT_ID}.desktop.tmp"));
+        std::os::unix::fs::symlink(&original, &old_staging).unwrap();
+
+        apply(&dir, DEFAULT_ID, true).unwrap();
+
+        assert_eq!(fs::read(&original).unwrap(), contents);
+        assert!(fs::symlink_metadata(&old_staging).unwrap().is_symlink());
+        assert_eq!(
+            fs::read_to_string(dir.join(format!("{DEFAULT_ID}.desktop"))).unwrap(),
+            entry(DEFAULT_ID)
+        );
+    }
+
+    #[test]
+    fn failed_publication_preserves_destination_and_cleans_owned_staging() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("autostart");
+        let destination = dir.join(format!("{DEFAULT_ID}.desktop"));
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(destination.join("keep"), b"existing directory").unwrap();
+
+        assert!(apply(&dir, DEFAULT_ID, true).is_err());
+
+        assert_eq!(
+            fs::read(destination.join("keep")).unwrap(),
+            b"existing directory"
+        );
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn staging_does_not_shorten_the_supported_entry_name() {
+        let root = tempfile::tempdir().unwrap();
+        let id = format!("app.prism.{}", "x".repeat(230));
+        assert!(valid_id(&id));
+        apply(root.path(), &id, true).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.path().join(format!("{id}.desktop"))).unwrap(),
+            entry(&id)
+        );
     }
 }

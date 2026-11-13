@@ -23,6 +23,8 @@ pub mod document_pdf;
 pub mod document_pdf_file;
 #[path = "../../../src-tauri/src/document_pdf_job.rs"]
 pub mod document_pdf_job;
+#[path = "../../../src-tauri/src/flatpak_startup.rs"]
+pub mod flatpak_startup;
 #[path = "../../../src-tauri/src/form_fill.rs"]
 pub mod form_fill;
 #[path = "../../../src-tauri/src/ocr.rs"]

@@ -517,6 +517,18 @@ own the executable and fixture directory. A missing marker can select installed
 mode and affect normal-profile startup settings, so an assertion after launch
 is too late to establish isolation.
 
+`npm run test:persistence` checks settings replacement and newly written clipboard
+text/PNG/index files in an actual bundled Windows debug app. Build with
+`--features tauri/custom-protocol` after the frontend build, then supply
+`PRISM_TEST_EXECUTABLE` and its `PRISM_TEST_APP_SHA256`. The test copies the app
+into a fresh portable directory, verifies the CDP process ancestry, private
+profile revision and in-memory clipboard before changing settings, and exercises
+pin/copy controls and restart persistence. A browser PNG decoder checks every
+generated pixel independently. Screenshots and results stay in the printed OS
+temporary directory. The bounded capture fixture is rejected by release builds
+and ordinary debug profiles; this checks the real storage writer with synthetic
+content, without exercising the system clipboard monitor or physical paste.
+
 Document PDF export checks use a separate Python 3.11+ inspector. For Windows
 native document checks, prepare it in PowerShell before running the fixture:
 

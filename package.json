@@ -35,6 +35,7 @@
     "test:standalone": "node tests/native/standalone.mjs",
     "test:clipboard": "node tests/native/clipboard.mjs",
     "test:clipboard-ui": "node tests/native/clipboard-ui.mjs",
+    "test:persistence": "node tests/native/persistence.mjs",
     "test:paste": "node tests/native/paste.mjs",
     "test:updates": "node tests/native/updates.mjs",
     "test:diagnostics": "node tests/native/diagnostics.mjs",

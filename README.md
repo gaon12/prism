@@ -477,6 +477,21 @@ npm run test:native
 
 This tests actual WebView2 windows, IPC, shortcut registration, isolated settings persistence, restart recovery and Markdown writes. It uses a temporary data directory through the development-only `PRISM_DEV_DATA_DIR` override, plus a separate WebView2 profile. Isolated debug tests skip the single-instance handoff so they can coexist with an open user app. Normal debug and release apps retain single-instance behavior. Screenshots and test output are saved in the OS temporary directory, outside committed source. The tests do not send physical OS keyboard input or exercise native file-picker dialogs. Isolated debug profiles inject an in-memory clipboard, including copy commands, so they never read or write the user’s system clipboard. Clipboard fixtures cover text/link/image restoration, filtering, pinning, retention settings, first-run acknowledgment and restart; real Windows clipboard capture remains a separate manual integration check.
 
+Document PDF export checks use a separate Python 3.11+ inspector. For Windows
+native document checks, prepare it in PowerShell before running the fixture:
+
+```powershell
+python -m venv .dev/native-pdf-inspector
+$env:PRISM_TEST_PYTHON = Join-Path (Resolve-Path .dev/native-pdf-inspector).Path 'Scripts/python.exe'
+& $env:PRISM_TEST_PYTHON -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r tests/native/requirements-pdf.txt
+npm run test:documents
+```
+
+The version and wheel hash are pinned independently of the app. CI prepares an
+isolated inspector before its Rust build and passes that same interpreter to
+the native helpers through `PRISM_TEST_PYTHON`. Product PDF export uses Rust and
+does not depend on this test environment.
+
 The real-download settings regression is an explicit Windows check. After building
 the bundled release executable, run it with PowerShell:
 

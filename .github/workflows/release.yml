@@ -80,6 +80,26 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: node scripts/release-config.mjs --platform '${{ matrix.platform }}' --output "$RUNNER_TEMP/prism-build.json"
+      - name: Set up Python for the independent native PDF inspector
+        if: matrix.platform == 'windows'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Prepare the independent native PDF inspector
+        # Fail before the Rust build if the document test's parser is unavailable.
+        # The app itself does not require Python or pypdf.
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $taskVenv = Join-Path $env:RUNNER_TEMP 'prism-pdf-inspector'
+          python -m venv $taskVenv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $taskPython = Join-Path $taskVenv 'Scripts/python.exe'
+          & $taskPython -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r tests/native/requirements-pdf.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $taskPython -c "import pypdf; from pypdf import PdfReader; print('Independent PDF inspector: pypdf ' + pypdf.__version__)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "PRISM_TEST_PYTHON=$taskPython" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Install Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy

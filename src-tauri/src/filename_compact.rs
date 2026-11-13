@@ -718,7 +718,7 @@ impl Catalog {
             self.dirs[id as usize].children += 1;
             // Projections are deterministic per directory, so a later child can
             // only add what the first child did not need. Store them now.
-            let plain_search = self.dir_part(id, 1).unwrap_or(split.dir_key).to_string();
+            let plain_search = self.dir_part(id, 1).unwrap_or(split.dir_key);
             let add_initials = self.dir_part(id, 2).is_none()
                 && split.dir_initials.is_some_and(|text| text != plain_search);
             let add_keyboard = self.dir_part(id, 3).is_none()
@@ -909,7 +909,12 @@ impl Catalog {
         // nothing else differs from it (true for most Windows paths).
         let derived = split.name_path.is_ascii()
             && split.name_key.len() == split.name_path.len()
-            && split.name_key == split.name_path.to_ascii_lowercase()
+            // Unix identity keys may retain uppercase. Compare to the exact
+            // lowercase bytes, rather than accepting either case in the key.
+            && split
+                .name_key
+                .bytes()
+                .eq(split.name_path.bytes().map(|byte| byte.to_ascii_lowercase()))
             && split.name_search.is_none()
             && split.name_initials.is_none()
             && split.name_keyboard.is_none()
@@ -1469,6 +1474,68 @@ mod tests {
         assert_eq!(entry.size(), expected.size);
         assert_eq!(entry.modified_ms(), expected.modified_ms);
         assert!(entry.is_seen(expected.seen));
+    }
+
+    #[test]
+    fn name_derivation_preserves_case_sensitive_identity_keys() {
+        for (path, key, derived) in [
+            (r"C:\Docs\UPPER.TXT", "c:/docs/upper.txt", true),
+            ("/srv/UPPER.TXT", "/srv/UPPER.TXT", false),
+            ("/srv/MiXeD.txt", "/srv/MiXeD.txt", false),
+            ("/srv/lower.txt", "/srv/lower.txt", true),
+            ("UPPER.TXT", "UPPER.TXT", false),
+            ("UPPER.TXT", "upper.txt", true),
+            ("/srv/ÉCOLE.txt", "/srv/ÉCOLE.txt", false),
+            ("/srv/İ.txt", "/srv/i\u{307}.txt", false),
+        ] {
+            let mut catalog = Catalog::new();
+            let row = input(path, key);
+            let id = catalog.insert_new(&row);
+            assert_round_trip(&catalog, &row);
+            assert_eq!(catalog.nodes[id as usize].flags & DERIVED != 0, derived);
+            assert!(
+                catalog.remove(key),
+                "the exact identity remains addressable"
+            );
+        }
+        // A case-insensitive comparison would corrupt the uppercase entry's
+        // rebuilt key and prevent these distinct Unix siblings coexisting.
+        let mut catalog = Catalog::new();
+        let upper = input("/srv/REPORT.txt", "/srv/REPORT.txt");
+        let lower = input("/srv/report.txt", "/srv/report.txt");
+        catalog.insert(&upper);
+        catalog.insert(&lower);
+        assert_eq!(catalog.len(), 2);
+        assert_round_trip(&catalog, &upper);
+        assert_round_trip(&catalog, &lower);
+    }
+
+    #[test]
+    fn a_shared_directory_can_gain_both_projections_after_its_first_child() {
+        let mut first = input("/DATA/문서/one.txt", "/DATA/문서/one.txt");
+        first.search = Some("/data/문서/one.txt");
+        let mut second = input("/DATA/문서/둘.txt", "/DATA/문서/둘.txt");
+        second.search = Some("/data/문서/둘.txt");
+        second.initials = Some("/data/ㅁㅅ/ㄷ.txt");
+        let mut third = input("/DATA/문서/셋.txt", "/DATA/문서/셋.txt");
+        third.search = Some("/data/문서/셋.txt");
+        third.initials = Some("/data/ㅁㅅ/ㅅ.txt");
+        third.keyboard = Some("/data/anstj/tpt.txt");
+        let rows = [first, second, third];
+        let mut catalog = Catalog::new();
+        for (index, row) in rows.iter().enumerate() {
+            catalog.insert(row);
+            for previous in &rows[..=index] {
+                assert_round_trip(&catalog, previous);
+            }
+        }
+        let dir = catalog.get(rows[0].key).unwrap().node().dir;
+        assert_eq!(catalog.dir_part(dir, 1), Some("/data/문서"));
+        assert_eq!(catalog.dir_part(dir, 2), Some("/data/ㅁㅅ"));
+        assert_eq!(catalog.dir_part(dir, 3), Some("/data/anstj"));
+        assert!(catalog.remove(rows[2].key));
+        assert_round_trip(&catalog, &rows[0]);
+        assert_round_trip(&catalog, &rows[1]);
     }
 
     /// The directory record that holds `key`'s entry.

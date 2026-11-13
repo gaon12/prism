@@ -2,7 +2,7 @@ use sha2::{Digest, Sha256};
 use std::io::{self, BufReader, Read, Write};
 use std::time::Instant;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum StageMode {
     Decode,
     Baseline,
@@ -55,7 +55,7 @@ impl StageBuilder {
         let started = Instant::now();
         if self.mode == StageMode::Stages {
             let stage = Instant::now();
-            self.raws.extend(self.rows.drain(..).map(raw));
+            self.raws.extend(self.rows.drain(..).map(raw_mapper::raw));
             self.raw_time += stage.elapsed();
             let stage = Instant::now();
             self.ready
@@ -64,8 +64,11 @@ impl StageBuilder {
         } else {
             // The production worker's fused mapping loop, followed by the same
             // compact insertion. No clocks are sampled per row.
-            self.ready
-                .extend(self.rows.drain(..).map(|row| Entry::new(raw(row), 1)));
+            self.ready.extend(
+                self.rows
+                    .drain(..)
+                    .map(|row| Entry::new(raw_mapper::raw(row), 1)),
+            );
         }
         let stage = Instant::now();
         for entry in self.ready.drain(..) {
@@ -193,7 +196,11 @@ mod stage_tests {
                 path: path.into(),
                 is_dir: index == 0,
                 size: index as u64,
-                modified_ms: if index % 2 == 0 { Some(i64::MIN) } else { None },
+                modified_ms: if index.is_multiple_of(2) {
+                    Some(i64::MIN)
+                } else {
+                    None
+                },
             };
             baseline.push(row.clone());
             stages.push(row);

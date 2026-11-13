@@ -30,7 +30,6 @@ mod index {
         use prism_ntfs_protocol::FileRecord;
         include!(concat!(env!("OUT_DIR"), "/raw.rs"));
     }
-    use raw_mapper::raw;
     include!("stages.rs");
 }
 

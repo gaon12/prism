@@ -97,6 +97,26 @@ and partial rewrites retain their original path. Backend tests cover the new
 contract; the editor entry point and actual 1.7B/native export qualification are
 still pending.
 
+A direct component probe on 2026-11-13 used the committed `69a602f` Rust
+schema, extraction prompt and renderer with the original pinned 1.7B Q8 model
+and b11960 CPU runtime. The manually reviewed layout contained field definitions
+and column labels, without expected evidence values. The six controlled excerpts
+and original facts/table assertions were unchanged. One actual request returned
+the four correct values with their individual source labels, and classified the
+reservation field as `explicitlyUnavailable` with its current excerpt citation.
+The assembled document passed both original assertions. Temperature 0, 8192
+context, 2048 output tokens and the existing resource/deadline guards were kept;
+HTTP took 22.00 s (849 prompt / 222 completion tokens, normal stop, no truncation).
+Minimum available memory was 1.79 GiB, with no guard stop; the owned server exited.
+
+This is one combined extraction/assembly component result, not repeated stability
+or the native release gate. It bypasses the app/editor/retrieval orchestration and
+does not qualify PDF/HWPX export or reopening. Raw provider content and rendered
+Markdown are separate, with no response repair. Evidence is retained in
+`.dev/document-assembly-inference-20261113/qualification.json`, SHA-256
+`db0e7ab5a5bdf582905c3f41dbd7df963294eebccce44edb9a9e2ccd69054283`.
+The original required gate remains unresolved until the actual app path passes.
+
 Rejecting an output that violates a structured plan is a useful intermediate
 behavior, but it would not satisfy the current positive generation gate. The
 present response contains neither requested output, so there is no semantic

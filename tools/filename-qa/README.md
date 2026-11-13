@@ -209,6 +209,63 @@ System CPU during each case, including the benchmark itself, ranged from 23% to
 selected or substituted for the first dataset, and neither dataset qualifies
 whole-app startup.
 
+## Comparing directory keys without rebuilding paths
+
+`65f3130` replaces the temporary whole-directory key in `find_dir` with an exact
+comparison of stored path parts. Explicit keys keep their original spelling;
+derived keys use the same ASCII lowercase and separator edits as reconstruction.
+No per-entry storage is added. Differential tests cover case-sensitive keys,
+Unicode, mixed separators, linked ancestors and freed directory-slot reuse.
+
+The baseline at `1365068` and candidate were built with the same local Rust
+1.99.0 compiler and differed only in `filename_compact.rs`. They passed 81 and
+82 tests respectively (six explicit ignored tests each), both strict Clippy
+checks and release builds. The same private 2,185,112-row capture was replayed
+A/B/B/A in independently verified one-CPU, 512 MiB process/job limits:
+
+| Case      | Whole Job CPU (seconds) | Decode + build (wall seconds) | Insertion (wall seconds) |
+| --------- | ----------------------: | ----------------------------: | -----------------------: |
+| A, first  |                   4.733 |                         4.322 |                    3.243 |
+| B, first  |                   4.655 |                         4.106 |                    3.078 |
+| B, second |                   4.562 |                         4.151 |                    3.060 |
+| A, last   |                   4.671 |                         4.238 |                    3.204 |
+
+Observed insertion averages were 3.2232→3.0693 seconds (-4.77%); whole Job CPU
+was 4.7020→4.6085 seconds (-1.99%), including verification and teardown. These
+are modest observations from one paired sequence on an interactive host, not
+a repeated performance guarantee. System CPU usage during the cases was 22–24%,
+including the benchmark. Absolute values must not be compared with the earlier
+CI-built compiler's runs as a product speedup.
+
+All four full stored-field hashes remained
+`2050731a23fb94bb1ba25399970e97a12beed3cf1533618712447fc9794f2b2c`.
+Peak job commit was 181.9–182.7 MiB, all source/control/capture/executable checks
+remained unchanged, and no memory or deadline guard fired. This component result
+does not qualify GUI startup, service transfer, IPC, HDD or the whole-app
+5–7-second target. Evidence:
+`.dev/filename-dir-key-20261114/qualification.json`, SHA-256
+`79d2db7a3562a8e9a4f90691206c1d8bdd98b59305826442036a4580d324187b`.
+
+## Isolating table growth cost
+
+A private diagnostic overlay on `65f3130` timed `Table::rebuild` at function
+boundaries and insertion at bounded-batch boundaries. No per-row clocks were
+added. Two replays of the same capture in verified one-CPU/512 MiB limits each
+recorded 35 table rebuilds and 3,538,920 existing IDs rehashed. Rebuild work took
+1.852/1.924 wall seconds and 5.533/5.579 billion thread cycles, or 60.49%/60.36%
+of the 9.148/9.243 billion insertion cycles. Cycle counts remain unconverted.
+
+These totals combine the directory and entry tables, key reconstruction and
+hashing, allocation and probing. They establish table growth as a substantial
+insertion cost, not a separate cost for any one of those operations. The overlay
+uses two clock reads per rebuild and insertion batch (1067 batches); clock
+overhead is included. Its full-field SHA matched the uninstrumented binaries in
+both runs, no guard fired, and all diagnostic inputs stayed unchanged. This is
+component attribution, not an app-startup speedup. The diagnostic source changes
+are preserved privately and were not added to the product. Evidence:
+`.dev/filename-rebuild-profile-20261114/qualification.json`, SHA-256
+`babbd429ff988df6aa6b375304461f7c5d32ff099da50ee494c78f31a5fbb28e`.
+
 ## Retention after the captured snapshot
 
 [CI 43399104552](https://github.com/gaon12/prism/actions/runs/43399104552) at

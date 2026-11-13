@@ -114,6 +114,56 @@ pub fn paste_fixture(
     let _ = (state, mode);
     Err("Synthetic paste fixtures require an isolated debug profile.".into())
 }
+
+/// Generate bounded synthetic history data through the real blob/index writer.
+/// Ordinary profiles and release builds cannot use this fixture.
+#[tauri::command]
+pub async fn clipboard_capture_fixture(
+    state: State<'_, AppState>,
+    kind: String,
+    nonce: String,
+) -> Result<ClipStatus, String> {
+    #[cfg(debug_assertions)]
+    if state.input_fixture.is_some() && state.clipboard_fixture.is_some() {
+        if nonce.len() != 32 || !nonce.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("Invalid synthetic clipboard nonce.".into());
+        }
+        let content = match kind.as_str() {
+            "text" => crate::clipboard_history::ClipContent::Text(format!(
+                "Prism 저장 회귀 {nonce} 한글 🙂"
+            )),
+            "image" => {
+                let (width, height) = (96u32, 64u32);
+                let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+                for y in 0..height {
+                    for x in 0..width {
+                        rgba.extend_from_slice(&[
+                            26 + x as u8,
+                            94 + y as u8,
+                            67 + (x / 2) as u8,
+                            255,
+                        ]);
+                    }
+                }
+                crate::clipboard_history::ClipContent::Image {
+                    width,
+                    height,
+                    rgba,
+                }
+            }
+            _ => return Err("Unknown synthetic clipboard kind.".into()),
+        };
+        let service = state.clipboard.clone();
+        return tauri::async_runtime::spawn_blocking(move || {
+            service.capture(content)?;
+            service.status()
+        })
+        .await
+        .map_err(|_| "Synthetic clipboard capture failed.".to_string())?;
+    }
+    let _ = (state, kind, nonce);
+    Err("Synthetic clipboard capture requires an isolated debug profile.".into())
+}
 #[tauri::command]
 pub async fn clipboard_pin(
     state: State<'_, AppState>,

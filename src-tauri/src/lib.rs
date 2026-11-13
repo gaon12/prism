@@ -663,6 +663,7 @@ pub fn run() {
             clipboard_commands::clipboard_copy,
             clipboard_commands::clipboard_paste,
             clipboard_commands::paste_fixture,
+            clipboard_commands::clipboard_capture_fixture,
             update_commands::update_status,
             update_commands::update_check,
             update_commands::update_dismiss,

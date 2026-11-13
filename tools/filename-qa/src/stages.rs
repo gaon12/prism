@@ -7,6 +7,27 @@ enum StageMode {
     Decode,
     Baseline,
     Stages,
+    ReconcileLegacy,
+    ReconcileSeen,
+}
+
+/// The first whole-drive sweep has seen every inserted row. The legacy path
+/// builds each key before checking seen; the current path checks seen first.
+/// Count only keys the actual catalog method passes to its caller.
+fn reconcile(catalog: &mut Entries, mode: StageMode, sweep: u64) -> u64 {
+    let mut keys = 0;
+    match mode {
+        StageMode::ReconcileLegacy => catalog.retain(|_, entry| {
+            keys += 1;
+            entry.is_seen(sweep)
+        }),
+        StageMode::ReconcileSeen => catalog.retain_seen_or(sweep, |_, _| {
+            keys += 1;
+            false
+        }),
+        _ => unreachable!("reconcile requires an explicit reconcile mode"),
+    }
+    keys
 }
 
 struct StageBuilder {
@@ -129,6 +150,8 @@ pub(super) fn run_stages() -> io::Result<()> {
         Some("decode") => StageMode::Decode,
         Some("baseline") => StageMode::Baseline,
         Some("stages") => StageMode::Stages,
+        Some("reconcile-legacy") => StageMode::ReconcileLegacy,
+        Some("reconcile-seen") => StageMode::ReconcileSeen,
         _ => return Err(io::ErrorKind::InvalidInput.into()),
     };
     // The driver must assign the owned process to a verified Job Object before
@@ -152,9 +175,34 @@ pub(super) fn run_stages() -> io::Result<()> {
     )?;
     builder.flush();
     let build_time = started.elapsed();
+    let is_reconcile = matches!(mode, StageMode::ReconcileLegacy | StageMode::ReconcileSeen);
+    let before_verification = Instant::now();
+    let before_signature = is_reconcile.then(|| stage_signature(&builder.catalog));
+    let before_verification_time = before_verification.elapsed();
+    let reconcile_measurement = if is_reconcile {
+        let count = builder.catalog.len();
+        let before_cpu = crate::cpu_clock::ThreadUsage::read()?;
+        let started = Instant::now();
+        let keys = reconcile(&mut builder.catalog, mode, 1);
+        let wall = started.elapsed();
+        let cpu = crate::cpu_clock::ThreadUsage::read()?.since(before_cpu)?;
+        if builder.catalog.len() != count {
+            return Err(io::Error::other("Reconcile changed the all-seen catalog"));
+        }
+        Some(serde_json::json!({
+            "wallSeconds":wall.as_secs_f64(),"threadCpu":cpu,
+            "keysPassedToPredicate":keys,"entriesBefore":count,"entriesAfter":builder.catalog.len(),
+            "allRowsSeen":true,"sweep":1,"catalogLockHeld":false,"lockContention":false
+        }))
+    } else {
+        None
+    };
     let verification = Instant::now();
     let signature = (mode != StageMode::Decode).then(|| stage_signature(&builder.catalog));
     let verification_time = verification.elapsed();
+    if is_reconcile && before_signature != signature {
+        return Err(io::Error::other("Reconcile changed stored catalog fields"));
+    }
     println!(
         "{}",
         serde_json::json!({
@@ -169,6 +217,9 @@ pub(super) fn run_stages() -> io::Result<()> {
             "insertWallSeconds":(mode!=StageMode::Decode).then_some(builder.insert_time.as_secs_f64()),
             "decodeAndDispatchWallSeconds":build_time.saturating_sub(builder.prepare_time).as_secs_f64(),
             "verificationWallSeconds":verification_time.as_secs_f64(),
+            "beforeReconcileSha256":before_signature,
+            "beforeReconcileVerificationWallSeconds":is_reconcile.then_some(before_verification_time.as_secs_f64()),
+            "reconcile":reconcile_measurement,
             "rawMapperSha256":format!("{:x}",Sha256::digest(include_bytes!(concat!(env!("OUT_DIR"),"/raw.rs"))))
         })
     );
@@ -178,6 +229,42 @@ pub(super) fn run_stages() -> io::Result<()> {
 #[cfg(test)]
 mod stage_tests {
     use super::*;
+    #[test]
+    fn reconcile_modes_keep_the_same_seen_rows_and_drop_stale_rows() {
+        for stale in [false, true] {
+            let mut signatures = Vec::new();
+            for mode in [StageMode::ReconcileLegacy, StageMode::ReconcileSeen] {
+                let mut entries = Entries::new();
+                for (index, path) in [r"C:\a\first.md", r"C:\a\문서.md", r"C:\a\last.md"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let seen = if stale && index == 1 { 2 } else { 1 };
+                    entries.insert(&Entry::new(
+                        raw_mapper::raw(FileRecord {
+                            path: path.into(),
+                            is_dir: false,
+                            size: index as u64,
+                            modified_ms: Some(i64::MIN),
+                        }),
+                        seen,
+                    ));
+                }
+                let keys = reconcile(&mut entries, mode, 1);
+                assert_eq!(entries.len(), if stale { 2 } else { 3 });
+                assert_eq!(
+                    keys,
+                    if mode == StageMode::ReconcileLegacy {
+                        3
+                    } else {
+                        u64::from(stale)
+                    }
+                );
+                signatures.push(stage_signature(&entries));
+            }
+            assert_eq!(signatures[0], signatures[1]);
+        }
+    }
     #[test]
     fn fused_and_separated_mapping_keep_all_catalog_text_and_metadata_equal() {
         let mut baseline = StageBuilder::new(StageMode::Baseline);

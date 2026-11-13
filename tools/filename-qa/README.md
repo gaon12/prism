@@ -40,6 +40,24 @@ not establish live service/IPC latency, provisional-search contention, WebView
 memory, cold MFT behavior, HDD performance or whole-app startup. Do not upload
 capture data or print path values in logs.
 
+Two additional modes, `reconcile-legacy` and `reconcile-seen`, use that same
+fused insertion path and then measure the first whole-drive sweep's retention.
+Every inserted entry is seen by sweep 1. The legacy mode calls the actual
+`Entries::retain` and checks `is_seen` in its closure, after the method has
+rebuilt the key. The current mode calls the actual `retain_seen_or`, which skips
+key reconstruction for seen entries. Both modes hash all stored fields before
+and after retention and reject any change in this all-seen catalog.
+
+Compare the same release executable in a fixed legacy/seen/seen/legacy sequence,
+using the same private capture and verified one-CPU, 512 MiB Job limits. Results
+report retention wall time, unconverted thread CPU cycles, raw single-interval
+`GetThreadTimes` CPU and the number of keys passed to the predicate. CPU accounting
+can be coarse for a short retention phase. Build time excludes retention; the
+before/after SHA work has separate clocks. Whole Job CPU includes all of them.
+This isolates retention on an owned catalog without a catalog lock, GUI queries
+or contention. It cannot establish the window's blocked duration. A regression
+also checks equal retained fields and deletion of stale rows in both modes.
+
 ## Observed component baseline
 
 On 2026-11-13, a fixed decode/baseline/stages/stages/baseline sequence replayed

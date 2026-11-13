@@ -190,6 +190,25 @@ observations, without a clean-host performance qualification. Stored-field
 equivalence is unaffected. The hosted synthetic CPU profiles ran on a separate
 machine.
 
+One fixed follow-up A/B/B/A sequence after stopping that server reused the same
+two CI executables and capture, preserving the original dataset:
+
+| Follow-up case | Whole Job CPU (seconds) | Decode + build (wall seconds) | Insertion (wall seconds) |
+| -------------- | ----------------------: | ----------------------------: | -----------------------: |
+| A, first       |                   5.249 |                         4.582 |                    3.433 |
+| B, first       |                   4.921 |                         4.524 |                    3.322 |
+| B, second      |                   5.030 |                         4.428 |                    3.301 |
+| A, last        |                   4.859 |                         4.581 |                    3.457 |
+
+Average CPU was 5.0540 seconds for A and 4.9755 seconds for B (-1.55%), with
+overlapping ranges. The two complete datasets therefore still do not establish
+a reliable CPU gain. All four follow-up catalogs preserved the same SHA-256 and
+entry count, all inputs/executables stayed unchanged, and no guard fired.
+System CPU during each case, including the benchmark itself, ranged from 23% to
+28%; this interactive host was not fully isolated. No favorable cases were
+selected or substituted for the first dataset, and neither dataset qualifies
+whole-app startup.
+
 ## Retention after the captured snapshot
 
 [CI 43399104552](https://github.com/gaon12/prism/actions/runs/43399104552) at

@@ -199,6 +199,7 @@ impl FileIndex {
             // Only the current, fully authenticated/root-validated collection
             // may replace the last successful diagnostic. No paths are kept.
             if self.current(generation) {
+                catalog.status.service_snapshots += 1;
                 catalog.status.last_service_snapshot = Some(ServiceSnapshotTiming {
                     received_records,
                     first_batch_ms: first_batch.map(millis),

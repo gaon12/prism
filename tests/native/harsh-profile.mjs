@@ -188,6 +188,11 @@ try {
           result.firstSearchableTotal = partial.total;
         }
       }
+      // The whole first catalog is published and searchable. Collection may
+      // still run afterwards (live updates, or a repeat after lost events),
+      // which readyMs below includes.
+      if (result.firstCompleteMs === undefined && status.initialScanComplete)
+        result.firstCompleteMs = Math.round(performance.now() - spawnedAt);
       return status.initialScanComplete && !status.scanning;
     },
     'first complete filename sweep',
@@ -198,6 +203,10 @@ try {
   result.skipped = status.skipped;
   const diagnostics = await invoke('diagnostics_snapshot');
   result.lastServiceSnapshot = diagnostics?.filenameIndex?.lastServiceSnapshot ?? null;
+  // How many whole-drive snapshots ran, and how many were repeats after lost
+  // live-update events (absent in builds before these counters existed).
+  result.serviceSnapshots = diagnostics?.filenameIndex?.serviceSnapshots ?? null;
+  result.overflowReconciles = diagnostics?.filenameIndex?.overflowReconciles ?? null;
   // A search over the full catalog must also stay usable inside the budget.
   const searchStart = performance.now();
   const search = await invoke('search_files', { query: 'readme', extension: '', scopeId });

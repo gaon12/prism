@@ -257,6 +257,15 @@ pub struct IndexStatus {
     /// status/search polls keep their existing DTO and revision semantics.
     #[serde(skip)]
     pub(crate) last_service_snapshot: Option<ServiceSnapshotTiming>,
+    /// Diagnostics only, counted since the last refresh: validated service
+    /// snapshots, and full re-collections started because live-update events
+    /// were lost (the OS buffer or the pending-path bound overflowed). Each such
+    /// re-collection repeats a whole-drive snapshot, so it shows why a run
+    /// used more time or CPU than one collection.
+    #[serde(skip)]
+    pub(crate) service_snapshots: u32,
+    #[serde(skip)]
+    pub(crate) overflow_reconciles: u32,
 }
 /// One successfully validated service snapshot, not an entire GUI scan. Fetch
 /// overlaps private preparation and includes callback/backpressure wall time;
@@ -740,6 +749,11 @@ impl FileIndex {
                 Err(_) => continue,
             };
             let overflowed = overflow.swap(false, Ordering::SeqCst) || queue_overflow;
+            if overflowed {
+                if let Ok(mut catalog) = self.catalog.write() {
+                    catalog.status.overflow_reconciles += 1;
+                }
+            }
             if overflowed || last_reconcile.elapsed().unwrap_or_default() > interval {
                 if !healthy {
                     self.refresh(scopes.clone());

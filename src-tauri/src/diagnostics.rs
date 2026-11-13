@@ -88,6 +88,8 @@ struct FilenameSummary {
     warning_count: usize,
     watching: bool,
     last_service_snapshot: Option<crate::index::ServiceSnapshotTiming>,
+    service_snapshots: u32,
+    overflow_reconciles: u32,
 }
 impl From<crate::index::IndexStatus> for FilenameSummary {
     fn from(status: crate::index::IndexStatus) -> Self {
@@ -98,6 +100,8 @@ impl From<crate::index::IndexStatus> for FilenameSummary {
             warning_count: status.warnings.len(),
             watching: status.watching,
             last_service_snapshot: status.last_service_snapshot,
+            service_snapshots: status.service_snapshots,
+            overflow_reconciles: status.overflow_reconciles,
         }
     }
 }
@@ -282,6 +286,8 @@ mod tests {
                 total_ms: 60,
                 initial_catalog: true,
             }),
+            service_snapshots: 2,
+            overflow_reconciles: 1,
             ..Default::default()
         });
         let content = ContentSummary::from(crate::content_service::ContentStatus {
@@ -340,6 +346,8 @@ mod tests {
         assert_eq!(data["content"]["issueCount"], 1);
         assert_eq!(data["filename"]["warningCount"], 1);
         assert_eq!(data["filename"]["lastServiceSnapshot"]["totalMs"], 60);
+        assert_eq!(data["filename"]["serviceSnapshots"], 2);
+        assert_eq!(data["filename"]["overflowReconciles"], 1);
         assert_eq!(data["embedding"]["error"], true);
         assert_eq!(data["updates"]["installError"], true);
     }

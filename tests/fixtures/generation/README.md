@@ -320,6 +320,36 @@ earlier model result. Native UI evidence:
 Latest-source cross-platform CI and the whole-catalog 1 CPU / 512 MiB performance
 target remain open.
 
+After the filename-catalog hash-cache change, the `254a43f` Windows release app
+also passed the unchanged required actual 1.7B native gate. Its source/app hash,
+fresh private profile, original assets and 82 integrity records were verified.
+The run ended at reopening the generated document and answering from it, with
+no response replacement, assertion relaxation, resource stop or console errors/
+warnings, and normal app exit. It took 150.91 s with 3.15 GiB minimum available
+host memory. The actual stored body had 1698 prompt / 356 completion tokens,
+133 cached prompt tokens, the reviewed field IDs and a literal unavailability
+quote with empty `text`.
+
+The same immutable revision passed native PDF export and the original facts
+oracle without another inference. Its complete one-page PyMuPDF rendering was
+reviewed for readable Korean, the requested table, values and five source
+footnotes; no clipping, overlap or missing glyphs were observed. The actual
+native screenshots were also reviewed; their first viewport shows the expanded
+reference/options panel, while the exported PDF shows the complete generated
+content. The new executable is SHA-256
+`dbe35c262c555f67a8d772c2405606316e2b606b2bf3bb4bc828f71d766a9c71`.
+Combined evidence:
+`.dev/native-cached-hash-254a43f-20261114/qualification.json`, SHA-256
+`dd1df0d7d62da288c684f9ba8d58b7bc0318a3ddc61698fdc0d0072320758435`.
+
+This actual-model run used normal host resources. The separate
+[app/WebView budget check](../../../tools/filename-qa/README.md#actual-app-and-webview-budget-check)
+observed 5–7-second filename completion in both candidate starts inside a
+one-CPU/512 MiB app job; the installed service stayed outside it, and no HDD was
+tested. It does not claim the optional generative model runs inside that budget.
+The original whole-project scope, latest-source cross-platform CI and physical
+low-end limitations remain open; these results do not replace that audit.
+
 Rejecting an output that violates a structured plan is a useful intermediate
 behavior, but it does not satisfy the positive native generation gate. The
 preserved failed free-form response contained neither requested output, so it

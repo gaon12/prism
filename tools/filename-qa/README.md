@@ -292,12 +292,52 @@ Observed average insertion time fell from 3.1381 to 1.3472 seconds (-57.07%),
 and whole Job CPU from 4.7020 to 3.0925 seconds (-34.23%). The full stored-field
 SHA remained identical in all four cases, all source/control/capture/executable
 hashes were unchanged, and no resource or deadline guard fired. The extra memory
-is an explicit tradeoff: this component fits the limit, but the actual app and
-WebView need their own combined-budget result. This single paired sequence on
+is an explicit tradeoff: this component fits the limit; the actual app/WebView
+combined-budget result follows below. This single paired sequence on
 an interactive host does not qualify whole-app startup, service transfer, HDD or
 the 5–7-second target. Evidence:
 `.dev/filename-cached-hash-20261114/qualification.json`, SHA-256
 `4e49d474d3e2fd9952fea1344baf87c6fddb26c3b8cc46be549cbb64c495c757`.
+
+## Actual app and WebView budget check
+
+The release app at `254a43f` was then compared with the preserved release app at
+`290cac9`, in A/B/B/A order using unchanged `harsh-profile.mjs`. Each run owned a
+fresh portable profile and constrained the app and its WebView processes to one
+logical CPU and 512 MiB, with kernel limit readback. Software drawing was enabled
+and verified, matching the app's low-memory drawing mode. C: had about 2.187
+million live entries; fresh test profiles make that count rise slightly.
+
+| Case      | Window (seconds) | First searchable (seconds) | Entire list ready (seconds) | Peak app/WebView job (MiB) |
+| --------- | ---------------: | -------------------------: | --------------------------: | -------------------------: |
+| A, first  |            2.261 |                      5.886 |                      13.688 |                      386.6 |
+| B, first  |            1.596 |                      1.809 |                       6.785 |                      402.6 |
+| B, second |            1.674 |                      1.897 |                       5.571 |                      389.5 |
+| A, last   |            1.675 |                      1.734 |                       9.229 |                      383.8 |
+
+Both candidate starts observed the 5–7-second window within this **app/WebView**
+budget, with headroom below 512 MiB. Every case had one service snapshot and zero
+overflow reconciliations. The installed NTFS service stayed at PID 5924 with
+binary SHA-256 `d0b1fe5e90f59aa071bedea67fdd360832904092a8f703e72339ae71f04552ee`;
+it was neither replaced nor restarted. The first baseline had a slower first
+batch (5.666 s versus about 1.1–1.2 s in the other runs), so the startup averages
+do not isolate the code change from cache/scheduling effects. All cases remain
+in the evidence.
+
+The LocalSystem service ran **outside** the CPU/memory job, and both physical
+drives are NVMe SSDs. These two candidate starts are not a whole-PC 512 MiB,
+single-CPU service, HDD, cold-cache or long-run latency qualification. Latest
+cross-platform CI also remains pending. Evidence:
+`.dev/harsh-cached-hash-20261114/qualification.json`, SHA-256
+`b6f6e9282c70d0d4e729e12fe729eb73685873afbd1df65793393c6221dbc821`.
+
+The same new app separately passed the unchanged actual 1.7B generation,
+HWPX/reopen gate and PDF export of that generated revision, using normal host
+resources. This is a regression check of document retrieval after the catalog
+change; the optional generative model is not running in the 512 MiB filename
+benchmark. Combined native evidence:
+`.dev/native-cached-hash-254a43f-20261114/qualification.json`, SHA-256
+`dd1df0d7d62da288c684f9ba8d58b7bc0318a3ddc61698fdc0d0072320758435`.
 
 ## Retention after the captured snapshot
 

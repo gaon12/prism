@@ -641,10 +641,8 @@ impl DocumentService {
         {
             return Err(DocumentError::new(DocumentErrorCode::OutlineReviewRequired));
         }
-        // The reviewed contract can be saved independently. Until typed-value
-        // generation is wired, never silently process it as free-form Markdown.
         if operation == DocumentOperation::Body && revision.plan.assembly.is_some() {
-            return Err(DocumentError::new(DocumentErrorCode::Input));
+            validate_plan(&revision.plan)?;
         }
         if operation == DocumentOperation::Rewrite {
             validate_targets(&revision, &targets, selection.as_ref())?;
@@ -927,6 +925,11 @@ fn document_response_schema(
     operation: DocumentOperation,
     targets: &[String],
 ) -> Value {
+    if operation == DocumentOperation::Body {
+        if let Some(assembly) = &revision.plan.assembly {
+            return assembly.response_schema();
+        }
+    }
     let sections: Vec<_> = revision
         .plan
         .sections
@@ -985,24 +988,60 @@ fn apply_answer(
         revision.outline_reviewed = false;
         revision.blocks.clear();
     } else {
-        let body: ModelBody = serde_json::from_str(payload)
-            .map_err(|_| DocumentError::new(DocumentErrorCode::Malformed))?;
-        if body.blocks.is_empty() {
+        let mut blocks: Vec<_> = if let Some(assembly) = revision
+            .plan
+            .assembly
+            .as_ref()
+            .filter(|_| operation == DocumentOperation::Body)
+        {
+            let current: Vec<_> = answer
+                .assistant_turn
+                .citations
+                .iter()
+                .filter(|citation| citation.state == crate::rag_service::SourceState::Current)
+                .map(|citation| format!("[{}]", citation.label))
+                .collect();
+            assembly
+                .render(payload, &current)
+                .map_err(|_| DocumentError::new(DocumentErrorCode::Malformed))?
+                .into_iter()
+                .map(|block| {
+                    Ok(DocumentBlock {
+                        id: crate::document_store::fresh_id()?,
+                        section_id: Some(block.section_id),
+                        kind: if block.markdown.is_empty() {
+                            DocumentBlockKind::Blank
+                        } else if block.unsupported {
+                            DocumentBlockKind::AiProposal
+                        } else {
+                            DocumentBlockKind::Fact
+                        },
+                        markdown: block.markdown,
+                        source_labels: block.source_labels,
+                        claims_verified: false,
+                        user_edited: false,
+                    })
+                })
+                .collect::<DocumentResult<_>>()?
+        } else {
+            let body: ModelBody = serde_json::from_str(payload)
+                .map_err(|_| DocumentError::new(DocumentErrorCode::Malformed))?;
+            body.blocks
+                .into_iter()
+                .map(|block| DocumentBlock {
+                    id: block.id,
+                    section_id: block.section_id,
+                    kind: block.kind,
+                    markdown: block.markdown,
+                    source_labels: block.source_labels,
+                    claims_verified: false,
+                    user_edited: false,
+                })
+                .collect()
+        };
+        if blocks.is_empty() {
             return Err(DocumentError::new(DocumentErrorCode::Malformed));
         }
-        let mut blocks: Vec<_> = body
-            .blocks
-            .into_iter()
-            .map(|block| DocumentBlock {
-                id: block.id,
-                section_id: block.section_id,
-                kind: block.kind,
-                markdown: block.markdown,
-                source_labels: block.source_labels,
-                claims_verified: false,
-                user_edited: false,
-            })
-            .collect();
         remap_model_citations(
             &mut blocks,
             &mut revision.citations,
@@ -1170,6 +1209,13 @@ fn make_prompt(
     targets: &[String],
     selection: Option<&DocumentSelection>,
 ) -> DocumentResult<String> {
+    if operation == DocumentOperation::Body {
+        if let Some(assembly) = &revision.plan.assembly {
+            let prompt = assembly.extraction_prompt(purpose, instruction);
+            text(&prompt, MAX_DOCUMENT)?;
+            return Ok(prompt);
+        }
+    }
     let schema = if operation == DocumentOperation::Outline {
         r#"Return only JSON: {"title":"...","sections":[{"id":"section_1","heading":"...","instruction":"..."}]}."#
     } else {
@@ -1227,7 +1273,21 @@ fn render(revision: &DocumentRevision, sources: bool, types: bool) -> String {
             &labels,
         )
     });
+    let mut rendered_sections = HashSet::new();
     for block in &revision.blocks {
+        if revision.plan.assembly.is_some() {
+            if let Some(section) = block.section_id.as_ref().and_then(|id| {
+                revision
+                    .plan
+                    .sections
+                    .iter()
+                    .find(|section| section.id == *id)
+            }) {
+                if rendered_sections.insert(&section.id) {
+                    result.push_str(&format!("## {}\n\n", assembly::literal(&section.heading)));
+                }
+            }
+        }
         if types {
             let kind = match block.kind {
                 DocumentBlockKind::Fact => "fact",
@@ -1761,15 +1821,16 @@ mod tests {
             let current = reopened.get(&page.document.id, None).unwrap();
             assert_eq!(current.revision.plan, typed);
             assert!(current.revision.outline_reviewed);
+            f.transport
+                .push(body("old_markdown", "A free-form replacement [S1]"));
             assert_eq!(
                 reopened
-                    .generate_body(request(&current, "typed_pending"))
+                    .generate_body(request(&current, "typed_reject_markdown"))
                     .await
                     .unwrap_err()
                     .code,
-                DocumentErrorCode::Input
+                DocumentErrorCode::Malformed
             );
-            assert!(f.transport.calls.lock().unwrap().is_empty());
             assert_eq!(
                 reopened.get(&page.document.id, None).unwrap().revision.id,
                 saved.id
@@ -1789,6 +1850,48 @@ mod tests {
                     .plan
                     .assembly,
                 None
+            );
+            f.policy.write().unwrap().prefs.local_structured_documents = true;
+            f.transport.push(serde_json::json!({"values":[{
+                "fieldId":"cost","state":"provided","text":"51200 credits | literal [S99]","sourceLabels":["[S1]"]
+            }]}).to_string());
+            let current = DocumentPage {
+                document: page.document.clone(),
+                revision: restored,
+            };
+            let generated = reopened
+                .generate_body(request(&current, "typed_values"))
+                .await
+                .unwrap();
+            assert_eq!(generated.plan, typed);
+            assert_eq!(generated.blocks.len(), 1);
+            assert_eq!(generated.blocks[0].kind, DocumentBlockKind::Fact);
+            assert!(!generated.blocks[0].claims_verified);
+            assert!(!generated.blocks[0].user_edited);
+            assert!(generated.blocks[0]
+                .markdown
+                .starts_with("| Field | Value |"));
+            assert!(generated.blocks[0]
+                .markdown
+                .contains("\\| literal \\[S99\\]"));
+            assert_eq!(generated.blocks[0].source_labels, vec!["[S1]"]);
+            assert!(generated
+                .markdown
+                .contains("## Summary\n\n| Field | Value |"));
+            assert_eq!(
+                reopened
+                    .get(&page.document.id, None)
+                    .unwrap()
+                    .revision
+                    .blocks,
+                generated.blocks
+            );
+            let schemas = f.transport.schemas.lock().unwrap();
+            let schema = schemas.last().unwrap().as_ref().unwrap();
+            assert!(schema["properties"].get("blocks").is_none());
+            assert_eq!(
+                schema["properties"]["values"]["items"]["properties"]["fieldId"]["enum"],
+                serde_json::json!(["cost"])
             );
         });
     }

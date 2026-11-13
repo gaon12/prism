@@ -86,10 +86,16 @@ backend step stores an optional `DocumentPlan.assembly` contract with a version,
 bounded field definitions, section assignments and field/table presentation.
 Legacy plans omit that property and retain their existing JSON shape. The
 contract contains no expected evidence values. Restart and revision restoration
-must preserve it exactly. Typed extraction and rendering are not connected in
-this initial step: body generation with an assembly contract fails closed rather
-than silently using the existing free-form Markdown generator. There is no new
-editor entry point or actual-model qualification from this groundwork alone.
+preserve it exactly. Body generation with this contract requests typed values
+instead of model-written Markdown, then assembles the reviewed fields and tables
+in the backend. Each requested field must occur exactly once. Values and explicit
+unavailability require current citations; information not found in the excerpts
+has no citation and receives a scoped, unverified notice only when the reviewed
+field requests one. These states remain distinct. Values are escaped as literal
+text before adding table delimiters and source markers. Existing free-form plans
+and partial rewrites retain their original path. Backend tests cover the new
+contract; the editor entry point and actual 1.7B/native export qualification are
+still pending.
 
 Rejecting an output that violates a structured plan is a useful intermediate
 behavior, but it would not satisfy the current positive generation gate. The

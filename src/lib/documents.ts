@@ -12,6 +12,22 @@ export interface PlanSection {
 export interface DocumentPlan {
   title: string;
   sections: PlanSection[];
+  assembly?: DocumentAssemblyPlan | null;
+}
+export interface DocumentAssemblyField {
+  id: string;
+  label: string;
+  instruction: string;
+  missingDisplay: 'blank' | 'notice';
+}
+export type DocumentAssemblyElement =
+  | { kind: 'field'; fieldId: string }
+  | { kind: 'fieldTable'; columns: [string, string]; fields: string[] };
+export interface DocumentAssemblyPlan {
+  version: 1;
+  noticeLanguage: 'ko' | 'en' | 'zh-CN' | 'zh-TW' | 'ja';
+  fields: DocumentAssemblyField[];
+  sections: { sectionId: string; elements: DocumentAssemblyElement[] }[];
 }
 export interface DocumentBlock {
   id: string;

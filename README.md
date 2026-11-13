@@ -320,8 +320,11 @@ Flatpak uses its separate host-config publisher, following the
 inside the sandbox. It launches with `flatpak run`, and writes through a unique,
 exclusively created staging file so an old staging link cannot rewrite another
 file. The [publisher checks](tools/platform-qa/README.md) cover real filesystem
-links and failed-publication cleanup in owned fixtures; actual Flatpak login
-integration and the latest full Linux platform check remain pending.
+links and failed-publication cleanup in owned fixtures. The later `a139cf9`
+Linux platform check passed 239 ordinary tests (13 ignored) and strict all-target
+Clippy in an owned, memory-bounded WSL user scope, with unchanged source and pins.
+Actual Flatpak login integration and the complete current Tauri desktop remain
+separate verification scopes.
 
 The previous release AppImage reproduced the wrong configuration path. The
 corrected signed AppImage from CI run `42373664783` passed actual settings UI

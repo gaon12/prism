@@ -30,10 +30,29 @@ passed 217 Windows library tests (10 opt-in ignored) and strict all-target Clipp
 A separate direct compilation of the production module passed seven actual Linux
 filesystem tests with compiler warnings denied and unchanged source/dependency
 hashes. The broader Linux platform build stopped when host memory fell below the
-unchanged 1-GiB limit, before tests; its full test/Clippy result remains pending.
+unchanged 1-GiB limit, before tests; its full test/Clippy result was pending at
+that checkpoint.
 No Flatpak sandbox or desktop login was exercised. Evidence:
 `.dev/flatpak-startup-20261114/qualification.json`, SHA-256
 `5fc579faf5a105a075415fe8e96f4bb72e55d40cad3cb718bcd5eca5926408ba`.
+
+The later `a139cf9` check passed all ordinary targets on WSL Ubuntu 26.04 x64
+with Rust 1.99.0: 239 passed, 13 ignored, plus strict all-target Clippy. This
+includes the actual Linux PDF renderer's five pixel/process checks and the
+inert-server supervisor's six lifecycle checks. The original resource stop and
+a new uncapped stop remain preserved. With incremental compilation disabled and
+an owned user scope, the complete test command took 44.0 seconds; the Windows
+host guard took 48.4 seconds. Scope peak usage was 2,687,885,312 bytes, with no
+OOM event, and the transient scope was gone after exit. Host available memory
+stayed above the existing 1-GiB floor. This is a maintainer build/test result,
+not an application RAM requirement or a desktop/Flatpak qualification.
+
+All 339 captured inputs remained unchanged. The existing QA-only registry
+differences from the app were retained: upstream `tempfile` 3.27.0 and TOML
+0.8.23 with `toml_datetime` 0.6.11, `toml_edit` 0.22.27, `toml_write` 0.1.2 and
+`winnow` 0.7.15. No dependency or pin was changed. Evidence:
+`.dev/linux-platform-current-20261114/qualification.json`, SHA-256
+`6f8b43b49c3c2d9bb99a2667993c473894292ae4588e9d728956a0ef3b29f906`.
 
 Existing-form checks import the production DOCX/HWPX codec directly. Run
 `cargo test --manifest-path tools/platform-qa/Cargo.toml --locked form_fill`.
@@ -104,6 +123,28 @@ or complete PDF feature coverage. The production launcher is always
 cargo test --manifest-path tools/platform-qa/Cargo.toml --locked
 cargo clippy --manifest-path tools/platform-qa/Cargo.toml --locked --all-targets -- -D warnings
 ```
+
+On a constrained Linux/WSL maintainer host, an existing delegated cgroup v2 user
+manager can bound just the build's processes and file cache with a
+[transient scope](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html).
+The successful check used a 2.5-GiB soft limit, 3-GiB hard limit and no swap for
+that scope, without changing WSL settings or dropping global caches:
+
+```sh
+systemd-run --user --scope --collect --quiet --no-ask-password \
+  --property=MemoryHigh=2560M --property=MemoryMax=3G --property=MemorySwapMax=0 \
+  -- env CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
+  cargo test --manifest-path tools/platform-qa/Cargo.toml --locked --offline -j1 \
+  --all-targets -- --test-threads=2
+```
+
+Use the existing Linux scratch target and keep the external host/guest guard:
+3 GiB available before starting, stop below 1 GiB, and 900 seconds per command.
+The scope's cap does not enforce those host limits. If user resource control is
+unavailable, report that condition rather than changing system-wide settings.
+The same scope can wrap the Clippy command. The 13 ignored entries retain their
+original opt-in/helper contracts; this result does not newly qualify real models,
+hosted providers, OS credentials or native macOS behavior.
 
 Ordinary tests use synthetic archives and temporary application directories. Windows
 tests additionally use DPAPI and privately owned child processes. Unix tests start

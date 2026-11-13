@@ -9,6 +9,9 @@ publish = false
 prism-ntfs-protocol = { path = "../protocol" }
 sha2 = { version = "0.10", optional = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [features]
 cache = ["dep:sha2"]
 

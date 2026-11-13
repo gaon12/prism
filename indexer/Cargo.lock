@@ -157,6 +157,7 @@ dependencies = [
  "flate2",
  "prism-ntfs-protocol",
  "sha2",
+ "windows-sys",
 ]
 
 [[package]]

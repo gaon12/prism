@@ -12,6 +12,7 @@ mod parallel;
 #[cfg(test)]
 #[path = "snapshot/parallel_snapshot_tests.rs"]
 mod parallel_snapshot_tests;
+mod parallelism;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Progress {
@@ -31,17 +32,7 @@ pub fn collect(
     check: impl Fn() -> layout::Result<()>,
     progress: impl FnMut(Progress),
 ) -> layout::Result<Snapshot> {
-    // A small MFT cannot amortize a worker pool. Keep its existing sequential
-    // path; only pure decoding, never the volume/journal source, is parallel.
-    let workers = if geometry.mft_bytes >= 16 * 1024 * 1024 {
-        std::thread::available_parallelism()
-            .map_or(1, usize::from)
-            // Four decoders matched or beat eight in the owned-buffer
-            // benchmark, without doubling the bounded raw working set.
-            .clamp(1, 4)
-    } else {
-        1
-    };
+    let workers = parallelism::workers(geometry.mft_bytes);
     collect_using(source, geometry, check, progress, workers, 4 * 1024 * 1024)
 }
 

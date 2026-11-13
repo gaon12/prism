@@ -33,6 +33,9 @@ Implemented:
   merged while consuming the old pages, so deletion history does not accumulate
   dead storage. Visitation and cache writing merge this order directly, without
   a separate whole-catalog sorting table. The cache format is unchanged.
+  Cold-scan decoder pools keep the small-scan sequential path and four-worker
+  cap. On Windows the count also respects the process affinity mask, so a
+  one-CPU process does not create multiple decoder workers.
   Derived paths reserve their complete UTF-8 byte size before appending the
   parent, separator and name; the separate Windows UTF-16 limit still applies.
 - An independent public mkntfs image exercises 581 records, file sizes, and

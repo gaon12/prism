@@ -243,6 +243,17 @@ jobs:
           New-Item -Path $taskKey -Force | Out-Null
           New-ItemProperty -Path $taskKey -Name 'prism.exe' -PropertyType String -Force `
             -Value '--remote-debugging-port=9324 --remote-debugging-address=127.0.0.1' | Out-Null
+      - name: Verify document sources, revisions and PDF/HWPX export in the actual app
+        # About 30 s. Generation is a synthetic local server (no model), so this
+        # checks the app's own document, citation and export paths, including
+        # source paths kept literally in HWPX/PDF footnotes.
+        if: matrix.platform == 'windows'
+        timeout-minutes: 5
+        env:
+          PRISM_TEST_EXECUTABLE: ${{ github.workspace }}/src-tauri/target/release/prism.exe
+          PRISM_TEST_EXPECT_RELEASE: '1'
+          PRISM_APP_CDP_PORT: '9324'
+        run: node tests/native/documents.mjs
       - name: Verify actual embedding download progress and cancellation
         if: matrix.platform == 'windows'
         timeout-minutes: 8

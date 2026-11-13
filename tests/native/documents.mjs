@@ -39,7 +39,12 @@ if (portable) {
   await writeFile(join(application, 'prism.portable'), '');
   assert.equal(await sha(executable), executableSha256);
 }
-const launchOptions = portable ? { executable, portable: true, productionPortable: true } : {};
+// CI runs elevated, where WebView2 ignores the per-launch debug port and uses
+// the machine policy's fixed port instead (PRISM_APP_CDP_PORT, release.yml).
+const cdpPort = process.env.PRISM_APP_CDP_PORT ? Number(process.env.PRISM_APP_CDP_PORT) : undefined;
+const launchOptions = portable
+  ? { executable, portable: true, productionPortable: true, cdpPort }
+  : { cdpPort };
 const folder = join(directory, '_source_[literal](v1)');
 await mkdir(folder);
 const source = join(folder, '원본.md');

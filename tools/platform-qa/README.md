@@ -7,6 +7,13 @@ identity files directly. It avoids the Tauri, WebView
 and Lance build requirements so these modules can also be checked in a Linux shell.
 It does not replace the full application tests or native desktop QA.
 
+The crate also imports the shared atomic byte publisher and JSON persistence
+wrapper used by settings, search sessions and update records. The focused
+`atomic_file::tests` and `settings_file::tests` checks use owned temporary files:
+binary/UTF-8 preservation, old pending-file links, failed publication and failed
+serialization. The [core-check guide](../rag-qa/README.md) records their current
+Windows/Linux results and main-app compilation scope.
+
 Flatpak startup-entry checks import the production publisher directly. Run
 `cargo test --manifest-path tools/platform-qa/Cargo.toml --locked flatpak_startup::tests`.
 They use explicit temporary directories rather than changing `HOME`, calling the

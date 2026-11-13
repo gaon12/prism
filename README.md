@@ -281,6 +281,14 @@ tests and strict Clippy with locked dependencies. Completion/source fixtures
 remain synthetic, and the full app, search-engine adapters and real-model
 native behavior still need their own checks.
 
+Settings, saved search sessions, update records and clipboard files publish
+complete bytes through a unique, exclusively created sibling file. Existing
+`.pending` files are retained, and ordinary failed writes preserve the committed
+record. The JSON format and clipboard encoding are unchanged. The
+[persistence checks](tools/rag-qa/README.md) cover real linked files, failed
+publication/serialization and binary/UTF-8 bytes in isolated fixtures. They do
+not establish new native clipboard behavior or power-loss durability.
+
 On Linux, login startup follows an absolute `XDG_CONFIG_HOME`, with
 `HOME/.config` as the fallback for unset, empty or relative values. The
 [local dependency patch](src-tauri/vendor/auto-launch/PRISM_PATCH.md) records the

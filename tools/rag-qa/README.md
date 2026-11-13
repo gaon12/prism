@@ -19,6 +19,28 @@ already cached. CARGO_TARGET_DIR can choose a different build-output location.
 Rust and a C compiler for bundled SQLite are required. The complete suite also
 requires Node.js on `PATH` for its actual stdio MCP server fixture.
 
+Shared persistence checks import `atomic_file.rs` and `settings_file.rs` directly.
+Settings, saved search sessions and update records retain their pretty UTF-8 JSON
+format; settings exposes the same `write_json` API. Clipboard files use the same
+byte publisher without changing capture, retention, restoration or PNG encoding.
+The publisher exclusively creates a unique sibling file, writes and syncs the
+complete bytes, then renames it. Ordinary failures clean up only its owned staging
+file. Older `.pending` entries are left intact. Callers retain responsibility for
+encoding, directory setup and authorization.
+
+At `4776e49`, fixed-pending behavior failed three regressions by rewriting linked
+fixture data and leaking staging after a failed publication. The fixed source
+passed 138 Windows and 136 Linux core tests (one Linux native-store opt-in ignored),
+plus strict all-target Clippy on both. Eleven additional actual Linux filesystem
+checks covered the shared publisher and existing Flatpak regressions. Serialization
+failure left existing files untouched, and byte/UTF-8 format checks passed.
+The actual Windows release app library also passed locked/offline `cargo check`
+with its production protocol feature; nine unused/dead-code library warnings were
+retained. This is source/type and isolated filesystem verification, not a new
+native UI/restart/system-clipboard run, full app CI or power-loss qualification.
+Evidence: `.dev/atomic-persistence-20261114/qualification.json`, SHA-256
+`92ad54a085012feb13ad36eb632f4f9bc7383b1f2bc5578a280adfe7c791f0c4`.
+
 The modules have the same private visibility as in the app. The QA crate allows
 dead-code warnings because full-app callers are absent; it does not suppress
 other compiler or Clippy diagnostics. No old source copies, substituted search

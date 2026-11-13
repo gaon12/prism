@@ -15,7 +15,9 @@ fn build_index_helper() {
     for path in [
         "Cargo.toml",
         "Cargo.lock",
+        "protocol/Cargo.toml",
         "protocol/src",
+        "core/Cargo.toml",
         "core/src",
         "windows/src",
         "windows/Cargo.toml",

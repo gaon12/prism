@@ -98,6 +98,17 @@ fn encode_record(record: &MetadataRecord, out: &mut Vec<u8>) -> io::Result<()> {
     Ok(())
 }
 fn decode_record(bytes: &[u8]) -> io::Result<MetadataRecord> {
+    decode_record_with_names::<true>(bytes)
+}
+// The initial streaming index needs owned names only for directory records.
+// File names still receive every validation below; they are borrowed from the
+// reusable encoded-record buffer and discarded without allocating Strings.
+fn decode_index_record(bytes: &[u8]) -> io::Result<MetadataRecord> {
+    decode_record_with_names::<false>(bytes)
+}
+fn decode_record_with_names<const RETAIN_FILE_NAMES: bool>(
+    bytes: &[u8],
+) -> io::Result<MetadataRecord> {
     let mut read = io::Cursor::new(bytes);
     let reference = FileReference(u64_value(&mut read)?);
     let is_dir = flag(&mut read)?;
@@ -113,7 +124,8 @@ fn decode_record(bytes: &[u8]) -> io::Result<MetadataRecord> {
     if count > 4096 {
         return Err(invalid());
     }
-    let mut names = Vec::with_capacity(count.min(16));
+    let retain_names = RETAIN_FILE_NAMES || is_dir;
+    let mut names = Vec::with_capacity(if retain_names { count.min(16) } else { 0 });
     for _ in 0..count {
         let parent = FileReference(u64_value(&mut read)?);
         let namespace = number::<1>(&mut read)?[0];
@@ -126,11 +138,13 @@ fn decode_record(bytes: &[u8]) -> io::Result<MetadataRecord> {
         if !valid_name(name, namespace) {
             return Err(invalid());
         }
-        names.push(FileName {
-            parent,
-            name: name.to_owned(),
-            namespace,
-        });
+        if retain_names {
+            names.push(FileName {
+                parent,
+                name: name.to_owned(),
+                namespace,
+            });
+        }
         read.set_position((start + length) as u64);
     }
     if read.position() != bytes.len() as u64 {
@@ -539,6 +553,83 @@ mod tests {
             DEVICE,
             || Ok(()),
         )
+    }
+    fn record_named(bytes: &[u8], namespace: u8, directory: bool) -> Vec<u8> {
+        let mut record = sample().catalog.records[&18].clone();
+        record.is_dir = directory;
+        if directory {
+            record.size = Some(0);
+        }
+        record.names.truncate(1);
+        record.names[0].name = "x".into();
+        let mut out = Vec::new();
+        encode_record(&record, &mut out).unwrap();
+        let text = out.len() - 1;
+        assert_eq!(out[text], b'x');
+        out.truncate(text);
+        out[text - 3] = namespace;
+        out[text - 2..text].copy_from_slice(&(bytes.len() as u16).to_le_bytes());
+        out.extend_from_slice(bytes);
+        out
+    }
+    #[test]
+    fn index_validation_keeps_directory_names_and_discards_only_valid_file_names() {
+        for name in [
+            "x".into(),
+            "자료-日本語-😀.md".into(),
+            "a".repeat(255),
+            "가".repeat(255),
+            format!("{}x", "😀".repeat(127)),
+        ] {
+            for directory in [false, true] {
+                for namespace in 0..=3 {
+                    let bytes = record_named(name.as_bytes(), namespace, directory);
+                    let full = decode_record(&bytes).unwrap();
+                    let mut index = decode_index_record(&bytes).unwrap();
+                    if directory {
+                        assert_eq!(index.names, full.names);
+                    } else {
+                        assert!(index.names.is_empty());
+                        assert_eq!(index.names.capacity(), 0);
+                        // All other persisted metadata fields are identical.
+                        index.names = full.names;
+                    }
+                    let mut reencoded = Vec::new();
+                    encode_record(&index, &mut reencoded).unwrap();
+                    assert_eq!(reencoded, bytes);
+                }
+            }
+        }
+    }
+    #[test]
+    fn unretained_file_names_still_reject_bad_utf8_namespace_separators_and_lengths() {
+        let invalid = [
+            Vec::new(),
+            b".".to_vec(),
+            b"..".to_vec(),
+            b"a\0b".to_vec(),
+            b"a/b".to_vec(),
+            b"a\\b".to_vec(),
+            b"a:b".to_vec(),
+            vec![0xc0, 0xaf],
+            vec![0xed, 0xa0, 0x80],
+            vec![0xf4, 0x90, 0x80, 0x80],
+            "a".repeat(256).into_bytes(),
+            "😀".repeat(128).into_bytes(),
+            vec![b'x'; 1021],
+        ];
+        for directory in [false, true] {
+            for name in &invalid {
+                let bytes = record_named(name, 1, directory);
+                assert!(decode_record(&bytes).is_err());
+                assert!(decode_index_record(&bytes).is_err());
+            }
+            for namespace in [4, 255] {
+                let bytes = record_named(b"valid-name", namespace, directory);
+                assert!(decode_record(&bytes).is_err());
+                assert!(decode_index_record(&bytes).is_err());
+            }
+        }
     }
     #[test]
     fn roundtrip_is_deterministic_and_retains_old_extension_ownership() {

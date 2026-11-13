@@ -39,7 +39,7 @@ impl<R: Read + Seek> Reader<R> {
             if index % 256 == 0 {
                 checked(&check)?;
             }
-            let record = read_record(&mut body, &mut bytes)?;
+            let record = read_record(&mut body, &mut bytes, decode_index_record)?;
             let number = record.reference.number();
             if references
                 .last()
@@ -201,14 +201,18 @@ fn visit_merged(
     checked(check)
 }
 
-fn read_record(body: &mut io::Take<impl Read>, bytes: &mut Vec<u8>) -> io::Result<MetadataRecord> {
+fn read_record(
+    body: &mut io::Take<impl Read>,
+    bytes: &mut Vec<u8>,
+    decode: impl FnOnce(&[u8]) -> io::Result<MetadataRecord>,
+) -> io::Result<MetadataRecord> {
     let size = u32_value(body)? as usize;
     if !(38..=MAX_RECORD_BYTES).contains(&size) || size as u64 > body.limit() {
         return Err(invalid());
     }
     bytes.resize(size, 0);
     body.read_exact(bytes)?;
-    decode_record(bytes)
+    decode(bytes)
 }
 
 fn visit_records(
@@ -227,7 +231,7 @@ fn visit_records(
         if index % 256 == 0 {
             checked(check)?;
         }
-        let record = read_record(&mut body, &mut bytes)?;
+        let record = read_record(&mut body, &mut bytes, decode_record)?;
         if record.reference != *reference {
             return Err(invalid());
         }

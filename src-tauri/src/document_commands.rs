@@ -261,10 +261,19 @@ pub async fn doc_rewrite(
     service(&state)?.rewrite(request).await
 }
 #[tauri::command]
-pub fn doc_cancel(state: State<'_, AppState>, id: String, request: String) -> DocumentResult<()> {
-    service(&state)?.cancel(&id, &request)
+pub async fn doc_cancel(
+    state: State<'_, AppState>,
+    id: String,
+    request: String,
+) -> DocumentResult<()> {
+    let service = service(&state)?;
+    blocking(move || service.cancel(&id, &request)).await
 }
 #[tauri::command]
-pub fn doc_job(state: State<'_, AppState>, id: String) -> DocumentResult<Option<DocumentJob>> {
-    service(&state)?.job(&id)
+pub async fn doc_job(
+    state: State<'_, AppState>,
+    id: String,
+) -> DocumentResult<Option<DocumentJob>> {
+    let service = service(&state)?;
+    blocking(move || service.job(&id)).await
 }

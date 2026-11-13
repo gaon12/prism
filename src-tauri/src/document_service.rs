@@ -999,10 +999,16 @@ fn apply_answer(
                 .citations
                 .iter()
                 .filter(|citation| citation.state == crate::rag_service::SourceState::Current)
-                .map(|citation| format!("[{}]", citation.label))
+                .filter_map(|citation| {
+                    answer
+                        .document_sources
+                        .iter()
+                        .find(|source| source.source == citation.source)
+                        .map(|source| (format!("[{}]", citation.label), source.text.clone()))
+                })
                 .collect();
             assembly
-                .render(payload, &current)
+                .render_with_sources(payload, &current)
                 .map_err(|_| DocumentError::new(DocumentErrorCode::Malformed))?
                 .into_iter()
                 .map(|block| {
@@ -1859,6 +1865,24 @@ mod tests {
                 document: page.document.clone(),
                 revision: restored,
             };
+            assert_eq!(
+                reopened
+                    .generate_body(request(&current, "unsupported_value"))
+                    .await
+                    .unwrap_err()
+                    .code,
+                DocumentErrorCode::Malformed
+            );
+            assert_eq!(
+                reopened.get(&page.document.id, None).unwrap().revision.id,
+                current.revision.id
+            );
+            f.transport.push(
+                serde_json::json!({"values":[{
+                    "fieldId":"cost","state":"provided","text":"123.4500","sourceLabels":["[S1]"]
+                }]})
+                .to_string(),
+            );
             let generated = reopened
                 .generate_body(request(&current, "typed_values"))
                 .await
@@ -1871,9 +1895,7 @@ mod tests {
             assert!(generated.blocks[0]
                 .markdown
                 .starts_with("| Field | Value |"));
-            assert!(generated.blocks[0]
-                .markdown
-                .contains("\\| literal \\[S99\\]"));
+            assert!(generated.blocks[0].markdown.contains("123\\.4500"));
             assert_eq!(generated.blocks[0].source_labels, vec!["[S1]"]);
             assert!(generated
                 .markdown

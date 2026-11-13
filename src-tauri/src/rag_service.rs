@@ -587,6 +587,10 @@ pub struct RagAnswer {
     pub assistant_turn: ConversationTurn,
     pub attempts: Vec<ProviderAttempt>,
     pub omitted_history_pairs: usize,
+    /// Exact redacted/truncated excerpts sent by this document operation.
+    /// Ephemeral backend validation input: never IPC, history, logs or storage.
+    #[serde(skip)]
+    pub(crate) document_sources: Vec<RagSource>,
 }
 impl fmt::Debug for RagAnswer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -716,6 +720,7 @@ struct Prepared {
     key: Option<SecretValue>,
     messages: Vec<GenerationMessage>,
     sources: Vec<RagCitation>,
+    document_sources: Vec<RagSource>,
     provenance: Vec<SourceRef>,
     snapshot: ScopeSnapshot,
     stamp: Vec<u8>,
@@ -1313,7 +1318,7 @@ impl RagService {
             .perform(&request, &initial, &cancel, &mut pair, input.as_ref())
             .await;
         match result {
-            Ok((attempts, omitted)) => {
+            Ok((attempts, omitted, document_sources)) => {
                 let user = pair.user.clone();
                 let assistant = pair.assistant.clone();
                 let store = self.inner.store.clone();
@@ -1326,6 +1331,11 @@ impl RagService {
                 // answer follows the *current* settings, exactly like reopening it would:
                 // anything that depends on a revoked external source is hidden.
                 self.hide_revoked(std::slice::from_mut(&mut pair.assistant));
+                let document_sources = if pair.assistant.external_revoked {
+                    Vec::new()
+                } else {
+                    document_sources
+                };
                 self.update_job(&request, "ready", pair.assistant.provider, None);
                 Ok(RagAnswer {
                     conversation_id: request.conversation_id,
@@ -1334,6 +1344,7 @@ impl RagService {
                     assistant_turn: pair.assistant,
                     attempts,
                     omitted_history_pairs: omitted,
+                    document_sources,
                 })
             }
             Err(failure) => {
@@ -1372,7 +1383,7 @@ impl RagService {
         cancel: &RequestCancel,
         pair: &mut crate::rag_store::PendingPair,
         input: Option<&RagDocumentInput>,
-    ) -> RagResult<(Vec<ProviderAttempt>, usize)> {
+    ) -> RagResult<(Vec<ProviderAttempt>, usize, Vec<RagSource>)> {
         let mut attempts = Vec::new();
         let mut last_error = RagError::new(RagErrorCode::NotConfigured);
         // External evidence is gathered once and shared by every provider attempt. It is
@@ -1480,7 +1491,7 @@ impl RagService {
                         provider: slot,
                         error: None,
                     });
-                    return Ok((attempts, prepared.omitted));
+                    return Ok((attempts, prepared.omitted, prepared.document_sources));
                 }
                 Err(error) => {
                     let fallback = matches!(
@@ -1895,6 +1906,11 @@ impl RagService {
                 key,
                 messages: packet.messages,
                 sources: packet.citations,
+                document_sources: if input.is_some() {
+                    packet.excerpts
+                } else {
+                    Vec::new()
+                },
                 provenance: packet.provenance,
                 snapshot: snapshot(&policy, &request.scope_ids),
                 stamp,
@@ -1993,6 +2009,7 @@ impl RagService {
 struct Packet {
     messages: Vec<GenerationMessage>,
     citations: Vec<RagCitation>,
+    excerpts: Vec<RagSource>,
     provenance: Vec<SourceRef>,
     omitted: usize,
 }
@@ -2027,6 +2044,7 @@ fn build_packet(
     let mut remaining = available - reserve;
     let mut context = String::new();
     let mut citations = Vec::new();
+    let mut excerpts = Vec::new();
     let mut provenance = Vec::new();
     for item in current {
         let label = format!("S{}", citations.len() + 1);
@@ -2053,6 +2071,10 @@ fn build_packet(
         context.push_str(&excerpt);
         context.push('\n');
         provenance.push(item.source.clone());
+        excerpts.push(RagSource {
+            source: item.source.clone(),
+            text: excerpt,
+        });
         citations.push(RagCitation {
             label,
             source: item.source,
@@ -2097,6 +2119,10 @@ fn build_packet(
         external_context.push_str(&excerpt);
         external_context.push('\n');
         provenance.push(item.source.clone());
+        excerpts.push(RagSource {
+            source: item.source.clone(),
+            text: excerpt,
+        });
         citations.push(RagCitation {
             label,
             source: item.source,
@@ -2158,6 +2184,7 @@ fn build_packet(
     Ok(Packet {
         messages,
         citations,
+        excerpts,
         provenance,
         omitted: total_history.saturating_sub(kept),
     })
@@ -4202,5 +4229,69 @@ mod tests {
         assert!(!serde_json::to_string(&page.turns)
             .unwrap()
             .contains(DERIVED));
+    }
+
+    #[test]
+    fn document_excerpts_are_exact_transient_validation_input_not_serialized_or_stored() {
+        let f = fixture();
+        // This deliberately simple resolver returns its whole fixture set;
+        // provide the selected set, as the production resolver does.
+        f.sources
+            .items
+            .lock()
+            .unwrap()
+            .retain(|source| source.source.scope_id == "public");
+        let conversation = f
+            .service
+            .create_for_document("Transient validation")
+            .unwrap();
+        let mut req = request(
+            &f.service,
+            &conversation.id,
+            "document_excerpts",
+            "Extract one recorded value",
+        );
+        req.scope_ids = vec!["public".into()];
+        let answer = runtime()
+            .block_on(f.service.ask_for_document(
+                req,
+                RagDocumentInput {
+                    provenance: vec![],
+                    external_input_eligible: true,
+                    retrieval_query: "Evidence".into(),
+                    semantic_query: "Evidence".into(),
+                    external_query: None,
+                    response_schema: None,
+                },
+            ))
+            .unwrap();
+        assert!(!answer.document_sources.is_empty());
+        let calls = f.transport.calls.lock().unwrap();
+        let message = &calls[0].messages.last().unwrap().content;
+        assert!(answer
+            .document_sources
+            .iter()
+            .all(|source| source.source.scope_id == "public" && message.contains(&source.text)));
+        drop(calls);
+        let encoded = serde_json::to_value(&answer).unwrap();
+        assert!(
+            encoded.get("documentSources").is_none() && encoded.get("document_sources").is_none()
+        );
+        assert!(!encoded.to_string().contains(PUBLIC));
+        assert!(!format!("{answer:?}").contains(PUBLIC));
+        let reopened = runtime()
+            .block_on(f.service.conversation(&conversation.id, None, 100))
+            .unwrap();
+        assert!(!serde_json::to_string(&reopened).unwrap().contains(PUBLIC));
+        let conversation = f.service.create_conversation(None, None).unwrap();
+        let ordinary = runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &conversation.id,
+                "ordinary_no_excerpts",
+                "Question",
+            )))
+            .unwrap();
+        assert!(ordinary.document_sources.is_empty());
     }
 }

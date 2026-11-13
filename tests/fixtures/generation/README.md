@@ -120,6 +120,28 @@ Markdown are separate, with no response repair. Evidence is retained in
 `db0e7ab5a5bdf582905c3f41dbd7df963294eebccce44edb9a9e2ccd69054283`.
 The original required gate remains unresolved until the actual app path passes.
 
+A subsequent field-ID-only probe used UUID-v4 IDs, matching the real editor.
+Reversing those IDs restored the earlier request bytes exactly; the model,
+runtime, excerpts, decoder and generation controls were unchanged. The four
+values and the assembled facts/table checks passed, but the place value cited
+the date excerpt `[S1]` instead of its supporting place excerpt `[S2]`. That
+component result is **failed**, not an additional quality pass or evidence of
+systematic UUID causality. Its raw content is preserved in
+`body-wrong-field-source.txt`, used only by regression tests, never as a model
+input. Full evidence is in
+`.dev/document-assembly-uuid-inference-20261113/qualification.json`, SHA-256
+`071009ea6156a69bcd27b757d84a79a39fc534dbf588f96d200e96ca6477866b`.
+
+The backend now retains the exact transmitted, redacted and truncated excerpts
+only for the current document operation. They are neither serialized in the API
+answer nor stored in history. Provided field text must occur in every cited
+excerpt after whitespace normalization. An unrelated but known label is rejected,
+without reassigning it or changing the model response. The captured UUID response
+regresses this case, and a service test checks that rejection preserves the prior
+revision. This is literal-span validation; field meaning, explicit-unavailability
+classification and overall claim truth remain unverified. The stricter path
+still needs actual-model and native-app qualification.
+
 Rejecting an output that violates a structured plan is a useful intermediate
 behavior, but it would not satisfy the current positive generation gate. The
 present response contains neither requested output, so there is no semantic

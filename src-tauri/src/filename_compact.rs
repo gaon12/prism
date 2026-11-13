@@ -5,9 +5,9 @@
 //! 2.2-million-entry drive, far beyond a 512 MB low-end PC.
 //!
 //! Almost all of those bytes repeat the parent directory. This catalog stores:
-//! - every **directory once** as a 16-byte record whose path lives in a shared
+//! - every **directory once** as a 28-byte record whose path lives in a shared
 //!   text arena (its identity key is derived from the path when possible);
-//! - every **entry as a 40-byte record** (`Node`) that points to its parent
+//! - every **entry as a 44-byte record** (`Node`) that points to its parent
 //!   directory and to its own name in the same arena;
 //! - two small open-addressing tables of `u32` ids for key lookups, instead of
 //!   hash maps that duplicate keys.
@@ -97,6 +97,8 @@ struct Dir {
     /// Live child entries plus linked child directories; the record is
     /// released at zero. 0 = free slot.
     children: u32,
+    /// Full keyed identity hash, reused when the lookup table grows.
+    key_hash: [u32; 2],
 }
 
 /// `Dir::path_len` flag: the separator before a linked own name is a backslash.
@@ -116,11 +118,12 @@ impl Dir {
     }
 }
 
-/// One entry. 36 bytes (there is one per file, millions of them); its name
+/// One entry. 44 bytes (there is one per file, millions of them); its name
 /// bytes live in `Catalog::text`.
 ///
-/// The 64-bit size and time are kept as two `u32` halves so the record only
-/// needs 4-byte alignment: with `u64` fields it was padded to 40 bytes.
+/// The 64-bit values are kept as two `u32` halves so the record only needs
+/// 4-byte alignment. Caching the full keyed hash costs eight bytes per entry,
+/// avoiding whole-path reconstruction and hashing on every table growth.
 #[derive(Clone, Copy)]
 struct Node {
     /// Parent directory id, or `NONE` for a free slot.
@@ -134,11 +137,13 @@ struct Node {
     size: [u32; 2],
     /// `i64` modification time (ms), low half first.
     modified: [u32; 2],
+    key_hash: [u32; 2],
     name_len: u16,
     flags: u8,
 }
 
-const _: () = assert!(std::mem::size_of::<Node>() == 36);
+const _: () = assert!(std::mem::size_of::<Node>() == 44);
+const _: () = assert!(std::mem::size_of::<Dir>() == 28);
 
 /// Split a 64-bit value into the two halves a `Node` stores.
 fn halves(value: u64) -> [u32; 2] {
@@ -319,7 +324,7 @@ impl Text {
     }
 }
 
-/// Entry records per chunk: 65,536 records, 2.25 MiB.
+/// Entry records per chunk: 65,536 records, 2.75 MiB.
 const NODE_CHUNK_BITS: u32 = 16;
 const NODE_CHUNK: usize = 1 << NODE_CHUNK_BITS;
 
@@ -579,14 +584,7 @@ impl Catalog {
         if self.key_table.slots.len() < (self.len + entries) * 2 {
             let mut table = std::mem::take(&mut self.key_table);
             table.reserve(self.len + entries, |stored| {
-                let mut scratch = String::new();
-                self.hash(
-                    (EntryRef {
-                        catalog: self,
-                        id: stored,
-                    })
-                    .write_key(&mut scratch),
-                )
+                whole(self.nodes[stored as usize].key_hash)
             });
             self.key_table = table;
         }
@@ -810,12 +808,14 @@ impl Catalog {
             .ok()
             .filter(|len| len & DIR_BACKSLASH == 0)
             .expect("a directory path below 2 GiB");
+        let hash = self.hash(split.dir_key);
         let dir = Dir {
             path,
             path_len: stored_len | flag,
             parent,
             extra,
             children: 1,
+            key_hash: halves(hash),
         };
         let id = match self.free_dirs.pop() {
             Some(id) => {
@@ -827,11 +827,9 @@ impl Catalog {
                 (self.dirs.len() - 1) as u32
             }
         };
-        let hash = self.hash(split.dir_key);
         let mut table = std::mem::take(&mut self.dir_table);
         table.insert(hash, id, |stored| {
-            let mut scratch = String::new();
-            self.hash(self.write_dir_key(stored, &mut scratch))
+            whole(self.dirs[stored as usize].key_hash)
         });
         self.dir_table = table;
         id
@@ -861,9 +859,7 @@ impl Catalog {
             if id == 0 || self.dirs[id as usize].children > 0 {
                 return;
             }
-            let mut scratch = String::new();
-            let key = self.write_dir_key(id, &mut scratch).to_string();
-            let hash = self.hash(&key);
+            let hash = whole(self.dirs[id as usize].key_hash);
             let at = self
                 .dir_table
                 .find(hash, |stored| stored == id)
@@ -963,6 +959,7 @@ impl Catalog {
                 own_dir,
             ])
         };
+        let hash = self.hash(input.key);
         let node = Node {
             dir,
             name,
@@ -972,6 +969,7 @@ impl Catalog {
             seen: input.seen as u32,
             size: halves(input.size),
             modified: halves(input.modified_ms.unwrap_or(0) as u64),
+            key_hash: halves(hash),
         };
         let id = if self.free_nodes != NONE {
             let id = self.free_nodes;
@@ -982,17 +980,9 @@ impl Catalog {
             self.nodes.push(node);
             u32::try_from(self.nodes.len() - 1).expect("fewer than 4 billion entries")
         };
-        let hash = self.hash(input.key);
         let mut table = std::mem::take(&mut self.key_table);
         table.insert(hash, id, |stored| {
-            let mut scratch = String::new();
-            self.hash(
-                (EntryRef {
-                    catalog: self,
-                    id: stored,
-                })
-                .write_key(&mut scratch),
-            )
+            whole(self.nodes[stored as usize].key_hash)
         });
         self.key_table = table;
         self.len += 1;
@@ -1026,6 +1016,7 @@ impl Catalog {
             seen: 0,
             size: [0; 2],
             modified: [0; 2],
+            key_hash: [0; 2],
         };
         self.free_nodes = id;
         self.len -= 1;
@@ -1495,6 +1486,7 @@ mod tests {
         let mut buffer = String::new();
         assert_eq!(entry.write_path(&mut buffer), expected.path);
         assert_eq!(entry.write_key(&mut buffer), expected.key);
+        assert_eq!(whole(entry.node().key_hash), catalog.hash(expected.key));
         assert_eq!(
             entry.write_search(&mut buffer),
             expected.search.unwrap_or(expected.key)
@@ -1506,6 +1498,67 @@ mod tests {
         assert_eq!(entry.size(), expected.size);
         assert_eq!(entry.modified_ms(), expected.modified_ms);
         assert!(entry.is_seen(expected.seen));
+    }
+
+    #[test]
+    fn cached_hashes_survive_growth_reuse_and_text_compaction() {
+        let mut catalog = Catalog::new();
+        let rows: Vec<_> = (0..600)
+            .map(|i| {
+                let path = format!(
+                    "C:\\Cache\\Dir{i}\\{}_{i}_{}.txt",
+                    ["Leaf", "문서", "İ"][i % 3],
+                    "x".repeat(128)
+                );
+                let key = path.replace('\\', "/").to_lowercase();
+                (path, key)
+            })
+            .collect();
+        for (path, key) in &rows {
+            catalog.insert(&input(path, key));
+        }
+        let check = |catalog: &Catalog| {
+            let mut buffer = String::new();
+            for entry in catalog.iter() {
+                let key = entry.write_key(&mut buffer);
+                assert_eq!(whole(entry.node().key_hash), catalog.hash(key));
+                assert_eq!(catalog.get(key).unwrap().id, entry.id);
+            }
+            for id in 1..catalog.dirs.len() as u32 {
+                let dir = &catalog.dirs[id as usize];
+                if dir.children > 0 {
+                    let key = catalog.write_dir_key(id, &mut buffer);
+                    assert_eq!(whole(dir.key_hash), catalog.hash(key));
+                    assert_eq!(catalog.find_dir(key), Some(id));
+                }
+            }
+        };
+        check(&catalog);
+        let slots = catalog.key_table.slots.len();
+        catalog.reserve(10_000, 0);
+        assert!(catalog.key_table.slots.len() > slots);
+        check(&catalog);
+        for (_, key) in rows.iter().take(450) {
+            assert!(catalog.remove(key));
+        }
+        catalog.compact();
+        check(&catalog);
+        for i in 0..450 {
+            let path = format!("/Reused/Directory{i}/different.txt");
+            catalog.insert(&input(&path, &path));
+            assert_round_trip(&catalog, &input(&path, &path));
+        }
+        check(&catalog);
+        for (_, key) in rows.iter().take(450) {
+            assert!(!catalog.contains_key(key));
+        }
+        for (path, key) in rows.iter().skip(450) {
+            assert_round_trip(&catalog, &input(path, key));
+        }
+        catalog.clear();
+        catalog.insert(&input(&rows[0].0, &rows[0].1));
+        check(&catalog);
+        assert_round_trip(&catalog, &input(&rows[0].0, &rows[0].1));
     }
 
     #[test]

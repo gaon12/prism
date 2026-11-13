@@ -1,0 +1,120 @@
+# Separate, opt-in check of actual local document generation with the pinned 4B profile.
+#
+# It reuses the Windows release app another Release run already built and uploaded
+# (`qa-windows-app`), so no Rust build or release queue is involved. The original 1.7B
+# greedy gate in release.yml and its results are not changed by this workflow; this
+# result is reported as its own named profile (see tests/fixtures/generation/README.md).
+name: Model qualification
+on:
+  workflow_dispatch:
+    inputs:
+      app_run_id:
+        description: Release run whose qa-windows-app artifact is tested
+        required: true
+        type: string
+permissions:
+  contents: read
+  # Download the artifact of another run and read that run's commit.
+  actions: read
+
+jobs:
+  qwen4b:
+    name: Qwen3-4B thinking profile (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Use a temp folder without aliases
+        # Windows TEMP is the 8.3 short path C:\Users\RUNNER~1\..., which Prism rejects as a
+        # folder alias. RUNNER_TEMP (D:\a\_temp) is a plain, real path.
+        shell: bash
+        run: |
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Read the tested app's source commit
+        id: app
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.app_run_id }}
+        run: |
+          # Only a digit run id; the commit comes from GitHub, not from the input.
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "app_run_id must be a run number"; exit 1; }
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .head_sha)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "No commit for run $RUN_ID"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: qa-windows-app
+          path: ${{ runner.temp }}/qa-app
+          run-id: ${{ inputs.app_run_id }}
+          github-token: ${{ github.token }}
+      - run: npm ci
+      - name: Prepare the separate 4B profile
+        # No download or inference: writes a test tree and qualification-profile.json.
+        # The script needs Python 3.11 or newer; the runner's PATH Python may be older, so
+        # use the newest preinstalled 3.11+ from the runner tool cache (fail if there is none).
+        shell: pwsh
+        run: |
+          $python = Get-ChildItem -Directory (Join-Path $env:RUNNER_TOOL_CACHE 'Python') |
+            Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' -and [version]$_.Name -ge [version]'3.11' } |
+            Sort-Object { [version]$_.Name } | Select-Object -Last 1 |
+            ForEach-Object { Join-Path $_.FullName 'x64/python.exe' }
+          if (-not $python -or -not (Test-Path -LiteralPath $python)) { throw 'No Python 3.11+ on this runner' }
+          & $python --version
+          & $python -B scripts/prepare-generation-qualification.py --output .dev/qwen4b-qualification
+          exit $LASTEXITCODE
+      - name: Let the native test reach its owned app WebView
+        # Same policy as release.yml, on this disposable hosted runner only.
+        shell: pwsh
+        run: |
+          $taskKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+          New-Item -Path $taskKey -Force | Out-Null
+          New-ItemProperty -Path $taskKey -Name 'prism.exe' -PropertyType String -Force `
+            -Value '--remote-debugging-port=9324 --remote-debugging-address=127.0.0.1' | Out-Null
+      - name: Prepare pinned 4B generation assets
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          $profile = Get-Content -LiteralPath .dev/qwen4b-qualification/qualification-profile.json -Raw | ConvertFrom-Json
+          $command = @($profile.commands.prepareAssets)
+          & $command[0] $command[1..($command.Count - 1)]
+          exit $LASTEXITCODE
+      - name: Verify the 4B profile assets, then generate a document in the actual app
+        # One case; the whole case gets the 15-minute bound the profile asks for.
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          PRISM_TEST_EXECUTABLE: ${{ runner.temp }}/qa-app/prism.exe
+          PRISM_TEST_EXPECT_RELEASE: '1'
+          PRISM_TEST_SOURCE_SHA: ${{ steps.app.outputs.sha }}
+          PRISM_APP_CDP_PORT: '9324'
+        run: |
+          $profile = Get-Content -LiteralPath .dev/qwen4b-qualification/qualification-profile.json -Raw | ConvertFrom-Json
+          $assets = Get-Content -LiteralPath .dev/qwen4b-qualification/assets/assets.json -Raw | ConvertFrom-Json
+          $env:PRISM_REAL_GENERATION = $assets.generation.path
+          $env:PRISM_REAL_EMBEDDING = $assets.embedding.path
+          $env:PRISM_REAL_RUNTIME = $assets.runtime.path
+          $env:PRISM_TEST_APP_SHA256 = (Get-FileHash -LiteralPath $env:PRISM_TEST_EXECUTABLE -Algorithm SHA256).Hash.ToLowerInvariant()
+          foreach ($name in 'verifyAssets', 'run') {
+            $command = @($profile.commands.$name)
+            & $command[0] $command[1..($command.Count - 1)]
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Keep the qualification evidence on success or failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: model-qualification-qwen4b
+          path: |
+            .dev/qwen4b-qualification/qualification-profile.json
+            .dev/qwen4b-qualification/assets/status.json
+            ${{ runner.temp }}/prism-real-generation-*/evidence/**
+          if-no-files-found: warn
+          compression-level: 0

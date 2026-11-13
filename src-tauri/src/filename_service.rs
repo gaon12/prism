@@ -334,6 +334,7 @@ impl FileIndex {
             for _ in 0..threads {
                 let rows = &rows;
                 workers.push(scope.spawn(move || -> io::Result<()> {
+                    background_thread();
                     loop {
                         if !self.current(generation) {
                             break;

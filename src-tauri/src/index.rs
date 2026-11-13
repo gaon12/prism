@@ -59,6 +59,25 @@ fn usable_cpus() -> usize {
     all
 }
 
+/// Run the calling indexing thread below normal priority (Windows).
+///
+/// On a single-CPU machine the filename collection and the window's own
+/// threads take turns on that one CPU. At equal priority a fast service kept
+/// the window from starting for 10-18 s. Below-normal priority lets the window
+/// and search answer first; collection still uses every idle moment, so it is
+/// not throttled when nothing else needs the CPU. Disk priority is unchanged.
+fn background_thread() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+        };
+        // SAFETY: the pseudo handle names the calling thread and needs no closing.
+        // A failure only leaves the normal priority in place.
+        unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) };
+    }
+}
+
 /// `all` CPUs limited to the CPUs set in an affinity `mask` (at least one).
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 fn cpus_allowed(all: usize, mask: usize) -> usize {
@@ -459,7 +478,10 @@ impl FileIndex {
             lifetime: Arc::new(()),
         };
         let worker = this.clone();
-        std::thread::spawn(move || worker.run(rx));
+        std::thread::spawn(move || {
+            background_thread();
+            worker.run(rx)
+        });
         this
     }
     pub fn configure(&self, scopes: Vec<SearchScope>) {
@@ -793,6 +815,7 @@ impl FileIndex {
                 let wake = &wake;
                 let unreadable = &unreadable;
                 scope.spawn(move || {
+                    background_thread();
                     let mut batch = WalkBatch {
                         rows: Vec::with_capacity(512),
                         skipped: 0,
@@ -1550,6 +1573,21 @@ mod tests {
         assert_eq!(cpus_allowed(4, 0), 4);
         assert_eq!(cpus_allowed(0, 0), 1);
         assert!(usable_cpus() >= 1);
+    }
+    #[test]
+    #[cfg(windows)]
+    fn an_indexing_thread_runs_below_normal() {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+        };
+        std::thread::spawn(|| {
+            background_thread();
+            // SAFETY: the pseudo handle names this test thread.
+            let priority = unsafe { GetThreadPriority(GetCurrentThread()) };
+            assert_eq!(priority, THREAD_PRIORITY_BELOW_NORMAL);
+        })
+        .join()
+        .unwrap();
     }
     #[test]
     fn explicit_reset_clears_catalog_and_prevents_old_scan_publication() {

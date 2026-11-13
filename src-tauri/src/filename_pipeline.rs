@@ -55,6 +55,7 @@ impl<'scope> Preparation<'scope> {
             let worker = std::thread::Builder::new()
                 .name("prism-file-stream".into())
                 .spawn_scoped(scope, move || {
+                    background_thread();
                     let mut ready = Vec::new();
                     loop {
                         if !active(index, generation, &stop) {

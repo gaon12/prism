@@ -5,7 +5,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultSettings, emptySession } from '../../src/lib/types';
-import type { DocumentPage, DocumentPlan } from '../../src/lib/documents';
+import type { DocumentBlock, DocumentPage, DocumentPlan } from '../../src/lib/documents';
 
 const evidence = join(tmpdir(), 'prism-assembly-editor-ui', `run-${process.pid}-${Date.now()}`);
 const sourceScope = {
@@ -356,6 +356,45 @@ test('reviewed field and table editing preserves payloads, validation and respon
   await expect(mode).toBeChecked();
   await expect(table.getByLabel('두 번째 열 제목', { exact: true })).toHaveValue('기록된 값');
   await expect(note.getByRole('checkbox')).toBeChecked();
+  // A long outline and body share the editor viewport. Reading one pane to
+  // its end must not open the other pane with its first content off-screen.
+  await page.evaluate(() => {
+    const fixture = (window as any).__assemblyFixture;
+    fixture.page.revision.blocks = Array.from({ length: 4 }, (_, index): DocumentBlock => ({
+      id: `scroll-${index}`,
+      sectionId: 'first',
+      kind: 'fact',
+      markdown: `Visible body ${index + 1}`,
+      sourceLabels: [],
+      claimsVerified: false,
+      userEdited: false,
+    }));
+    fixture.history[fixture.page.revision.id] = structuredClone(fixture.page.revision);
+    sessionStorage.setItem(
+      'prism.test.assembly-page',
+      JSON.stringify({ page: fixture.page, history: fixture.history }),
+    );
+  });
+  await open();
+  const editorScroll = page.locator('.doc-edit-scroll');
+  const scrollToEnd = async () => {
+    await editorScroll.evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+    });
+    await expect.poll(() => editorScroll.evaluate((node) => node.scrollTop)).toBeGreaterThan(100);
+  };
+  await scrollToEnd();
+  const bodyTab = page.getByRole('tab', { name: '본문 블록', exact: true });
+  await bodyTab.click();
+  await expect.poll(() => editorScroll.evaluate((node) => node.scrollTop)).toBe(0);
+  await expect(page.locator('.doc-block textarea').first()).toHaveValue('Visible body 1');
+  await expect(page.locator('.doc-block textarea').first()).toBeInViewport();
+  await page.screenshot({ path: join(evidence, 'body-after-outline.png') });
+  await scrollToEnd();
+  await bodyTab.press('ArrowLeft');
+  await expect(page.getByRole('tab', { name: '개요', exact: true })).toBeFocused();
+  await expect.poll(() => editorScroll.evaluate((node) => node.scrollTop)).toBe(0);
+  await page.screenshot({ path: join(evidence, 'outline-after-body.png') });
   // A later revision exists; opening the prior structured revision must make
   // every new editing control read-only, just like the existing outline.
   await page.evaluate(() => {

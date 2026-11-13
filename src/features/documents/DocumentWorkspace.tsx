@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { Download, FileText, FolderSearch, Plus, RefreshCw, Square, Settings2 } from 'lucide-react';
 import { bridge, native } from '../../lib/bridge';
 import { documents, scalarSelection } from '../../lib/documents';
@@ -388,6 +388,11 @@ function DocumentEditor({
   const [optionsOpen, setOptionsOpen] = useState(false);
   const outlineTab = useRef<HTMLButtonElement>(null);
   const bodyTab = useRef<HTMLButtonElement>(null);
+  const editScroll = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    // The two panes share a viewport, but not a meaningful scroll position.
+    editScroll.current?.scrollTo({ top: 0, behavior: 'instant' });
+  }, [pane]);
   const t = (key: DocumentMessage) => documentText(language, key);
   const alive = useRef(false);
   const epoch = useRef(0);
@@ -1164,7 +1169,7 @@ function DocumentEditor({
           ) : null}
         </div>
       ) : null}
-      <div className="doc-edit-scroll">
+      <div className="doc-edit-scroll" ref={editScroll}>
         <details
           className="doc-options"
           open={optionsOpen}

@@ -702,12 +702,44 @@ impl Catalog {
         }
         buffer.as_str()
     }
+    /// Compare an identity key without allocating or rebuilding the path.
+    /// Non-derived keys retain their exact spelling; derived keys apply the
+    /// same ASCII edits as `push_derived_dir_key` to each stored path part.
+    fn dir_key_is(&self, id: u32, key: &str) -> bool {
+        if let Some(stored) = self.dir_part(id, 0) {
+            return stored == key;
+        }
+        let mut rest = key.as_bytes();
+        let mut at = id;
+        loop {
+            let part = self.dir_stored(at).as_bytes();
+            let Some(start) = rest.len().checked_sub(part.len()) else {
+                return false;
+            };
+            if !rest[start..].iter().copied().eq(part.iter().map(|&byte| {
+                if byte == b'\\' {
+                    b'/'
+                } else {
+                    byte.to_ascii_lowercase()
+                }
+            })) {
+                return false;
+            }
+            rest = &rest[..start];
+            let dir = &self.dirs[at as usize];
+            if dir.parent == NONE {
+                return rest.is_empty();
+            }
+            let Some(head) = rest.strip_suffix(b"/") else {
+                return false;
+            };
+            rest = head;
+            at = dir.parent;
+        }
+    }
     fn find_dir(&self, key: &str) -> Option<u32> {
-        let mut scratch = String::new();
         self.dir_table
-            .find(self.hash(key), |id| {
-                self.write_dir_key(id, &mut scratch) == key
-            })
+            .find(self.hash(key), |id| self.dir_key_is(id, key))
             .map(|at| self.dir_table.slots[at])
     }
     fn intern_dir(&mut self, split: &Split<'_>) -> u32 {
@@ -1474,6 +1506,74 @@ mod tests {
         assert_eq!(entry.size(), expected.size);
         assert_eq!(entry.modified_ms(), expected.modified_ms);
         assert!(entry.is_seen(expected.seen));
+    }
+
+    #[test]
+    fn directory_key_comparison_matches_exact_reconstruction() {
+        let mut catalog = Catalog::new();
+        for (path, key) in [
+            (r"C:\Root\one.txt", "c:/root/one.txt"),
+            (r"C:\Root\Child\two.txt", "c:/root/child/two.txt"),
+            (
+                r"C:\Root\Child\Deep\three.txt",
+                "c:/root/child/deep/three.txt",
+            ),
+            ("C:/ROOT/Child/four.txt", "c:/root/child/four.txt"),
+            (r"C:\Root/Mixed\five.txt", "c:/root/mixed/five.txt"),
+            (
+                r"\\Server\Share\Folder\six.txt",
+                "//server/share/folder/six.txt",
+            ),
+            ("/Case/UPPER/file.txt", "/Case/UPPER/file.txt"),
+            ("/case/upper/file.txt", "/case/upper/file.txt"),
+            ("/École/문서/일.txt", "/école/문서/일.txt"),
+            ("/İ/둘.txt", "/i\u{307}/둘.txt"),
+        ] {
+            catalog.insert(&input(path, key));
+        }
+        // Linked ancestors must be compared iteratively, including separators.
+        let mut path = String::from("C:\\Chain");
+        for _ in 0..64 {
+            let file = format!("{path}\\leaf.txt");
+            let key = file.replace('\\', "/").to_ascii_lowercase();
+            catalog.insert(&input(&file, &key));
+            path.push_str("\\Part");
+        }
+        let check = |catalog: &Catalog| {
+            let keys: Vec<_> = (1..catalog.dirs.len() as u32)
+                .filter(|&id| catalog.dirs[id as usize].children > 0)
+                .map(|id| {
+                    let mut buffer = String::new();
+                    (id, catalog.write_dir_key(id, &mut buffer).to_owned())
+                })
+                .collect();
+            assert!(keys
+                .iter()
+                .any(|&(id, _)| catalog.dirs[id as usize].parent != NONE));
+            assert!(keys
+                .iter()
+                .any(|&(id, _)| catalog.dir_part(id, 0).is_some()));
+            assert!(keys
+                .iter()
+                .any(|&(id, _)| catalog.dir_part(id, 0).is_none()));
+            for (id, expected) in &keys {
+                assert_eq!(catalog.find_dir(expected), Some(*id));
+                for query in keys.iter().map(|(_, key)| key.clone()).chain([
+                    String::new(),
+                    format!("x{expected}"),
+                    format!("{expected}/"),
+                    expected.to_uppercase(),
+                    expected.replacen('/', "\\", 1),
+                ]) {
+                    assert_eq!(catalog.dir_key_is(*id, &query), expected == &query);
+                }
+            }
+        };
+        check(&catalog);
+        // A freed directory slot can acquire an unrelated exact key.
+        assert!(catalog.remove("/Case/UPPER/file.txt"));
+        catalog.insert(&input("/REUSED/Mixed/new.txt", "/REUSED/Mixed/new.txt"));
+        check(&catalog);
     }
 
     #[test]

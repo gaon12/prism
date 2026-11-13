@@ -289,6 +289,14 @@ record. The JSON format and clipboard encoding are unchanged. The
 publication/serialization and binary/UTF-8 bytes in isolated fixtures. They do
 not establish new native clipboard behavior or power-loss durability.
 
+The `13ba4cf`/`1002c5c` Windows debug check additionally exercised actual settings
+controls, new text/PNG/index writes, pin/copy actions and restart persistence in a
+private portable app. An independent browser decoder verified all 6,144 image
+pixels; desktop and narrow screenshots showed the saved records, with no observed
+JavaScript errors or warnings. The release build's inert command branch also passed
+the main library typecheck. Content came from MemoryClipboard fixtures; actual
+system capture, physical paste and power-loss durability remain separate checks.
+
 On Linux, login startup follows an absolute `XDG_CONFIG_HOME`, with
 `HOME/.config` as the fallback for unset, empty or relative values. The
 [local dependency patch](src-tauri/vendor/auto-launch/PRISM_PATCH.md) records the

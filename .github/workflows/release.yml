@@ -302,6 +302,9 @@ jobs:
             ${{ runner.temp }}/prism-model-progress-*/evidence/**
             ${{ runner.temp }}/prism-real-generation-*/evidence/**
             ${{ runner.temp }}/prism-generation-assets-*/status.json
+            ${{ runner.temp }}/prism-documents-*/evidence/**
+            ${{ runner.temp }}/prism-document-source-pdf-*/*.pdf
+            ${{ runner.temp }}/prism-document-source-pdf-*/*.hwpx
           if-no-files-found: warn
           compression-level: 0
       - name: Collect Windows setup

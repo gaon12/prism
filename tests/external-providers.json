@@ -1,0 +1,47 @@
+{
+  "note": "OpenAI-compatible providers for the manual provider check (.github/workflows/providers.yml). A provider runs only when its key variable is set; model names change often, so edit this list rather than the test. Only synthetic fixture text is ever sent.",
+  "providers": [
+    {
+      "name": "groq-llama-3.3-70b",
+      "endpoint": "https://api.groq.com/openai/v1",
+      "model": "llama-3.3-70b-versatile",
+      "keyEnv": "GROQ_API_KEY",
+      "tokenParameter": "maxTokens"
+    },
+    {
+      "name": "groq-gpt-oss-20b",
+      "endpoint": "https://api.groq.com/openai/v1",
+      "model": "openai/gpt-oss-20b",
+      "keyEnv": "GROQ_API_KEY",
+      "tokenParameter": "maxTokens"
+    },
+    {
+      "name": "groq-qwen3-32b",
+      "endpoint": "https://api.groq.com/openai/v1",
+      "model": "qwen/qwen3-32b",
+      "keyEnv": "GROQ_API_KEY",
+      "tokenParameter": "maxTokens"
+    },
+    {
+      "name": "gemini-flash",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "model": "gemini-2.5-flash",
+      "keyEnv": "GEMINI_API_KEY",
+      "tokenParameter": "maxTokens"
+    },
+    {
+      "name": "openai-gpt-5-mini",
+      "endpoint": "https://api.openai.com/v1",
+      "model": "gpt-5-mini",
+      "keyEnv": "OPENAI_API_KEY",
+      "tokenParameter": "maxCompletionTokens"
+    },
+    {
+      "name": "claude-haiku",
+      "endpoint": "https://api.anthropic.com/v1",
+      "model": "claude-haiku-5-5",
+      "keyEnv": "ANTHROPIC_API_KEY",
+      "tokenParameter": "maxTokens"
+    }
+  ]
+}

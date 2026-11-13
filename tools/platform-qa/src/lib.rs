@@ -11,6 +11,10 @@ pub mod collection_render;
 pub mod collection_service;
 #[path = "../../../src-tauri/src/collection_store.rs"]
 pub mod collection_store;
+// The reviewed-field assembler; external_providers.rs feeds it real replies.
+#[allow(dead_code)]
+#[path = "../../../src-tauri/src/document_assembly.rs"]
+pub mod document_assembly;
 #[path = "../../../src-tauri/src/document_export_file.rs"]
 pub mod document_export_file;
 #[path = "../../../src-tauri/src/document_pdf.rs"]
@@ -70,6 +74,11 @@ pub mod process_job;
 pub mod runtime_process;
 #[path = "../../../src-tauri/src/runtime_supervisor.rs"]
 pub mod runtime_supervisor;
+// The OpenAI-compatible client, checked against hosted providers on demand.
+#[cfg(test)]
+mod external_providers;
+#[path = "../../../src-tauri/src/generation_runtime.rs"]
+pub mod generation_runtime;
 #[path = "../../../src-tauri/src/secret_store.rs"]
 pub mod secret_store;
 #[allow(dead_code)]

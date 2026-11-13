@@ -1,0 +1,46 @@
+# Manual check of Prism's OpenAI-compatible client against hosted providers.
+# Not part of the release: a provider outage or rate limit never blocks a build.
+# A provider runs only when its key is saved as a repository secret
+# (gh secret set GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY).
+# Only synthetic fixture text is sent; see tools/platform-qa/src/external_providers.rs.
+name: Providers
+on:
+  workflow_dispatch:
+    inputs:
+      providers:
+        description: Comma-separated names from tests/external-providers.json (empty = every provider with a key)
+        type: string
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: providers
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: OpenAI-compatible providers
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          cache-on-failure: true
+          workspaces: tools/platform-qa
+      - name: Check the providers that have a key
+        env:
+          PRISM_PROVIDERS: ${{ inputs.providers }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: cargo test --manifest-path tools/platform-qa/Cargo.toml --locked --lib external_providers -- --ignored --nocapture --test-threads=1

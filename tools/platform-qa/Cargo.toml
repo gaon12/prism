@@ -21,7 +21,7 @@ walkdir = "2.5.0"
 sha2 = "0.10"
 getrandom = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "system-proxy"] }
-tokio = { version = "1.54.1", features = ["rt", "time"] }
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "time"] }
 zip = { version = "9.3", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"

@@ -182,3 +182,10 @@ Peak job commit was 181.8–182.5 MiB, input/executable/controller hashes stayed
 unchanged, and no resource or deadline guard fired. This preserves allocation
 removal and semantic equivalence evidence, while the whole-app 5–7-second target
 still needs its separate measurement.
+
+Later that day, an idle Hancom MCP server owned by the measuring Codex session
+was found consuming one full CPU core and was stopped. The earlier local capture
+replays did not isolate that background load, so their timings remain
+observations, without a clean-host performance qualification. Stored-field
+equivalence is unaffected. The hosted synthetic CPU profiles ran on a separate
+machine.

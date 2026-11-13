@@ -40,8 +40,9 @@ python3 -B scripts/qualify-macos-keychain.py --output "$RUNNER_TEMP/prism-keycha
 ```
 
 The manual [Mac Keychain qualification workflow](../../.github/workflows/mac-keychain.yml)
-runs these checks independently of Release and keeps `mac-keychain-qualification`
-logs on success or failure. It has no release or publishing steps.
+runs these checks independently of Release and keeps
+`mac-keychain-qualification-<architecture>` logs on success or failure. It has no
+release or publishing steps.
 
 The script first compiles this crate's actual test binary with locked application
 dependency versions. It then creates a private temporary Keychain, selects it as
@@ -60,8 +61,10 @@ directory's logs and `result.json`; the Keychain itself is outside it. A success
 result requires the exact test to pass once, unchanged source/binary hashes,
 restoration and cleanup. The script refuses local and self-hosted machines before
 creating output or changing settings. Unit checks use modeled preference calls
-and do not prove macOS API behavior. Actual hosted-Mac execution remains pending;
-this check does not establish desktop prompting, signing or locked-login UX.
+and do not prove macOS API behavior. The actual ARM64 API test passed in
+[run 43380557268](https://github.com/gaon12/prism/actions/runs/43380557268), including
+restoration and cleanup. Native Intel execution remains pending. This check does
+not establish desktop prompting, signing or locked-login UX.
 
 Non-streaming generation can finish inference before sending response headers.
 The transport keeps its 180-second total request budget for that wait, then

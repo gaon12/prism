@@ -1,8 +1,9 @@
 // Only launches the test's own process with isolated settings, WebView and clipboard.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { lstat } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { chromium } from '@playwright/test';
 
 export async function until(check, label, timeout = 25_000) {
@@ -68,7 +69,42 @@ export async function untilWebView(child, port, label, stillOk = () => {}) {
     throw error;
   }
 }
+// Validate before spawning: a missing marker would make a release app use the
+// installed profile and could apply its login/clipboard settings. Callers still
+// own the executable and fixture directory; this is a preflight, not a sandbox.
+export async function assertPortableProfile(dataDir, executable) {
+  const info = async (path) => {
+    try {
+      return await lstat(path);
+    } catch (error) {
+      if (error.code === 'ENOENT') return null;
+      throw new Error('Portable fixture metadata could not be inspected');
+    }
+  };
+  const application = dirname(resolve(executable));
+  assert(
+    (await info(join(application, 'prism.portable')))?.isFile(),
+    'Portable marker must be a regular file beside the executable',
+  );
+  const expected = join(application, 'PrismData');
+  const compare = (path) => (process.platform === 'win32' ? path.toLowerCase() : path);
+  assert.equal(
+    compare(resolve(dataDir)),
+    compare(expected),
+    'Portable data directory must be PrismData beside the executable',
+  );
+  const profile = await info(expected);
+  assert(!profile || profile.isDirectory(), 'Portable data directory must not be a file or link');
+  assert((await info(resolve(executable)))?.isFile(), 'Portable executable must be a regular file');
+}
+
 export async function launch(dataDir, options = {}) {
+  assert(
+    !options.productionPortable || options.portable,
+    'Production portable mode needs portable',
+  );
+  if (options.portable)
+    await assertPortableProfile(dataDir, options.executable ?? 'src-tauri/target/debug/prism.exe');
   let port = options.cdpPort;
   if (port !== undefined) {
     assert(Number.isInteger(port) && port > 1024 && port < 65536, 'Invalid explicit test CDP port');
@@ -81,10 +117,6 @@ export async function launch(dataDir, options = {}) {
   });
   port = reservation.address().port;
   await new Promise((done) => reservation.close(done));
-  assert(
-    !options.productionPortable || options.portable,
-    'Production portable mode needs portable',
-  );
   const environment = {
     ...process.env,
     PRISM_DEV_DATA_DIR: dataDir,

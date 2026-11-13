@@ -274,6 +274,11 @@ except `index.rs` and `filename_compact.rs`: A took those two files from the
 parent of `5ff473b`, and B took them from `5ff473b`. Local Rust 1.99.0 passed
 80/81 tests respectively, six ignored in each, and strict Clippy for both.
 
+The committed harness also passed [CI 43414049924](https://github.com/gaon12/prism/actions/runs/43414049924)
+at `af80a2a` on Rust 1.100.0: 81 tests, six ignored, strict Clippy, formatting
+and the release executable build. That hosted run did not replay the private
+capture; it is separate from the local comparison below.
+
 | Case      | Watch wall seconds | Raw thread CPU seconds | Thread cycles (billions) |
 | --------- | -----------------: | ---------------------: | -----------------------: |
 | A, first  |            2.51953 |               2.421875 |                    7.334 |

@@ -165,6 +165,19 @@ with at least 16 metadata records and use the same `G` start gate. Raw MFT reads
 are rejected. The driver/journal is synthetic; this is not an installed-service,
 protected-Store, IPC, app or HDD qualification.
 
+An ordinary-user capture tool is available with
+`cargo build --release --manifest-path indexer/Cargo.toml -p prism-ntfs-windows --example service_capture`.
+Run `service_capture --drive C --output <new-private-file>` and send `G` on stdin
+after assigning any process limits. It uses the existing authenticated client,
+requires an already running service and refuses an elevated token. It neither
+installs nor starts a host. The create-new output contains paths/metadata, not
+file contents; keep it private and out of commits. It has bounded bytes/rows and
+reuses the protocol's frame/path validation. Only a fully successful, terminal
+and root-revalidated response appends completion; incomplete files are rejected.
+The tool flushes/fsyncs and reads back the complete capture, while stdout and
+error messages report only aggregate values. Capture timings include serialization
+and readback and do not measure a new host or raw NTFS performance.
+
 An explicit read-only probe is available for an already authorized Windows
 administrator shell:
 

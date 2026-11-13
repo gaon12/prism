@@ -137,7 +137,7 @@ pub(super) fn run_stages() -> io::Result<()> {
     io::stdout().flush()?;
     let mut gate = [0];
     io::stdin().read_exact(&mut gate)?;
-    if gate != [b'G'] || usable_cpus() != 1 {
+    if gate != *b"G" || usable_cpus() != 1 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let mut builder = StageBuilder::new(mode);
@@ -164,9 +164,9 @@ pub(super) fn run_stages() -> io::Result<()> {
             "catalogEntries":builder.catalog.len(),"catalogSha256":signature,
             "buildWallSeconds":build_time.as_secs_f64(),
             "prepareWallSeconds":builder.prepare_time.as_secs_f64(),
-            "rawWallSeconds":(mode==StageMode::Stages).then(||builder.raw_time.as_secs_f64()),
-            "entryWallSeconds":(mode==StageMode::Stages).then(||builder.entry_time.as_secs_f64()),
-            "insertWallSeconds":(mode!=StageMode::Decode).then(||builder.insert_time.as_secs_f64()),
+            "rawWallSeconds":(mode==StageMode::Stages).then_some(builder.raw_time.as_secs_f64()),
+            "entryWallSeconds":(mode==StageMode::Stages).then_some(builder.entry_time.as_secs_f64()),
+            "insertWallSeconds":(mode!=StageMode::Decode).then_some(builder.insert_time.as_secs_f64()),
             "decodeAndDispatchWallSeconds":build_time.saturating_sub(builder.prepare_time).as_secs_f64(),
             "verificationWallSeconds":verification_time.as_secs_f64(),
             "rawMapperSha256":format!("{:x}",Sha256::digest(include_bytes!(concat!(env!("OUT_DIR"),"/raw.rs"))))

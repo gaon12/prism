@@ -6,6 +6,27 @@ use std::{
     ops::Range,
 };
 
+/// Source metadata is plain text, unlike the authored Markdown around it.
+/// Keep path punctuation such as drive colons and extension dots readable,
+/// while preventing escapes, links, entities and inline formatting in names.
+pub(super) fn literal_path(path: &str) -> String {
+    let mut escaped = String::with_capacity(path.len());
+    for character in path.chars() {
+        if matches!(character, '\r' | '\n') {
+            escaped.push(' ');
+        } else {
+            if matches!(
+                character,
+                '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '&' | '|' | '$' | '~' | '^' | '!'
+            ) {
+                escaped.push('\\');
+            }
+            escaped.push(character);
+        }
+    }
+    escaped
+}
+
 /// A block may validly end with an unfinished fenced code block. When more
 /// Markdown is concatenated, its next block and source definitions must stay
 /// outside that code. Let the same parser determine whether an unindented

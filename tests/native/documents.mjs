@@ -40,7 +40,7 @@ if (portable) {
   assert.equal(await sha(executable), executableSha256);
 }
 const launchOptions = portable ? { executable, portable: true, productionPortable: true } : {};
-const folder = join(directory, 'source-documents');
+const folder = join(directory, '_source_[literal](v1)');
 await mkdir(folder);
 const source = join(folder, '원본.md');
 await writeFile(source, 'shared 제주 출장 경비 120000원. 표와 일정 검토.');
@@ -407,6 +407,10 @@ try {
   // metadata. Exporting neither generates new content nor calls the provider.
   const pdfDirectory = await mkdtemp(join(tmpdir(), 'prism-document-source-pdf-'));
   const beforePdf = calls.length;
+  const usedCitations = restored.citations.filter((citation) =>
+    restored.blocks.some((block) => block.sourceLabels.includes(`[${citation.label}]`)),
+  );
+  const sourcePaths = new Set(usedCitations.map((citation) => citation.source.filePath));
   for (const sources of [true, false]) {
     const path = join(pdfDirectory, sources ? 'with-sources.pdf' : 'without-sources.pdf');
     const result = await invoke('doc_export_pdf', {
@@ -429,7 +433,7 @@ try {
     ])
       assert(inspected.text.replace(/\s+/g, '').includes(literal), `PDF literal: ${literal}`);
     assert.equal(
-      inspected.text.includes('원본.md'),
+      inspected.text.replace(/\s+/g, '').includes('원본.md'),
       sources,
       'PDF source footnotes follow the saved-revision option',
     );
@@ -445,6 +449,14 @@ try {
     });
     const hwpx = inspectHwpx(hwpxPath);
     assert(hwpx.text.includes('120000원'));
+    for (const sourcePath of sourcePaths)
+      assert.equal(
+        hwpx.noteTexts.filter((text) => text.includes(sourcePath)).length,
+        sources
+          ? usedCitations.filter((citation) => citation.source.filePath === sourcePath).length
+          : 0,
+        'HWPX source path must remain literal',
+      );
     for (const literal of [
       'CODE_LITERAL_S1[S1]',
       'CODE_LITERAL_FOOTNOTE[^S1]',

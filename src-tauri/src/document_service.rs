@@ -1246,7 +1246,7 @@ fn render(revision: &DocumentRevision, sources: bool, types: bool) -> String {
                     .source_labels
                     .contains(&format!("[{}]", citation.label))
             }) {
-                let path = citation.source.file_path.replace(['\r', '\n'], " ");
+                let path = markdown_sources::literal_path(&citation.source.file_path);
                 result.push_str(&format!(
                     "[^{}]: {}{}{}; source state: {:?}; claim not verified\n",
                     notes.id(&citation.label),
@@ -2097,6 +2097,59 @@ mod tests {
                     revision.markdown,
                     "disabling sources preserves the stored body"
                 );
+            }
+        });
+    }
+    #[test]
+    fn source_note_paths_round_trip_as_literal_text() {
+        run(async {
+            let f = fixture();
+            let page = reviewed(&f);
+            f.transport.push(body("b1", "A sourced statement [S1]"));
+            let mut revision = f
+                .service
+                .generate_body(request(&page, "literal_source_path"))
+                .await
+                .unwrap();
+            for path in [
+                r"D:\a\_temp\보고서_[1](확정).md",
+                r"/tmp/_[notes](v2)&copy;-$x$-~old~^2^`tick`.md",
+                "/tmp/line\n# not a heading\nfile.md",
+            ] {
+                revision.citations[0].source.file_path = path.into();
+                let before = serde_json::to_string(&revision).unwrap();
+                let exported = render(&revision, true, false);
+                let mut in_note = false;
+                let mut note_text = String::new();
+                for event in
+                    pulldown_cmark::Parser::new_ext(&exported, pulldown_cmark::Options::all())
+                {
+                    match event {
+                        pulldown_cmark::Event::Start(pulldown_cmark::Tag::FootnoteDefinition(
+                            _,
+                        )) => {
+                            in_note = true;
+                        }
+                        pulldown_cmark::Event::End(pulldown_cmark::TagEnd::FootnoteDefinition) => {
+                            in_note = false;
+                        }
+                        pulldown_cmark::Event::Text(text) | pulldown_cmark::Event::Code(text)
+                            if in_note =>
+                        {
+                            note_text.push_str(&text);
+                        }
+                        _ => {}
+                    }
+                }
+                assert_eq!(
+                    note_text,
+                    format!(
+                        "{}, page 1, paragraph 2; source state: Current; claim not verified",
+                        path.replace(['\r', '\n'], " ")
+                    ),
+                    "footnote source paths must remain literal: {exported}"
+                );
+                assert_eq!(serde_json::to_string(&revision).unwrap(), before);
             }
         });
     }

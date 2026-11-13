@@ -94,8 +94,11 @@ has no citation and receives a scoped, unverified notice only when the reviewed
 field requests one. These states remain distinct. Values are escaped as literal
 text before adding table delimiters and source markers. Existing free-form plans
 and partial rewrites retain their original path. Backend tests cover the new
-contract; the editor entry point and actual 1.7B/native export qualification are
-still pending.
+contract. The outline editor exposes fields, two-column tables, row order and
+missing-notice options in all five UI languages. Its production-preview check
+uses fixture IPC to verify review invalidation, save payloads, reopening and
+read-only history at desktop and narrow widths. This is client editing evidence;
+actual-app 1.7B generation/export/reopening qualification remains pending.
 
 A direct component probe on 2026-11-13 used the committed `69a602f` Rust
 schema, extraction prompt and renderer with the original pinned 1.7B Q8 model

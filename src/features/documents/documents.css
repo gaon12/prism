@@ -308,6 +308,54 @@
   font-size: 0.75rem;
   color: var(--muted);
 }
+.doc-assembly-controls {
+  margin: 14px 0;
+  padding: 8px 0;
+  border-block: 1px solid var(--border);
+}
+.doc-assembly-controls select {
+  max-width: 250px;
+}
+.doc-assembly-section,
+.doc-assembly-table {
+  min-width: 0;
+  margin: 12px 0;
+  border: 0;
+  padding: 0;
+}
+.doc-assembly-section > legend,
+.doc-assembly-table > legend {
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0;
+}
+.doc-assembly-table {
+  padding: 8px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.doc-assembly-table > legend {
+  padding: 0 4px;
+}
+.doc-assembly-element,
+.doc-assembly-row {
+  margin-block: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.doc-assembly-inputs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 8px 12px;
+}
+.doc-assembly-inputs > div {
+  min-width: 0;
+}
+@media (max-width: 760px) {
+  .doc-assembly-inputs {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 /* A block is a quiet section of the document. Its kind shows in its fill and its header label:
    a blank slot is dashed, an AI proposal has a soft blue fill. */
 .doc-block {

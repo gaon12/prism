@@ -28,6 +28,8 @@ import {
   validResearchQuery,
 } from './ExternalResearch';
 import { researchText } from './research-messages';
+import { AssemblyPlanControls, AssemblySectionEditor } from './AssemblyPlanEditor';
+import { alignAssembly, assemblyPlanValid } from './assembly-plan';
 const bytes = (value: string) => new TextEncoder().encode(value).length;
 const titleValid = (value: string) =>
   Boolean(value.trim() && Array.from(value).length <= 200 && !/[\u0000-\u001f\u007f]/u.test(value));
@@ -36,6 +38,7 @@ const planValid = (plan: DocumentPlan) =>
   titleValid(plan.title) &&
   plan.sections.length > 0 &&
   plan.sections.length <= 64 &&
+  assemblyPlanValid(plan) &&
   plan.sections.every(
     (section) =>
       section.heading.trim() &&
@@ -640,7 +643,7 @@ function DocumentEditor({
   }, [id]);
   const updatePlan = (next: DocumentPlan) => {
     editVersion.current++;
-    setPlan(next);
+    setPlan(alignAssembly(next));
     setReviewed(false);
     setSelection(null);
   };
@@ -1222,6 +1225,13 @@ function DocumentEditor({
             maxLength={400}
             onChange={(event) => updatePlan({ ...plan, title: event.target.value })}
           />
+          <AssemblyPlanControls
+            key={`${id}-${page?.revision.id}`}
+            plan={plan}
+            language={language}
+            disabled={!editable}
+            onChange={updatePlan}
+          />
           <ol>
             {plan.sections.map((section, index) => (
               <li key={section.id}>
@@ -1262,6 +1272,13 @@ function DocumentEditor({
                       ),
                     })
                   }
+                />
+                <AssemblySectionEditor
+                  plan={plan}
+                  sectionId={section.id}
+                  language={language}
+                  disabled={!editable}
+                  onChange={updatePlan}
                 />
                 <button
                   type="button"

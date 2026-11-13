@@ -13,7 +13,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TEST = "index::service::bench::cpu::synthetic_preparation_cpu_stages"
+TEST = "index::service::benchmark::cpu::synthetic_preparation_cpu_stages"
 CASES = [
     ("fused-a", "fused"),
     ("stages-a", "stages"),
@@ -249,6 +249,21 @@ def main():
             raise RuntimeError("Expected exactly one current filename test executable.")
         executable = artifacts[0]
         report["testExecutableSha256"] = sha(executable)
+        inventory = subprocess.run(
+            [str(executable), TEST, "--exact", "--ignored", "--list"],
+            cwd=ROOT,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        ).stdout
+        (output / "selected-test.txt").write_text(inventory, encoding="utf8")
+        if f"{TEST}: test" not in inventory.splitlines():
+            raise RuntimeError(
+                "The current executable does not contain the exact CPU test."
+            )
         helper_source = ROOT / "tests/native/support/job-limit.ps1"
         expected = None
         for name, mode in CASES:

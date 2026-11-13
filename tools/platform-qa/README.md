@@ -227,3 +227,12 @@ the native Quartz PDF and Korean Vision tests explicitly; other model/credential
 opt-ins still require their stated environment. Inspect those specific job steps
 before claiming native execution. A passing compile or archive check alone does
 not establish actual macOS runtime/keychain behavior.
+
+The separate manual [Mac Keychain workflow](../../.github/workflows/mac-keychain.yml)
+selects the existing credential test through the lighter RAG QA crate, which
+imports the same production provider. Actual roundtrip, replacement, account
+isolation and deletion passed on native ARM64 and Intel Macs in
+[run 43381277889](https://github.com/gaon12/prism/actions/runs/43381277889).
+Each runner used a new temporary User-domain Keychain; its original default and
+search list were restored and the temporary store was deleted. This API check
+does not qualify desktop prompting, signing or locked-login behavior.

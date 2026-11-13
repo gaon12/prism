@@ -61,10 +61,12 @@ directory's logs and `result.json`; the Keychain itself is outside it. A success
 result requires the exact test to pass once, unchanged source/binary hashes,
 restoration and cleanup. The script refuses local and self-hosted machines before
 creating output or changing settings. Unit checks use modeled preference calls
-and do not prove macOS API behavior. The actual ARM64 API test passed in
-[run 43380557268](https://github.com/gaon12/prism/actions/runs/43380557268), including
-restoration and cleanup. Native Intel execution remains pending. This check does
-not establish desktop prompting, signing or locked-login UX.
+and do not prove macOS API behavior. The actual production credential API test
+passed on both ARM64 and Intel Macs in
+[run 43381277889](https://github.com/gaon12/prism/actions/runs/43381277889), with
+one selected test per architecture, source/binary integrity, restoration and
+cleanup verified. This check does not establish desktop prompting, signing or
+locked-login UX.
 
 Non-streaming generation can finish inference before sending response headers.
 The transport keeps its 180-second total request budget for that wait, then

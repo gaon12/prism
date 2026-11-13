@@ -2097,6 +2097,28 @@ mod performance_tests {
             (false, vec![], vec![PathBuf::from("C:/temp")]),
             "a busy folder must not trigger a whole-drive scan"
         );
+        // A folder's own refresh and the walk of a child created in it keep
+        // each other, in either order: neither covers the other.
+        queue.push_entries([PathBuf::from("C:/temp")]);
+        queue.push([PathBuf::from("C:/temp/new")]);
+        assert_eq!(
+            queue.take_changes(),
+            (
+                false,
+                vec![PathBuf::from("C:/temp/new")],
+                vec![PathBuf::from("C:/temp")]
+            )
+        );
+        queue.push([PathBuf::from("C:/temp/new")]);
+        queue.push_entries([PathBuf::from("C:/temp")]);
+        assert_eq!(
+            queue.take_changes(),
+            (
+                false,
+                vec![PathBuf::from("C:/temp/new")],
+                vec![PathBuf::from("C:/temp")]
+            )
+        );
         queue.push_entries((0..4097).map(|n| PathBuf::from(format!("C:/files/{n}.txt"))));
         assert!(
             queue.take_changes().0,

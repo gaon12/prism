@@ -117,6 +117,9 @@ export async function launch(dataDir, options = {}) {
   try {
     // A resource guard must own the process handle even before WebView starts.
     options.onSpawn?.(child);
+    // Optional: a caller can see when each startup step finished
+    // (harsh-profile.mjs records them to split a slow window).
+    const mark = (name) => options.onStep?.(name);
     await until(async () => {
       if (spawnError) throw spawnError;
       if (child.exitCode !== null || child.signalCode !== null)
@@ -127,11 +130,19 @@ export async function launch(dataDir, options = {}) {
         return false;
       }
     }, 'isolated WebView endpoint');
+    mark('webview');
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
-    let main, quick;
+    let main,
+      quick,
+      seenPage = false;
     await until(
       () => {
         const pages = browser.contexts().flatMap((context) => context.pages());
+        // First moment any page exists, and its address then (startup timing only).
+        if (pages.length && !seenPage) {
+          seenPage = true;
+          mark(`page:${pages.map((page) => page.url().slice(0, 40)).join(',')}`);
+        }
         main = pages.find(
           (page) => page.url().includes('tauri.localhost') && !page.url().includes('#quick'),
         );
@@ -145,6 +156,7 @@ export async function launch(dataDir, options = {}) {
       'bundled main and Spotlight windows',
       options.windowTimeout,
     );
+    mark('pages');
     if (options.readyHeading !== false)
       await main
         .getByRole('heading', { name: options.readyHeading ?? '파일 검색', exact: true })

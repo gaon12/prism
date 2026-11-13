@@ -71,16 +71,38 @@ fn total_memory() -> Option<u64> {
     None
 }
 
-/// WebView2 arguments for every Prism window, or `None` for Tauri's own.
+/// WebView2 arguments for every Prism window.
 ///
 /// Passing arguments replaces wry's default ones, so those are repeated:
 /// they turn off Edge's mini menu, PDF mini menu and SmartScreen in the app.
 /// Prism sets no proxy or autoplay, the only other things wry would add.
+///
+/// The two backgrounding switches keep the windows' renderer at normal
+/// priority. Chromium otherwise drops a hidden or occluded renderer to the
+/// idle priority class (thread priority 4), below Prism's own below-normal
+/// indexing threads (7). The hidden quick-search window shares its renderer
+/// with the main window, so on one CPU the main window stayed blank until the
+/// first whole-drive collection finished: ready at 12-17 s, against 2.3-3.2 s
+/// in four of four runs with these switches. Hidden windows still trim memory
+/// through `set_memory_target`.
 #[cfg(windows)]
 fn browser_args() -> Option<String> {
-    software_rendering().then(|| {
-        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu".to_string()
-    })
+    Some(browser_args_for(software_rendering()))
+}
+
+/// The argument string; `--disable-gpu` only when drawing in software.
+#[cfg(windows)]
+fn browser_args_for(software: bool) -> String {
+    let mut args = [
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
+        "--disable-renderer-backgrounding",
+        "--disable-backgrounding-occluded-windows",
+    ]
+    .join(" ");
+    if software {
+        args.push_str(" --disable-gpu");
+    }
+    args
 }
 
 /// Tell a window's WebView2 how hard to hold on to memory.
@@ -309,6 +331,25 @@ mod tests {
         assert!(!choose_software_rendering(Some("0"), Some(2 * gib)));
         assert!(choose_software_rendering(Some("yes"), Some(2 * gib)));
         assert!(!choose_software_rendering(Some("yes"), Some(16 * gib)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn every_window_keeps_its_renderer_at_normal_priority() {
+        for software in [false, true] {
+            let args = browser_args_for(software);
+            let switches: Vec<&str> = args.split(' ').collect();
+            // wry's own defaults are kept, plus the two backgrounding switches.
+            for expected in [
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
+                "--disable-renderer-backgrounding",
+                "--disable-backgrounding-occluded-windows",
+            ] {
+                assert!(switches.contains(&expected), "{expected} in {args}");
+            }
+            assert_eq!(switches.contains(&"--disable-gpu"), software, "{args}");
+            assert!(switches.iter().all(|switch| !switch.is_empty()), "{args}");
+        }
     }
 
     #[cfg(windows)]

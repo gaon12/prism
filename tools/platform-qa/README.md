@@ -7,6 +7,27 @@ identity files directly. It avoids the Tauri, WebView
 and Lance build requirements so these modules can also be checked in a Linux shell.
 It does not replace the full application tests or native desktop QA.
 
+Flatpak startup-entry checks import the production publisher directly. Run
+`cargo test --manifest-path tools/platform-qa/Cargo.toml --locked flatpak_startup::tests`.
+They use explicit temporary directories rather than changing `HOME`, calling the
+environment-based startup setter or altering login settings. Cases cover host
+configuration selection, enable/disable, old staging names linked to unrelated
+fixture files, failed-publication cleanup and long application IDs. Unix also
+checks a real symbolic link. Publication uses a unique exclusively created file;
+ordinary failures clean up only that owned file, and successful publication
+replaces the entry with a completed file. Pre-existing staging names are retained.
+
+At `689ab0b`, the old publisher failed two Windows regressions by rewriting a
+linked fixture file and leaving staging after a failed rename. The fixed source
+passed 217 Windows library tests (10 opt-in ignored) and strict all-target Clippy.
+A separate direct compilation of the production module passed seven actual Linux
+filesystem tests with compiler warnings denied and unchanged source/dependency
+hashes. The broader Linux platform build stopped when host memory fell below the
+unchanged 1-GiB limit, before tests; its full test/Clippy result remains pending.
+No Flatpak sandbox or desktop login was exercised. Evidence:
+`.dev/flatpak-startup-20261114/qualification.json`, SHA-256
+`5fc579faf5a105a075415fe8e96f4bb72e55d40cad3cb718bcd5eca5926408ba`.
+
 Existing-form checks import the production DOCX/HWPX codec directly. Run
 `cargo test --manifest-path tools/platform-qa/Cargo.toml --locked form_fill`.
 They cover split runs, repeated fields, independent named/positional keys,

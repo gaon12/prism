@@ -299,6 +299,14 @@ paths, using only its own recorder and private session:
 cargo test --manifest-path src-tauri/Cargo.toml --locked -p auto-launch --test xdg_exec -- real_gio_preserves_executable_and_arguments --ignored --exact
 ```
 
+Flatpak uses its separate host-config publisher, following the
+[host XDG paths](https://docs.flatpak.org/en/latest/conventions.html) exposed
+inside the sandbox. It launches with `flatpak run`, and writes through a unique,
+exclusively created staging file so an old staging link cannot rewrite another
+file. The [publisher checks](tools/platform-qa/README.md) cover real filesystem
+links and failed-publication cleanup in owned fixtures; actual Flatpak login
+integration and the latest full Linux platform check remain pending.
+
 The previous release AppImage reproduced the wrong configuration path. The
 corrected signed AppImage from CI run `42373664783` passed actual settings UI
 enable/disable checks in a private installed XDG profile. It created and removed

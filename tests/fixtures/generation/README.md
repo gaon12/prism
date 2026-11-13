@@ -297,10 +297,28 @@ Combined native/PDF evidence:
 `.dev/native-state-schema-ead2af3-20261114/qualification.json`, SHA-256
 `7f6a5b03d68f8c12b49b57145937858548b3d283a8d0ae55831fc858e01328c8`.
 This is one actual fixture success, not repeated stability, arbitrary-document
-correctness or latest-source cross-platform CI qualification. A later editor
-scroll fix at `e165f40` passed production-bundle browser checks separately; it is
-outside the qualified `ead2af3` executable. The whole-catalog 1 CPU / 512 MiB
-performance target also remains open.
+correctness or latest-source cross-platform CI qualification.
+
+The later editor scroll fix at `e165f40` first failed its regression on the old
+UI, then passed production-bundle browser checks. It was also verified in the
+Windows release app at `290cac9`, using a clone of the actual generated document's
+private portable profile. At 1600×1050 and 760×900, switching from the bottom of
+the outline to body blocks showed the first generated value; keyboard navigation
+back to the outline reset its viewport and preserved tab focus. The revision
+remained unchanged, no horizontal overflow or app errors/warnings were observed,
+and the owned app exited normally. An initial helper run omitted the portable
+marker and stopped at the install-kind assertion before document interaction;
+the corrected run verified the marker and expected scope/settings first.
+
+The fixed UI executable is SHA-256
+`a5025a2723b41e5b7367ea356b685db9f4f49ec0276e3c90b915ef62f9938395`.
+All Rust sources and canonical native-generation scripts match qualified
+`ead2af3`; the UI run made no additional inference and does not replace the
+earlier model result. Native UI evidence:
+`.dev/native-editor-scroll-290cac9-20261114/qualification.json`, SHA-256
+`0676e3e8cfc868003e3c84eed488fdee7c4b656bd6d233c905e677934f40781f`.
+Latest-source cross-platform CI and the whole-catalog 1 CPU / 512 MiB performance
+target remain open.
 
 Rejecting an output that violates a structured plan is a useful intermediate
 behavior, but it does not satisfy the positive native generation gate. The

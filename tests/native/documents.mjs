@@ -410,7 +410,14 @@ try {
   const usedCitations = restored.citations.filter((citation) =>
     restored.blocks.some((block) => block.sourceLabels.includes(`[${citation.label}]`)),
   );
-  const sourcePaths = new Set(usedCitations.map((citation) => citation.source.filePath));
+  // This fixture emits one source reference in each bound block. HWPX owns a
+  // footnote at each reference site, even when both bind the same citation.
+  const sourceReferences = restored.blocks.flatMap((block) =>
+    usedCitations.filter((citation) => block.sourceLabels.includes(`[${citation.label}]`)),
+  );
+  assert.equal(usedCitations.length, 1, 'Both source sites bind the same citation');
+  assert.equal(sourceReferences.length, 2, 'The fixture has two bound source-reference sites');
+  const sourcePaths = new Set(sourceReferences.map((citation) => citation.source.filePath));
   for (const sources of [true, false]) {
     const path = join(pdfDirectory, sources ? 'with-sources.pdf' : 'without-sources.pdf');
     const result = await invoke('doc_export_pdf', {
@@ -453,7 +460,7 @@ try {
       assert.equal(
         hwpx.noteTexts.filter((text) => text.includes(sourcePath)).length,
         sources
-          ? usedCitations.filter((citation) => citation.source.filePath === sourcePath).length
+          ? sourceReferences.filter((citation) => citation.source.filePath === sourcePath).length
           : 0,
         'HWPX source path must remain literal',
       );

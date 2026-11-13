@@ -262,7 +262,7 @@ fn synthetic_preparation_cpu_stages() {
         "{}",
         serde_json::json!({"synthetic":true,"records":count,"workers":1,
         "mode":mode,"wireBytes":wire_bytes,"workerThreadId":worker,
-        "cpuClock":"GetThreadTimes user+kernel; 100ns units, platform accounting resolution",
+        "cpuClock":"GetThreadTimes user+kernel; raw quantized diagnostics, not additive phase attribution",
         "cycleClock":"QueryThreadCycleTime; cycles are not converted to time",
         "inputPreparation":input.json(),"decode":decode.json(),"raw":raw_cost.json(),
         "entry":entry_cost.json(),"fusedRawEntry":fused.json(),"insert":insert.json(),

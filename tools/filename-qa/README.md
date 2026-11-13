@@ -86,9 +86,12 @@ encoding, complete stored-field verification, setup and clock calibration are
 reported separately. A streaming, noncryptographic checksum must match before
 and after publication and across all four cases.
 
-Each requested stage reports thread user/kernel CPU from `GetThreadTimes`, wall
-time and `QueryThreadCycleTime` cycles. Accounting resolution can make very short
-stages report zero CPU; cycles are never converted to time. Instrumentation is
+Each requested stage reports raw thread user/kernel CPU from `GetThreadTimes`,
+wall time and `QueryThreadCycleTime` cycles. Cycles are the primary stage CPU
+measure and are never converted to time. Short-batch CPU-time differences can
+report zero and need not sum to the whole-worker CPU time. The driver reports
+both sums explicitly and marks stage CPU milliseconds unsuitable for attribution.
+Instrumentation is
 per bounded protocol batch, and the fused cases provide a control for separating
 raw mapping from Entry construction. The driver preserves source/executable
 hashes, compiler version, full logs, job CPU and peak commit. It requires 3 GiB

@@ -21,6 +21,18 @@ CASES = [
     ("fused-b", "fused"),
 ]
 RECORDS = 2_200_000
+PHASES = [
+    "setup",
+    "clockCalibration2048",
+    "inputPreparation",
+    "decode",
+    "raw",
+    "entry",
+    "fusedRawEntry",
+    "insert",
+    "publishSwap",
+    "verification",
+]
 
 
 def sha(path):
@@ -392,12 +404,24 @@ def main():
                     raise RuntimeError(
                         "Fused and separated preparation changed stored data."
                     )
+                summed_cpu = sum(value[key]["cpuMs"] for key in PHASES)
+                summed_cycles = sum(value[key]["threadCycles"] for key in PHASES)
+                accounting = {
+                    "primaryStageCpuMeasure": "threadCycles",
+                    "stageCpuMsSuitableForAttribution": False,
+                    "summedPhaseCpuMs": summed_cpu,
+                    "wholeWorkerCpuMs": value["wholeWorker"]["cpuMs"],
+                    "summedPhaseThreadCycles": summed_cycles,
+                    "wholeWorkerThreadCycles": value["wholeWorker"]["threadCycles"],
+                    "note": "Short-batch GetThreadTimes differences are raw diagnostics; they may not add up to whole-worker CPU. Cycles are never converted to time.",
+                }
                 report["cases"].append(
                     {
                         "name": name,
                         "limitsBeforeStart": limits,
                         "job": job,
                         "measurement": value,
+                        "clockAttribution": accounting,
                     }
                 )
                 print(
@@ -405,8 +429,8 @@ def main():
                         {
                             "case": name,
                             "records": RECORDS,
-                            "cpuMs": {
-                                key: value[key]["cpuMs"]
+                            "threadCycles": {
+                                key: value[key]["threadCycles"]
                                 for key in [
                                     "decode",
                                     "raw",
@@ -416,6 +440,7 @@ def main():
                                     "publishSwap",
                                 ]
                             },
+                            "clockAttribution": accounting,
                         }
                     ),
                     flush=True,

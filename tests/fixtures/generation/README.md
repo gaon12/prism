@@ -25,6 +25,42 @@ this failure therefore persists after retrieving the relevant evidence. The
 actual HWPX contained zero tables. The original assertions and failure remain
 preserved; this is separate from the synthetic document/export smoke test.
 
+### Decision if rule placement does not resolve the failure
+
+The prepared direct-model control changes only the placement of existing
+product-owned document rules from the final user message into the system
+message. Source excerpts, user-reviewed input, previous turns, JSON schema,
+model/runtime pins and decoding settings remain unchanged. A successful single
+pair would support that hypothesis for the frozen input, not establish stable
+actual-app generation. The original native gate must still pass after a real
+implementation; the captured requests reconstruct a controlled earlier history
+and are not an exact wire capture of the current CI run.
+
+The current body schema constrains block fields and section IDs. Backend
+validation also requires every reviewed section to be represented. Neither
+contract makes free-form Markdown contain a requested table or a missing-value
+statement. The reviewed plan currently expresses those requirements in prose.
+
+| Option                                                           | Product behavior and required work                                                                                                                                                                                                                                                                                                                                            | Meaning of the existing gate                                                                                                                                                                 |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Structure the reviewed plan and assemble the document in the app | Add explicit table columns, requested fields and unavailable/unknown states to the plan the user reviews. Request source-linked typed values from the provider, validate them, then render tables and requested missing-value notices deterministically. This changes the plan/editor/storage contracts and still needs real 1.7B extraction and native export qualification. | Keep the original facts, table, absence, citation and reopen assertions. A pass would qualify the combined model-extraction and app-assembly path, rather than unconstrained model Markdown. |
+| Redefine the release gate                                        | Explicitly decide which model capability the release requires and how unsupported generation is reported. Keep the existing failed case and model identity visible; do not describe a schema-only or graceful-failure check as successful document generation.                                                                                                                | Removing the table or absence assertions would change the requirement, not fix this observed failure. It requires an explicit policy decision.                                               |
+
+Deterministic assembly must be generic, driven by the reviewed plan and current
+evidence. It must not insert this fixture's expected values or reservation text
+into a prompt, response or export. A missing extracted value does not prove its
+absence from the original document: distinguish an explicit source statement
+from information not found in the supplied excerpts, and keep that scope visible.
+Preserve citations, unverified classifications, user edits and immutable
+revisions. Raw model output and the rendered document remain separate evidence.
+
+Rejecting an output that violates a structured plan is a useful intermediate
+behavior, but it would not satisfy the current positive generation gate. The
+present response contains neither requested output, so there is no semantic
+false-negative evidence supporting an assertion relaxation. The required 1.7B
+fixture, original checks and product provider defaults remain unchanged while
+these alternatives are reviewed.
+
 `outline-duplicate-ids.txt` retains the assistant's JSON content captured from
 Qwen3-1.7B Q8 with the pinned b11960 CPU runtime on 2026-11-12. The direct wire
 probe used the workshop document's paragraphs 6, 3, 5, 4, 1 and 9, separately

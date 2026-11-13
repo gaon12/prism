@@ -70,11 +70,18 @@ fn background_thread() {
     #[cfg(windows)]
     {
         use windows_sys::Win32::System::Threading::{
-            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+            GetCurrentThread, SetThreadPriority, SetThreadPriorityBoost,
+            THREAD_PRIORITY_BELOW_NORMAL,
         };
         // SAFETY: the pseudo handle names the calling thread and needs no closing.
         // A failure only leaves the normal priority in place.
         unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) };
+        // Windows briefly raises a thread's priority each time its I/O completes.
+        // The snapshot reader completes a pipe read for every batch, so with the
+        // boost it ran at 9-11 most of the time: above the window's renderer (8),
+        // which made below-normal useless on one CPU (window ready at 12-14 s).
+        // SAFETY: as above; TRUE (1) disables the boost for this thread only.
+        unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) };
     }
 }
 
@@ -339,6 +346,19 @@ struct Provisional {
 /// re-read large folders such as the user's temporary files (about 46,000
 /// entries) many times a minute; on one CPU that kept collection busy for
 /// seconds after every first catalog. Other platforms keep the recursive walk.
+/// A real file or folder, not a link or another reparse point such as a
+/// junction (the walker skips those, so only a full walk updates them).
+fn plain_entry(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // FILE_ATTRIBUTE_REPARSE_POINT
+        if metadata.file_attributes() & 0x400 != 0 {
+            return false;
+        }
+    }
+    !metadata.file_type().is_symlink()
+}
 fn entry_only(kind: &EventKind) -> bool {
     cfg!(windows) && matches!(kind, EventKind::Modify(notify::event::ModifyKind::Any))
 }
@@ -849,14 +869,16 @@ impl FileIndex {
             };
             let mut unique: Vec<_> = paths.into_iter().filter(available).collect();
             let mut entries: Vec<_> = entries.into_iter().filter(available).collect();
-            // A changed entry that no longer exists went away with everything
-            // below it: walk it like a removal so its cached subtree is dropped.
+            // An entry refresh fits only a plain file or folder. A path that no
+            // longer exists went away with everything below it, and a folder that
+            // became a link or junction is no longer walked at all: walk such a
+            // path like a removal so its cached entry and subtree are dropped.
             entries.retain(|path| {
-                let exists = fs::symlink_metadata(path).is_ok();
-                if !exists {
+                let plain = fs::symlink_metadata(path).is_ok_and(|metadata| plain_entry(&metadata));
+                if !plain {
                     unique.push(path.clone());
                 }
-                exists
+                plain
             });
             if !unique.is_empty() || !entries.is_empty() {
                 // Re-walk only the changed subtrees under a fresh sweep id, then drop entries in
@@ -1683,13 +1705,20 @@ mod tests {
     #[cfg(windows)]
     fn an_indexing_thread_runs_below_normal() {
         use windows_sys::Win32::System::Threading::{
-            GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+            GetCurrentThread, GetThreadPriority, GetThreadPriorityBoost,
+            THREAD_PRIORITY_BELOW_NORMAL,
         };
         std::thread::spawn(|| {
             background_thread();
-            // SAFETY: the pseudo handle names this test thread.
+            // SAFETY: the pseudo handle names this test thread; `disabled` is a valid local.
             let priority = unsafe { GetThreadPriority(GetCurrentThread()) };
             assert_eq!(priority, THREAD_PRIORITY_BELOW_NORMAL);
+            let mut disabled = 0;
+            assert_ne!(
+                unsafe { GetThreadPriorityBoost(GetCurrentThread(), &mut disabled) },
+                0
+            );
+            assert_eq!(disabled, 1, "I/O completions must not lift the thread");
         })
         .join()
         .unwrap();
@@ -2074,6 +2103,29 @@ mod performance_tests {
             "lost refreshes must still reconcile"
         );
         assert_eq!(queue.take_changes(), (false, vec![], vec![]));
+    }
+    #[test]
+    fn only_plain_files_and_folders_take_an_entry_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("file.md"), "").unwrap();
+        for path in [dir.path().to_owned(), dir.path().join("file.md")] {
+            assert!(plain_entry(&fs::symlink_metadata(path).unwrap()));
+        }
+        #[cfg(windows)]
+        {
+            // A junction needs no privilege, unlike a symbolic link.
+            let target = dir.path().join("target");
+            let junction = dir.path().join("junction");
+            fs::create_dir(&target).unwrap();
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&junction)
+                .arg(&target)
+                .output()
+                .unwrap();
+            assert!(made.status.success());
+            assert!(!plain_entry(&fs::symlink_metadata(&junction).unwrap()));
+        }
     }
     #[test]
     fn only_a_windows_modified_notice_skips_the_folder_walk() {

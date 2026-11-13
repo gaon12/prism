@@ -153,16 +153,23 @@ try {
       assigned = job.assign(owned.pid);
     },
   });
+  // Time since launch when each step before the status loop answered, so a
+  // slow first status can be told apart from a slow window or service query.
+  const since = () => Math.round(performance.now() - spawnedAt);
+  result.stages = { windowReadyMs: since() };
   result.limits = await assigned;
   result.assignMs = Math.round(performance.now() - spawnedAt);
   const { invoke } = instance;
   const settings = await invoke('get_settings');
+  result.stages.settingsMs = since();
   assert(settings.scopes[0]?.id === scopeId, 'CDP must reach this fixture profile');
   result.runtime = await invoke('runtime_info');
+  result.stages.runtimeMs = since();
   assert.equal(result.runtime.installKind, 'portable');
   if (process.env.PRISM_WEBVIEW_SOFTWARE === '1')
     assert.equal(result.runtime.softwareRendering, true, 'The app must choose software drawing');
   result.service = await invoke('index_service_status').catch(() => null);
+  result.stages.serviceStatusMs = since();
   let status;
   // Each change of the row count or scan state, with its time since launch,
   // so a slow run shows which stage the time went to.

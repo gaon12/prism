@@ -264,5 +264,34 @@ CPU/cycles without converting cycles to seconds.
 
 This is a component replay without filesystem walks, a catalog lock, window
 queries or service contention. It does not qualify app startup or explain the
-frequency of watch events. No before/after performance claim is available until
-both revisions have been built and replayed with identical private inputs.
+frequency of watch events.
+
+The 2026-11-13 fixed A/B/B/A replay used the same 2,185,112-row capture and
+eight captured directories, selected by path SHA-256 among directories with
+2–16 immediate children. This fixed list is not an observed watch-event trace.
+Both isolated builds used the `af80a2a` harness and the same 207 source files,
+except `index.rs` and `filename_compact.rs`: A took those two files from the
+parent of `5ff473b`, and B took them from `5ff473b`. Local Rust 1.99.0 passed
+80/81 tests respectively, six ignored in each, and strict Clippy for both.
+
+| Case      | Watch wall seconds | Raw thread CPU seconds | Thread cycles (billions) |
+| --------- | -----------------: | ---------------------: | -----------------------: |
+| A, first  |            2.51953 |               2.421875 |                    7.334 |
+| B, first  |            0.35644 |               0.343750 |                    1.050 |
+| B, second |            0.35856 |               0.359375 |                    1.055 |
+| A, last   |            2.51598 |               2.328125 |                    7.299 |
+
+Mean watch wall time fell from 2.51776 to 0.35750 seconds (85.8%) in this fixture.
+Every replay preserved the full catalog SHA-256 and entry count. The source,
+executables, capture and path file remained unchanged; all four processes had
+the same one-CPU affinity and 512 MiB process/job commit limits before starting.
+Peak job commit was 181.6–182.1 MiB, minimum host availability was 3.61 GiB,
+and no resource or deadline guard fired. The four cases took 42.30 seconds in
+total, including decoding, construction, SHA checks and setup outside the watch
+timer. The measuring session's previously busy MCP PID 18976 was absent.
+
+All four predeclared cases are retained. This interactive host was not isolated:
+aggregate CPU busy during each whole case, including the benchmark itself,
+ranged from 18.2% to 27.9%. The component replay demonstrates the lower cost for
+this fixed eight-path input. It does not establish the live event count, an
+eight-second GUI stall's full cause, or the whole-app 5–7 second startup target.

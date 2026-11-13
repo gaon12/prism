@@ -704,6 +704,8 @@ impl DocumentService {
                 semantic_query,
                 external_query: request.research_query.clone(),
                 response_schema: Some(document_response_schema(&revision, operation, &targets)),
+                application_citations: operation == DocumentOperation::Body
+                    && revision.plan.assembly.is_some(),
             };
             let rag_request = RagRequest {
                 external: request.research_query.is_some(),
@@ -1053,6 +1055,18 @@ fn apply_answer(
             &mut revision.citations,
             &answer.assistant_turn.citations,
         );
+        if operation == DocumentOperation::Body && revision.plan.assembly.is_some() {
+            // The provider supplied literal values/quotes, not citation labels.
+            // Track actual use in this newly assembled revision, not markers in
+            // a raw response or sticky usage from an earlier document body.
+            for citation in &mut revision.citations {
+                citation.is_cited = blocks.iter().any(|block| {
+                    block
+                        .source_labels
+                        .contains(&format!("[{}]", citation.label))
+                });
+            }
+        }
         validate_blocks(&blocks, &revision.plan)
             .map_err(|_| DocumentError::new(DocumentErrorCode::Malformed))?;
         if operation == DocumentOperation::Body
@@ -1879,7 +1893,7 @@ mod tests {
             );
             f.transport.push(
                 serde_json::json!({"values":[{
-                    "fieldId":"cost","state":"provided","text":"123.4500","sourceLabels":["[S1]"]
+                    "fieldId":"cost","state":"provided","text":"123.4500","quote":""
                 }]})
                 .to_string(),
             );
@@ -1898,6 +1912,32 @@ mod tests {
             assert!(generated.blocks[0].markdown.contains("123\\.4500"));
             assert_eq!(generated.blocks[0].source_labels, vec!["[S1]"]);
             assert!(generated
+                .citations
+                .iter()
+                .any(|c| c.label == "S1" && c.is_cited));
+            let conversation = f
+                .rag
+                .conversation(
+                    &reopened
+                        .inner
+                        .store
+                        .conversation(&page.document.id)
+                        .unwrap(),
+                    None,
+                    100,
+                )
+                .await
+                .unwrap();
+            let raw = conversation
+                .turns
+                .iter()
+                .find(|turn| {
+                    turn.request_id == "doc_typed_values"
+                        && turn.role == crate::rag_service::TurnRole::Assistant
+                })
+                .unwrap();
+            assert!(raw.citations.iter().all(|c| !c.is_cited));
+            assert!(generated
                 .markdown
                 .contains("## Summary\n\n| Field | Value |"));
             assert_eq!(
@@ -1911,6 +1951,9 @@ mod tests {
             let schemas = f.transport.schemas.lock().unwrap();
             let schema = schemas.last().unwrap().as_ref().unwrap();
             assert!(schema["properties"].get("blocks").is_none());
+            assert!(schema["properties"]["values"]["items"]["properties"]
+                .get("sourceLabels")
+                .is_none());
             assert_eq!(
                 schema["properties"]["values"]["items"]["properties"]["fieldId"]["enum"],
                 serde_json::json!(["cost"])
@@ -3307,6 +3350,7 @@ mod tests {
                     RagDocumentInput {
                         external_query: None,
                         response_schema: None,
+                        application_citations: false,
                         provenance: vec![],
                         external_input_eligible: true,
                         retrieval_query: "Evidence based report".into(),
@@ -3540,6 +3584,7 @@ mod tests {
             let input = RagDocumentInput {
                 external_query: None,
                 response_schema: None,
+                application_citations: false,
                 provenance: vec![],
                 external_input_eligible: true,
                 retrieval_query: "Evidence based report".into(),

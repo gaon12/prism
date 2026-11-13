@@ -1,0 +1,34 @@
+{
+  "values": [
+    {
+      "fieldId": "aa4e0fe2-d627-4590-aa55-501b5afdeef5",
+      "quote": "2026년 12월 5일",
+      "state": "provided",
+      "text": "2026년 12월 5일"
+    },
+    {
+      "fieldId": "8f9d3c53-6c7a-4829-bc6f-d520333b0b4b",
+      "quote": "부산 해운대",
+      "state": "provided",
+      "text": "부산 해운대"
+    },
+    {
+      "fieldId": "0cd2e859-c941-404a-926c-77776fa51a2d",
+      "quote": "347000원",
+      "state": "provided",
+      "text": "347000원"
+    },
+    {
+      "fieldId": "1e31ec1a-85f4-4939-ba15-a38a8dac3208",
+      "quote": "7명",
+      "state": "provided",
+      "text": "7명"
+    },
+    {
+      "fieldId": "2d80bff5-648c-4153-b7e4-df2ce5af785d",
+      "quote": "예약 번호는 정해지지 않았으며 이 자료에 기재되어 있지 않다.",
+      "state": "explicitlyUnavailable",
+      "text": ""
+    }
+  ]
+}

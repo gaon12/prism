@@ -88,8 +88,10 @@ Legacy plans omit that property and retain their existing JSON shape. The
 contract contains no expected evidence values. Restart and revision restoration
 preserve it exactly. Body generation with this contract requests typed values
 instead of model-written Markdown, then assembles the reviewed fields and tables
-in the backend. Each requested field must occur exactly once. Values and explicit
-unavailability require current citations; information not found in the excerpts
+in the backend. Each requested field must occur exactly once. The provider returns
+literal values or quotes; the app assigns citations after finding one unique
+match in the currently transmitted document excerpts. Values and explicit
+unavailability require this match; information not found in the excerpts
 has no citation and receives a scoped, unverified notice only when the reviewed
 field requests one. These states remain distinct. Values are escaped as literal
 text before adding table delimiters and source markers. Existing free-form plans
@@ -132,15 +134,15 @@ input. Full evidence is in
 `.dev/document-assembly-uuid-inference-20261113/qualification.json`, SHA-256
 `071009ea6156a69bcd27b757d84a79a39fc534dbf588f96d200e96ca6477866b`.
 
-The backend now retains the exact transmitted, redacted and truncated excerpts
-only for the current document operation. They are neither serialized in the API
-answer nor stored in history. Provided field text must occur in every cited
+The `0d15e44` backend retained the exact transmitted, redacted and truncated excerpts
+only for the current document operation. They were neither serialized in the API
+answer nor stored in history. Provided field text had to occur in every cited
 excerpt after whitespace normalization. An unrelated but known label is rejected,
 without reassigning it or changing the model response. The captured UUID response
 regresses this case, and a service test checks that rejection preserves the prior
 revision. This is literal-span validation; field meaning, explicit-unavailability
 classification and overall claim truth remain unverified. The stricter path
-still needs actual-model and native-app qualification.
+was subsequently tested with the actual model below.
 
 A fresh request using that stricter source rule produced the same decoded wrong
 place citation and was rejected by the newly compiled strict core. It was not
@@ -165,19 +167,52 @@ application-assigned citation matched its supporting excerpt. HTTP took 30.80 s
 available memory was 3.79 GiB, with the original guards and owned-server cleanup
 intact. The prototype also specializes the trusted system instructions to make
 citations app-owned while preserving source-permission and untrusted-data rules.
-This changes the extraction protocol, not just prompt placement. It has not been
-adopted in production or qualified in the native app, and one request is not a
-stability result. Raw provider data and app-derived citation/rendering structures
+This changes the extraction protocol, not just prompt placement. That prototype
+did not qualify the native app, and one request is not a stability result.
+Raw provider data and app-derived citation/rendering structures
 are separate. Evidence is in
 `.dev/document-assembly-derived-citations-20261113/qualification.json`, SHA-256
 `fea384a63ccd37ecc47db8491b36531ec2c1fe7161f2230125408d11a61c6553`.
 
+The production implementation now uses this value/quote-only contract. A typed
+internal value carries app-owned citation metadata directly to the renderer;
+the provider response is not rewritten into another model response. Old
+`sourceLabels` payloads fail schema validation. An explicitly unavailable field
+displays its literal supporting statement; a not-found field gets only the
+reviewed, scoped notice or blank. Matching normalizes whitespace without joining
+separate words or digits and rejects zero or multiple excerpt matches. This
+checks literal support, not field meaning or claim truth.
+
+Only structured full-body generation receives the trusted citation-ownership
+system specialization, and its length counts against the context budget. Exact
+redacted/truncated excerpts remain ephemeral, excluded from API serialization,
+debug output and history, and are discarded when external evidence is revoked.
+Document revision citation-use flags reflect the assembled blocks; raw provider
+turns retain their own citation metadata. Ordinary chat, legacy free-form plans,
+outline generation and partial rewrites retain their existing paths.
+
+On 2026-11-14, the current production prompt, schema and renderer passed a fresh
+actual 1.7B request with the same UUIDs and excerpts. The request messages matched
+the successful prototype; the only decoder-schema difference was an explicit
+`type: string` on the state enum. Original facts/table checks, all five app-assigned
+sources, explicit-unavailability classification and section coverage passed.
+HTTP took 31.07 s (1061 prompt / 391 completion tokens, cache 0, normal stop,
+no truncation). Minimum available memory was 3.49 GiB, original guards remained
+active and the owned server exited. RAG QA passed 130 tests and strict Clippy.
+`body-derived-citations.txt` preserves the earlier prototype response for decoder
+and source-assignment regression tests only; it is never a model input.
+
+This remains a component result, not repeated stability or a native app,
+retrieval, PDF/HWPX export or reopen pass. The required native gate remains open.
+Evidence is in
+`.dev/document-quote-production-inference-attempt2-20261114/qualification.json`, SHA-256
+`0b9443b4b3735553c34f2c29ea579b8866c223d699cbd57e73ee97178f117c2b`.
+
 Rejecting an output that violates a structured plan is a useful intermediate
-behavior, but it would not satisfy the current positive generation gate. The
-present response contains neither requested output, so there is no semantic
-false-negative evidence supporting an assertion relaxation. The required 1.7B
-fixture, original checks and product provider defaults remain unchanged while
-these alternatives are reviewed.
+behavior, but it does not satisfy the positive native generation gate. The
+preserved failed free-form response contained neither requested output, so it
+does not support relaxing the assertions. The required 1.7B fixture, original
+checks and product provider defaults remain unchanged.
 
 `outline-duplicate-ids.txt` retains the assistant's JSON content captured from
 Qwen3-1.7B Q8 with the pinned b11960 CPU runtime on 2026-11-12. The direct wire

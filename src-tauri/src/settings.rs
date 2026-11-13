@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, fs, io::Write, path::Path};
+use std::{collections::HashSet, fs, path::Path};
 use tauri_plugin_global_shortcut::Shortcut;
 
 #[path = "file_shortcut.rs"]
@@ -321,19 +321,7 @@ pub fn read_settings(path: &Path) -> Result<ClientSettings, String> {
     }
 }
 
-pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    let contents = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
-    let temporary = path.with_extension("pending");
-    let parent = path.parent().ok_or("No parent directory for settings.")?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let mut file = fs::File::create(&temporary).map_err(|error| error.to_string())?;
-    file.write_all(&contents)
-        .and_then(|_| file.sync_all())
-        .map_err(|error| error.to_string())?;
-    drop(file);
-    fs::rename(&temporary, path)
-        .map_err(|error| format!("Could not save {}: {error}", path.display()))
-}
+pub use crate::settings_file::write_json;
 
 #[cfg(test)]
 mod tests {

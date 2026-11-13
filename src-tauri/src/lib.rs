@@ -1,4 +1,5 @@
 mod app_paths;
+mod atomic_file;
 mod automatic_search;
 mod chat_selection;
 mod clipboard_commands;
@@ -78,6 +79,7 @@ mod runtime_supervisor;
 mod secret_store;
 mod selection_set;
 mod settings;
+mod settings_file;
 mod update_backend;
 mod update_commands;
 #[cfg(debug_assertions)]

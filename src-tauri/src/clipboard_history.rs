@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs,
-    io::{BufReader, Write},
+    io::BufReader,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -228,13 +228,7 @@ fn content_hash(content: &ClipContent) -> String {
     hex(&hasher.finalize())
 }
 fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
-    let temporary = path.with_extension("pending");
-    let mut file = fs::File::create(&temporary).map_err(|error| error.to_string())?;
-    file.write_all(contents)
-        .and_then(|_| file.sync_all())
-        .map_err(|error| error.to_string())?;
-    drop(file);
-    fs::rename(&temporary, path).map_err(|error| error.to_string())
+    crate::atomic_file::write(path, contents).map_err(|error| error.to_string())
 }
 
 fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {

@@ -7,8 +7,7 @@
 //! (`--filesystem=host`), so this writes the entry into the *host* autostart
 //! folder instead, launching through `flatpak run`.
 use std::{
-    fs,
-    io::{self, Write},
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -42,16 +41,6 @@ fn entry(id: &str) -> String {
     )
 }
 
-struct Pending(Option<PathBuf>);
-
-impl Drop for Pending {
-    fn drop(&mut self) {
-        if let Some(path) = &self.0 {
-            let _ = fs::remove_file(path);
-        }
-    }
-}
-
 /// Write or remove `<dir>/<id>.desktop`. Writing goes through a temporary file
 /// and a rename, so a crash never leaves a half-written entry.
 fn apply(dir: &Path, id: &str, enabled: bool) -> io::Result<()> {
@@ -63,31 +52,7 @@ fn apply(dir: &Path, id: &str, enabled: bool) -> io::Result<()> {
         };
     }
     fs::create_dir_all(dir)?;
-    let mut nonce = [0; 16];
-    getrandom::fill(&mut nonce).map_err(|_| io::Error::other("Cannot prepare startup entry."))?;
-    let temporary = dir.join(format!(
-        ".prism-autostart-{:032x}.tmp",
-        u128::from_le_bytes(nonce)
-    ));
-    // Never truncate or clean up a pre-existing entry, including a linked one.
-    // Declaring the guard first also closes the file before cleanup on errors.
-    let mut pending = Pending(None);
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&temporary)?;
-    pending.0 = Some(temporary.clone());
-    file.write_all(entry(id).as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(&temporary, &path)?;
-    // Publication consumed this name; a later file at it does not belong to us.
-    pending.0 = None;
-    Ok(())
+    crate::atomic_file::write(&path, entry(id).as_bytes())
 }
 
 pub fn set(enabled: bool) -> Result<(), String> {

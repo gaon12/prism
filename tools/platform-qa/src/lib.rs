@@ -1,4 +1,6 @@
 //! Compile the exact production platform modules without Tauri, WebView or Lance.
+#[path = "../../../src-tauri/src/atomic_file.rs"]
+pub mod atomic_file;
 #[path = "../../../src-tauri/src/collection_epub.rs"]
 pub mod collection_epub;
 #[path = "../../../src-tauri/src/collection_import.rs"]
@@ -11,6 +13,8 @@ pub mod collection_render;
 pub mod collection_service;
 #[path = "../../../src-tauri/src/collection_store.rs"]
 pub mod collection_store;
+#[path = "../../../src-tauri/src/settings_file.rs"]
+pub mod settings_file;
 // The reviewed-field assembler; external_providers.rs feeds it real replies.
 #[allow(dead_code)]
 #[path = "../../../src-tauri/src/document_assembly.rs"]

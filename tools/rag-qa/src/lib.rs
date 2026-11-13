@@ -5,6 +5,11 @@
 // Full-app entry points intentionally have no callers in this test-only crate.
 #![allow(dead_code)]
 
+#[path = "../../../src-tauri/src/atomic_file.rs"]
+mod atomic_file;
+#[path = "../../../src-tauri/src/settings_file.rs"]
+mod settings_file;
+
 #[path = "../../../src-tauri/src/chat_selection.rs"]
 mod chat_selection;
 #[path = "../../../src-tauri/src/document_schema.rs"]

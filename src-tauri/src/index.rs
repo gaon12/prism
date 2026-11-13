@@ -233,8 +233,18 @@ struct Raw {
     size: u64,
     modified_ms: Option<i64>,
 }
+/// What one walk job reads.
+#[derive(Clone, Copy)]
+enum Walk {
+    /// A changed path and everything below it.
+    Tree,
+    /// The children of a folder whose own entry its parent's job recorded.
+    Children,
+    /// Only the path's own entry; the folder's children are unchanged.
+    Entry,
+}
 struct WalkJobs {
-    paths: VecDeque<(PathBuf, bool)>,
+    paths: VecDeque<(PathBuf, Walk)>,
     outstanding: usize,
 }
 struct WalkBatch {
@@ -319,28 +329,49 @@ struct Provisional {
     entries: Arc<Mutex<Entries>>,
 }
 
+/// Whether a watch event changed only its path's own entry, so the folder
+/// below it need not be walked again.
+///
+/// On Windows a "modified" notice for a folder means a child was added,
+/// removed or renamed, or the folder's own times changed. Each such child is
+/// also reported on its own, and lost notices raise a rescan, so the folder's
+/// own entry is all that is left to read. Walking the whole folder for it
+/// re-read large folders such as the user's temporary files (about 46,000
+/// entries) many times a minute; on one CPU that kept collection busy for
+/// seconds after every first catalog. Other platforms keep the recursive walk.
+fn entry_only(kind: &EventKind) -> bool {
+    cfg!(windows) && matches!(kind, EventKind::Modify(notify::event::ModifyKind::Any))
+}
+
 /// Bound queued recursive subtrees, not notifications: one busy file or an
 /// already queued parent covers repeated writes throughout that subtree.
 #[derive(Default)]
 struct PendingPaths {
     paths: BTreeMap<String, PathBuf>,
+    /// Paths whose own entry changed while the folder below them did not (see
+    /// [`entry_only`]). Only the entry itself is read again. A queued walk of
+    /// the path or of a parent covers it, so it is dropped then.
+    entries: BTreeMap<String, PathBuf>,
     overflow: bool,
 }
 impl PendingPaths {
+    /// Whether a queued recursive walk of `key` itself or of a parent covers it.
+    fn covers(&self, key: &str) -> bool {
+        let mut ancestor = key;
+        loop {
+            if self.paths.contains_key(ancestor) {
+                return true;
+            }
+            match ancestor.rsplit_once('/') {
+                Some((parent, _)) => ancestor = parent,
+                None => return false,
+            }
+        }
+    }
     fn push(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
         for path in paths {
             let key = path_key(&path);
-            let mut ancestor = key.as_str();
-            let covered = loop {
-                if self.paths.contains_key(ancestor) {
-                    break true;
-                }
-                match ancestor.rsplit_once('/') {
-                    Some((parent, _)) => ancestor = parent,
-                    None => break false,
-                }
-            };
-            if covered {
+            if self.covers(&key) {
                 continue;
             }
             // This path will be scanned recursively. Replace its descendants
@@ -359,6 +390,20 @@ impl PendingPaths {
             for descendant in descendants {
                 self.paths.remove(&descendant);
             }
+            // Entry refreshes at or below this path are covered by its walk too.
+            let entries: Vec<_> = self
+                .entries
+                .range::<str, _>((
+                    std::ops::Bound::Included(prefix.as_str()),
+                    std::ops::Bound::Unbounded,
+                ))
+                .take_while(|(candidate, _)| candidate.starts_with(&prefix))
+                .map(|(key, _)| key.clone())
+                .collect();
+            for entry in entries {
+                self.entries.remove(&entry);
+            }
+            self.entries.remove(&key);
             if self.paths.len() == 4096 {
                 // Once a path was lost, later coalescing cannot establish that
                 // it was covered. Keep overflow set until the consumer takes it.
@@ -367,6 +412,28 @@ impl PendingPaths {
             }
             self.paths.insert(key, path);
         }
+    }
+    /// Queue paths whose own entry changed but whose folder contents did not.
+    /// Repeated notices for one folder take a single slot, and the same bound
+    /// as walks applies: a lost refresh raises the reconcile instead.
+    fn push_entries(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        for path in paths {
+            let key = path_key(&path);
+            if self.covers(&key) || self.entries.contains_key(&key) {
+                continue;
+            }
+            if self.entries.len() == 4096 {
+                self.overflow = true;
+                break;
+            }
+            self.entries.insert(key, path);
+        }
+    }
+    /// [`Self::take`] plus the queued entry refreshes.
+    fn take_changes(&mut self) -> (bool, Vec<PathBuf>, Vec<PathBuf>) {
+        let entries = std::mem::take(&mut self.entries).into_values().collect();
+        let (overflow, paths) = self.take();
+        (overflow, paths, entries)
     }
     fn take(&mut self) -> (bool, Vec<PathBuf>) {
         let overflow = std::mem::take(&mut self.overflow);
@@ -693,7 +760,11 @@ impl FileIndex {
                                     dropped.store(true, Ordering::SeqCst);
                                 }
                                 if let Ok(mut paths) = queue.lock() {
-                                    paths.push(event.paths);
+                                    if entry_only(&event.kind) {
+                                        paths.push_entries(event.paths);
+                                    } else {
+                                        paths.push(event.paths);
+                                    }
                                 }
                             }
                             Err(_) => {
@@ -744,8 +815,8 @@ impl FileIndex {
                 Err(_) => continue,
             };
             let interval = Duration::from_secs(if healthy { 300 } else { 120 });
-            let (queue_overflow, paths) = match pending.lock() {
-                Ok(mut paths) => paths.take(),
+            let (queue_overflow, paths, entries) = match pending.lock() {
+                Ok(mut paths) => paths.take_changes(),
                 Err(_) => continue,
             };
             let overflowed = overflow.swap(false, Ordering::SeqCst) || queue_overflow;
@@ -764,31 +835,55 @@ impl FileIndex {
                 last_reconcile = SystemTime::now();
                 continue;
             }
-            if paths.is_empty() {
+            if paths.is_empty() && entries.is_empty() {
                 continue;
             }
             let roots = match self.catalog.read() {
                 Ok(catalog) => catalog.roots.clone(),
                 Err(_) => continue,
             };
-            let unique: Vec<_> = paths
-                .into_iter()
-                .filter(|path| {
-                    roots
-                        .iter()
-                        .any(|root| root.available && under(&path_key(path), &root.key))
-                })
-                .collect();
-            if !unique.is_empty() {
+            let available = |path: &PathBuf| {
+                roots
+                    .iter()
+                    .any(|root| root.available && under(&path_key(path), &root.key))
+            };
+            let mut unique: Vec<_> = paths.into_iter().filter(available).collect();
+            let mut entries: Vec<_> = entries.into_iter().filter(available).collect();
+            // A changed entry that no longer exists went away with everything
+            // below it: walk it like a removal so its cached subtree is dropped.
+            entries.retain(|path| {
+                let exists = fs::symlink_metadata(path).is_ok();
+                if !exists {
+                    unique.push(path.clone());
+                }
+                exists
+            });
+            if !unique.is_empty() || !entries.is_empty() {
                 // Re-walk only the changed subtrees under a fresh sweep id, then drop entries in
                 // those subtrees that the walk no longer saw (deleted or renamed away).
                 sweep += 1;
-                self.scan(generation, &unique, sweep, false);
+                self.scan_changes(generation, &unique, &entries, sweep);
             }
         }
     }
     /// Walks `paths`. A reconcile sweep (`reconcile`) also removes entries the walk did not see.
     fn scan(&self, generation: u64, paths: &[PathBuf], sweep: u64, reconcile: bool) {
+        self.scan_paths(generation, paths, &[], sweep, reconcile);
+    }
+    /// A live update: walks each changed path in `paths` with everything below
+    /// it, reads only the own entry of each path in `entries`, then drops
+    /// entries under `paths` that the walk no longer saw.
+    fn scan_changes(&self, generation: u64, paths: &[PathBuf], entries: &[PathBuf], sweep: u64) {
+        self.scan_paths(generation, paths, entries, sweep, false);
+    }
+    fn scan_paths(
+        &self,
+        generation: u64,
+        paths: &[PathBuf],
+        entries: &[PathBuf],
+        sweep: u64,
+        reconcile: bool,
+    ) {
         if !self.current(generation) {
             return;
         }
@@ -816,9 +911,10 @@ impl FileIndex {
             paths: walk_paths
                 .iter()
                 .cloned()
-                .map(|path| (path, true))
+                .map(|path| (path, Walk::Tree))
+                .chain(entries.iter().cloned().map(|path| (path, Walk::Entry)))
                 .collect(),
-            outstanding: walk_paths.len(),
+            outstanding: walk_paths.len() + entries.len(),
         });
         let wake = Condvar::new();
         let unreadable = Mutex::new(PendingPaths::default());
@@ -850,22 +946,16 @@ impl FileIndex {
                                     .0;
                             }
                         };
-                        let Some((path, include_root)) = work else {
+                        let Some((path, walk)) = work else {
                             break;
                         };
-                        let children = self.walk_directory(
-                            generation,
-                            &path,
-                            include_root,
-                            sweep,
-                            &mut batch,
-                            unreadable,
-                        );
+                        let children = self
+                            .walk_directory(generation, &path, walk, sweep, &mut batch, unreadable);
                         let mut jobs = jobs.lock().unwrap_or_else(|error| error.into_inner());
                         jobs.outstanding += children.len();
                         jobs.outstanding -= 1;
                         jobs.paths
-                            .extend(children.into_iter().map(|path| (path, false)));
+                            .extend(children.into_iter().map(|path| (path, Walk::Children)));
                         wake.notify_all();
                     }
                     self.publish(generation, sweep, &mut batch.rows, batch.skipped, false);
@@ -933,16 +1023,17 @@ impl FileIndex {
         &self,
         generation: u64,
         path: &Path,
-        include_root: bool,
+        walk: Walk,
         sweep: u64,
         batch: &mut WalkBatch,
         unreadable: &Mutex<PendingPaths>,
     ) -> Vec<PathBuf> {
         let mut children = vec![];
         // Depth one makes directory ownership explicit. Keep WalkDir's cached
-        // Windows metadata and the existing symlink/junction safeguards.
+        // Windows metadata and the existing symlink/junction safeguards. An
+        // entry refresh reads the path's own entry alone (depth zero).
         let walker = WalkDir::new(path)
-            .max_depth(1)
+            .max_depth(if matches!(walk, Walk::Entry) { 0 } else { 1 })
             .follow_links(false)
             .follow_root_links(false)
             .into_iter()
@@ -973,7 +1064,7 @@ impl FileIndex {
             }
             match entry {
                 Ok(entry) => {
-                    if entry.depth() == 0 && !include_root {
+                    if entry.depth() == 0 && matches!(walk, Walk::Children) {
                         continue;
                     }
                     if !entry.file_type().is_dir() && !entry.file_type().is_file() {
@@ -1957,6 +2048,77 @@ mod performance_tests {
         );
         assert_eq!(paths, [PathBuf::from("C:/downloads")]);
         assert!(!queue.take().0, "only consuming the overflow clears it");
+    }
+    #[test]
+    fn entry_refreshes_take_one_slot_each_and_yield_to_queued_walks() {
+        let mut queue = PendingPaths::default();
+        queue.push_entries(["C:/temp", "C:/a/b.txt", "C:/a-b"].map(PathBuf::from));
+        // A walk of C:/a covers the refresh below it but not the sibling C:/a-b.
+        queue.push([PathBuf::from("C:/a")]);
+        queue.push_entries(["C:/a/c.txt", "C:/a", "C:/temp"].map(PathBuf::from));
+        let (overflow, paths, entries) = queue.take_changes();
+        assert!(!overflow);
+        assert_eq!(paths, [PathBuf::from("C:/a")]);
+        assert_eq!(entries, ["C:/a-b", "C:/temp"].map(PathBuf::from));
+        for _ in 0..20_000 {
+            queue.push_entries([PathBuf::from("C:/temp")]);
+        }
+        assert_eq!(
+            queue.take_changes(),
+            (false, vec![], vec![PathBuf::from("C:/temp")]),
+            "a busy folder must not trigger a whole-drive scan"
+        );
+        queue.push_entries((0..4097).map(|n| PathBuf::from(format!("C:/files/{n}.txt"))));
+        assert!(
+            queue.take_changes().0,
+            "lost refreshes must still reconcile"
+        );
+        assert_eq!(queue.take_changes(), (false, vec![], vec![]));
+    }
+    #[test]
+    fn only_a_windows_modified_notice_skips_the_folder_walk() {
+        use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
+        let modified = EventKind::Modify(ModifyKind::Any);
+        assert_eq!(entry_only(&modified), cfg!(windows));
+        for kind in [
+            EventKind::Create(CreateKind::Any),
+            EventKind::Remove(RemoveKind::Any),
+            EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+            EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+            EventKind::Any,
+        ] {
+            assert!(!entry_only(&kind), "{kind:?} must walk the changed path");
+        }
+    }
+    #[test]
+    fn an_entry_refresh_reads_the_folder_alone_and_keeps_its_contents() {
+        let (tx, _rx) = mpsc::channel();
+        let index = FileIndex {
+            catalog: Arc::new(RwLock::new(Catalog::default())),
+            generation: Arc::new(AtomicU64::new(1)),
+            tx,
+            lifetime: Arc::new(()),
+        };
+        let _owner = index.clone();
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("temp");
+        fs::create_dir_all(folder.join("deep")).unwrap();
+        fs::write(folder.join("deep/kept.md"), "").unwrap();
+        index.scan(1, &[dir.path().into()], 1, true);
+        assert_eq!(index.status().unwrap().count, 4);
+        // A file that arrives without its own notice stays unread: the refresh
+        // reads the folder entry only. Everything below the folder is kept.
+        fs::write(folder.join("unannounced.md"), "").unwrap();
+        index.scan_changes(1, &[], std::slice::from_ref(&folder), 2);
+        let status = index.status().unwrap();
+        assert_eq!(status.count, 4);
+        assert!(!status.scanning);
+        let catalog = index.catalog.read().unwrap();
+        assert!(catalog.entries.get(path_key(&folder).as_str()).is_some());
+        assert!(catalog
+            .entries
+            .get(path_key(&folder.join("deep/kept.md")).as_str())
+            .is_some());
     }
     #[test]
     fn parallel_walk_keeps_every_nested_file_and_cancels_revoked_scopes() {

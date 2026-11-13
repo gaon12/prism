@@ -164,9 +164,21 @@ try {
     assert.equal(result.runtime.softwareRendering, true, 'The app must choose software drawing');
   result.service = await invoke('index_service_status').catch(() => null);
   let status;
+  // Each change of the row count or scan state, with its time since launch,
+  // so a slow run shows which stage the time went to.
+  result.timeline = [];
   await until(
     async () => {
       status = await invoke('index_status');
+      const last = result.timeline.at(-1);
+      if (last?.count !== status.count || last?.scanning !== status.scanning)
+        result.timeline.push({
+          ms: Math.round(performance.now() - spawnedAt),
+          count: status.count,
+          scanning: status.scanning,
+          complete: status.initialScanComplete,
+          warnings: status.warnings.length,
+        });
       // The first moment a search can find files: a first scan's rows are
       // searchable before the whole snapshot is validated.
       if (result.firstSearchableMs === undefined && status.count > 0) {

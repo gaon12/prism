@@ -36,6 +36,37 @@ fn normalized(value: &str) -> String {
 fn path_key(path: &Path) -> String {
     path_key_text(&path.to_string_lossy())
 }
+
+/// How many CPUs this process may actually run on, for sizing worker threads.
+///
+/// `std::thread::available_parallelism` counts every CPU of the machine on
+/// Windows, even when the process is limited to fewer (an affinity mask or a
+/// Job Object, as the low-end test profile and some managed PCs do). Eight
+/// workers sharing one CPU then crowd out the window's own threads: on a
+/// 1-CPU limit the first results appeared after 9-20 s instead of about 2 s.
+/// So on Windows the count is capped by the process affinity mask.
+fn usable_cpus() -> usize {
+    let all = std::thread::available_parallelism().map_or(1, usize::from);
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
+        let (mut process, mut system) = (0usize, 0usize);
+        // SAFETY: the pseudo handle needs no closing; both pointers are valid locals.
+        if unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) } != 0 {
+            return cpus_allowed(all, process);
+        }
+    }
+    all
+}
+
+/// `all` CPUs limited to the CPUs set in an affinity `mask` (at least one).
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn cpus_allowed(all: usize, mask: usize) -> usize {
+    match mask.count_ones() as usize {
+        0 => all.max(1),
+        allowed => allowed.min(all).max(1),
+    }
+}
 fn path_key_text(value: &str) -> String {
     let value = value
         .strip_prefix(r"\\?\UNC\")
@@ -755,9 +786,7 @@ impl FileIndex {
         });
         let wake = Condvar::new();
         let unreadable = Mutex::new(PendingPaths::default());
-        let threads = std::thread::available_parallelism()
-            .map_or(2, usize::from)
-            .clamp(1, 8);
+        let threads = usable_cpus().clamp(1, 8);
         std::thread::scope(|scope| {
             for _ in 0..threads {
                 let jobs = &jobs;
@@ -1267,9 +1296,7 @@ fn top_matches(
         }
         (total, heap)
     };
-    let threads = std::thread::available_parallelism()
-        .map_or(1, |count| count.get())
-        .min(8);
+    let threads = usable_cpus().min(8);
     let count = candidates.len();
     let (total, heap) = if count < 20_000 || threads < 2 {
         scan(0..count)
@@ -1513,6 +1540,17 @@ mod scan_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn worker_threads_follow_the_cpus_the_process_may_use() {
+        // A 1-CPU limit on a 16-CPU machine gives one worker, not sixteen.
+        assert_eq!(cpus_allowed(16, 0b1), 1);
+        assert_eq!(cpus_allowed(16, 0b1010), 2);
+        // A mask never raises the machine's count, and an empty one is ignored.
+        assert_eq!(cpus_allowed(4, usize::MAX), 4);
+        assert_eq!(cpus_allowed(4, 0), 4);
+        assert_eq!(cpus_allowed(0, 0), 1);
+        assert!(usable_cpus() >= 1);
+    }
     #[test]
     fn explicit_reset_clears_catalog_and_prevents_old_scan_publication() {
         let (tx, _rx) = mpsc::channel();

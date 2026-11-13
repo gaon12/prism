@@ -82,9 +82,7 @@ impl FileIndex {
             .catalog
             .read()
             .is_ok_and(|catalog| catalog.entries.is_empty());
-        let threads = std::thread::available_parallelism()
-            .map_or(2, usize::from)
-            .clamp(1, 8);
+        let threads = usable_cpus().clamp(1, 8);
         let mut rows = Vec::new();
         let mut row_count = 0usize;
         let mut shown = Instant::now();

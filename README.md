@@ -483,6 +483,14 @@ npm run test:native
 
 This tests actual WebView2 windows, IPC, shortcut registration, isolated settings persistence, restart recovery and Markdown writes. It uses a temporary data directory through the development-only `PRISM_DEV_DATA_DIR` override, plus a separate WebView2 profile. Isolated debug tests skip the single-instance handoff so they can coexist with an open user app. Normal debug and release apps retain single-instance behavior. Screenshots and test output are saved in the OS temporary directory, outside committed source. The tests do not send physical OS keyboard input or exercise native file-picker dialogs. Isolated debug profiles inject an in-memory clipboard, including copy commands, so they never read or write the user’s system clipboard. Clipboard fixtures cover text/link/image restoration, filtering, pinning, retention settings, first-run acknowledgment and restart; real Windows clipboard capture remains a separate manual integration check.
 
+Portable fixtures must place a regular `prism.portable` file beside the executable
+and use its adjacent `PrismData` directory. The shared launcher checks these paths
+before spawning, rejecting missing markers and linked or invalid data paths.
+These checks do not create a profile or provide a sandbox; the caller must still
+own the executable and fixture directory. A missing marker can select installed
+mode and affect normal-profile startup settings, so an assertion after launch
+is too late to establish isolation.
+
 Document PDF export checks use a separate Python 3.11+ inspector. For Windows
 native document checks, prepare it in PowerShell before running the fixture:
 

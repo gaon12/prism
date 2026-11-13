@@ -310,6 +310,24 @@ and the owned app exited normally. An initial helper run omitted the portable
 marker and stopped at the install-kind assertion before document interaction;
 the corrected run verified the marker and expected scope/settings first.
 
+A later audit confirmed that the failed helper had registered its temporary
+executable in the user's Windows startup entry. That exact registration was
+backed up and removed. The pre-test value is unknown, so restoration of the
+original startup entry or all normal-profile state is not claimed. The shared
+launcher now validates the portable marker, executable and adjacent data path
+before spawning (`6489ac0`). Six new preflight regressions and five related
+evidence checks passed, followed by all 58 release-tooling checks.
+
+The guarded launcher also passed the unchanged native document suite using the
+`254a43f` release executable: source/revision/restart checks and source-on/off
+PDF/HWPX exports passed, with no console errors or warnings. Both exported PDF
+pages were independently rendered and reviewed; literal source paths and authored
+notes were retained. This suite uses synthetic loopback generation and is separate
+from the actual 1.7B success recorded below. The fixture source is `6489ac0`, not
+the product executable's revision. Evidence:
+`.dev/portable-marker-side-effect-20261114/qualification.json`, SHA-256
+`11a561833756006404393a1b46e2e8e9153059e62d17ecbf92fe9695b37e80b8`.
+
 The fixed UI executable is SHA-256
 `a5025a2723b41e5b7367ea356b685db9f4f49ec0276e3c90b915ef62f9938395`.
 All Rust sources and canonical native-generation scripts match qualified

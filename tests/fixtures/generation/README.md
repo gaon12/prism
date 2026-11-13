@@ -142,6 +142,36 @@ revision. This is literal-span validation; field meaning, explicit-unavailabilit
 classification and overall claim truth remain unverified. The stricter path
 still needs actual-model and native-app qualification.
 
+A fresh request using that stricter source rule produced the same decoded wrong
+place citation and was rejected by the newly compiled strict core. It was not
+accepted or repaired. The same UUIDs and excerpts were retained; only the generic
+literal/citation instruction was added to the request. Evidence is in
+`.dev/document-assembly-strict-uuid-inference-20261113/qualification.json`, SHA-256
+`39b0797fa6bfbbeb0ee42e8b3791f616bf8568edb90e1da29f556b8fdfc21218`.
+
+A separate value/quote-only prototype then removed provider-owned citation
+labels from its response contract. The app assigns a citation only when the
+returned literal value or supporting quote uniquely matches a currently supplied
+excerpt. Zero or multiple matches fail without guessing. An explicit
+unavailability notice displays the actual source statement, rather than adding
+a stronger absence assertion. Old `sourceLabels` responses are rejected as an
+invalid schema, not silently corrected. Seven offline protocol checks cover
+ambiguity, quotes, unsupported values, contradictory states and blank display.
+
+One actual request with the same failed UUIDs and excerpts passed this prototype:
+the original facts/table assertions passed, values were preserved and every
+application-assigned citation matched its supporting excerpt. HTTP took 30.80 s
+(1061 prompt / 391 completion tokens, cache 0, normal stop, no truncation); minimum
+available memory was 3.79 GiB, with the original guards and owned-server cleanup
+intact. The prototype also specializes the trusted system instructions to make
+citations app-owned while preserving source-permission and untrusted-data rules.
+This changes the extraction protocol, not just prompt placement. It has not been
+adopted in production or qualified in the native app, and one request is not a
+stability result. Raw provider data and app-derived citation/rendering structures
+are separate. Evidence is in
+`.dev/document-assembly-derived-citations-20261113/qualification.json`, SHA-256
+`fea384a63ccd37ecc47db8491b36531ec2c1fe7161f2230125408d11a61c6553`.
+
 Rejecting an output that violates a structured plan is a useful intermediate
 behavior, but it would not satisfy the current positive generation gate. The
 present response contains neither requested output, so there is no semantic

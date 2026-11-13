@@ -4,6 +4,13 @@ The three Markdown files are public, test-authored source documents. The native
 generation gate checks actual pinned models against their dates, amounts and
 locations; it does not substitute generated answers.
 
+The pinned Qwen models are test fixtures, not Prism's default generative model.
+New profiles have no local or external generation configuration. Users configure
+an OpenAI-compatible server and model; Prism does not install or start that
+generative server. The native tests launch their own owned server and explicitly
+configure their private app profile. Changing a qualification fixture therefore
+does not change user settings or introduce a managed product model.
+
 `outline-duplicate-ids.txt` retains the assistant's JSON content captured from
 Qwen3-1.7B Q8 with the pinned b11960 CPU runtime on 2026-11-12. The direct wire
 probe used the workshop document's paragraphs 6, 3, 5, 4, 1 and 9, separately

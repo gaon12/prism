@@ -64,8 +64,12 @@ cargo test --manifest-path tools/platform-qa/Cargo.toml --locked --test pdf_rend
 Set `PRISM_TEST_PDF_CAPTURE_DIR` to a new empty directory to retain the actual
 PNG/WebP outputs for visual review; files are created without overwriting.
 These are Linux library/owned-process checks, not a full Tauri desktop/AppImage
-test. ARM compilation/execution, missing custom-font substitution and complete
-PDF feature coverage remain unverified. The production launcher is always
+test. The same five actual renderer/process checks also passed on native Linux
+ARM64 in [run 43366759936](https://github.com/gaon12/prism/actions/runs/43366759936/job/131705067001)
+at `7aaeca9`, including original page pixels, OCR-disabled collection media,
+bounded requests, cancellation and parent-death cleanup. This does not verify an
+ARM desktop session, real embedding inference, missing custom-font substitution
+or complete PDF feature coverage. The production launcher is always
 `current_exe`; the QA host implements the same dispatch before any other work.
 
 ```sh

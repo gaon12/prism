@@ -27,8 +27,8 @@ the artifact digest and HWPX were independently checked. The same Windows job
 also passed the separate document PDF/HWPX and download-cancellation checks.
 
 This qualifies that earlier label-based implementation, not the newer
-`4371494` value/quote-only extraction contract. The latter's component result is
-recorded below; native app qualification for that source still needs a fresh run.
+`4371494` value/quote-only extraction contract. The latter's component results and
+subsequent native qualification at `ead2af3` are recorded below.
 One successful native fixture does not establish model stability or arbitrary
 document correctness. Evidence:
 `.dev/ci-43446497263-native-evidence-20261114/qualification.json`, SHA-256
@@ -215,9 +215,12 @@ regression evidence, not a new inference or native app pass. Evidence:
 `4f4ed817e90b7d72d638cbe85fa07f8b97227dbcfa1636df967e359c6cca9d16`.
 
 Only structured full-body generation receives the trusted citation-ownership
-system specialization, and its length counts against the context budget. Exact
-redacted/truncated excerpts remain ephemeral, excluded from API serialization,
-debug output and history, and are discarded when external evidence is revoked.
+system specialization, and its length counts against the context budget. The
+additional validation buffer of exact redacted/truncated excerpts is ephemeral,
+excluded from API serialization, debug output and history, and discarded when
+external evidence is revoked. Model output can include source quotations and is
+stored under the existing answer/provenance controls; this buffer restriction
+does not mean generated quotations are never saved.
 Document revision citation-use flags reflect the assembled blocks; raw provider
 turns retain their own citation metadata. Ordinary chat, legacy free-form plans,
 outline generation and partial rewrites retain their existing paths.
@@ -233,8 +236,8 @@ active and the owned server exited. RAG QA passed 130 tests and strict Clippy.
 `body-derived-citations.txt` preserves the earlier prototype response for decoder
 and source-assignment regression tests only; it is never a model input.
 
-This remains a component result, not repeated stability or a native app,
-retrieval, PDF/HWPX export or reopen pass. The required native gate remains open.
+That request was a component result, not repeated stability or a native app,
+retrieval, PDF/HWPX export or reopen pass. The later native result follows below.
 Evidence is in
 `.dev/document-quote-production-inference-attempt2-20261114/qualification.json`, SHA-256
 `0b9443b4b3735553c34f2c29ea579b8866c223d699cbd57e73ee97178f117c2b`.
@@ -262,10 +265,42 @@ that the earlier flat schema admitted this exact native response and the new
 schema rejects it. Synthetic valid protocol examples render identically in both
 compiled renderers; these examples are not new model responses or inference
 inputs. RAG QA passed 132 tests; external-provider offline tests passed two, and
-both strict Clippy checks passed. This grammar refinement still needs a new
-actual native run. Evidence:
+both strict Clippy checks passed. Offline evidence:
 `.dev/document-state-schema-compare-20261114/qualification.json`, SHA-256
 `bbd2aa41639169d83a34cbb01ec0f0d996a32bced5a838e8481938709456e2ef`.
+
+The Windows release app at `ead2af3` then passed the unchanged required actual
+1.7B native gate. It used fresh private portable data, the original pinned models
+and runtime, temperature zero and the original context/output limits. The real
+editor review, source-based answer, schema-constrained body, requested two-column
+table, HWPX export and reopening/answering all passed. The raw stored body matches
+the captured response: all five field IDs match the reviewed plan, and the
+explicit-unavailability value has empty `text` and a nonempty literal `quote`.
+There was no response replacement, field repair, retry or assertion relaxation.
+The body used 1701 prompt / 359 completion tokens, with 133 cached prompt tokens.
+The full native run took 151.05 s, with a 3.06 GiB minimum available memory, no
+resource/deadline stop, 82 unchanged integrity records, no console errors/warnings
+and normal app exit. The generation server was stopped during owned cleanup.
+
+A separate native IPC check exported that same immutable generated revision to
+PDF without another inference. The original facts oracle passed; the one-page
+PDF and its independent PyMuPDF rendering were checked for the date, place,
+budget, headcount, table, literal absence statement and five source footnotes.
+The complete rendered page had no observed clipping, overlap or missing glyphs.
+The revision remained unchanged and the app exited normally. This supplement
+qualifies the exporter, not the OS save dialog. Initial helper selector failures
+were preserved and corrected before the successful checks.
+
+The qualified executable is SHA-256
+`a72fb0d9e161955c24bc4af06ed66dbd47d71061756474906f7441cb43d7500d`.
+Combined native/PDF evidence:
+`.dev/native-state-schema-ead2af3-20261114/qualification.json`, SHA-256
+`7f6a5b03d68f8c12b49b57145937858548b3d283a8d0ae55831fc858e01328c8`.
+This is one actual fixture success, not repeated stability, arbitrary-document
+correctness or latest-source cross-platform CI qualification. A later editor
+scroll fix at `e165f40` passed production-bundle browser checks separately; it is
+outside the qualified `ead2af3` executable. The whole-catalog 1 CPU / 512 MiB
+performance target also remains open.
 
 Rejecting an output that violates a structured plan is a useful intermediate
 behavior, but it does not satisfy the positive native generation gate. The

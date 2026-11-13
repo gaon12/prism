@@ -32,10 +32,14 @@ jobs:
             runner: windows-latest
             verifier: tools/update-verifier/target/debug/prism-update-verifier.exe
             suffix: ''
+          # macOS here only runs the checks and the library tests. The app
+          # itself is built by the macos-binary jobs (one per processor, at the
+          # same time) and put together by the macos job below.
           - platform: macos
             runner: macos-latest
             verifier: tools/update-verifier/target/debug/prism-update-verifier
-            suffix: ''
+            suffix: '-checks'
+            checks_only: true
           - platform: linux
             runner: ubuntu-22.04
             verifier: tools/update-verifier/target/debug/prism-update-verifier
@@ -104,9 +108,6 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
-      - name: Install universal macOS targets
-        if: matrix.platform == 'macos'
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           # Save the compiled dependencies even when a later step fails. The
@@ -187,13 +188,6 @@ jobs:
           path: src-tauri/target/release/prism.exe
           if-no-files-found: error
           retention-days: 7
-      - name: Build universal macOS app and DMG
-        if: matrix.platform == 'macos'
-        env:
-          BUILD_CONFIG: ${{ steps.plan.outputs.config }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri -- build --target universal-apple-darwin --bundles app,dmg --config "$BUILD_CONFIG" -- --locked
       - name: Build Linux AppImage and .deb
         if: matrix.platform == 'linux'
         env:
@@ -203,11 +197,7 @@ jobs:
         # The .deb (same binary) is only the input of the Flatpak bundle below.
         run: npm run tauri -- build --bundles appimage,deb --config "$BUILD_CONFIG" -- --locked
       - name: Test the native app library
-        # On macOS the universal build compiled into target/aarch64-apple-darwin. Testing the same
-        # target reuses those compiled dependencies instead of rebuilding everything for the host.
-        env:
-          TEST_TARGET: ${{ matrix.platform == 'macos' && '--target aarch64-apple-darwin' || '' }}
-        run: cargo test --manifest-path src-tauri/Cargo.toml --release --lib --locked $TEST_TARGET
+        run: cargo test --manifest-path src-tauri/Cargo.toml --release --lib --locked
       - name: Verify production UI interactions
         if: matrix.platform == 'linux'
         run: |
@@ -355,21 +345,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri -- signer sign --app-version "$VERSION" "out/Prism_${VERSION}_x64-setup.exe"
-      - name: Collect macOS downloads
-        if: matrix.platform == 'macos'
-        env:
-          VERSION: ${{ steps.plan.outputs.version }}
-          SIGNED: ${{ steps.plan.outputs.signed }}
-        run: |
-          mkdir out
-          bundle=src-tauri/target/universal-apple-darwin/release/bundle
-          images=("$bundle"/dmg/*.dmg)
-          if [ "${#images[@]}" -ne 1 ] || [ ! -f "${images[0]}" ]; then exit 1; fi
-          cp "${images[0]}" "out/Prism_${VERSION}_universal.dmg"
-          if [ "$SIGNED" = true ]; then
-            cp "$bundle/macos/Prism.app.tar.gz" "out/Prism_${VERSION}_universal.app.tar.gz"
-            cp "$bundle/macos/Prism.app.tar.gz.sig" "out/Prism_${VERSION}_universal.app.tar.gz.sig"
-          fi
       - name: Collect Linux download
         if: matrix.platform == 'linux'
         env:
@@ -404,7 +379,7 @@ jobs:
           node scripts/build-flatpak.mjs --deb "${debs[0]}" --version "$VERSION" --arch "$ARCH" --out out
           test -s "out/Prism_${VERSION}_${ARCH}.flatpak"
       - name: Verify updater artifact against the app's public key
-        if: steps.plan.outputs.signed == 'true'
+        if: steps.plan.outputs.signed == 'true' && !matrix.checks_only
         env:
           VERSION: ${{ steps.plan.outputs.version }}
           PLATFORM: ${{ matrix.platform }}
@@ -412,16 +387,17 @@ jobs:
         run: |
           case "$PLATFORM" in
             windows) file="Prism_${VERSION}_x64-setup.exe" ;;
-            macos) file="Prism_${VERSION}_universal.app.tar.gz" ;;
             linux) file="Prism_${VERSION}_${ARCH}.AppImage" ;;
             *) exit 1 ;;
           esac
           "$PRISM_UPDATE_VERIFIER" --version "$VERSION" --file "out/$file"
       - name: Hash downloads
+        if: ${{ !matrix.checks_only }}
         env:
           VERSION: ${{ steps.plan.outputs.version }}
         run: node scripts/release-checksums.mjs --dir out --version "$VERSION" --write
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+      - if: ${{ !matrix.checks_only }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: downloads-${{ matrix.platform }}${{ matrix.suffix }}
           path: out/*
@@ -436,8 +412,162 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  # The universal macOS app used to be compiled for both processors one after
+  # the other in a single job (35 + 28 minutes, then 28 more for the tests).
+  # Each processor now builds in its own job at the same time, the tests run
+  # in the build job above, and the macos job joins the two programs and makes
+  # the app, the DMG and the updater signature.
+  macos-binary:
+    name: Build macos program (${{ matrix.arch }})
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
+    runs-on: macos-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      PRISM_UPDATER_PUBLIC_KEY: ${{ vars.PRISM_UPDATER_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Use a temp folder without aliases
+        # See the build job: macOS TMPDIR passes through the /var symlink.
+        run: |
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Check versions, tag and updater key configuration
+        id: plan
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: node scripts/release-config.mjs --platform macos --output "$RUNNER_TEMP/prism-build.json"
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add ${{ matrix.arch }}-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          cache-on-failure: true
+          # One cache per processor: they compile different files.
+          key: ${{ matrix.arch }}
+          workspaces: src-tauri
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: '34.1'
+          repo-token: ${{ github.token }}
+      - run: npm ci
+      - name: Build the program for this processor
+        # The same build `tauri build --target universal-apple-darwin` runs for
+        # each processor, without bundling (the macos job bundles once).
+        env:
+          BUILD_CONFIG: ${{ steps.plan.outputs.config }}
+        run: npm run tauri -- build --target ${{ matrix.arch }}-apple-darwin --no-bundle --config "$BUILD_CONFIG" -- --locked
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          # Only an input of the macos job, never a release download.
+          name: macos-program-${{ matrix.arch }}
+          path: src-tauri/target/${{ matrix.arch }}-apple-darwin/release/prism
+          if-no-files-found: error
+          retention-days: 1
+
+  macos:
+    name: Build macos
+    needs: macos-binary
+    timeout-minutes: 60
+    runs-on: macos-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      PRISM_UPDATER_PUBLIC_KEY: ${{ vars.PRISM_UPDATER_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Use a temp folder without aliases
+        # See the build job: macOS TMPDIR passes through the /var symlink.
+        run: |
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Check versions, tag and updater key configuration
+        id: plan
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: node scripts/release-config.mjs --platform macos --output "$RUNNER_TEMP/prism-build.json"
+      - run: npm ci
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: macos-program-*
+          path: programs
+      - name: Join both programs into one universal program
+        # This is what Tauri itself does for --target universal-apple-darwin:
+        # lipo the two release programs into target/universal-apple-darwin.
+        run: |
+          out=src-tauri/target/universal-apple-darwin/release
+          mkdir -p "$out"
+          lipo -create -output "$out/prism" programs/macos-program-aarch64/prism programs/macos-program-x86_64/prism
+          chmod +x "$out/prism"
+          # Refuse a program that is missing either processor.
+          lipo "$out/prism" -verify_arch arm64 x86_64
+          lipo -info "$out/prism"
+      - name: Bundle the universal macOS app and DMG
+        env:
+          BUILD_CONFIG: ${{ steps.plan.outputs.config }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri -- bundle --target universal-apple-darwin --bundles app,dmg --config "$BUILD_CONFIG"
+      - name: Collect macOS downloads
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          SIGNED: ${{ steps.plan.outputs.signed }}
+        run: |
+          mkdir out
+          bundle=src-tauri/target/universal-apple-darwin/release/bundle
+          # The bundled app must hold the joined program for both processors.
+          programs=("$bundle"/macos/Prism.app/Contents/MacOS/*)
+          [ -f "${programs[0]}" ] || exit 1
+          for program in "${programs[@]}"; do lipo "$program" -verify_arch arm64 x86_64; done
+          images=("$bundle"/dmg/*.dmg)
+          if [ "${#images[@]}" -ne 1 ] || [ ! -f "${images[0]}" ]; then exit 1; fi
+          cp "${images[0]}" "out/Prism_${VERSION}_universal.dmg"
+          if [ "$SIGNED" = true ]; then
+            cp "$bundle/macos/Prism.app.tar.gz" "out/Prism_${VERSION}_universal.app.tar.gz"
+            cp "$bundle/macos/Prism.app.tar.gz.sig" "out/Prism_${VERSION}_universal.app.tar.gz.sig"
+          fi
+      - name: Verify updater artifact against the app's public key
+        if: steps.plan.outputs.signed == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          cargo build --manifest-path tools/update-verifier/Cargo.toml --locked
+          tools/update-verifier/target/debug/prism-update-verifier --version "$VERSION" --file "out/Prism_${VERSION}_universal.app.tar.gz"
+      - name: Hash downloads
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: node scripts/release-checksums.mjs --dir out --version "$VERSION" --write
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: downloads-macos
+          path: out/*
+          if-no-files-found: error
+          compression-level: 0
+
   draft:
-    needs: build
+    needs: [build, macos]
     if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.create_draft)
     runs-on: ubuntu-latest
     permissions:

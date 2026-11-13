@@ -189,3 +189,31 @@ replays did not isolate that background load, so their timings remain
 observations, without a clean-host performance qualification. Stored-field
 equivalence is unaffected. The hosted synthetic CPU profiles ran on a separate
 machine.
+
+## Retention after the captured snapshot
+
+[CI 43399104552](https://github.com/gaon12/prism/actions/runs/43399104552) at
+`edc375d` passed 79 tests and strict Clippy, including mixed seen/stale retention
+equivalence. Its single release executable then replayed the same 2,185,112-row
+capture in legacy/seen/seen/legacy order on one CPU with 512 MiB process/job
+limits, after stopping the identified busy MCP server.
+
+| Retention path     | Wall milliseconds | Thread cycles (millions) | Keys passed to predicate |
+| ------------------ | ----------------: | -----------------------: | -----------------------: |
+| Legacy, first      |             271.4 |                    814.2 |                2,185,112 |
+| Seen-first, first  |              6.95 |                     21.6 |                        0 |
+| Seen-first, second |              6.62 |                     20.6 |                        0 |
+| Legacy, last       |             276.4 |                    827.2 |                2,185,112 |
+
+All entries were already seen by sweep 1. Before/after counts and complete
+stored-field SHA-256 matched in all four cases. Retention averaged 273.9 versus
+6.78 wall milliseconds, saving about 0.267 seconds in this fixture; measured
+thread cycles fell by 97.4%. The fast path's raw CPU time readings were 15.625
+and 0 milliseconds, so their accounting resolution cannot establish its cost.
+Cycles remain unconverted. Peak job commit was 181.8–182.1 MiB, all input and
+executable hashes stayed unchanged, and no resource/deadline guard fired.
+
+This measures the actual retention methods on an owned catalog without a write
+lock, window queries or service contention. The observed saving does not explain
+the separate ten-second live-app delay. That delay still needs app profiling;
+the whole-app startup target is not qualified by this component result.

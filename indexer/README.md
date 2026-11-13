@@ -178,6 +178,16 @@ The tool flushes/fsyncs and reads back the complete capture, while stdout and
 error messages report only aggregate values. Capture timings include serialization
 and readback and do not measure a new host or raw NTFS performance.
 
+`cache_reader_bench import <private-row-capture> <new-derived-cache>` converts
+these rows into a distribution fixture with virtual references, geometry and
+checkpoint. It never treats the captured revision as USN data. It requires one
+root and metadata for every parent directory, preserves repeated non-root rows,
+and reports only aggregates. After writing/fsyncing a create-new cache it compares
+sorted row fingerprints, including duplicate multiplicity, against the original
+capture and reopens the cache with the streaming reader. Private names/paths stay
+in ignored local files. This prepares component data; it does not exercise real
+MFT IDs, extension ownership, journal replay, the protected Store or a new host.
+
 An explicit read-only probe is available for an already authorized Windows
 administrator shell:
 

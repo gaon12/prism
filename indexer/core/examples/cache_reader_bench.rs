@@ -20,6 +20,10 @@ use std::{
 };
 
 const DEVICE: &str = r"\Device\PrismSyntheticCache";
+#[path = "support/captured_rows.rs"]
+pub mod captured_rows;
+#[path = "cache_reader_bench/import.rs"]
+mod import;
 #[path = "cache_reader_bench/replay.rs"]
 mod replay;
 fn geometry() -> Geometry {
@@ -235,7 +239,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         [mode, path, count] if mode == "generate" => generate(Path::new(path), count.parse()?),
         [mode, path] if matches!(mode.as_str(), "full" | "stream") => measure(mode, Path::new(path)),
         [mode, path, output] if matches!(mode.as_str(), "replay-full" | "replay-stream") => replay::measure(mode, Path::new(path), Path::new(output)),
-        _ => Err(input_error("Usage: cache_reader_bench generate <new-cache> <count> | full|stream <synthetic-cache> | replay-full|replay-stream <synthetic-cache> <new-output>; reads require G on stdin").into()),
+        [mode, path, output] if mode == "import" => import::run(Path::new(path), Path::new(output)),
+        _ => Err(input_error("Usage: cache_reader_bench generate <new-cache> <count> | full|stream <synthetic-cache> | replay-full|replay-stream <synthetic-cache> <new-output> | import <private-row-capture> <new-derived-cache>; reads require G on stdin").into()),
     }
 }
 fn main() {

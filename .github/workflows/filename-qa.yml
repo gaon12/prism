@@ -1,6 +1,11 @@
 name: Filename preparation QA
 on:
   workflow_dispatch:
+    inputs:
+      profile_cpu:
+        description: Profile synthetic 2.2M-row preparation on one CPU
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -60,3 +65,19 @@ jobs:
             tools/filename-qa/target/release/prism-filename-qa.exe
             tools/filename-qa/executable.json
           if-no-files-found: error
+      - name: Install Python for the optional CPU profile
+        if: inputs.profile_cpu
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Profile synthetic preparation and real publication
+        if: inputs.profile_cpu
+        shell: pwsh
+        run: python -B scripts/profile-filename-cpu.py --output "$env:RUNNER_TEMP/filename-cpu-evidence"
+      - name: Keep synthetic CPU measurements
+        if: always() && inputs.profile_cpu
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: filename-cpu-profile
+          path: ${{ runner.temp }}/filename-cpu-evidence
+          if-no-files-found: warn

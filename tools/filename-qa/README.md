@@ -68,3 +68,33 @@ GUI, IPC and provisional-query contention. They do not qualify the requested
 whole-app 5–7-second startup. Likewise, the harsh profile's aggregate app/WebView
 Job CPU must not be reported as Entry-construction CPU. Per-process CPU and
 app-side waits need their own measurements.
+
+## Explicit synthetic CPU profile
+
+The optional `profile_cpu` input of `filename-qa.yml` runs
+`python -B scripts/profile-filename-cpu.py --output <new-evidence-directory>`.
+Locally the output must be inside `.dev`; the workflow uses `RUNNER_TEMP`.
+The driver builds the current release test executable and runs the exact ignored
+`synthetic_preparation_cpu_stages` test in a fresh one-CPU, 512 MiB process/job
+limit, with kernel limit readback before releasing its start gate.
+
+The fixed sequence is fused/stages/stages/fused, each with 2,200,000 rows from the
+existing synthetic generator (6.25% CJK names, 10,007 directories). The actual
+protocol codec, private raw mapper, Entry constructor, compact insertion and
+`publish_provisional` implementation are called directly. Input generation and
+encoding, complete stored-field verification, setup and clock calibration are
+reported separately. A streaming, noncryptographic checksum must match before
+and after publication and across all four cases.
+
+Each requested stage reports thread user/kernel CPU from `GetThreadTimes`, wall
+time and `QueryThreadCycleTime` cycles. Accounting resolution can make very short
+stages report zero CPU; cycles are never converted to time. Instrumentation is
+per bounded protocol batch, and the fused cases provide a control for separating
+raw mapping from Entry construction. The driver preserves source/executable
+hashes, compiler version, full logs, job CPU and peak commit. It requires 3 GiB
+host memory before starting and stops owned processes below 1 GiB available.
+
+This synthetic component profile has no IPC, GUI, concurrent searches or live
+service. Its CPU costs and hosted-runner hardware must not be substituted for
+whole-app startup on the target PC. The uploaded evidence contains synthetic
+rows only; the private capture is neither read nor uploaded.

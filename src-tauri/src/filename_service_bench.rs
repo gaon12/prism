@@ -1,4 +1,8 @@
 //! Explicit synthetic client-only comparison. No pipe, live volume or model.
+#[cfg(windows)]
+#[path = "filename_service_cpu_bench.rs"]
+mod cpu;
+
 use super::*;
 use prism_ntfs_protocol::FileRecord;
 use std::{

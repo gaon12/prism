@@ -16,6 +16,24 @@ qualification stays opt-in; its success does not satisfy or replace that require
 gate. This policy applies to test fixtures. Product profiles continue to require
 the user's server and model configuration.
 
+[Windows CI run 43446497263](https://github.com/gaon12/prism/actions/runs/43446497263)
+passed the original actual 1.7B generation gate at `0d15e44`: the real editor saved
+the reviewed five-field layout, the generated HWPX contained the requested table
+and absence statement, and reopening the generated document and answering from it
+passed. The result records actual inference, no response replacement, the pinned
+assets, a verified private portable profile, no console errors/warnings and normal
+app exit. Its captured scripts and three source fixtures match that Git commit;
+the artifact digest and HWPX were independently checked. The same Windows job
+also passed the separate document PDF/HWPX and download-cancellation checks.
+
+This qualifies that earlier label-based implementation, not the newer
+`4371494` value/quote-only extraction contract. The latter's component result is
+recorded below; native app qualification for that source still needs a fresh run.
+One successful native fixture does not establish model stability or arbitrary
+document correctness. Evidence:
+`.dev/ci-43446497263-native-evidence-20261114/qualification.json`, SHA-256
+`1c8d712fd1470509d332f4c7dbec683a2444436209137fa0e3c0994fdf3c58db`.
+
 The required [Windows CI run 43377675738](https://github.com/gaon12/prism/actions/runs/43377675738)
 at `c8bec76` remains red for actual Qwen3-1.7B generation. Its body preserved the
 workshop date, location, budget and attendance in four fact paragraphs, but

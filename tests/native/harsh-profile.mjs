@@ -148,6 +148,9 @@ try {
     executable,
     portable: true,
     productionPortable: true,
+    // One CPU can keep the window waiting for well over the usual 25 s; a
+    // late window is a result to record (stages.windowReadyMs), not an error.
+    windowTimeout: 120_000,
     onSpawn: (owned) => {
       spawnedAt = performance.now();
       assigned = job.assign(owned.pid);

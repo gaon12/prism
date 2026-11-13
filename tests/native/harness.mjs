@@ -129,16 +129,22 @@ export async function launch(dataDir, options = {}) {
     }, 'isolated WebView endpoint');
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
     let main, quick;
-    await until(() => {
-      const pages = browser.contexts().flatMap((context) => context.pages());
-      main = pages.find(
-        (page) => page.url().includes('tauri.localhost') && !page.url().includes('#quick'),
-      );
-      quick = pages.find(
-        (page) => page.url().includes('tauri.localhost') && page.url().includes('#quick'),
-      );
-      return main && quick;
-    }, 'bundled main and Spotlight windows');
+    await until(
+      () => {
+        const pages = browser.contexts().flatMap((context) => context.pages());
+        main = pages.find(
+          (page) => page.url().includes('tauri.localhost') && !page.url().includes('#quick'),
+        );
+        quick = pages.find(
+          (page) => page.url().includes('tauri.localhost') && page.url().includes('#quick'),
+        );
+        return main && quick;
+        // A slow-start measurement (harsh-profile.mjs) passes a longer
+        // windowTimeout so a slow window is recorded instead of failing the run.
+      },
+      'bundled main and Spotlight windows',
+      options.windowTimeout,
+    );
     if (options.readyHeading !== false)
       await main
         .getByRole('heading', { name: options.readyHeading ?? '파일 검색', exact: true })

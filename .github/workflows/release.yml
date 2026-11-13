@@ -89,6 +89,11 @@ jobs:
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
+          # Save the compiled dependencies even when a later step fails. The
+          # Windows job has been failing at the model gate, so it never saved a
+          # cache and rebuilt every dependency from scratch (about 63 minutes).
+          # Only third-party build outputs are cached, never this repo's crates.
+          cache-on-failure: true
           workspaces: |
             src-tauri
             installer/src-tauri

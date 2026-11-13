@@ -129,3 +129,38 @@ hosted runner. Its different absolute timings are not a before/after product
 performance comparison. The product preparation code was unchanged. CPU cycles
 remain in their native unit, following the
 [Windows API guidance](https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-querythreadcycletime).
+
+## Same-capture check of temporary allocation removal
+
+The compact insertion change at `b3f041d` borrows the reused directory's search
+text and compares an ASCII name's lowercase bytes without a temporary string.
+Regression tests preserve case-sensitive Unix keys and projections added to an
+existing shared directory. Its [CI 43396679430](https://github.com/gaon12/prism/actions/runs/43396679430)
+passed 78 tests and strict Clippy; the [baseline CI 43396617065](https://github.com/gaon12/prism/actions/runs/43396617065)
+at `057bf8c` passed 76 tests and strict Clippy.
+
+The two CI-built release executables used the same Rust 1.100.0 compiler and
+differed in only `filename_compact.rs`. Their artifact digests, executable hashes
+and source commits were verified before replaying the same 2,185,112-row capture
+locally in a fixed A/B/B/A sequence, each in fresh one-CPU, 512 MiB process/job
+limits. A is the baseline; B removes the two temporary allocations.
+
+| Case      | Whole Job CPU (seconds) | Decode + build (wall seconds) | Insertion (wall seconds) |
+| --------- | ----------------------: | ----------------------------: | -----------------------: |
+| A, first  |                   4.827 |                         5.090 |                    3.923 |
+| B, first  |                   4.656 |                         4.529 |                    3.395 |
+| B, second |                   4.984 |                         4.436 |                    3.330 |
+| A, last   |                   4.780 |                         4.580 |                    3.475 |
+
+Whole Job CPU includes decoding, preparation, complete stored-field SHA-256
+verification and teardown. Its average was 4.8035 seconds for A and 4.8200 seconds
+for B (+0.34%), with overlapping ranges: this check establishes **no CPU gain**.
+Wall averages were lower, but the first A was also slower than the last A; those
+observations do not qualify a startup performance improvement.
+
+All four catalogs retained the same complete stored-field SHA-256
+`2050731a23fb94bb1ba25399970e97a12beed3cf1533618712447fc9794f2b2c`.
+Peak job commit was 181.8–182.5 MiB, input/executable/controller hashes stayed
+unchanged, and no resource or deadline guard fired. This preserves allocation
+removal and semantic equivalence evidence, while the whole-app 5–7-second target
+still needs its separate measurement.

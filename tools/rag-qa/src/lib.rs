@@ -17,6 +17,7 @@ mod document_store;
 mod generation_runtime;
 #[path = "../../../src-tauri/src/mcp_client.rs"]
 mod mcp_client;
+#[cfg(windows)]
 #[path = "../../../src-tauri/src/process_job.rs"]
 mod process_job;
 #[path = "../../../src-tauri/src/rag_external.rs"]

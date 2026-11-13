@@ -16,7 +16,8 @@ The npm command compiles with one job and runs two test threads. The tool's dev
 and test profiles omit debug symbols while retaining normal assertions and
 overflow checks. Use CARGO_NET_OFFLINE=true when all locked dependencies are
 already cached. CARGO_TARGET_DIR can choose a different build-output location.
-Rust and a C compiler for bundled SQLite are required.
+Rust and a C compiler for bundled SQLite are required. The complete suite also
+requires Node.js on `PATH` for its actual stdio MCP server fixture.
 
 The modules have the same private visibility as in the app. The QA crate allows
 dead-code warnings because full-app callers are absent; it does not suppress
@@ -113,5 +114,44 @@ The search-engine adapters in rag_search_snapshot.rs remain part of the full
 app. This crate does **not** qualify their linkage, filesystem indexing, vector
 retrieval, GUI behavior, actual generative-model quality or shipping artifacts.
 Keep the full application CI and native tests. The first Windows verification
-passed 90 core tests and strict Clippy; other OS executions of this crate have
-not yet been qualified.
+passed 90 core tests and strict Clippy. A later Linux run passed 129 core tests
+with one native-store test ignored, plus strict all-target Clippy; the native
+store test is selected separately in its disposable session.
+
+## Disposable Linux Secret Service check
+
+With Linux, Python 3.11+, Cargo's locked dependencies already cached,
+`dbus-daemon`, `gdbus` and GNOME Keyring available, run:
+
+```sh
+export CARGO_TARGET_DIR=/absolute/scratch/cargo-target
+python3 -B scripts/qualify-linux-secret-service.py \
+  --output /absolute/new/secret-service-evidence
+```
+
+Use `--daemon /absolute/path/gnome-keyring-daemon` and optionally
+`--library-path /absolute/private/library-directory` for a previously prepared
+private installation. The script does not install packages, change `HOME` or
+select the login-session bus. It starts a new private bus, verifies the bus and
+Secret Service peer PIDs, and gives its foreground daemon private XDG paths.
+Only random credential IDs and synthetic values are used. The separate
+`secret-store-qa` binary imports the production credential files directly and
+refuses operations without its fixture's private bus, runtime and nonce.
+
+The original ignored roundtrip test runs first. Additional phases replace a
+synthetic key, lock the private collection, require read/write/delete storage
+errors, and check that no profile fallback directory appeared. Only the owned
+daemon is then restarted with the same private keyring and password. The original
+value must survive before deletion and repeated deletion are checked. This
+qualifies headless locked-store failure and preservation across that restart;
+it does not qualify desktop password dialogs, every Secret Service implementation,
+Flatpak or the full application.
+
+Compilation uses one job, offline locked inputs, a 3-GiB memory preflight and a
+1-GiB stop. Each compilation is bounded to 15 minutes, the original native test
+to 60 seconds and each additional credential phase to 20 seconds. A parent can
+also supply `--stop-file /absolute/interlock` to stop owned work. The controller
+terminates its process groups and removes its temporary keyring before success.
+Evidence retains source/binary hashes and logs, never the keyring or its random
+password. A cleanup failure makes the result fail. Missing system-prompt warnings
+are expected during the intentionally locked headless phase and remain in the logs.

@@ -5,6 +5,12 @@ edition = "2021"
 rust-version = "1.94"
 publish = false
 
+[[bin]]
+name = "secret-store-qa"
+path = "src/bin/secret-store-qa.rs"
+test = false
+bench = false
+
 # Keep this additional verification path practical on developer machines.
 # Assertions and overflow checks retain Cargo's normal test defaults.
 [profile.dev]

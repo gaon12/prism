@@ -236,3 +236,33 @@ This measures the actual retention methods on an owned catalog without a write
 lock, window queries or service contention. The observed saving does not explain
 the separate ten-second live-app delay. That delay still needs app profiling;
 the whole-app startup target is not qualified by this component result.
+
+## Replaying multiple watch paths
+
+`prism-filename-qa watch capture.pnrows roots.private.json` measures the catalog
+update after rewalking a fixed list of paths. The private JSON input is an array
+of 1–64 path strings, limited to 64 KiB. Use the same immutable capture and path
+file for both source revisions. As with the other replay modes, assign the
+waiting process to the verified one-CPU, 512 MiB process/job limits before
+sending its `G` start signal. No capture or path values are printed.
+
+The build script extracts the watch-update branch from that build's actual
+`src-tauri/src/index.rs`; `Entries::subtree` uses that build's actual compact
+catalog. Comparing source revisions therefore measures their real branch and
+catalog implementation rather than a manually reproduced legacy algorithm.
+Record both source revisions, executable/input hashes and the emitted
+`productionLoopSha256` and `normalizedPathsSha256` with the results.
+
+All captured rows have already been seen by sweep 1, modelling paths just
+rewalked after a snapshot. Input decoding, preparation, root-file parsing and
+complete stored-field SHA-256 passes run outside the watch timer. The timed
+branch includes subtree selection, stale-key collection and removal; it must
+leave the all-seen catalog unchanged. A separate mixed seen/stale regression
+checks actual removal, uncertain paths, overlapping roots in both orders and
+an unrelated sibling. The executable reports wall time and raw current-thread
+CPU/cycles without converting cycles to seconds.
+
+This is a component replay without filesystem walks, a catalog lock, window
+queries or service contention. It does not qualify app startup or explain the
+frequency of watch events. No before/after performance claim is available until
+both revisions have been built and replayed with identical private inputs.

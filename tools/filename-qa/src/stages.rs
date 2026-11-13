@@ -9,6 +9,7 @@ enum StageMode {
     Stages,
     ReconcileLegacy,
     ReconcileSeen,
+    Watch,
 }
 
 /// The first whole-drive sweep has seen every inserted row. The legacy path
@@ -143,7 +144,7 @@ pub(super) fn run_stages() -> io::Result<()> {
         return Err(io::ErrorKind::Unsupported.into());
     }
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args.len() != 2 {
+    if !(2..=3).contains(&args.len()) {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     let mode = match args[0].to_str() {
@@ -152,8 +153,12 @@ pub(super) fn run_stages() -> io::Result<()> {
         Some("stages") => StageMode::Stages,
         Some("reconcile-legacy") => StageMode::ReconcileLegacy,
         Some("reconcile-seen") => StageMode::ReconcileSeen,
+        Some("watch") if args.len() == 3 => StageMode::Watch,
         _ => return Err(io::ErrorKind::InvalidInput.into()),
     };
+    if mode != StageMode::Watch && args.len() != 2 {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
     // The driver must assign the owned process to a verified Job Object before
     // sending G. Capture files are not opened until after that signal.
     println!("{{\"waitingForStart\":true}}");
@@ -176,8 +181,14 @@ pub(super) fn run_stages() -> io::Result<()> {
     builder.flush();
     let build_time = started.elapsed();
     let is_reconcile = matches!(mode, StageMode::ReconcileLegacy | StageMode::ReconcileSeen);
+    let is_watch = mode == StageMode::Watch;
+    let watch_roots = if is_watch {
+        watch::roots(&args[2])?
+    } else {
+        Vec::new()
+    };
     let before_verification = Instant::now();
-    let before_signature = is_reconcile.then(|| stage_signature(&builder.catalog));
+    let before_signature = (is_reconcile || is_watch).then(|| stage_signature(&builder.catalog));
     let before_verification_time = before_verification.elapsed();
     let reconcile_measurement = if is_reconcile {
         let count = builder.catalog.len();
@@ -197,11 +208,16 @@ pub(super) fn run_stages() -> io::Result<()> {
     } else {
         None
     };
+    let watch_measurement = if is_watch {
+        Some(watch::measure(&mut builder.catalog, &watch_roots)?)
+    } else {
+        None
+    };
     let verification = Instant::now();
     let signature = (mode != StageMode::Decode).then(|| stage_signature(&builder.catalog));
     let verification_time = verification.elapsed();
-    if is_reconcile && before_signature != signature {
-        return Err(io::Error::other("Reconcile changed stored catalog fields"));
+    if (is_reconcile || is_watch) && before_signature != signature {
+        return Err(io::Error::other("Update changed stored catalog fields"));
     }
     println!(
         "{}",
@@ -217,9 +233,12 @@ pub(super) fn run_stages() -> io::Result<()> {
             "insertWallSeconds":(mode!=StageMode::Decode).then_some(builder.insert_time.as_secs_f64()),
             "decodeAndDispatchWallSeconds":build_time.saturating_sub(builder.prepare_time).as_secs_f64(),
             "verificationWallSeconds":verification_time.as_secs_f64(),
-            "beforeReconcileSha256":before_signature,
+            "beforeReconcileSha256":is_reconcile.then_some(before_signature.as_ref()).flatten(),
             "beforeReconcileVerificationWallSeconds":is_reconcile.then_some(before_verification_time.as_secs_f64()),
             "reconcile":reconcile_measurement,
+            "beforeWatchSha256":is_watch.then_some(before_signature.as_ref()).flatten(),
+            "beforeWatchVerificationWallSeconds":is_watch.then_some(before_verification_time.as_secs_f64()),
+            "watch":watch_measurement,
             "rawMapperSha256":format!("{:x}",Sha256::digest(include_bytes!(concat!(env!("OUT_DIR"),"/raw.rs"))))
         })
     );

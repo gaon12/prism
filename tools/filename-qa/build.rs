@@ -18,4 +18,31 @@ fn main() {
         &tail[..end],
     )
     .expect("write unchanged raw mapper");
+
+    // Keep both sides of a historical comparison on their actual watch loop,
+    // including key/seen ordering. Do not maintain a benchmark imitation.
+    let index_path = "../../src-tauri/src/index.rs";
+    println!("cargo:rerun-if-changed={index_path}");
+    let index = fs::read_to_string(index_path).expect("production filename index");
+    let anchor = "// Keep watch updates limited to their own subtrees,";
+    assert_eq!(index.matches(anchor).count(), 1, "unique watch loop");
+    let tail = &index[index.find(anchor).unwrap()..];
+    let start = tail
+        .find("let mut key = String::new();")
+        .expect("watch body");
+    let boundary = tail
+        .find("\n            if catalog.entries.len() != before")
+        .expect("watch body boundary");
+    let end = tail[..boundary].rfind('}').expect("watch branch end");
+    assert_eq!(tail[end..boundary].trim(), "}");
+    let body = &tail[start..end];
+    assert!(body.contains("for key in stale {") && body.contains("catalog.entries.remove(&key);"));
+    let generated = format!(
+        "fn production_update(catalog: &mut WatchCatalog, paths: &[PathBuf], sweep: u64, uncertain: &HashSet<String>) {{\n{body}\n}}\n"
+    );
+    fs::write(
+        PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("watch.rs"),
+        generated,
+    )
+    .expect("write unchanged production watch loop");
 }

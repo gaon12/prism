@@ -32,6 +32,9 @@ mod index {
         include!(concat!(env!("OUT_DIR"), "/raw.rs"));
     }
     include!("stages.rs");
+    mod watch {
+        include!("watch.rs");
+    }
 }
 
 pub fn run() -> std::io::Result<()> {

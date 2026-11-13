@@ -259,6 +259,71 @@ try {
     'Document generation history must stay out of chat lists',
   );
   assert.equal((await invoke('rag_list', { query: '120000', limit: 100 })).length, 0);
+  // The normal provider response has four valid blocks assigned to summary.
+  // A second reviewed section must not disappear just because JSON is valid.
+  const coverage = await invoke('doc_create', {
+    input: {
+      title: 'Incomplete body guard',
+      purpose: 'shared',
+      scopeIds: [scopeId],
+      templateMarkdown: null,
+    },
+  });
+  const coverageId = coverage.document.id;
+  const coverageReviewed = await invoke('doc_save_outline', {
+    id: coverageId,
+    expected: coverage.revision.id,
+    plan: {
+      title: 'Incomplete body guard',
+      sections: [
+        { id: 'summary', heading: 'Summary', instruction: 'shared' },
+        { id: 'details', heading: 'Details', instruction: 'shared details' },
+      ],
+    },
+    reviewed: true,
+  });
+  const coverageSaved = await invoke('doc_save_manual', {
+    id: coverageId,
+    expected: coverageReviewed.id,
+    blocks: ['summary', 'details'].map((sectionId) => ({
+      id: `saved_${sectionId}`,
+      sectionId,
+      kind: 'userInput',
+      markdown: `Existing ${sectionId}`,
+      sourceLabels: [],
+      claimsVerified: false,
+      userEdited: true,
+    })),
+    plan: null,
+  });
+  const coverageHistory = await invoke('doc_revisions', {
+    id: coverageId,
+    before: null,
+    limit: 100,
+  });
+  const coverageCalls = calls.length;
+  const incomplete = await result('doc_generate_body', {
+    request: {
+      ...request(coverageSaved),
+      documentId: coverageId,
+    },
+  });
+  assert.equal(
+    incomplete.error?.code,
+    'malformed',
+    'Body generation must not silently omit a reviewed section',
+  );
+  assert.deepEqual(
+    (await invoke('doc_get', { id: coverageId, revisionId: null })).revision,
+    coverageSaved,
+  );
+  assert.deepEqual(
+    await invoke('doc_revisions', { id: coverageId, before: null, limit: 100 }),
+    coverageHistory,
+  );
+  assert.equal((await invoke('doc_job', { id: coverageId })).phase, 'failed');
+  assert.equal(calls.length, coverageCalls + 1, 'Incomplete bodies are not repaired or retried');
+  await invoke('doc_delete', { id: coverageId });
   const modified = structuredClone(body.blocks);
   modified.find((block) => block.id === 'blank').kind = 'userInput';
   modified.find((block) => block.id === 'blank').markdown = '사용자가 채운 값';

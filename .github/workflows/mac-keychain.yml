@@ -1,0 +1,50 @@
+# The credential provider is exercised against an empty temporary Keychain on
+# a disposable runner. This workflow has no release or publishing steps.
+name: Mac Keychain qualification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mac-keychain-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  credentials:
+    name: Verify actual native Keychain operations
+    runs-on: macos-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: tools/rag-qa
+          key: mac-keychain
+      - name: Check isolation and failure recovery before using the OS store
+        run: python -B -m unittest discover -s tests/scripts -p test_qualify_macos_keychain.py -v
+      - name: Exercise production credentials in a disposable Keychain
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TMPDIR: ${{ runner.temp }}
+        run: python -B scripts/qualify-macos-keychain.py --output "$RUNNER_TEMP/prism-keychain-evidence"
+      - name: Keep test logs and restoration evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: mac-keychain-qualification
+          # The temporary Keychain lives outside this directory and is not uploaded.
+          path: ${{ runner.temp }}/prism-keychain-evidence/
+          if-no-files-found: warn

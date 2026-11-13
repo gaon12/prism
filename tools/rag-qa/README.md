@@ -39,6 +39,10 @@ with Python 3.11 or newer:
 python3 -B scripts/qualify-macos-keychain.py --output "$RUNNER_TEMP/prism-keychain-evidence"
 ```
 
+The manual [Mac Keychain qualification workflow](../../.github/workflows/mac-keychain.yml)
+runs these checks independently of Release and keeps `mac-keychain-qualification`
+logs on success or failure. It has no release or publishing steps.
+
 The script first compiles this crate's actual test binary with locked application
 dependency versions. It then creates a private temporary Keychain, selects it as
 the User-domain default and sole search entry, and verifies that selection before

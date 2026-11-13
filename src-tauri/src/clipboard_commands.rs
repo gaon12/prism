@@ -18,8 +18,11 @@ pub async fn clipboard_list(
         .map_err(|_| "Clipboard request failed.")?
 }
 #[tauri::command]
-pub fn clipboard_status(state: State<'_, AppState>) -> Result<ClipStatus, String> {
-    state.clipboard.status()
+pub async fn clipboard_status(state: State<'_, AppState>) -> Result<ClipStatus, String> {
+    let service = state.clipboard.clone();
+    tauri::async_runtime::spawn_blocking(move || service.status())
+        .await
+        .map_err(|_| "Clipboard request failed.")?
 }
 #[tauri::command]
 pub async fn clipboard_text(state: State<'_, AppState>, id: String) -> Result<String, String> {
@@ -140,9 +143,12 @@ pub async fn clipboard_clear(
         .map_err(|_| "Clipboard request failed.")?
 }
 #[tauri::command]
-pub fn clipboard_set_paused(
+pub async fn clipboard_set_paused(
     state: State<'_, AppState>,
     paused: bool,
 ) -> Result<ClipStatus, String> {
-    state.clipboard.set_paused(paused)
+    let service = state.clipboard.clone();
+    tauri::async_runtime::spawn_blocking(move || service.set_paused(paused))
+        .await
+        .map_err(|_| "Clipboard request failed.")?
 }

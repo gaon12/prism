@@ -8,8 +8,11 @@ fn service(state: &AppState) -> Result<UpdateRuntime, String> {
     state.updates.as_ref().cloned().map_err(Clone::clone)
 }
 #[tauri::command]
-pub fn update_status(state: State<'_, AppState>) -> Result<UpdateView, String> {
-    Ok(service(&state)?.status())
+pub async fn update_status(state: State<'_, AppState>) -> Result<UpdateView, String> {
+    let service = service(&state)?;
+    tauri::async_runtime::spawn_blocking(move || service.status())
+        .await
+        .map_err(|_| "Update status failed.".into())
 }
 #[tauri::command]
 pub async fn update_check(state: State<'_, AppState>) -> Result<UpdateView, String> {
@@ -19,8 +22,11 @@ pub async fn update_check(state: State<'_, AppState>) -> Result<UpdateView, Stri
         .map_err(|_| "Update check failed.".into())
 }
 #[tauri::command]
-pub fn update_dismiss(state: State<'_, AppState>) -> Result<UpdateView, String> {
-    Ok(service(&state)?.dismiss())
+pub async fn update_dismiss(state: State<'_, AppState>) -> Result<UpdateView, String> {
+    let service = service(&state)?;
+    tauri::async_runtime::spawn_blocking(move || service.dismiss())
+        .await
+        .map_err(|_| "Update dismissal failed.".into())
 }
 #[tauri::command]
 pub async fn update_install(state: State<'_, AppState>, version: String) -> Result<(), String> {

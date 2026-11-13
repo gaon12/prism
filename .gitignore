@@ -13,6 +13,8 @@
 /tools/update-verifier/target/
 /tools/platform-qa/target/
 /tools/rag-qa/target/
+/tools/filename-qa/target/
+/tools/filename-qa/executable.json
 /test-results/
 /playwright-report/
 

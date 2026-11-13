@@ -1,0 +1,55 @@
+name: Filename preparation QA
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: filename-qa-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: tools/filename-qa
+          key: filename-qa
+      - name: Check the production filename modules and benchmark equivalence
+        shell: pwsh
+        run: |
+          cargo test --manifest-path tools/filename-qa/Cargo.toml --locked --release -j1 --lib -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --manifest-path tools/filename-qa/Cargo.toml --locked --release -j1 --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fmt --manifest-path tools/filename-qa/Cargo.toml --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustfmt --edition 2021 --check tools/filename-qa/src/stages.rs
+          exit $LASTEXITCODE
+      - name: Build the private-capture measurement executable
+        shell: pwsh
+        run: |
+          cargo build --manifest-path tools/filename-qa/Cargo.toml --locked --release -j1 --bin prism-filename-qa
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $taskExe = 'tools/filename-qa/target/release/prism-filename-qa.exe'
+          $taskRecord = @{
+            sourceCommit = $env:GITHUB_SHA
+            sha256 = (Get-FileHash -LiteralPath $taskExe -Algorithm SHA256).Hash.ToLowerInvariant()
+            bytes = (Get-Item -LiteralPath $taskExe).Length
+          }
+          $taskRecord | ConvertTo-Json | Set-Content -LiteralPath tools/filename-qa/executable.json -Encoding utf8
+      - name: Keep the executable and its source provenance
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: filename-preparation-qa
+          path: |
+            tools/filename-qa/target/release/prism-filename-qa.exe
+            tools/filename-qa/executable.json
+          if-no-files-found: error

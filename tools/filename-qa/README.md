@@ -101,3 +101,31 @@ This synthetic component profile has no IPC, GUI, concurrent searches or live
 service. Its CPU costs and hosted-runner hardware must not be substituted for
 whole-app startup on the target PC. The uploaded evidence contains synthetic
 rows only; the private capture is neither read nor uploaded.
+
+On 2026-11-13, [Windows CI 43395193150](https://github.com/gaon12/prism/actions/runs/43395193150)
+at `97cf663` passed all four synthetic cases, 76 ordinary tests and strict Clippy.
+All cases stored 2,200,000 entries, preserved the same full-field checksum across
+publication, and peaked at 172.7–173.3 MiB job commit.
+
+| Stage                        | First separated run (billion cycles) | Second separated run (billion cycles) |
+| ---------------------------- | -----------------------------------: | ------------------------------------: |
+| Protocol decode              |                                1.008 |                                 1.017 |
+| Raw identity mapping         |                                0.633 |                                 0.632 |
+| Entry construction           |                                1.560 |                                 1.549 |
+| Compact insertion/drop       |                                7.211 |                                 7.079 |
+| Real provisional publication |                             0.000078 |                              0.000104 |
+
+Insertion used 76.4–76.7% of preparation cycles (raw + Entry + insertion), while
+Entry construction used 16.6–16.7%. This fixture therefore points first to compact
+insertion, rather than intermediate Entry allocation. The sum of all measured
+phase cycles covered more than 99.94% of whole-worker cycles. By contrast, summed
+short-batch `GetThreadTimes` differences covered only 52.7–58.2% of whole-worker
+CPU time and are unqualified for stage attribution. Their raw values remain in
+the evidence. Whole-worker CPU was 5.58–5.72 seconds, including synthetic input
+generation and full verification, so it is not a catalog startup time.
+
+The earlier run `43394358771` showed the same preparation cycle shares on another
+hosted runner. Its different absolute timings are not a before/after product
+performance comparison. The product preparation code was unchanged. CPU cycles
+remain in their native unit, following the
+[Windows API guidance](https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-querythreadcycletime).

@@ -18,6 +18,9 @@ use std::{
     time::Duration,
 };
 
+#[path = "document_assembly.rs"]
+pub mod assembly;
+
 const MAX_DOCUMENT: usize = 128 * 1024;
 const MAX_RESPONSE: usize = 256 * 1024;
 pub type DocumentResult<T> = Result<T, DocumentError>;
@@ -95,6 +98,8 @@ pub struct PlanSection {
 pub struct DocumentPlan {
     pub title: String,
     pub sections: Vec<PlanSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assembly: Option<assembly::AssemblyPlan>,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -636,6 +641,11 @@ impl DocumentService {
         {
             return Err(DocumentError::new(DocumentErrorCode::OutlineReviewRequired));
         }
+        // The reviewed contract can be saved independently. Until typed-value
+        // generation is wired, never silently process it as free-form Markdown.
+        if operation == DocumentOperation::Body && revision.plan.assembly.is_some() {
+            return Err(DocumentError::new(DocumentErrorCode::Input));
+        }
         if operation == DocumentOperation::Rewrite {
             validate_targets(&revision, &targets, selection.as_ref())?;
         }
@@ -828,6 +838,16 @@ fn validate_plan(plan: &DocumentPlan) -> DocumentResult<()> {
         {
             return Err(DocumentError::new(DocumentErrorCode::Input));
         }
+    }
+    if let Some(assembly) = &plan.assembly {
+        let sections: Vec<_> = plan
+            .sections
+            .iter()
+            .map(|section| section.id.as_str())
+            .collect();
+        assembly
+            .validate(&sections)
+            .map_err(|_| DocumentError::new(DocumentErrorCode::Input))?;
     }
     Ok(())
 }
@@ -1702,12 +1722,75 @@ mod tests {
     fn plan() -> DocumentPlan {
         DocumentPlan {
             title: "Report".into(),
+            assembly: None,
             sections: vec![PlanSection {
                 id: "summary".into(),
                 heading: "Summary".into(),
                 instruction: "Use evidence".into(),
             }],
         }
+    }
+
+    #[test]
+    fn legacy_plan_json_remains_byte_shape_compatible() {
+        let legacy = serde_json::json!({"title":"Report","sections":[{
+            "id":"summary","heading":"Summary","instruction":"Use evidence"
+        }]});
+        let decoded: DocumentPlan = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(decoded.assembly.is_none());
+        validate_plan(&decoded).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), legacy);
+    }
+
+    #[test]
+    fn reviewed_assembly_survives_restart_restore_and_never_falls_back_to_markdown() {
+        run(async {
+            let f = fixture();
+            let page = create(&f);
+            let mut typed = plan();
+            typed.assembly = Some(serde_json::from_value(serde_json::json!({
+                "version":1,"noticeLanguage":"en",
+                "fields":[{"id":"cost","label":"Cost","instruction":"Extract the recorded currency.","missingDisplay":"notice"}],
+                "sections":[{"sectionId":"summary","elements":[{"kind":"fieldTable","columns":["Field","Value"],"fields":["cost"]}]}]
+            })).unwrap());
+            let saved = f
+                .service
+                .save_outline(&page.document.id, &page.revision.id, typed.clone(), true)
+                .unwrap();
+            let reopened = DocumentService::open(f.directory.path(), f.rag.clone()).unwrap();
+            let current = reopened.get(&page.document.id, None).unwrap();
+            assert_eq!(current.revision.plan, typed);
+            assert!(current.revision.outline_reviewed);
+            assert_eq!(
+                reopened
+                    .generate_body(request(&current, "typed_pending"))
+                    .await
+                    .unwrap_err()
+                    .code,
+                DocumentErrorCode::Input
+            );
+            assert!(f.transport.calls.lock().unwrap().is_empty());
+            assert_eq!(
+                reopened.get(&page.document.id, None).unwrap().revision.id,
+                saved.id
+            );
+            let replaced = reopened
+                .save_outline(&page.document.id, &saved.id, plan(), true)
+                .unwrap();
+            let restored = reopened
+                .restore(&page.document.id, &replaced.id, &saved.id)
+                .unwrap();
+            assert_eq!(restored.plan, typed);
+            assert_eq!(
+                reopened
+                    .get(&page.document.id, Some(&page.revision.id))
+                    .unwrap()
+                    .revision
+                    .plan
+                    .assembly,
+                None
+            );
+        });
     }
     fn request(page: &DocumentPage, id: &str) -> DocumentGenerateRequest {
         DocumentGenerateRequest {

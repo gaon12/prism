@@ -80,6 +80,17 @@ from information not found in the supplied excerpts, and keep that scope visible
 Preserve citations, unverified classifications, user edits and immutable
 revisions. Raw model output and the rendered document remain separate evidence.
 
+The selected implementation direction is the reviewed-plan/app-assembly path;
+the original required 1.7B gate and its assertions remain in place. Its first
+backend step stores an optional `DocumentPlan.assembly` contract with a version,
+bounded field definitions, section assignments and field/table presentation.
+Legacy plans omit that property and retain their existing JSON shape. The
+contract contains no expected evidence values. Restart and revision restoration
+must preserve it exactly. Typed extraction and rendering are not connected in
+this initial step: body generation with an assembly contract fails closed rather
+than silently using the existing free-form Markdown generator. There is no new
+editor entry point or actual-model qualification from this groundwork alone.
+
 Rejecting an output that violates a structured plan is a useful intermediate
 behavior, but it would not satisfy the current positive generation gate. The
 present response contains neither requested output, so there is no semantic

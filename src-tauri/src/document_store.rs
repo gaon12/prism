@@ -89,6 +89,7 @@ impl DocumentStore {
             plan: DocumentPlan {
                 title: input.title.clone(),
                 sections: vec![],
+                assembly: None,
             },
             outline_reviewed: false,
             blocks: vec![],

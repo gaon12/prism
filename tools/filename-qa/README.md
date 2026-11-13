@@ -266,6 +266,39 @@ are preserved privately and were not added to the product. Evidence:
 `.dev/filename-rebuild-profile-20261114/qualification.json`, SHA-256
 `babbd429ff988df6aa6b375304461f7c5d32ff099da50ee494c78f31a5fbb28e`.
 
+## Reusing computed hashes during table growth
+
+`254a43f` caches the full keyed identity hash in each entry and directory record.
+Growing or reserving either lookup table reads those hashes instead of rebuilding
+and hashing whole paths. Lookup still compares exact keys to resolve collisions;
+the cached hash is not a persistent identity or a substitute for key equality.
+Lifecycle regressions cover growth, reserve, deletion, slot reuse, text-arena
+compaction and catalog clearing. The records retain four-byte alignment, but
+entries grow from 36 to 44 bytes and directories from 20 to 28 bytes.
+
+The same local compiler and capture were used for a new isolated A/B/B/A pair,
+with baseline `1cf7947`. Both release binaries passed strict Clippy; the baseline
+passed 82 tests and the candidate 83, with six explicit ignored tests each.
+Every case independently verified one-CPU affinity and both 512 MiB limits.
+
+| Case      | Whole Job CPU (seconds) | Decode + build (wall seconds) | Insertion (wall seconds) | Peak job (MiB) |
+| --------- | ----------------------: | ----------------------------: | -----------------------: | -------------: |
+| A, first  |                   4.718 |                         4.134 |                    3.112 |          182.1 |
+| B, first  |                   3.077 |                         2.460 |                    1.351 |          203.3 |
+| B, second |                   3.108 |                         2.429 |                    1.343 |          203.6 |
+| A, last   |                   4.686 |                         4.242 |                    3.164 |          181.7 |
+
+Observed average insertion time fell from 3.1381 to 1.3472 seconds (-57.07%),
+and whole Job CPU from 4.7020 to 3.0925 seconds (-34.23%). The full stored-field
+SHA remained identical in all four cases, all source/control/capture/executable
+hashes were unchanged, and no resource or deadline guard fired. The extra memory
+is an explicit tradeoff: this component fits the limit, but the actual app and
+WebView need their own combined-budget result. This single paired sequence on
+an interactive host does not qualify whole-app startup, service transfer, HDD or
+the 5–7-second target. Evidence:
+`.dev/filename-cached-hash-20261114/qualification.json`, SHA-256
+`4e49d474d3e2fd9952fea1344baf87c6fddb26c3b8cc46be549cbb64c495c757`.
+
 ## Retention after the captured snapshot
 
 [CI 43399104552](https://github.com/gaon12/prism/actions/runs/43399104552) at

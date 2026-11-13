@@ -72,9 +72,10 @@ Implemented:
   and lost journals require a fresh scan.
 - `codec::streaming::Reader` verifies the same complete cache digest, metadata
   and extension ownership before exposing a sequential visitor. Its index keeps
-  file references and directory metadata; other file names are decoded during
+  file references and a paged directory path index (reference, parent, alias flag
+  and first name in a chunked UTF-8 arena); other file names are decoded during
   visitation. Initial validation borrows all file names from a reusable record
-  buffer and retains owned strings only for directories, while enforcing the
+  buffer and copies directory names into the arena, while enforcing the
   same UTF-8, namespace, name and UTF-16 length checks. With a buffered immutable file input, this avoids retaining the
   full file-metadata catalog. It uses the same path rules and unchanged cache
   format. Its consuming `refresh` replays the journal into a changed-family

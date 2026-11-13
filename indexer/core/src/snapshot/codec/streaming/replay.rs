@@ -69,8 +69,10 @@ impl<R: Read + Seek> Reader<R> {
 
     fn remove_number(&mut self, number: u64) {
         if let Some(reference) = self.reference(number) {
+            if self.is_directory(number) {
+                self.directory_records -= 1;
+            }
             self.records -= 1;
-            self.directories.records.remove(&number);
             if let Some(members) = self.directories.families.remove(&reference) {
                 for member in members {
                     if self.directories.owners.get(&member) == Some(&reference) {
@@ -111,7 +113,7 @@ impl<R: Read + Seek> Reader<R> {
         self.directories.families.extend(merged.families);
         self.records += 1;
         if record.is_dir {
-            self.directories.records.insert(number, record.clone());
+            self.directory_records += 1;
         }
         self.overrides.insert(number, Some(record));
         self.directories.directories.clear();
@@ -236,6 +238,7 @@ mod tests {
             // unchanged file name; it is decoded from the immutable input.
             assert!(!stream.directories.records.contains_key(&19));
             assert!(!stream.overrides.contains_key(&19));
+            assert!(!stream.is_directory(19));
         }
         let mut saved = Cursor::new(Vec::new());
         stream.write(DEVICE, &mut saved, || Ok(())).unwrap();

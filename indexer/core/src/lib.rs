@@ -464,6 +464,32 @@ fn deduplicate_names(record: &mut MetadataRecord) {
     record.names.shrink_to_fit();
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DirectoryView<'a> {
+    reference: FileReference,
+    alias: bool,
+    first_name: Option<(FileReference, &'a str)>,
+}
+impl<'a> DirectoryView<'a> {
+    fn from_record(record: &'a MetadataRecord) -> Option<Self> {
+        record.is_dir.then(|| Self {
+            reference: record.reference,
+            alias: record.alias(),
+            first_name: record
+                .names
+                .first()
+                .map(|name| (name.parent, name.name.as_str())),
+        })
+    }
+}
+trait DirectoryLookup {
+    fn directory(&self, number: u64) -> Option<DirectoryView<'_>>;
+}
+impl DirectoryLookup for Records {
+    fn directory(&self, number: u64) -> Option<DirectoryView<'_>> {
+        self.get(&number).and_then(DirectoryView::from_record)
+    }
+}
 pub struct Catalog {
     records: Records,
     directories: HashMap<FileReference, Option<String>>,
@@ -552,7 +578,7 @@ impl Catalog {
         Ok(())
     }
     fn parent_path<'a>(
-        records: &Records,
+        records: &impl DirectoryLookup,
         directories: &'a mut HashMap<FileReference, Option<String>>,
         drive: DriveLetter,
         reference: FileReference,
@@ -571,8 +597,8 @@ impl Catalog {
                 break None;
             }
             let Some(record) = records
-                .get(&current.number())
-                .filter(|record| record.reference == current && record.is_dir && !record.alias())
+                .directory(current.number())
+                .filter(|record| record.reference == current && !record.alias)
             else {
                 break None;
             };
@@ -582,11 +608,11 @@ impl Catalog {
             if current.number() < 16 {
                 break None;
             }
-            let Some(name) = record.names.first() else {
+            let Some((parent, name)) = record.first_name else {
                 break None;
             };
-            chain.push((current, name.name.clone()));
-            current = name.parent;
+            chain.push((current, name.to_owned()));
+            current = parent;
         };
         for (reference, name) in chain.into_iter().rev() {
             path = path.and_then(|parent| {
@@ -624,7 +650,7 @@ impl Catalog {
         Ok(())
     }
     fn visit_record<E>(
-        records: &Records,
+        records: &impl DirectoryLookup,
         directories: &mut HashMap<FileReference, Option<String>>,
         drive: DriveLetter,
         number: u64,

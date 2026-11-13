@@ -1,10 +1,12 @@
 //! Verified, bounded-memory traversal of the unchanged metadata cache format.
-//! Keep only file references, directory metadata and extension ownership; file
+//! Keep only file references, directory path fields and extension ownership; file
 //! names are decoded as visited. The owned input MUST deny external mutation,
 //! including deletion, for this reader's lifetime (as the native cache does).
 use super::*;
+use crate::DirectoryLookup;
 use prism_ntfs_protocol::{DriveLetter, FileRecord};
 use std::collections::BTreeMap;
+mod directories;
 mod replay;
 mod writer;
 
@@ -13,6 +15,8 @@ pub struct Reader<R> {
     header: CacheHeader,
     references: Vec<FileReference>,
     directories: Catalog,
+    base_directories: directories::Index,
+    directory_records: usize,
     records_start: u64,
     records_bytes: u64,
     // Only replayed families are retained; None hides a deleted/reused cached
@@ -33,7 +37,7 @@ impl<R: Read + Seek> Reader<R> {
         let (mut body, header) = open_body(&mut input, expected, device, &check)?;
         let records_start = HEADER + header.length - body.limit();
         let mut references: Vec<FileReference> = Vec::with_capacity(header.records);
-        let mut records = Records::default();
+        let mut base_directories = directories::Index::default();
         let mut bytes = Vec::new();
         for index in 0..header.records {
             if index % 256 == 0 {
@@ -49,7 +53,7 @@ impl<R: Read + Seek> Reader<R> {
             }
             references.push(record.reference);
             if record.is_dir {
-                records.insert(number, record);
+                base_directories.push(&record)?;
             }
         }
         let records_bytes = HEADER + header.length - body.limit() - records_start;
@@ -65,12 +69,13 @@ impl<R: Read + Seek> Reader<R> {
             return Err(invalid());
         }
         let count = references.len();
+        let directory_records = base_directories.len();
         Ok(Self {
             input,
             header,
             references,
             directories: Catalog {
-                records,
+                records: Records::default(),
                 directories: HashMap::new(),
                 owners,
                 families,
@@ -79,6 +84,8 @@ impl<R: Read + Seek> Reader<R> {
             records_bytes,
             overrides: BTreeMap::new(),
             records: count,
+            base_directories,
+            directory_records,
         })
     }
 
@@ -92,7 +99,15 @@ impl<R: Read + Seek> Reader<R> {
         self.records
     }
     pub fn directory_count(&self) -> usize {
-        self.directories.records.len()
+        self.directory_records
+    }
+    fn is_directory(&self, number: u64) -> bool {
+        directories::View {
+            base: &self.base_directories,
+            changes: &self.overrides,
+        }
+        .directory(number)
+        .is_some()
     }
     pub fn reference(&self, number: u64) -> Option<FileReference> {
         if let Some(record) = self.overrides.get(&number) {
@@ -144,6 +159,10 @@ impl<R: Read + Seek> Reader<R> {
     ) -> io::Result<()> {
         self.directories.directories.clear();
         let directories = &mut self.directories;
+        let lookup = directories::View {
+            base: &self.base_directories,
+            changes: &self.overrides,
+        };
         visit_merged(
             &mut self.input,
             &self.references,
@@ -153,7 +172,7 @@ impl<R: Read + Seek> Reader<R> {
             &check,
             |record| {
                 Catalog::visit_record(
-                    &directories.records,
+                    &lookup,
                     &mut directories.directories,
                     drive,
                     record.reference.number(),

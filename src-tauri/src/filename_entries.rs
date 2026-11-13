@@ -225,6 +225,27 @@ impl Entries {
             keep(entry_key, entry)
         });
     }
+    /// Keep every entry seen by `sweep`, and of the others only those for
+    /// which `keep(key, entry)` returns true.
+    ///
+    /// The same result as `retain` with an `is_seen` test first, but a seen
+    /// entry's key is never rebuilt. Rebuilding a key walks the entry's whole
+    /// folder chain; after a first whole-drive collection every entry was
+    /// seen, and rebuilding 2.2 million keys under the catalog write lock kept
+    /// the window's first status query waiting for seconds on one CPU.
+    pub(super) fn retain_seen_or(
+        &mut self,
+        sweep: u64,
+        mut keep: impl FnMut(&str, EntryRef<'_>) -> bool,
+    ) {
+        let mut key = String::new();
+        self.inner.retain(|entry| {
+            entry.is_seen(sweep) || {
+                let entry_key = entry.write_key(&mut key);
+                keep(entry_key, entry)
+            }
+        });
+    }
     /// The entry at `root` and every entry below it.
     pub(super) fn subtree<'a>(&'a self, root: &'a str) -> impl Iterator<Item = EntryRef<'a>> + 'a {
         self.inner.subtree(root)

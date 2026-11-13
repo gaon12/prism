@@ -139,15 +139,18 @@ public static class PrismJob {
     }
   }
 
-  /// Per-process name, private (committed) bytes and working set, for the
-  /// processes still running in the job. Exited processes are skipped.
+  /// Per-process name, private (committed) bytes, working set and CPU time
+  /// so far (user/kernel ms), for the processes still running in the job, so
+  /// the app's own CPU can be told apart from its WebView processes'.
+  /// Exited processes are skipped.
   static string ProcessUsage() {
     var rows = new List<string>();
     foreach (var text in ProcessIds().Trim('[', ']').Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)) {
       try {
         using (var process = System.Diagnostics.Process.GetProcessById(int.Parse(text))) {
-          rows.Add(string.Format("{{\"pid\":{0},\"name\":\"{1}\",\"privateBytes\":{2},\"workingSetBytes\":{3}}}",
-            text, process.ProcessName.Replace("\\", "").Replace("\"", ""), process.PrivateMemorySize64, process.WorkingSet64));
+          rows.Add(string.Format("{{\"pid\":{0},\"name\":\"{1}\",\"privateBytes\":{2},\"workingSetBytes\":{3},\"cpuUserMs\":{4},\"cpuKernelMs\":{5}}}",
+            text, process.ProcessName.Replace("\\", "").Replace("\"", ""), process.PrivateMemorySize64, process.WorkingSet64,
+            (long)process.UserProcessorTime.TotalMilliseconds, (long)process.PrivilegedProcessorTime.TotalMilliseconds));
         }
       } catch (ArgumentException) {
       } catch (InvalidOperationException) {

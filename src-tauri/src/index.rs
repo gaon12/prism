@@ -1002,9 +1002,9 @@ impl FileIndex {
                     .map(|root| root.key.clone())
                     .collect();
                 let visited: Vec<_> = paths.iter().map(|path| path_key(path)).collect();
-                catalog.entries.retain(|key, entry| {
-                    entry.is_seen(sweep)
-                        || uncertain.contains(key)
+                // Seen entries are kept without rebuilding their keys.
+                catalog.entries.retain_seen_or(sweep, |key, _| {
+                    uncertain.contains(key)
                         // A still-configured offline parent must not hide a
                         // confirmed deletion in an available, visited child scope.
                         || (unavailable.iter().any(|root| under(key, root))
@@ -1998,6 +1998,42 @@ mod performance_tests {
             modified_ms: Some(modified),
             path: display_path(&path),
         }
+    }
+    #[test]
+    fn a_seen_entry_is_kept_without_asking_for_its_key() {
+        let mut entries = Entries::default();
+        for (path, seen) in [
+            ("C:/a/seen-1.md", 7),
+            ("C:/a/b/seen-2.md", 7),
+            ("C:/a/old-kept.md", 6),
+            ("C:/a/old-dropped.md", 6),
+        ] {
+            entries.insert(&Entry::new(raw(path, 1), seen));
+        }
+        let mut asked = Vec::new();
+        entries.retain_seen_or(7, |key, _| {
+            asked.push(key.to_string());
+            key.ends_with("old-kept.md")
+        });
+        asked.sort();
+        assert_eq!(
+            asked,
+            [
+                path_key_text("C:/a/old-dropped.md"),
+                path_key_text("C:/a/old-kept.md")
+            ],
+            "only entries the sweep did not see are checked by key"
+        );
+        let mut left: Vec<_> = entries
+            .sorted()
+            .into_iter()
+            .map(|e| e.key.to_string())
+            .collect();
+        left.sort();
+        let mut expected =
+            ["C:/a/b/seen-2.md", "C:/a/old-kept.md", "C:/a/seen-1.md"].map(path_key_text);
+        expected.sort();
+        assert_eq!(left, expected);
     }
     #[test]
     fn repeated_download_notifications_do_not_overflow_the_queue() {

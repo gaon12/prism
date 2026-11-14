@@ -694,6 +694,27 @@ impl ContentStore {
         limit_count: usize,
         cancel: &AtomicBool,
     ) -> Result<ContentSearchResponse> {
+        self.search_detailed_with_admission(
+            query,
+            filter,
+            allowed_content_roots,
+            limit_count,
+            cancel,
+            &mut |_| true,
+        )
+    }
+
+    /// Narrow current source visibility before result slots and full chunks are
+    /// selected. The callback cannot authorize a path outside the supplied roots.
+    pub(crate) fn search_detailed_with_admission(
+        &self,
+        query: &str,
+        filter: &ContentSearchFilter,
+        allowed_content_roots: &[PathBuf],
+        limit_count: usize,
+        cancel: &AtomicBool,
+        admit: &mut dyn FnMut(&Path) -> bool,
+    ) -> Result<ContentSearchResponse> {
         check_cancel(cancel)?;
         let candidate_limit = self.candidate_limit;
         if query.len() > MAX_QUERY_BYTES
@@ -879,6 +900,7 @@ impl ContentStore {
                         (documents.is_empty() || documents.contains(&path_key(&path)))
                             && (scopes.is_empty()
                                 || scopes.iter().any(|scope| within(&path, scope)))
+                            && admit(&path)
                     });
                 if !permitted {
                     continue;
@@ -898,7 +920,8 @@ impl ContentStore {
             // Check the returned files one more time: a file may have been edited or deleted
             // while we were ranking. Only the final hits (at most 100) are checked again.
             hits.retain(|hit| {
-                visible(&hit.chunk.file_path, &hit.chunk.fingerprint, &allowed).is_some()
+                visible(&hit.chunk.file_path, &hit.chunk.fingerprint, &allowed)
+                    .is_some_and(|path| admit(&path))
             });
             Ok(ContentSearchResponse {
                 hits,
@@ -1422,6 +1445,64 @@ mod tests {
         store
             .search(query, &ContentSearchFilter::default(), roots, 20, &cancel())
             .unwrap()
+    }
+
+    #[test]
+    fn admission_backfills_result_slots_and_rechecks_before_returning_cached_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let roots = vec![directory.path().join("sources")];
+        let store = ContentStore::open(&directory.path().join("index.sqlite")).unwrap();
+        for name in ["a-denied.md", "b-denied.md", "z-allowed.md"] {
+            let doc = document(&roots[0], name, "admissioncanary evidence");
+            store.replace_document(&doc, &roots, &cancel()).unwrap();
+        }
+        let filter = ContentSearchFilter::default();
+        let baseline = store
+            .search_detailed("admissioncanary", &filter, &roots, 1, &cancel())
+            .unwrap();
+        assert!(baseline.hits[0].chunk.file_path.ends_with("a-denied.md"));
+        let admitted = store
+            .search_detailed_with_admission(
+                "admissioncanary",
+                &filter,
+                &roots,
+                1,
+                &cancel(),
+                &mut |path| path.ends_with("z-allowed.md"),
+            )
+            .unwrap();
+        assert_eq!(admitted.hits.len(), 1);
+        assert!(admitted.hits[0].chunk.file_path.ends_with("z-allowed.md"));
+        assert_eq!(admitted.candidate_count, baseline.candidate_count);
+        assert_eq!(admitted.candidate_limit, baseline.candidate_limit);
+
+        let mut checks = 0;
+        let revoked = store
+            .search_detailed_with_admission(
+                "admissioncanary",
+                &filter,
+                &roots,
+                1,
+                &cancel(),
+                &mut |_| {
+                    checks += 1;
+                    checks == 1
+                },
+            )
+            .unwrap();
+        assert!(revoked.hits.is_empty());
+        assert_eq!(checks, 2);
+        let outside = store
+            .search_detailed_with_admission(
+                "admissioncanary",
+                &filter,
+                &[],
+                1,
+                &cancel(),
+                &mut |_| true,
+            )
+            .unwrap();
+        assert!(outside.hits.is_empty());
     }
 
     #[cfg(unix)]

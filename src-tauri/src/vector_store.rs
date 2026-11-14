@@ -748,6 +748,34 @@ impl VectorStore {
         max_candidates: usize,
         cancel: &AtomicBool,
     ) -> Result<VectorSearchResponse> {
+        self.search_with_admission(
+            query_vector,
+            model_fingerprint,
+            filter,
+            content,
+            allowed_roots,
+            top_k,
+            max_candidates,
+            cancel,
+            &mut |_| true,
+        )
+        .await
+    }
+
+    /// Apply additional source policy while expanding nearest-neighbor batches,
+    /// before top_k is satisfied. Existing candidate and scope limits still apply.
+    pub(crate) async fn search_with_admission(
+        &self,
+        query_vector: &[f32],
+        model_fingerprint: &str,
+        filter: &ContentSearchFilter,
+        content: &ContentStore,
+        allowed_roots: &[PathBuf],
+        top_k: usize,
+        max_candidates: usize,
+        cancel: &AtomicBool,
+        admit: &mut (dyn FnMut(&Path) -> bool + Send),
+    ) -> Result<VectorSearchResponse> {
         check_cancel(cancel)?;
         if model_fingerprint != self.model.model_fingerprint {
             return Err(error(
@@ -856,6 +884,7 @@ impl VectorStore {
                         chunk.fingerprint.sha256 != row.fingerprint
                             || key(&chunk.file_path) != key(&row.file_path)
                             || !filter.matches(chunk)
+                            || !admit(Path::new(&chunk.file_path))
                     })
                 {
                     response.filtered_out += 1;
@@ -1053,6 +1082,115 @@ mod tests {
         (document, chunks)
     }
     use crate::document_extract::ExtractedDocument;
+
+    #[test]
+    fn admission_expands_past_denied_neighbors_within_the_existing_candidate_budget() {
+        runtime(async {
+            let directory = tempfile::tempdir().unwrap();
+            let roots = vec![directory.path().join("sources")];
+            let content = ContentStore::open(&directory.path().join("index.sqlite")).unwrap();
+            let text = (0..40)
+                .map(|i| format!("denied evidence paragraph {i}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let (denied, denied_chunks) = source(&roots[0], "denied.md", &text, &content, &roots);
+            assert!(denied_chunks.len() > 32);
+            let (allowed, allowed_chunks) = source(
+                &roots[0],
+                "allowed.md",
+                "permitted evidence",
+                &content,
+                &roots,
+            );
+            let spec = model(2);
+            let vectors = VectorStore::open(&directory.path().join("vectors"), spec.clone())
+                .await
+                .unwrap();
+            for (doc, chunks, vector) in [
+                (&denied, &denied_chunks, vec![1.0, 0.0]),
+                (&allowed, &allowed_chunks, vec![0.0, 1.0]),
+            ] {
+                vectors
+                    .replace_document(
+                        batch(doc, chunks, &spec.model_fingerprint, vector),
+                        &content,
+                        &roots,
+                        &cancel(),
+                    )
+                    .await
+                    .unwrap();
+            }
+            let filter = ContentSearchFilter::default();
+            let limited = vectors
+                .search_with_admission(
+                    &[1.0, 0.0],
+                    &spec.model_fingerprint,
+                    &filter,
+                    &content,
+                    &roots,
+                    1,
+                    32,
+                    &cancel(),
+                    &mut |path| path.ends_with("allowed.md"),
+                )
+                .await
+                .unwrap();
+            assert!(limited.hits.is_empty());
+            assert!(limited.hard_limit_reached && !limited.exhausted);
+            assert_eq!(limited.candidate_count, 32);
+            let admitted = vectors
+                .search_with_admission(
+                    &[1.0, 0.0],
+                    &spec.model_fingerprint,
+                    &filter,
+                    &content,
+                    &roots,
+                    1,
+                    64,
+                    &cancel(),
+                    &mut |path| path.ends_with("allowed.md"),
+                )
+                .await
+                .unwrap();
+            assert_eq!(admitted.hits.len(), 1);
+            assert_eq!(admitted.hits[0].chunk.id, allowed_chunks[0].id);
+            assert_eq!(
+                admitted.hits[0].chunk.file_path,
+                allowed_chunks[0].file_path
+            );
+            assert!(admitted.candidate_count > 32 && admitted.candidate_count <= 64);
+            assert!(admitted.exhausted && !admitted.hard_limit_reached);
+            let baseline = vectors
+                .search(
+                    &[1.0, 0.0],
+                    &spec.model_fingerprint,
+                    &filter,
+                    &content,
+                    &roots,
+                    1,
+                    64,
+                    &cancel(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(baseline.hits[0].chunk.file_path, denied_chunks[0].file_path);
+            let outside = vectors
+                .search_with_admission(
+                    &[1.0, 0.0],
+                    &spec.model_fingerprint,
+                    &filter,
+                    &content,
+                    &[],
+                    1,
+                    64,
+                    &cancel(),
+                    &mut |_| true,
+                )
+                .await
+                .unwrap();
+            assert!(outside.hits.is_empty());
+        });
+    }
 
     #[cfg(windows)]
     #[test]

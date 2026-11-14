@@ -229,23 +229,18 @@ mod tests {
 
     #[test]
     fn content_policy_blocks_sha_reads_and_backfills_allowed_lower_ranked_evidence() {
-        let (_directory, resolver, mut policy) = policy_fixture(&[
-            "a0.rs",
-            "a1.rs",
-            "a2.rs",
-            "a3.rs",
-            "a4.rs",
-            "a5.rs",
-            "a6.rs",
-            "a7.rs",
-            "z-allowed.txt",
-        ]);
+        // More denied matches than the service's 100-hit preview. Filtering
+        // only that preview cannot discover the permitted lower-ranked file.
+        let mut files: Vec<_> = (0..120).map(|i| format!("a{i:03}.rs")).collect();
+        files.push("z-allowed.txt".into());
+        let names: Vec<_> = files.iter().map(String::as_str).collect();
+        let (_directory, resolver, mut policy) = policy_fixture(&names);
         let cancel = AtomicBool::new(false);
         let before = resolver
             .retrieve("guardedpolicycanary", &[], &policy, 1, &cancel)
             .unwrap();
         assert_eq!(before.len(), 1);
-        assert!(before[0].source.file_path.ends_with("a0.rs"));
+        assert!(before[0].source.file_path.ends_with("a000.rs"));
         policy.file_policy.source_code = false;
         SOURCE_HASH_REQUESTS.with(|calls| calls.set(0));
         let after = resolver
@@ -712,6 +707,9 @@ impl ContentSources {
             policy,
             folders,
         } = *plan;
+        let mut admit = |path: &Path| {
+            policy.file_policy.unrestricted() || scope_for(path, policy, folders).is_some()
+        };
         if let Some(query) = prepared {
             let filter = crate::content_store::ContentSearchFilter {
                 document_paths: documents.unwrap_or_default().to_vec(),
@@ -719,29 +717,24 @@ impl ContentSources {
             };
             candidates.semantic.extend(
                 self.0
-                    .run_semantic_query(query, &filter, ids, limit, cancel)
+                    .run_semantic_query_with_admission(
+                        query, &filter, ids, limit, cancel, &mut admit,
+                    )
                     .map_err(|error| source_error(&error.code))?
                     .hits,
             );
         }
         if hybrid || prepared.is_none() {
-            match self.0.search_selected(question, "", ids, documents, cancel) {
+            match self
+                .0
+                .search_selected_with_admission(question, "", ids, documents, cancel, &mut admit)
+            {
                 Ok(response) => candidates.keyword.extend(response.hits),
                 // Long natural-language questions can exceed the lexical term
                 // budget. Semantic retrieval remains available in hybrid mode.
                 Err(error) if hybrid && error.code.eq_ignore_ascii_case("invalidInput") => {}
                 Err(error) => return Err(source_error(&error.code)),
             }
-        }
-        if !policy.file_policy.unrestricted() {
-            // Filter before branch truncation/fusion so denied high-ranked
-            // matches do not consume every requested source position.
-            candidates.keyword.retain(|hit| {
-                scope_for(Path::new(&hit.chunk.file_path), policy, folders).is_some()
-            });
-            candidates.semantic.retain(|hit| {
-                scope_for(Path::new(&hit.chunk.file_path), policy, folders).is_some()
-            });
         }
         candidates.trim(limit);
         Ok(())
@@ -771,13 +764,7 @@ impl SourceResolver for ContentSources {
         let hybrid = policy.prefs.retrieval == crate::rag_service::RetrievalMode::Hybrid
             && prepared.is_some();
         let limit = top_k.clamp(1, 128);
-        let branch_limit = if hybrid {
-            HYBRID_BRANCH_LIMIT
-        } else if !policy.file_policy.unrestricted() {
-            HYBRID_BRANCH_LIMIT.max(limit)
-        } else {
-            limit
-        };
+        let branch_limit = if hybrid { HYBRID_BRANCH_LIMIT } else { limit };
         let mut after = String::new();
         let plan = RetrievalPlan {
             question,
@@ -797,12 +784,7 @@ impl SourceResolver for ContentSources {
             let paths: Vec<_> = batch.into_iter().map(|file| file.path).collect();
             self.collect_retrieval(&plan, Some(&paths), &mut candidates, cancel)?;
         }
-        let finish_limit = if policy.file_policy.unrestricted() {
-            limit
-        } else {
-            branch_limit.max(limit)
-        };
-        let best = candidates.finish(hybrid, prepared.is_some(), finish_limit);
+        let best = candidates.finish(hybrid, prepared.is_some(), limit);
         authorize(best, &folders, policy, limit, cancel)
     }
     fn retrieve(
@@ -858,13 +840,7 @@ impl SourceResolver for ContentSources {
         let hybrid = policy.prefs.retrieval == crate::rag_service::RetrievalMode::Hybrid
             && prepared.is_some();
         let limit = top_k.clamp(1, 128);
-        let branch_limit = if hybrid {
-            HYBRID_BRANCH_LIMIT
-        } else if !policy.file_policy.unrestricted() {
-            HYBRID_BRANCH_LIMIT.max(limit)
-        } else {
-            limit
-        };
+        let branch_limit = if hybrid { HYBRID_BRANCH_LIMIT } else { limit };
         let plan = RetrievalPlan {
             question: query.keyword,
             ids: &ids,
@@ -876,12 +852,7 @@ impl SourceResolver for ContentSources {
         };
         let mut candidates = RetrievalCandidates::default();
         self.collect_retrieval(&plan, documents, &mut candidates, cancel)?;
-        let finish_limit = if policy.file_policy.unrestricted() {
-            limit
-        } else {
-            branch_limit.max(limit)
-        };
-        let candidates = candidates.finish(hybrid, prepared.is_some(), finish_limit);
+        let candidates = candidates.finish(hybrid, prepared.is_some(), limit);
         authorize(candidates, &folders, policy, top_k, cancel)
     }
     fn revalidate(

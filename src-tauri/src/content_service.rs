@@ -1235,6 +1235,24 @@ impl ContentService {
         documents: Option<&[String]>,
         cancel: &AtomicBool,
     ) -> Result<ContentSearchResponse> {
+        self.search_selected_with_admission(
+            query,
+            extension,
+            scope_ids,
+            documents,
+            cancel,
+            &mut |_| true,
+        )
+    }
+    pub(crate) fn search_selected_with_admission(
+        &self,
+        query: &str,
+        extension: &str,
+        scope_ids: &[String],
+        documents: Option<&[String]>,
+        cancel: &AtomicBool,
+        admit: &mut dyn FnMut(&Path) -> bool,
+    ) -> Result<ContentSearchResponse> {
         let roots = self.selected_roots(scope_ids)?;
         let mut filter = self.search_filter(extension)?;
         if let Some(paths) = documents {
@@ -1251,7 +1269,9 @@ impl ContentService {
         let mut response = self
             .inner
             .store
-            .search_detailed(query, &filter, &roots, 100, cancel)
+            .search_detailed_with_admission(query, &filter, &roots, 100, cancel, &mut |path| {
+                !self.is_excluded(&path.to_string_lossy()) && admit(path)
+            })
             .map_err(|error| ContentError {
                 code: serde_json::to_value(error.code)
                     .ok()
@@ -1355,6 +1375,19 @@ impl ContentService {
         limit: usize,
         cancel: &AtomicBool,
     ) -> Result<VectorSearchResponse> {
+        self.run_semantic_query_with_admission(query, filter, scope_ids, limit, cancel, &mut |_| {
+            true
+        })
+    }
+    pub(crate) fn run_semantic_query_with_admission(
+        &self,
+        query: &SemanticQuery,
+        filter: &ContentSearchFilter,
+        scope_ids: &[String],
+        limit: usize,
+        cancel: &AtomicBool,
+        admit: &mut (dyn FnMut(&Path) -> bool + Send),
+    ) -> Result<VectorSearchResponse> {
         if !(1..=128).contains(&limit)
             || !filter.document_paths.is_empty() && filter.document_paths.len() > 256
         {
@@ -1365,7 +1398,7 @@ impl ContentService {
         let mut response = self
             .inner
             .runtime
-            .block_on(vector.search(
+            .block_on(vector.search_with_admission(
                 &query.vector,
                 &query.fingerprint,
                 filter,
@@ -1374,6 +1407,7 @@ impl ContentService {
                 limit,
                 4096,
                 cancel,
+                &mut |path| !self.is_excluded(&path.to_string_lossy()) && admit(path),
             ))
             .map_err(|error| ContentError {
                 code: "vector".into(),

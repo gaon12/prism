@@ -5,6 +5,21 @@ and private metadata-capture reader without linking Tauri, a WebView or vector
 runtime. The settings type is only a DTO fixture. No service is started, upgraded
 or contacted by the benchmark. Captures must stay private.
 
+The crate also imports the production Q18 file-category policy. Its tests cover
+independent filename/content defaults, unknown facts, and filename-derived code
+and archive categories. Default inclusion needs no facts; exclusions cannot turn
+missing metadata into a confirmed negative. Hidden/system facts must include
+ancestors, and repository-ignore facts must come from hierarchical rules.
+Language extensions and named build scripts identify code; archive extensions
+identify archives, while ZIP-based documents such as DOCX, HWPX and EPUB remain
+documents. This performs no content sniffing or archive extraction.
+
+The policy is a persisted model at this stage. Actual Windows app-library tests
+separately cover settings-file round trips; the fixture here cannot prove them.
+Walker/service admission, live queries/snapshots, content/vector/RAG checks and
+settings controls still need integration. Passing these tests does not establish
+an active user-facing inclusion filter or whole-application qualification.
+
 ```sh
 cargo build --manifest-path tools/filename-qa/Cargo.toml --locked --release -j1
 cargo test --manifest-path tools/filename-qa/Cargo.toml --locked --release -j1 --lib -- --test-threads=1

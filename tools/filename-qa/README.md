@@ -91,10 +91,22 @@ not a CSS fix. A freshly built bundled Windows app separately passed
 keyboard cancellation, collection, file/rule watcher updates and rediscovery.
 Its desktop WebView screenshots show all ten controls in all five languages.
 
+`tests/native/content-policy.mjs` separately exercises the same controls through
+actual content extraction and SQLite keyword search. After an explicit folder
+content grant, it finds five generated documents, including a real Windows
+SYSTEM-attribute file. Content exclusions hide code, hidden descendants,
+repository-ignored files and system files while filename settings stay
+independent. Previously issued chunk IDs are rejected too. The regression
+restarts the app, re-includes the documents, then revokes folder content access
+and checks that all content/chunk access disappears. Original bytes and the
+owned fixture's original attributes are preserved; no model or provider runs.
+
 The native test requires `PRISM_TEST_EXECUTABLE` and its known SHA-256 in
 `PRISM_TEST_APP_SHA256`, then runs with `node tests/native/file-policy.mjs`.
 It creates an isolated profile/source directory and verifies native test mode
 before mutations; it never changes an installed service or user clipboard.
+The content regression accepts the same executable/hash variables and runs
+with `node tests/native/content-policy.mjs`.
 Evidence is
 `C:/Users/solso/AppData/Local/Temp/prism-q18-filename-20261114-1c455odk/qualification.json`.
 Native macOS, the full Linux app, deployed NTFS transfer/fallback, narrow native

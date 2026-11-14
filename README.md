@@ -265,8 +265,15 @@ Desktop builds link an `rlib` into the executable to keep intermediate disk usag
 
 The native LanceDB build also requires `protoc`. Install a compatible [official Protocol Buffers release](https://github.com/protocolbuffers/protobuf/releases) and put its executable on PATH, or set `PROTOC` for the build shell. The Windows vector tests were verified with protoc 34.1.
 
+Keep the distribution's standard `.proto` definitions as well as its executable.
+For a custom installation, set `PROTOC_INCLUDE` to the directory containing
+`google/protobuf/empty.proto`. Checking `protoc --version` alone does not verify
+those files; missing definitions fail the LanceDB dependency build before the
+app tests run.
+
 ```powershell
 $env:PROTOC = "C:\tools\protobuf\bin\protoc.exe"
+$env:PROTOC_INCLUDE = "C:\tools\protobuf\include"
 npm ci
 npm run tauri dev
 ```

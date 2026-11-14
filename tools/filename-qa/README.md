@@ -84,6 +84,13 @@ app-wide `-D warnings` result. No manifest/profile changes or timing claim.
 
 Production-bundle browser tests passed 38 cases, including independent settings
 persistence, cancellation, five languages and narrow-screen control bounds.
+After adding the minimum-size cases, the focused inclusion suite passed 11:
+desktop persistence/cancellation plus all five languages at 390×844 and 760×540.
+The latter matches the configured minimum main-window dimensions; control bounds
+and Save/Cancel visibility passed and all ten switches appeared in the five
+760×540 screenshots. This is browser-viewport evidence, not an OS resize test.
+Both Windows Computer Use paths reported an unavailable native pipe, so actual
+minimum-window resizing remains unverified. No window manipulation occurred.
 Some first headless Chromium captures omit switch paint despite passing
 interaction/layout checks; those captures remain an open visual limitation,
 not a CSS fix. A freshly built bundled Windows app separately passed

@@ -167,72 +167,84 @@ for (const [language, settings, scopes, title, filename, content, archive, save]
     '保存',
   ],
 ]) {
-  test(`edits localized inclusion rules on a narrow screen: ${language}`, async ({
-    page,
-  }, info) => {
-    await page.setViewportSize({ width: 390, height: 844 });
-    const errors = await prepare(page, language);
-    await page.getByRole('button', { name: settings, exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: settings, exact: true });
-    await dialog.getByRole('button', { name: scopes, exact: true }).click();
-    const policy = dialog.locator('.file-policy-settings');
-    await expect(policy.getByRole('heading', { name: title, exact: true })).toBeVisible();
-    const filenames = policy.getByRole('group', { name: filename, exact: true });
-    const body = policy.getByRole('group', { name: content, exact: true });
-    await body.getByRole('checkbox', { name: archive, exact: true }).uncheck();
-    await expect(filenames.getByRole('checkbox', { name: archive, exact: true })).toBeChecked();
-    await body.scrollIntoViewIfNeeded();
-    await settleDialog(dialog);
-    const controls = await policy.evaluate((section) => {
-      const pane = section.closest('.settings-body') as HTMLElement;
-      const clip = pane.getBoundingClientRect();
-      return [...section.querySelectorAll('input')].map((input) => {
-        const rect = input.getBoundingClientRect();
-        return {
-          label: input.closest('label')?.textContent?.trim(),
-          left: rect.left,
-          right: rect.right,
-          top: rect.top,
-          bottom: rect.bottom,
-          checked: input.checked,
-          clipLeft: clip.left,
-          clipRight: clip.left + pane.clientWidth,
-          clipTop: clip.top,
-          clipBottom: clip.top + pane.clientHeight,
-          scrollLeft: pane.scrollLeft,
-          width: rect.width,
-          background: getComputedStyle(input).backgroundColor,
-        };
+  for (const [width, height] of [
+    [390, 844],
+    [760, 540],
+  ] as const) {
+    const size = width === 390 ? 'a narrow screen' : 'the minimum window';
+    test(`edits localized inclusion rules on ${size}: ${language}`, async ({ page }, info) => {
+      await page.setViewportSize({ width, height });
+      const errors = await prepare(page, language);
+      await page.getByRole('button', { name: settings, exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: settings, exact: true });
+      await dialog.getByRole('button', { name: scopes, exact: true }).click();
+      const policy = dialog.locator('.file-policy-settings');
+      await expect(policy.getByRole('heading', { name: title, exact: true })).toBeVisible();
+      const filenames = policy.getByRole('group', { name: filename, exact: true });
+      const body = policy.getByRole('group', { name: content, exact: true });
+      await body.getByRole('checkbox', { name: archive, exact: true }).uncheck();
+      await expect(filenames.getByRole('checkbox', { name: archive, exact: true })).toBeChecked();
+      await body.scrollIntoViewIfNeeded();
+      await settleDialog(dialog);
+      const controls = await policy.evaluate((section) => {
+        const pane = section.closest('.settings-body') as HTMLElement;
+        const clip = pane.getBoundingClientRect();
+        return [...section.querySelectorAll('input')].map((input) => {
+          const rect = input.getBoundingClientRect();
+          return {
+            label: input.closest('label')?.textContent?.trim(),
+            left: rect.left,
+            right: rect.right,
+            top: rect.top,
+            bottom: rect.bottom,
+            checked: input.checked,
+            clipLeft: clip.left,
+            clipRight: clip.left + pane.clientWidth,
+            clipTop: clip.top,
+            clipBottom: clip.top + pane.clientHeight,
+            scrollLeft: pane.scrollLeft,
+            width: rect.width,
+            background: getComputedStyle(input).backgroundColor,
+          };
+        });
       });
+      for (const control of controls) {
+        expect(control.left, JSON.stringify(control)).toBeGreaterThanOrEqual(control.clipLeft);
+        expect(control.right, JSON.stringify(control)).toBeLessThanOrEqual(control.clipRight);
+        expect(control.width, JSON.stringify(control)).toBeGreaterThanOrEqual(24);
+      }
+      for (const control of controls.slice(5)) {
+        expect(control.top, JSON.stringify(control)).toBeGreaterThanOrEqual(control.clipTop);
+        expect(control.bottom, JSON.stringify(control)).toBeLessThanOrEqual(control.clipBottom);
+      }
+      await info.attach('switch-layout', {
+        body: JSON.stringify(controls, null, 2),
+        contentType: 'application/json',
+      });
+      await page.screenshot({
+        path: join(evidence, `inclusion-${language}-${width}.png`),
+      });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+        true,
+      );
+      const box = await dialog.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.width).toBeLessThanOrEqual(width);
+      for (const button of await dialog.locator('.modal-footer button').all()) {
+        const bounds = await button.boundingBox();
+        expect(bounds).not.toBeNull();
+        expect(bounds!.y).toBeGreaterThanOrEqual(0);
+        expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(height);
+      }
+      await dialog.getByRole('button', { name: save, exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      expect(
+        await page.evaluate(
+          () => JSON.parse(localStorage.getItem('prism.settings.v1')!).filePolicy,
+        ),
+      ).toMatchObject({ filename: { archives: true }, content: { archives: false } });
+      expect(errors).toEqual([]);
     });
-    for (const control of controls) {
-      expect(control.left, JSON.stringify(control)).toBeGreaterThanOrEqual(control.clipLeft);
-      expect(control.right, JSON.stringify(control)).toBeLessThanOrEqual(control.clipRight);
-      expect(control.width, JSON.stringify(control)).toBeGreaterThanOrEqual(24);
-    }
-    for (const control of controls.slice(5)) {
-      expect(control.top, JSON.stringify(control)).toBeGreaterThanOrEqual(control.clipTop);
-      expect(control.bottom, JSON.stringify(control)).toBeLessThanOrEqual(control.clipBottom);
-    }
-    await info.attach('switch-layout', {
-      body: JSON.stringify(controls, null, 2),
-      contentType: 'application/json',
-    });
-    await page.screenshot({
-      path: join(evidence, `inclusion-${language}-390.png`),
-    });
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
-      true,
-    );
-    const box = await dialog.boundingBox();
-    expect(box).not.toBeNull();
-    expect(box!.x).toBeGreaterThanOrEqual(0);
-    expect(box!.width).toBeLessThanOrEqual(390);
-    await dialog.getByRole('button', { name: save, exact: true }).click();
-    await expect(dialog).toHaveCount(0);
-    expect(
-      await page.evaluate(() => JSON.parse(localStorage.getItem('prism.settings.v1')!).filePolicy),
-    ).toMatchObject({ filename: { archives: true }, content: { archives: false } });
-    expect(errors).toEqual([]);
-  });
+  }
 }

@@ -16,6 +16,15 @@ qualification stays opt-in; its success does not satisfy or replace that require
 gate. This policy applies to test fixtures. Product profiles continue to require
 the user's server and model configuration.
 
+Native body screenshots now close the reference-options disclosure and scroll
+each block into the inner editor pane before capture. They check visible area,
+hit testing and unchanged Markdown values at desktop and narrow widths. Long
+inputs may be only partly visible; recorded geometry distinguishes that from a
+fully visible input. The shared helper passed the actual Windows document UI
+flow with a synthetic loopback provider; the screenshot-only changes do not
+constitute a new actual-model qualification. The original generation assertions
+and the required 1.7B fixture remain unchanged.
+
 [Build-only CI 43527340272](https://github.com/gaon12/prism/actions/runs/43527340272)
 at `315ae41` subsequently passed the value/quote-only implementation, including
 the unchanged required Windows 1.7B gate. Its result records actual inference,

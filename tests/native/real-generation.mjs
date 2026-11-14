@@ -21,6 +21,7 @@ import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launch, shutdown, until } from './harness.mjs';
 import { documentFailureEvidence } from './support/generation-evidence.mjs';
+import { captureDocumentBlocks } from './support/document-block-evidence.mjs';
 import { inspectHwpx } from './hwpx-inspect.mjs';
 import { hasTableHeaders } from './support/table-headers.mjs';
 import { hasReservationAbsenceStatement } from './support/reservation-note.mjs';
@@ -145,6 +146,7 @@ try {
     fileURLToPath(import.meta.url),
     fileURLToPath(new URL('./harness.mjs', import.meta.url)),
     fileURLToPath(new URL('./support/generation-evidence.mjs', import.meta.url)),
+    fileURLToPath(new URL('./support/document-block-evidence.mjs', import.meta.url)),
     fileURLToPath(new URL('./hwpx-inspect.mjs', import.meta.url)),
     fileURLToPath(new URL('./support/table-headers.mjs', import.meta.url)),
     fileURLToPath(new URL('./support/reservation-note.mjs', import.meta.url)),
@@ -669,14 +671,24 @@ try {
     });
     assertFacts(exported);
     await writeFile(join(evidence, 'actual-document.md'), exported);
-    await main.screenshot({ path: join(evidence, 'actual-document-body.png') });
+    result.bodyScreenshots = await captureDocumentBlocks(
+      main,
+      expectedBlockText,
+      evidence,
+      'actual-document-body',
+    );
     await main.setViewportSize({ width: 760, height: 900 });
     result.narrowLayout = await main.evaluate(() => ({
       width: innerWidth,
       scroll: document.body.scrollWidth,
     }));
     assert(result.narrowLayout.scroll <= result.narrowLayout.width + 1);
-    await main.screenshot({ path: join(evidence, 'actual-document-narrow.png') });
+    result.narrowBodyScreenshots = await captureDocumentBlocks(
+      main,
+      expectedBlockText,
+      evidence,
+      'actual-document-narrow',
+    );
     assert.deepEqual(instance.errors, []);
     result.firstSessionErrors = [...instance.errors];
     stage = 'reopen actual generated document and answer';

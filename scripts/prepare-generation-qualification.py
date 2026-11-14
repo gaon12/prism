@@ -6,7 +6,7 @@ import json
 import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
-ORIGINAL_TEST_SHA256 = "e9eced744d7ce52ea7504852c586d76d1219d251309b4a08676a5be2d94c5de7"
+ORIGINAL_TEST_SHA256 = "966228810e3b3aaac0440ecb2312ca5cd69036043f09a015b612c7218bbf1a6a"
 PROFILE = "qwen3-4b-official-thinking-no-repack-seed42"
 MODEL = {
     "filename": "Qwen3-4B-Q4_K_M.gguf",
@@ -72,7 +72,7 @@ def prepare(output):
     original = original_path.read_text(encoding="utf8")
     variant = transform(original)
     sources = [original_path, ROOT / "scripts/prepare-generation-assets.mjs"]
-    helpers = ["harness.mjs", "hwpx-inspect.mjs", "support/generation-evidence.mjs", "support/table-headers.mjs", "support/reservation-note.mjs"]
+    helpers = ["harness.mjs", "hwpx-inspect.mjs", "support/generation-evidence.mjs", "support/document-block-evidence.mjs", "support/table-headers.mjs", "support/reservation-note.mjs"]
     sources += [ROOT / "tests/native" / name for name in helpers]
     # Captured negative answers in this directory are never qualification inputs.
     fixtures = [ROOT / "tests/fixtures/generation" / name for name in ["pins.json", "은하 워크숍.md", "별빛 세미나.md", "독서 동호회.md"]]

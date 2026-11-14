@@ -57,6 +57,19 @@ class PreparationTests(unittest.TestCase):
             checked = subprocess.run([shutil.which("node"), "--check", str(path)], capture_output=True, text=True, timeout=15)
             self.assertEqual(checked.returncode, 0, checked.stderr)
 
+    @unittest.skipUnless(shutil.which("node"), "Node is needed to resolve the screenshot helper")
+    def test_generated_screenshot_helper_imports_without_a_browser_or_model(self):
+        base = Path(tempfile.mkdtemp(prefix="generation-profile-import-", dir=ROOT / ".dev"))
+        manifest = profile.prepare(base / "case")
+        helper = Path(manifest["tree"]) / "tests/native/support/document-block-evidence.mjs"
+        # Import only the helper. Importing the native runner would execute its
+        # entry point, whereas this module merely exports its capture function.
+        checked = subprocess.run(
+            [shutil.which("node"), "--input-type=module", "-e", "await import(process.argv[1])", helper.as_uri()],
+            capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+
     def test_windows_checkout_line_endings_keep_original_bytes_and_make_same_program(self):
         base = Path(tempfile.mkdtemp(prefix="generation-profile-test-", dir=ROOT / ".dev"))
         reference = profile.prepare(base / "reference")

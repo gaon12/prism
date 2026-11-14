@@ -10,6 +10,7 @@ import { join, resolve, toNamespacedPath } from 'node:path';
 import { launch, shutdown, until } from './harness.mjs';
 import { inspectPdf } from './pdf-inspect.mjs';
 import { inspectHwpx } from './hwpx-inspect.mjs';
+import { captureDocumentBlocks } from './support/document-block-evidence.mjs';
 
 const directory = await mkdtemp(join(tmpdir(), 'prism-documents-'));
 const evidence = join(directory, 'evidence');
@@ -668,12 +669,14 @@ try {
   );
   assert.equal(uiSaved.blocks.find((block) => block.id === 'facts').userEdited, false);
   assert.equal(uiSaved.blocks.find((block) => block.id === 'blank').markdown, '화면에서 채운 값');
-  await main.locator('.doc-edit-scroll').evaluate((element) => (element.scrollTop = 0));
-  await main.screenshot({ path: join(evidence, 'documents-body-native.png') });
+  const screenshotBlocks = await main
+    .locator('.doc-block textarea')
+    .evaluateAll((inputs) => inputs.map((input) => input.value));
+  await captureDocumentBlocks(main, screenshotBlocks, evidence, 'documents-body-native');
   assert.equal(await main.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await main.setViewportSize({ width: 760, height: 760 });
   assert.equal(await main.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-  await main.screenshot({ path: join(evidence, 'documents-body-760-native.png') });
+  await captureDocumentBlocks(main, screenshotBlocks, evidence, 'documents-body-760-native');
   await main.setViewportSize({ width: 1280, height: 840 });
   await main.locator('.doc-history > summary').click();
   await main.getByRole('button', { name: '이전 버전으로 실행 취소', exact: true }).click();

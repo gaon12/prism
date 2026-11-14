@@ -14,7 +14,8 @@ Implemented:
 - `protocol`: bounded, versioned binary frames for drive snapshots and changes.
   Requests accept a drive letter and revision, with no filesystem paths,
   program execution, file-content request, or write operation. Replies contain
-  only filenames, directory flags, size and modification time.
+  only filenames, directory flags, size and modification time, plus own NTFS
+  attributes when the caller explicitly requests them.
   The client retains the codec's owned path-validation result for the stream
   receiver, avoiding a second scan. Constructed replies still require path
   checks; volume identity, ordering and global record/byte budgets are checked
@@ -98,11 +99,30 @@ Implemented:
   replay overlay, without a second filesystem lookup or per-path map. It does
   not change the cache/wire format or app catalog record layout. These are own
   record flags, not inherited directory exclusions. This prepares the hidden/
-  system-file policy work; the app settings and service/client attribute transfer
-  are still pending. Windows core all-target tests passed 64 cases and Linux 63
+  system-file policy work; app settings and policy integration remain pending.
+  Windows core all-target tests passed 64 cases and Linux 63
   (one explicit ignored benchmark each); strict Windows workspace all-feature
   and Linux core all-target Clippy passed. The Windows admin check used a real,
   freshly compiled private service payload, without installing or running it.
+- `client::snapshot_with_attributes` explicitly requests attributed rows.
+  Legacy snapshots retain their version-2 request and response bytes; new rows
+  are rejected unless requested, and plain rows cannot satisfy an attribute
+  request. Volume identity, record/path budgets, cancellation and terminal
+  acknowledgements use the existing validation. A legacy service's explicit
+  invalid-request reply becomes `Unsupported`, without a silent downgrade.
+  Each row distinguishes unknown attributes from a confirmed zero. The decoder
+  establishes complete flags alongside the standard-information timestamp;
+  records without that information expose `None`, even if partial flags exist.
+  No app catalog layout, cache format or default search policy changes.
+  Windows protocol/pipe checks passed 65 tests (one ignored benchmark), and
+  actual app filename modules passed 83 (six ignored benchmarks). Linux
+  protocol/core all-target checks passed 83 (one ignored benchmark). Strict
+  Clippy passed for those scopes and the Windows indexer workspace with all
+  targets/features. A separately compiled, unmodified `1c955f0` codec supplied
+  legacy golden bytes and rejected the exact new opt-in request. Private-pipe
+  tests use synthetic backend rows; the fresh service PE was only compiled,
+  never installed or run. Live installed-service and full-app policy integration
+  remain separate qualification work.
 - Persistent metadata uses a fixed private service subdirectory, exact protected
   ownership/ACL checks and regular single-link files. Immutable read handles
   prevent changes during hash verification and decoding. Writes use a bounded

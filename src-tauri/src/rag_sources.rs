@@ -228,6 +228,76 @@ mod tests {
     }
 
     #[test]
+    fn persisted_source_identity_is_checked_before_original_hash_reads() {
+        let (_directory, resolver, policy) = policy_fixture(&["first.md", "same.md"]);
+        let cancel = AtomicBool::new(false);
+        let original = resolver
+            .retrieve("guardedpolicycanary", &[], &policy, 8, &cancel)
+            .unwrap()
+            .into_iter()
+            .find(|source| source.source.file_path.ends_with("first.md"))
+            .unwrap()
+            .source;
+        let mut unknown = original.clone();
+        unknown.chunk_id.push_str("-not-current");
+        let mut wrong_hash = original.clone();
+        wrong_hash.sha256 = "not-the-current-fingerprint".into();
+        let mut wrong_path = original.clone();
+        wrong_path.file_path = Path::new(&original.file_path)
+            .with_file_name("same.md")
+            .to_string_lossy()
+            .into_owned();
+        // Both files have identical bytes. A hash match cannot substitute for
+        // the current chunk's path or ID, and invalid references need no read.
+        for source in [unknown, wrong_hash, wrong_path] {
+            SOURCE_HASH_REQUESTS.with(|calls| calls.set(0));
+            let checked = resolver
+                .revalidate(&[source], &[], &policy, &cancel)
+                .unwrap();
+            assert_eq!(checked[0].state, SourceState::Changed);
+            assert!(checked[0].text.is_none());
+            assert_eq!(SOURCE_HASH_REQUESTS.with(|calls| calls.get()), 0);
+        }
+        SOURCE_HASH_REQUESTS.with(|calls| calls.set(0));
+        let checked = resolver
+            .revalidate(&[original.clone(), original.clone()], &[], &policy, &cancel)
+            .unwrap();
+        assert!(checked
+            .iter()
+            .all(|value| value.state == SourceState::Current));
+        assert!(checked.iter().all(|value| value.text.is_some()));
+        assert_eq!(SOURCE_HASH_REQUESTS.with(|calls| calls.get()), 1);
+
+        // The content service's own exclusions can withdraw a cached chunk
+        // even while the broader RAG folder and category policy still allow it.
+        resolver
+            .0
+            .exclude_paths(&[Path::new(&original.file_path).to_path_buf()]);
+        assert!(resolver
+            .0
+            .chunks(std::slice::from_ref(&original.chunk_id), &cancel)
+            .unwrap()
+            .is_empty());
+        SOURCE_HASH_REQUESTS.with(|calls| calls.set(0));
+        let checked = resolver
+            .revalidate(std::slice::from_ref(&original), &[], &policy, &cancel)
+            .unwrap();
+        assert_eq!(checked[0].state, SourceState::Changed);
+        assert!(checked[0].text.is_none());
+        assert_eq!(SOURCE_HASH_REQUESTS.with(|calls| calls.get()), 0);
+
+        fs::remove_file(&original.file_path).unwrap();
+        SOURCE_HASH_REQUESTS.with(|calls| calls.set(0));
+        let checked = resolver
+            .revalidate(&[original], &[], &policy, &cancel)
+            .unwrap();
+        assert_eq!(checked[0].state, SourceState::Deleted);
+        assert!(checked[0].text.is_none());
+        assert_eq!(SOURCE_HASH_REQUESTS.with(|calls| calls.get()), 0);
+        resolver.0.shutdown();
+    }
+
+    #[test]
     fn content_policy_blocks_sha_reads_and_backfills_allowed_lower_ranked_evidence() {
         // More denied matches than the service's 100-hit preview. Filtering
         // only that preview cannot discover the permitted lower-ranked file.
@@ -946,6 +1016,15 @@ impl ContentSources {
                 SourceState::Deleted
             } else if scope.is_none() {
                 SourceState::OutOfScope
+            } else if !chunks.get(&source.chunk_id).is_some_and(|chunk| {
+                chunk.fingerprint.sha256 == source.sha256
+                    && canonical
+                        .as_ref()
+                        .is_some_and(|canonical| key(Path::new(&chunk.file_path)) == key(canonical))
+            }) {
+                // Stored provenance alone never authorizes an original read.
+                // The current content service may have withdrawn this chunk.
+                SourceState::Changed
             } else {
                 let sha = match hashes.entry(source.file_path.clone()) {
                     std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -954,14 +1033,7 @@ impl ContentSources {
                     }
                 };
                 if sha.as_deref() == Some(source.sha256.as_str())
-                    && chunks.get(&source.chunk_id).is_some_and(|chunk| {
-                        chunk.fingerprint.sha256 == source.sha256
-                            && canonical.as_ref().is_some_and(|canonical| {
-                                key(Path::new(&chunk.file_path)) == key(canonical)
-                            })
-                            && crate::path_identity::canonical(path).ok().as_ref()
-                                == canonical.as_ref()
-                    })
+                    && crate::path_identity::canonical(path).ok().as_ref() == canonical.as_ref()
                 {
                     SourceState::Current
                 } else {

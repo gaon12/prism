@@ -319,3 +319,28 @@ fresh native settings/shortcut/multi-window/restart run and Linux/macOS builds
 remain pending, as do filename inclusion and settings controls. Qualification
 SHA-256:
 `1acb284a934e2a6c9d6f6ffbeb47438871ceb47f407067256c5367d60a5a08ee`.
+
+## Persisted source identity before original reads
+
+The application's content-source resolver now requires a current chunk with the
+same ID, fingerprint and canonical path before requesting an original-file hash.
+A stored conversation reference alone is insufficient. Unknown IDs, mismatched
+fingerprints/paths and chunks removed by the content service's internal
+exclusions remain `Changed` with no text and no hash request. Existing `Deleted`
+and `OutOfScope` classifications keep their precedence. Valid sources still
+require a fresh original hash and a post-hash canonical-path check; duplicate
+references share one hash per validation pass.
+
+The actual Windows application regression first failed because an unknown ID
+still requested a hash, then passed with the corrected order. The complete app
+library suite passed 576 tests, with 19 explicit opt-ins ignored. This small QA
+crate does not compile the application content-source adapter. The functional
+suite retains opt1/assertions/overflow with command-local application codegen64;
+it is not a new GUI, inference, Linux/macOS app or performance qualification.
+
+An additional whole-app `clippy --lib --tests -- -D clippy::all` check failed on
+13 diagnostic lines verified unchanged from the source base. Those diagnostics
+and existing vendor/compiler warnings are preserved; no suppression was added.
+This result is not a clean whole-app lint qualification. Evidence:
+`C:/Users/solso/AppData/Local/Temp/prism-q18-source-identity-20261114-sjik2ku3/qualification.json`,
+SHA-256 `8f4e43fb580d478f291a3f3c0794ad77eaa89986c15c5e3d82382c621cde7199`.

@@ -16,6 +16,7 @@ import { fileShortcutError } from '../lib/file-shortcut';
 import type { Language, Theme, DocumentMode } from '../lib/types';
 import './settings-dialog.css';
 import { McpSettings } from './mcp/McpSettings';
+import { FilePolicySettings } from './FilePolicySettings';
 export type SettingsTab = 'general' | 'scopes' | 'shortcuts' | 'ai';
 
 export function SettingsDialog({
@@ -416,6 +417,20 @@ export function SettingsDialog({
                   <p className="scope-empty">{t('noScopes')}</p>
                 )}
                 <p className="setting-footnote">{t('engineNext')}</p>
+                <FilePolicySettings
+                  value={draft.filePolicy}
+                  language={settings.language}
+                  disabled={busy}
+                  onChange={(target, category, included) =>
+                    setDraft((current) => ({
+                      ...current,
+                      filePolicy: {
+                        ...current.filePolicy,
+                        [target]: { ...current.filePolicy[target], [category]: included },
+                      },
+                    }))
+                  }
+                />
                 <IndexServicePanel language={settings.language} runtime={runtime} />
                 <IndexResetPanel
                   language={settings.language}

@@ -2,6 +2,39 @@ import type { Language } from './types';
 
 // Each entry is Korean, English, Simplified Chinese, Traditional Chinese, Japanese.
 const messages = {
+  filePolicyTitle: ['포함할 항목', 'Items to include', '包含项目', '包含項目', '含める項目'],
+  filePolicyHint: [
+    '기본값은 모두 포함입니다. 파일명 검색과 본문·AI 색인에 포함할 항목을 각각 선택하세요.',
+    'All items are included by default. Choose items separately for filename search and content · AI indexing.',
+    '默认包含全部项目。请分别选择文件名搜索和正文 · AI 索引要包含的项目。',
+    '預設包含全部項目。請分別選擇檔名搜尋和內文 · AI 索引要包含的項目。',
+    '初期設定ではすべて含まれます。ファイル名検索と本文・AI索引に含める項目をそれぞれ選んでください。',
+  ],
+  filePolicyHidden: ['숨김 항목', 'Hidden items', '隐藏项目', '隱藏項目', '隠し項目'],
+  filePolicySystem: ['시스템 항목', 'System items', '系统项目', '系統項目', 'システム項目'],
+  filePolicySourceCode: ['소스 코드', 'Source code', '源代码', '原始碼', 'ソースコード'],
+  filePolicyRepositoryIgnored: [
+    '저장소에서 무시한 항목',
+    'Repository-ignored items',
+    '仓库忽略的项目',
+    '儲存庫忽略的項目',
+    'リポジトリの無視対象',
+  ],
+  filePolicyArchives: ['압축 파일', 'Archives', '压缩文件', '壓縮檔', '圧縮ファイル'],
+  filePolicyRulesHint: [
+    '저장소 항목은 .gitignore 등의 로컬 무시 규칙을 따릅니다. 압축 파일은 ZIP·7z·tar 등이며, DOCX·HWPX·EPUB는 문서로 다룹니다.',
+    'Repository items follow local ignore rules such as .gitignore. Archives include ZIP, 7z and tar; DOCX, HWPX and EPUB are treated as documents.',
+    '仓库项目遵循 .gitignore 等本地忽略规则。压缩文件包括 ZIP、7z、tar 等，DOCX、HWPX 和 EPUB 按文档处理。',
+    '儲存庫項目依循 .gitignore 等本機忽略規則。壓縮檔包括 ZIP、7z、tar 等，DOCX、HWPX 和 EPUB 視為文件。',
+    'リポジトリの項目には .gitignore などのローカル無視ルールを使います。ZIP・7z・tar などを圧縮ファイルとし、DOCX・HWPX・EPUB は文書として扱います。',
+  ],
+  filePolicyPermissionHint: [
+    '검색 폴더와 외부 AI 접근 권한은 폴더별 설정을 따릅니다.',
+    'Search folders and permission to send content to external AI follow each folder’s settings.',
+    '搜索文件夹范围及向外部 AI 发送内容的权限由各文件夹的设置决定。',
+    '搜尋資料夾範圍及傳送內容至外部 AI 的權限由各資料夾的設定決定。',
+    '検索フォルダーと外部AIへの送信権限には、フォルダーごとの設定が適用されます。',
+  ],
   searchMode: ['검색 방식', 'Search mode', '搜索方式', '搜尋方式', '検索方法'],
   chatWaitingForDocument: [
     'Spotlight의 대화가 준비됐습니다. 작성 중인 문서를 저장하거나 편집을 버리면 이동합니다.',

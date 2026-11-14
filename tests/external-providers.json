@@ -2,9 +2,9 @@
   "note": "OpenAI-compatible providers for the manual provider check (.github/workflows/providers.yml). A provider runs only when its key variable is set; model names change often, so edit this list rather than the test. Only synthetic fixture text is ever sent.",
   "providers": [
     {
-      "name": "groq-llama-3.3-70b",
+      "name": "groq-gpt-oss-120b",
       "endpoint": "https://api.groq.com/openai/v1",
-      "model": "llama-3.3-70b-versatile",
+      "model": "openai/gpt-oss-120b",
       "keyEnv": "GROQ_API_KEY",
       "tokenParameter": "maxTokens"
     },
@@ -16,16 +16,16 @@
       "tokenParameter": "maxTokens"
     },
     {
-      "name": "groq-qwen3-32b",
+      "name": "groq-qwen3.8-27b",
       "endpoint": "https://api.groq.com/openai/v1",
-      "model": "qwen/qwen3-32b",
+      "model": "qwen/qwen3.8-27b",
       "keyEnv": "GROQ_API_KEY",
       "tokenParameter": "maxTokens"
     },
     {
       "name": "gemini-flash",
       "endpoint": "https://generativelanguage.googleapis.com/v1beta/openai",
-      "model": "gemini-2.5-flash",
+      "model": "gemini-3.8-flash",
       "keyEnv": "GEMINI_API_KEY",
       "tokenParameter": "maxTokens"
     },

@@ -483,6 +483,12 @@ fn immediate_status_error(status: StatusCode) -> Option<GenerationErrorCode> {
     }
 }
 fn body_error_code(status: StatusCode, value: &Value) -> GenerationErrorCode {
+    // Some servers (Gemini's OpenAI-compatible endpoint) wrap the error object
+    // in a one-element array: [{"error": {...}}]. Look inside it the same way.
+    let value = match value.as_array().map(Vec::as_slice) {
+        Some([only]) => only,
+        _ => value,
+    };
     let item = value.get("error").unwrap_or(value);
     let code = item.get("code").and_then(Value::as_str).unwrap_or("");
     let kind = item.get("type").and_then(Value::as_str).unwrap_or("");
@@ -502,6 +508,10 @@ fn body_error_code(status: StatusCode, value: &Value) -> GenerationErrorCode {
         GenerationErrorCode::Context
     } else if matches!(code, "invalid_api_key" | "authentication_error")
         || kind == "authentication_error"
+        // Gemini answers a wrong key with 400 INVALID_ARGUMENT and the message
+        // "Please pass a valid API key", so a 400 that talks about the API key
+        // is an authentication problem, not a bad model or setting.
+        || message.contains("api key")
     {
         GenerationErrorCode::Auth
     } else if matches!(code, "rate_limit_exceeded" | "insufficient_quota")
@@ -848,6 +858,10 @@ mod tests {
             (400,serde_json::json!({"error":{"code":"context_length_exceeded","message":format!("{FAKE_KEY} {PROMPT}")}}).to_string(),GenerationErrorCode::Context),
             (200,format!("invalid JSON {FAKE_KEY} {PROMPT}"),GenerationErrorCode::Malformed),
             (302,"{}".into(),GenerationErrorCode::Endpoint),
+            // Gemini's wrong-key reply: 400, an array around the error, no "code" string.
+            (400,serde_json::json!([{"error":{"code":400,"message":format!("Please pass a valid API key. {FAKE_KEY} {PROMPT}"),"status":"INVALID_ARGUMENT"}}]).to_string(),GenerationErrorCode::Auth),
+            // A plain bad request still points at the model and settings.
+            (400,serde_json::json!([{"error":{"code":400,"message":"Unknown model","status":"INVALID_ARGUMENT"}}]).to_string(),GenerationErrorCode::Input),
         ] {
             let (endpoint,receiver,worker) = fixture(status,body,false,false);
             let key = SecretValue::new(FAKE_KEY.into()).unwrap();

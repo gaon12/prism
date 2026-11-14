@@ -154,7 +154,7 @@ impl FileIndex {
                         receive_callback += callback_started.elapsed();
                     }
                     Event::Progress { .. } => {}
-                    Event::Finished { .. } | Event::Removed(_) => {
+                    Event::AttributedRecords(_) | Event::Finished { .. } | Event::Removed(_) => {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             "Unexpected snapshot event.",

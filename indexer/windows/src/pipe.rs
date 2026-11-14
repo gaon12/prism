@@ -188,10 +188,7 @@ impl Connection {
             stream::{Error, Event, Receiver},
             Acknowledgement, Response,
         };
-        let drive = match request {
-            prism_ntfs_protocol::Request::Snapshot { drive }
-            | prism_ntfs_protocol::Request::Changes { drive, .. } => drive,
-        };
+        let drive = request.drive();
         self.set_frame_timeout(Duration::from_secs(2));
         request.write(self)?;
         let mut receiver = Receiver::new(request, expected_serial, expected_device);

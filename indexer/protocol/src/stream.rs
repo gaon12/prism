@@ -1,7 +1,10 @@
 //! Validate an entire reply, not just individual frames. A local drive letter
 //! can refer to a per-user mapping: paths are accepted only after the service's
 //! physical volume serial and kernel device match the caller's already-authorized root.
-use crate::{DriveLetter, FailureCode, FileRecord, Request, Response, ValidatedResponse};
+use crate::{
+    AttributedFileRecord, DriveLetter, FailureCode, FileRecord, Request, Response,
+    ValidatedResponse,
+};
 
 const MAX_RECORDS: u64 = 10_000_000;
 const MAX_PATH_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -24,6 +27,7 @@ impl std::error::Error for Error {}
 pub enum Event {
     Progress { completed: u64 },
     Records(Vec<FileRecord>),
+    AttributedRecords(Vec<AttributedFileRecord>),
     Removed(Vec<String>),
     Finished { revision: u64 },
 }
@@ -33,6 +37,7 @@ pub struct Receiver {
     expected_serial: u64,
     expected_device: String,
     changes: bool,
+    attributes: bool,
     announced: bool,
     terminal: bool,
     complete: bool,
@@ -41,15 +46,12 @@ pub struct Receiver {
 }
 impl Receiver {
     pub fn new(request: Request, expected_serial: u64, expected_device: &str) -> Self {
-        let (drive, changes) = match request {
-            Request::Snapshot { drive } => (drive, false),
-            Request::Changes { drive, .. } => (drive, true),
-        };
         Self {
-            drive,
+            drive: request.drive(),
             expected_serial,
             expected_device: expected_device.into(),
-            changes,
+            changes: matches!(request, Request::Changes { .. }),
+            attributes: matches!(request, Request::SnapshotWithAttributes { .. }),
             announced: false,
             terminal: false,
             complete: false,
@@ -127,11 +129,22 @@ impl Receiver {
             }
             Response::Progress { completed } => Ok(Some(Event::Progress { completed })),
             Response::Records(records) => {
-                if !self.announced {
+                if !self.announced || self.attributes {
                     Err(Error::Order)
                 } else {
                     self.account(records.iter().map(|record| record.path.as_str()), validated)?;
                     Ok(Some(Event::Records(records)))
+                }
+            }
+            Response::AttributedRecords(records) => {
+                if !self.announced || !self.attributes {
+                    Err(Error::Order)
+                } else {
+                    self.account(
+                        records.iter().map(|row| row.record.path.as_str()),
+                        validated,
+                    )?;
+                    Ok(Some(Event::AttributedRecords(records)))
                 }
             }
             Response::Removed(paths) => {
@@ -167,6 +180,62 @@ impl Receiver {
 mod tests {
     use super::*;
     const DEVICE: &str = r"\Device\TestVolume";
+    #[test]
+    fn attribute_rows_require_opt_in_identity_order_and_the_same_budgets() {
+        let drive = DriveLetter::new(b'C').unwrap();
+        let attributed = || {
+            Response::AttributedRecords(vec![AttributedFileRecord {
+                record: record(),
+                attributes: Some(0x8000_0026),
+            }])
+        };
+        let metadata = Request::SnapshotWithAttributes { drive };
+        for checked in [false, true] {
+            let mut receiver = Receiver::new(metadata, 7, DEVICE);
+            receiver.accept(volume(7)).unwrap();
+            let event = if checked {
+                receiver.accept_validated(decoded(&attributed(), drive))
+            } else {
+                receiver.accept(attributed())
+            }
+            .unwrap();
+            assert!(
+                matches!(event, Some(Event::AttributedRecords(rows)) if rows[0].attributes == Some(0x8000_0026) && rows[0].record == record())
+            );
+            receiver.accept(Response::Finished { revision: 4 }).unwrap();
+            assert!(receiver.finished());
+        }
+        for (request, response, announce) in [
+            (request(), attributed(), true),
+            (metadata, Response::Records(vec![record()]), true),
+            (metadata, attributed(), false),
+        ] {
+            let mut receiver = Receiver::new(request, 7, DEVICE);
+            if announce {
+                receiver.accept(volume(7)).unwrap();
+            }
+            assert_eq!(receiver.accept(response), Err(Error::Order));
+            assert!(!receiver.finished());
+            assert_eq!(
+                receiver.accept(Response::Finished { revision: 4 }),
+                Err(Error::Order)
+            );
+        }
+        for (records, bytes) in [(MAX_RECORDS, 0), (0, MAX_PATH_BYTES)] {
+            let mut receiver = Receiver::new(metadata, 7, DEVICE);
+            receiver.accept(volume(7)).unwrap();
+            receiver.records = records;
+            receiver.path_bytes = bytes;
+            assert_eq!(
+                receiver.accept_validated(decoded(&attributed(), drive)),
+                Err(Error::Limit)
+            );
+        }
+        let mut receiver = Receiver::new(metadata, 7, DEVICE);
+        assert_eq!(receiver.accept(volume(8)), Err(Error::VolumeMismatch));
+        assert_eq!(receiver.accept(attributed()), Err(Error::Order));
+    }
+
     fn volume(serial: u64) -> Response {
         Response::Volume {
             serial,

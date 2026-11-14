@@ -58,7 +58,9 @@ fn run() -> std::io::Result<()> {
         |event| match event {
             Event::Records(rows) => capture.push(rows),
             Event::Progress { .. } => Ok(()),
-            Event::Removed(_) | Event::Finished { .. } => Err(io::ErrorKind::InvalidData.into()),
+            Event::AttributedRecords(_) | Event::Removed(_) | Event::Finished { .. } => {
+                Err(io::ErrorKind::InvalidData.into())
+            }
         },
     )?;
     // Only the fully authenticated, terminal and root-revalidated exchange can

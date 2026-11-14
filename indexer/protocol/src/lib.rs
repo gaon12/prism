@@ -53,8 +53,17 @@ impl DriveLetter {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Request {
-    Snapshot { drive: DriveLetter },
-    Changes { drive: DriveLetter, after: u64 },
+    Snapshot {
+        drive: DriveLetter,
+    },
+    Changes {
+        drive: DriveLetter,
+        after: u64,
+    },
+    /// Explicit opt-in. Legacy requests retain their original response bytes.
+    SnapshotWithAttributes {
+        drive: DriveLetter,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,6 +72,14 @@ pub struct FileRecord {
     pub is_dir: bool,
     pub size: u64,
     pub modified_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttributedFileRecord {
+    pub record: FileRecord,
+    /// Complete own-record NTFS flags, without inherited path-policy decisions.
+    /// None means unavailable, which is distinct from a confirmed zero value.
+    pub attributes: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,6 +100,7 @@ pub enum Response {
     Volume { serial: u64, device: String },
     Progress { completed: u64 },
     Records(Vec<FileRecord>),
+    AttributedRecords(Vec<AttributedFileRecord>),
     Removed(Vec<String>),
     Finished { revision: u64 },
     Failure(FailureCode),
@@ -255,10 +273,50 @@ fn read_path(cursor: &mut Cursor<Vec<u8>>, drive: DriveLetter) -> io::Result<Str
     Ok(result)
 }
 
+fn write_record(payload: &mut Vec<u8>, record: &FileRecord, drive: DriveLetter) -> io::Result<()> {
+    write_path(payload, &record.path, drive)?;
+    payload.push(u8::from(record.is_dir));
+    payload.extend_from_slice(&record.size.to_le_bytes());
+    payload.push(u8::from(record.modified_ms.is_some()));
+    if let Some(modified) = record.modified_ms {
+        payload.extend_from_slice(&modified.to_le_bytes());
+    }
+    Ok(())
+}
+
+fn read_record(payload: &mut Cursor<Vec<u8>>, drive: DriveLetter) -> io::Result<FileRecord> {
+    let path = read_path(payload, drive)?;
+    let is_dir = match byte(payload)? {
+        0 => false,
+        1 => true,
+        _ => return Err(invalid()),
+    };
+    let size = u64_value(payload)?;
+    let modified_ms = match byte(payload)? {
+        0 => None,
+        1 => Some(u64_value(payload)? as i64),
+        _ => return Err(invalid()),
+    };
+    Ok(FileRecord {
+        path,
+        is_dir,
+        size,
+        modified_ms,
+    })
+}
+
 impl Request {
+    pub fn drive(self) -> DriveLetter {
+        match self {
+            Self::Snapshot { drive }
+            | Self::Changes { drive, .. }
+            | Self::SnapshotWithAttributes { drive } => drive,
+        }
+    }
     pub fn write(self, writer: &mut impl Write) -> io::Result<()> {
         let payload = match self {
             Self::Snapshot { drive } => vec![1, drive.byte()],
+            Self::SnapshotWithAttributes { drive } => vec![3, drive.byte()],
             Self::Changes { drive, after } => {
                 let mut payload = vec![2, drive.byte()];
                 payload.extend_from_slice(&after.to_le_bytes());
@@ -273,6 +331,7 @@ impl Request {
         let drive = DriveLetter::new(byte(&mut payload)?)?;
         let request = match kind {
             1 => Self::Snapshot { drive },
+            3 => Self::SnapshotWithAttributes { drive },
             2 => Self::Changes {
                 drive,
                 after: u64_value(&mut payload)?,
@@ -296,6 +355,10 @@ impl Response {
             Self::Records(records) => (
                 records.len() as u64,
                 records.iter().map(|row| row.path.len() as u64).sum(),
+            ),
+            Self::AttributedRecords(records) => (
+                records.len() as u64,
+                records.iter().map(|row| row.record.path.len() as u64).sum(),
             ),
             Self::Removed(paths) => (
                 paths.len() as u64,
@@ -336,12 +399,23 @@ impl Response {
                 payload.push(2);
                 payload.extend_from_slice(&(records.len() as u32).to_le_bytes());
                 for record in records {
-                    write_path(&mut payload, &record.path, drive)?;
-                    payload.push(u8::from(record.is_dir));
-                    payload.extend_from_slice(&record.size.to_le_bytes());
-                    payload.push(u8::from(record.modified_ms.is_some()));
-                    if let Some(modified) = record.modified_ms {
-                        payload.extend_from_slice(&modified.to_le_bytes());
+                    write_record(&mut payload, record, drive)?;
+                    if payload.len() > MAX_FRAME_BYTES {
+                        return Err(invalid());
+                    }
+                }
+            }
+            Self::AttributedRecords(records) => {
+                if records.len() > MAX_BATCH_RECORDS {
+                    return Err(invalid());
+                }
+                payload.push(7);
+                payload.extend_from_slice(&(records.len() as u32).to_le_bytes());
+                for row in records {
+                    write_record(&mut payload, &row.record, drive)?;
+                    payload.push(u8::from(row.attributes.is_some()));
+                    if let Some(attributes) = row.attributes {
+                        payload.extend_from_slice(&attributes.to_le_bytes());
                     }
                     if payload.len() > MAX_FRAME_BYTES {
                         return Err(invalid());
@@ -395,26 +469,27 @@ impl Response {
                 let count = count(&mut payload)?;
                 let mut records = Vec::with_capacity(count);
                 for _ in 0..count {
-                    let path = read_path(&mut payload, drive)?;
-                    let is_dir = match byte(&mut payload)? {
-                        0 => false,
-                        1 => true,
-                        _ => return Err(invalid()),
-                    };
-                    let size = u64_value(&mut payload)?;
-                    let modified_ms = match byte(&mut payload)? {
-                        0 => None,
-                        1 => Some(u64_value(&mut payload)? as i64),
-                        _ => return Err(invalid()),
-                    };
-                    records.push(FileRecord {
-                        path,
-                        is_dir,
-                        size,
-                        modified_ms,
-                    });
+                    records.push(read_record(&mut payload, drive)?);
                 }
                 Self::Records(records)
+            }
+            7 => {
+                let count = count(&mut payload)?;
+                let mut records = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let record = read_record(&mut payload, drive)?;
+                    let attributes = match byte(&mut payload)? {
+                        0 => None,
+                        1 => {
+                            let mut attributes = [0; 4];
+                            payload.read_exact(&mut attributes)?;
+                            Some(u32::from_le_bytes(attributes))
+                        }
+                        _ => return Err(invalid()),
+                    };
+                    records.push(AttributedFileRecord { record, attributes });
+                }
+                Self::AttributedRecords(records)
             }
             3 => {
                 let count = count(&mut payload)?;
@@ -438,6 +513,128 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_snapshot_bytes_stay_compatible_with_the_frozen_v2_codec() {
+        // Captured by compiling the unmodified 1c955f0 codec separately.
+        let drive = DriveLetter::new(b'C').unwrap();
+        let mut bytes = vec![];
+        Request::Snapshot { drive }.write(&mut bytes).unwrap();
+        assert_eq!(bytes, b"PNI2\x02\0\x02\0\0\0\x01C");
+        bytes.clear();
+        Request::SnapshotWithAttributes { drive }
+            .write(&mut bytes)
+            .unwrap();
+        // The frozen codec rejects exactly this unknown opt-in request.
+        assert_eq!(bytes, b"PNI2\x02\0\x02\0\0\0\x03C");
+        bytes.clear();
+        let response = Response::Records(vec![FileRecord {
+            path: "C:\\x".into(),
+            is_dir: false,
+            size: 42,
+            modified_ms: Some(-1),
+        }]);
+        response.write(&mut bytes, drive).unwrap();
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(
+            hex,
+            "504e493202001f000000020100000004000000433a5c78002a0000000000000001ffffffffffffffff"
+        );
+        assert_eq!(
+            Response::read(&mut Cursor::new(bytes), drive).unwrap(),
+            response
+        );
+    }
+
+    #[test]
+    fn unknown_attributes_are_distinct_from_confirmed_zero_and_malformed_flags() {
+        let drive = DriveLetter::new(b'C').unwrap();
+        let record = FileRecord {
+            path: "C:\\x".into(),
+            is_dir: false,
+            size: 0,
+            modified_ms: None,
+        };
+        for attributes in [None, Some(0), Some(u32::MAX)] {
+            let expected = Response::AttributedRecords(vec![AttributedFileRecord {
+                record: record.clone(),
+                attributes,
+            }]);
+            let mut bytes = vec![];
+            expected.write(&mut bytes, drive).unwrap();
+            assert_eq!(
+                Response::read(&mut Cursor::new(&bytes), drive).unwrap(),
+                expected
+            );
+            let marker = bytes.len() - if attributes.is_some() { 5 } else { 1 };
+            bytes[marker] = 2;
+            assert!(Response::read(&mut Cursor::new(&bytes), drive).is_err());
+            bytes[marker] = 1;
+            bytes.truncate(marker + 1);
+            let length = (bytes.len() - 10) as u32;
+            bytes[6..10].copy_from_slice(&length.to_le_bytes());
+            assert!(Response::read(&mut Cursor::new(&bytes), drive).is_err());
+            bytes[marker] = 0;
+            bytes.extend_from_slice(&[0; 4]);
+            let length = (bytes.len() - 10) as u32;
+            bytes[6..10].copy_from_slice(&length.to_le_bytes());
+            assert!(Response::read(&mut Cursor::new(&bytes), drive).is_err());
+        }
+    }
+
+    #[test]
+    fn attribute_mode_round_trips_flags_and_requires_complete_records() {
+        let drive = DriveLetter::new(b'C').unwrap();
+        let request = Request::SnapshotWithAttributes { drive };
+        let mut bytes = vec![];
+        request.write(&mut bytes).unwrap();
+        assert_eq!(Request::read(&mut Cursor::new(bytes)).unwrap(), request);
+        let row = FileRecord {
+            path: "C:\\문서\\가 😀.txt".into(),
+            is_dir: false,
+            size: u64::MAX,
+            modified_ms: Some(i64::MIN),
+        };
+        let expected = Response::AttributedRecords(vec![AttributedFileRecord {
+            record: row.clone(),
+            attributes: Some(u32::MAX),
+        }]);
+        let mut bytes = vec![];
+        expected.write(&mut bytes, drive).unwrap();
+        assert_eq!(
+            Response::read(&mut Cursor::new(&bytes), drive).unwrap(),
+            expected
+        );
+        let proof = Response::read_validated(&mut Cursor::new(&bytes), drive).unwrap();
+        assert_eq!(proof.path_count, 1);
+        assert_eq!(proof.path_bytes, row.path.len() as u64);
+        let mut wrong_drive = bytes.clone();
+        wrong_drive[19] = b'D';
+        assert!(Response::read_validated(&mut Cursor::new(wrong_drive), drive).is_err());
+        bytes.pop();
+        assert!(Response::read(&mut Cursor::new(bytes), drive).is_err());
+
+        // Relabelling a complete legacy row must not silently invent zero flags.
+        let mut missing_flags = vec![];
+        Response::Records(vec![row])
+            .write(&mut missing_flags, drive)
+            .unwrap();
+        missing_flags[10] = 7;
+        assert!(Response::read(&mut Cursor::new(missing_flags), drive).is_err());
+        let oversized = Response::AttributedRecords(vec![
+            AttributedFileRecord {
+                record: FileRecord {
+                    path: "C:\\x".into(),
+                    is_dir: true,
+                    size: 0,
+                    modified_ms: None
+                },
+                attributes: Some(0),
+            };
+            MAX_BATCH_RECORDS + 1
+        ]);
+        assert!(oversized.write(&mut vec![], drive).is_err());
+    }
+
     fn drive() -> DriveLetter {
         DriveLetter::new(b'c').unwrap()
     }

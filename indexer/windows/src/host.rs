@@ -45,6 +45,17 @@ enum SnapshotData {
     Cached(crate::administration::cache::CachedSnapshot),
 }
 impl SnapshotData {
+    fn visit_with_attributes(
+        &mut self,
+        drive: prism_ntfs_protocol::DriveLetter,
+        check: &impl Fn() -> layout::Result<()>,
+        visit: impl FnMut(prism_ntfs_protocol::FileRecord, u32) -> io::Result<()>,
+    ) -> io::Result<()> {
+        match self {
+            Self::Full(snapshot) => snapshot.catalog.visit_with_attributes(drive, visit),
+            Self::Cached(snapshot) => snapshot.visit_with_attributes(drive, check, visit),
+        }
+    }
     fn visit(
         &mut self,
         drive: prism_ntfs_protocol::DriveLetter,
@@ -97,7 +108,7 @@ impl Backend for SnapshotBackend {
         emit: &mut dyn FnMut(Response) -> io::Result<()>,
     ) -> Result<u64, FailureCode> {
         let drive = match request {
-            Request::Snapshot { drive } => drive,
+            Request::Snapshot { drive } | Request::SnapshotWithAttributes { drive } => drive,
             Request::Changes { .. } => return Err(FailureCode::JournalGap),
         };
         let begin = Instant::now();
@@ -172,27 +183,53 @@ impl Backend for SnapshotBackend {
             ),
         };
         check().map_err(failure)?;
-        let mut batch = vec![];
-        let mut encoded = 5usize;
-        result
-            .visit(drive, &check, |record| -> io::Result<()> {
-                check().map_err(io::Error::other)?;
-                let length = record.path.len() + 22;
-                if !batch.is_empty()
-                    && (batch.len() == MAX_BATCH_RECORDS
-                        || encoded.saturating_add(length) > MAX_FRAME_BYTES)
-                {
-                    emit.borrow_mut()(Response::Records(std::mem::take(&mut batch)))
-                        .map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?;
-                    encoded = 5;
-                }
-                encoded += length;
-                batch.push(record);
-                Ok(())
-            })
-            .map_err(visitor_failure)?;
-        if !batch.is_empty() {
-            emit.borrow_mut()(Response::Records(batch)).map_err(|_| FailureCode::Cancelled)?;
+        if matches!(request, Request::SnapshotWithAttributes { .. }) {
+            let mut batch = vec![];
+            let mut encoded = 5usize;
+            result
+                .visit_with_attributes(drive, &check, |record, attributes| -> io::Result<()> {
+                    check().map_err(io::Error::other)?;
+                    let length = record.path.len() + 27;
+                    if !batch.is_empty()
+                        && (batch.len() == MAX_BATCH_RECORDS
+                            || encoded.saturating_add(length) > MAX_FRAME_BYTES)
+                    {
+                        emit.borrow_mut()(Response::AttributedRecords(std::mem::take(&mut batch)))
+                            .map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?;
+                        encoded = 5;
+                    }
+                    encoded += length;
+                    batch.push(attributed_record(record, attributes));
+                    Ok(())
+                })
+                .map_err(visitor_failure)?;
+            if !batch.is_empty() {
+                emit.borrow_mut()(Response::AttributedRecords(batch))
+                    .map_err(|_| FailureCode::Cancelled)?;
+            }
+        } else {
+            let mut batch = vec![];
+            let mut encoded = 5usize;
+            result
+                .visit(drive, &check, |record| -> io::Result<()> {
+                    check().map_err(io::Error::other)?;
+                    let length = record.path.len() + 22;
+                    if !batch.is_empty()
+                        && (batch.len() == MAX_BATCH_RECORDS
+                            || encoded.saturating_add(length) > MAX_FRAME_BYTES)
+                    {
+                        emit.borrow_mut()(Response::Records(std::mem::take(&mut batch)))
+                            .map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?;
+                        encoded = 5;
+                    }
+                    encoded += length;
+                    batch.push(record);
+                    Ok(())
+                })
+                .map_err(visitor_failure)?;
+            if !batch.is_empty() {
+                emit.borrow_mut()(Response::Records(batch)).map_err(|_| FailureCode::Cancelled)?;
+            }
         }
         check().map_err(failure)?;
         if let Some(store) = store {
@@ -227,6 +264,16 @@ impl Backend for SnapshotBackend {
             .as_nanos() as u64)
             .max(1))
     }
+}
+fn attributed_record(
+    record: prism_ntfs_protocol::FileRecord,
+    raw: u32,
+) -> prism_ntfs_protocol::AttributedFileRecord {
+    // The decoder fills modified_ms only from complete STANDARD_INFORMATION,
+    // alongside its flags. Without it, FILE_NAME may establish only a subset
+    // of flags; do not present those bits as a complete known attribute set.
+    let attributes = record.modified_ms.map(|_| raw);
+    prism_ntfs_protocol::AttributedFileRecord { record, attributes }
 }
 fn visitor_failure(error: io::Error) -> FailureCode {
     if let Some(error) = error
@@ -290,9 +337,7 @@ pub(crate) fn session(mut connection: Connection, backend: &dyn Backend) -> io::
             )
         }
     };
-    let drive = match request {
-        Request::Snapshot { drive } | Request::Changes { drive, .. } => drive,
-    };
+    let drive = request.drive();
     let cancel = connection.cancel_flag();
     let shutdown = connection.shutdown_flag();
     let result = backend.stream(request, cancel.clone(), shutdown, &mut |response| {
@@ -452,17 +497,39 @@ mod tests {
             })
             .unwrap();
             emit(Response::Progress { completed: 581 }).unwrap();
-            emit(Response::Records(vec![FileRecord {
+            let record = FileRecord {
                 path: "C:\\fixture.md".into(),
                 is_dir: false,
                 size: 5,
                 modified_ms: Some(42),
-            }]))
+            };
+            emit(
+                if matches!(request, Request::SnapshotWithAttributes { .. }) {
+                    let mut unknown = record.clone();
+                    unknown.path = "C:\\unknown.md".into();
+                    unknown.modified_ms = None;
+                    Response::AttributedRecords(vec![
+                        attributed_record(record, 0x8000_0026),
+                        attributed_record(unknown, 0x20),
+                    ])
+                } else {
+                    Response::Records(vec![record])
+                },
+            )
             .map_err(|_| FailureCode::Cancelled)?;
             Ok(11)
         }
     }
     fn pair() -> (
+        String,
+        std::sync::mpsc::Receiver<()>,
+        JoinHandle<io::Result<()>>,
+    ) {
+        pair_with(Arc::new(Fixture))
+    }
+    fn pair_with(
+        backend: Arc<dyn Backend>,
+    ) -> (
         String,
         std::sync::mpsc::Receiver<()>,
         JoinHandle<io::Result<()>>,
@@ -479,7 +546,7 @@ mod tests {
             ready.send(()).unwrap();
             session(
                 server.accept(Arc::new(AtomicBool::new(false)), Duration::from_secs(2))?,
-                &Fixture,
+                backend.as_ref(),
             )
         });
         (name, waiting, thread)
@@ -528,6 +595,76 @@ mod tests {
             },
         );
         assert!(result.is_err());
+        assert_eq!(count, 0);
+        thread.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn attributed_pipe_exchange_retains_flags_and_acknowledges_the_terminal_frame() {
+        let (name, ready, thread) = pair();
+        ready.recv().unwrap();
+        let mut connection = Connection::fixture_client(&name).unwrap();
+        let mut events = vec![];
+        let revision = connection
+            .exchange(
+                Request::SnapshotWithAttributes {
+                    drive: DriveLetter::new(b'C').unwrap(),
+                },
+                7,
+                r"\Device\TestVolume",
+                |event| {
+                    events.push(event);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(revision, 11);
+        assert!(
+            matches!(events.as_slice(), [Event::Progress { completed: 581 }, Event::AttributedRecords(rows)]
+            if rows.len() == 2 && rows[0].record.path == "C:\\fixture.md" && rows[0].attributes == Some(0x8000_0026)
+                && rows[1].record.path == "C:\\unknown.md" && rows[1].attributes.is_none())
+        );
+        thread.join().unwrap().unwrap();
+    }
+
+    struct LegacyFixture;
+    impl Backend for LegacyFixture {
+        fn stream(
+            &self,
+            request: Request,
+            cancel: Arc<AtomicBool>,
+            shutdown: Arc<AtomicBool>,
+            emit: &mut dyn FnMut(Response) -> io::Result<()>,
+        ) -> Result<u64, FailureCode> {
+            if matches!(request, Request::SnapshotWithAttributes { .. }) {
+                return Err(FailureCode::InvalidRequest);
+            }
+            Fixture.stream(request, cancel, shutdown, emit)
+        }
+    }
+    #[test]
+    fn legacy_rejection_is_acknowledged_without_silent_attribute_downgrade() {
+        let (name, ready, thread) = pair_with(Arc::new(LegacyFixture));
+        ready.recv().unwrap();
+        let mut connection = Connection::fixture_client(&name).unwrap();
+        let mut count = 0;
+        let error = connection
+            .exchange(
+                Request::SnapshotWithAttributes {
+                    drive: DriveLetter::new(b'C').unwrap(),
+                },
+                7,
+                r"\Device\TestVolume",
+                |_| {
+                    count += 1;
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            crate::client::attribute_error(error).kind(),
+            io::ErrorKind::Unsupported
+        );
         assert_eq!(count, 0);
         thread.join().unwrap().unwrap();
     }

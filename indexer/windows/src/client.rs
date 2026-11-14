@@ -117,11 +117,51 @@ pub fn snapshot(
     cancel: Arc<AtomicBool>,
     receive: impl FnMut(Event) -> io::Result<()>,
 ) -> io::Result<u64> {
+    snapshot_mode(root, cancel, receive, false)
+}
+
+/// Explicit metadata mode. A legacy service's rejection is Unsupported, not
+/// permission to substitute rows that lack the requested attributes.
+/// Individual rows may still report None when complete flags are unavailable.
+pub fn snapshot_with_attributes(
+    root: &Path,
+    cancel: Arc<AtomicBool>,
+    receive: impl FnMut(Event) -> io::Result<()>,
+) -> io::Result<u64> {
+    snapshot_mode(root, cancel, receive, true).map_err(attribute_error)
+}
+
+pub(crate) fn attribute_error(error: io::Error) -> io::Error {
+    if error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<prism_ntfs_protocol::stream::Error>())
+        == Some(&prism_ntfs_protocol::stream::Error::Service(
+            prism_ntfs_protocol::FailureCode::InvalidRequest,
+        ))
+    {
+        io::Error::new(io::ErrorKind::Unsupported, "The filename service does not support file attributes. Use the bundled service version or the filesystem walker.")
+    } else {
+        error
+    }
+}
+
+fn snapshot_mode(
+    root: &Path,
+    cancel: Arc<AtomicBool>,
+    receive: impl FnMut(Event) -> io::Result<()>,
+    attributes: bool,
+) -> io::Result<u64> {
     let identity = root_identity(root)?;
     let mut connection = Connection::connect(cancel)?;
     let revision = connection.exchange(
-        Request::Snapshot {
-            drive: identity.drive,
+        if attributes {
+            Request::SnapshotWithAttributes {
+                drive: identity.drive,
+            }
+        } else {
+            Request::Snapshot {
+                drive: identity.drive,
+            }
         },
         identity.serial,
         &identity.device,
@@ -139,6 +179,37 @@ pub fn snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_an_explicit_unsupported_request_maps_to_attribute_unavailability() {
+        use prism_ntfs_protocol::{stream::Error, FailureCode};
+        let missing = attribute_error(io::Error::other(Error::Service(
+            FailureCode::InvalidRequest,
+        )));
+        assert_eq!(missing.kind(), io::ErrorKind::Unsupported);
+        for code in [
+            FailureCode::AccessDenied,
+            FailureCode::Unavailable,
+            FailureCode::Cancelled,
+            FailureCode::JournalGap,
+        ] {
+            let failure = Error::Service(code);
+            let error = attribute_error(io::Error::other(failure));
+            assert_eq!(error.kind(), io::ErrorKind::Other);
+            assert_eq!(
+                error.get_ref().unwrap().downcast_ref::<Error>(),
+                Some(&failure)
+            );
+        }
+        let error = attribute_error(io::Error::new(
+            io::ErrorKind::InvalidData,
+            Error::VolumeMismatch,
+        ));
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            attribute_error(io::ErrorKind::Interrupted.into()).kind(),
+            io::ErrorKind::Interrupted
+        );
+    }
     #[test]
     fn reject_relative_unc_and_subdirectory_inputs_before_opening() {
         for value in [

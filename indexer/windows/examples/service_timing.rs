@@ -78,7 +78,7 @@ fn run() -> std::io::Result<()> {
                 Event::Progress { .. } => progress_events += 1,
                 // The production snapshot client validates/rejects terminal
                 // ordering and removals; do not manufacture a successful reply.
-                Event::Removed(_) | Event::Finished { .. } => {
+                Event::AttributedRecords(_) | Event::Removed(_) | Event::Finished { .. } => {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
             }

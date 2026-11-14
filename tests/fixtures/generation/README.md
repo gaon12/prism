@@ -16,6 +16,26 @@ qualification stays opt-in; its success does not satisfy or replace that require
 gate. This policy applies to test fixtures. Product profiles continue to require
 the user's server and model configuration.
 
+[Build-only CI 43527340272](https://github.com/gaon12/prism/actions/runs/43527340272)
+at `315ae41` subsequently passed the value/quote-only implementation, including
+the unchanged required Windows 1.7B gate. Its result records actual inference,
+no response replacement, a verified private release profile and normal app exit.
+Independent checks of the downloaded Markdown and HWPX preserved the complete
+date, location, 347000-won budget, seven attendees, two-column table and literal
+reservation-number absence statement. The generated revision remains unverified
+as a factual claim, and its reopened revision matches. All ten captured gate,
+helper and source-fixture inputs match that commit and the reviewed local HEAD.
+
+The native-evidence ZIP matches GitHub's SHA-256
+`53d27400efd1c0cf23ae194f5ddeb3faed7f033504dd955af6b77ff3b9a3a0b3`.
+The same run passed the separate synthetic-provider document PDF/HWPX gate and
+real embedding download/cancellation check (392 progress frames). All seven
+build/check jobs succeeded across Windows, Linux x64/ARM64 and macOS; draft
+creation was skipped. This run predates the dictionary staging fix `f9a58c0` and
+its documentation, so it does not qualify the complete latest source. Evidence:
+`.dev/ci-315ae41-43527340272/qualification.json`, SHA-256
+`f88788a9377d2c3fc766f6f5fbcdf1dfd9e27e665181922afd38493752b66fbf`.
+
 [Windows CI run 43446497263](https://github.com/gaon12/prism/actions/runs/43446497263)
 passed the original actual 1.7B generation gate at `0d15e44`: the real editor saved
 the reviewed five-field layout, the generated HWPX contained the requested table

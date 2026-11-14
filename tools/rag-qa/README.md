@@ -199,7 +199,8 @@ independent of content permission.
 
 Policy stamps are checked before sending and after generation for local and
 external answers. A category change during generation cannot publish a complete
-answer, even if the settings revision has not advanced. The original regression
+answer at that check, even if the settings revision has not advanced. A separate
+post-persistence category-revocation race check remains pending. The original regression
 failed because the post-generation stamp check applied only to external evidence.
 
 Windows core tests passed 144 cases and strict all-target Clippy. Linux core tests
@@ -211,10 +212,42 @@ and repository-ignored files do not reach the original-file hasher, and allowed
 evidence below denied candidates can fill the requested result. Linux core QA
 does not include this app adapter.
 
-This is one enforcement boundary, not complete file-policy integration. Filtering
-still uses the current bounded retrieval pool. Admission into content extraction,
-backfill from earlier keyword/vector candidate stages, filename consumers and
-settings controls remain separate work. No new native UI, model/provider, macOS
+At `4b75693`, this was one enforcement boundary, with filtering limited to the
+existing retrieval pool. The following change moves candidate admission earlier.
+Admission into content extraction, filename consumers and settings controls remain
+separate work. No new native UI, model/provider, macOS
 or deployed-service qualification is implied. Captured results and failed-run
 evidence have qualification SHA-256
 `6caca55f3499e5a5214d37bf567ac2c1f0af41ad219971ea8ec3f31639a61172`.
+
+
+## Admission before retrieval limits
+
+`a744009` passes the current RAG policy into the actual keyword and vector
+repositories. Keyword admission runs before full chunks occupy result slots;
+vector admission runs while the nearest-neighbor query expands its candidate
+batch. A regression retrieves the permitted file behind 120 denied source-code
+files, exceeding the service's 100-hit preview. The vector fixture uses actual
+SQLite/Lance storage with synthetic two-dimensional vectors: the first 32
+neighbors are denied, a larger existing budget finds the permitted source, and
+the 32-candidate cap correctly retains an empty, explicitly limited result.
+
+The default APIs delegate to allow-all admission, while canonical-root and
+fingerprint checks remain mandatory. Candidate budgets and global hybrid branch
+limits are unchanged. Keyword results recheck admission before returning text.
+Internal app-cache exclusion also happens before result slots are filled. These
+callbacks narrow source access and cannot authorize files outside content scopes.
+
+The actual Windows app library passed 566 tests with 19 opt-ins ignored, covering
+the RAG adapter, content service and vector store. Linux platform QA passed 240
+tests with 13 opt-ins ignored, including the imported production ContentStore.
+Platform QA strict all-target Clippy passed on Windows and Linux; it does not
+include the vector store or Tauri adapters. The initial Windows vector test
+compared extended and normalized path spellings; it now checks the stored source
+chunk ID and path, retaining the same budget and backfill assertions.
+
+Application settings still need to supply these categories to the content
+collector and ordinary search paths. Filename policy, settings controls, native
+UI/restart, fresh model inference and macOS qualification remain pending. Evidence
+qualification SHA-256:
+`3eda559829e1cafc13741194379cedf68ab2023b958a56adce8db186aa797435`.

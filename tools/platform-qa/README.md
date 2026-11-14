@@ -305,3 +305,23 @@ isolation and deletion passed on native ARM64 and Intel Macs in
 Each runner used a new temporary User-domain Keychain; its original default and
 search list were restored and the temporary store was deleted. This API check
 does not qualify desktop prompting, signing or locked-login behavior.
+
+
+## Keyword candidate admission
+
+`a744009` adds a production ContentStore admission callback before keyword result
+slots are filled, plus a final check before returning cached text. The callback
+only narrows the existing canonical-root and fingerprint checks. It cannot
+authorize files outside those roots, and the original candidate budget remains.
+The new owned-fixture test checks backfill, revocation during selection, unchanged
+limits and empty authorized roots.
+
+At this source, the Linux all-target suite passed 240 tests with 13 explicit
+opt-ins ignored. Strict all-target Clippy passed on Windows and Linux. The actual
+Windows app-library suite separately passed 566 tests with 19 opt-ins ignored,
+including adaptive vector admission and the RAG beyond-100-candidate regression.
+This platform harness excludes VectorStore, ContentService and ContentSources;
+its Linux result is not proof of those app integrations. These checks use owned
+SQLite/Lance fixtures and synthetic vectors, without new native GUI, model or
+deployed-service qualification. Qualification SHA-256:
+`3eda559829e1cafc13741194379cedf68ab2023b958a56adce8db186aa797435`.

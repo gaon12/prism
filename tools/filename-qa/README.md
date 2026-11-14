@@ -17,9 +17,25 @@ documents. This performs no content sniffing or archive extraction.
 Actual Windows app-library tests separately cover settings-file round trips,
 content extraction/publication, keyword/vector admission, snapshots/chunks/open,
 password retry and RAG policy checks. This filename fixture cannot prove those
-app adapters. Filename walker/service admission, live filename queries/snapshots
-and settings controls still need integration. Passing these tests does not
-establish a complete user-facing inclusion filter or whole-app qualification.
+app adapters. Filename walker/service admission, live queries, snapshots and
+result resolution now apply the independently saved filename categories.
+Restricted candidates are checked before ranking limits; snapshots and original
+file actions use fresh facts, including changed repository rules. Explicit
+nested scopes remain independent when a parent is pruned. Category changes
+revoke provisional rows and invalidate an older collection generation.
+
+The Windows snapshot consumer requests attributed records when hidden/system
+facts are needed. An explicit unsupported response selects the legacy transfer;
+unknown attributes require fresh facts. Mixed transfer modes are rejected.
+Filtering happens before private preparation and publication. Default inclusion
+keeps the legacy transfer and skips filesystem fact work. No flags are retained
+in compact catalog nodes. Actual deployed-service interoperability still needs
+separate qualification.
+
+Settings expose separate filename and content groups in Korean, English,
+Simplified Chinese, Traditional Chinese and Japanese. The controls preserve
+folder-level content and external AI permissions. Their default is to include
+all categories; excluding an archive does not exclude ZIP-based documents.
 
 The shared filesystem fact reader now resolves restricted categories from
 native metadata and repository-local rules. Hidden/system attribute ancestry
@@ -49,8 +65,7 @@ unknown attributes retain the fresh-stat fallback when facts are required.
 Negative own flags do not override hidden/system ancestors, repository rules or
 scope/link checks. Reparse entries are rejected. NTFS ARCHIVE/COMPRESSED flags
 do not identify archive filenames. Use fresh `check()` plus scope authorization
-for original-file reads/actions; snapshot facts are not access authority. The
-filename pipeline does not consume the new API yet.
+for original-file reads/actions; snapshot facts are not access authority.
 
 The selected volume entry itself is exempt from implementation hidden/system
 flags, just as ancestor roots already were. A real Windows root-metadata
@@ -59,16 +74,31 @@ actual content admission helper. These tests never enumerate a user's drive.
 An owned 4,098-directory fixture also verifies exclusions after the existing
 bounded directory/missing-rule caches reset; their implementation is unchanged.
 
-Current Windows checks passed 102 tests (seven ignored), Linux 97 (four ignored),
-with strict all-target Clippy on both. The opt-in Git oracle passed separately
-on both in the earlier fact-reader qualification. Actual Windows app-library
-tests passed 575 (19 opt-ins ignored), using command-local app codegen64 with
-opt1/assertions/overflow checks retained; no manifest/profile changes or timing
-claim. Existing vendor warnings remain. Evidence is
-`C:/Users/solso/AppData/Local/Temp/prism-q18-snapshot-facts-20261114-yyd976wh/qualification.json`,
-SHA-256 `378d43bd0fea2627f8754bed504098362ed162675bfe2c1eabe44fe6228e6871`.
-Native macOS, fresh GUI/restart, complete filename filtering and new app
-memory/performance qualification remain pending.
+Current filename checks passed 112 tests on Windows (seven ignored) and 105 on
+Linux (four ignored), with strict all-target Clippy on both. The opt-in Git
+oracle passed separately in the earlier fact-reader qualification. Actual
+Windows app-library tests passed 586 (19 opt-ins ignored), using command-local
+app codegen64 with opt1/assertions/overflow checks retained. App Clippy passed
+`-D clippy::all`; existing compiler/vendor warnings remain, so this is not an
+app-wide `-D warnings` result. No manifest/profile changes or timing claim.
+
+Production-bundle browser tests passed 38 cases, including independent settings
+persistence, cancellation, five languages and narrow-screen control bounds.
+Some first headless Chromium captures omit switch paint despite passing
+interaction/layout checks; those captures remain an open visual limitation,
+not a CSS fix. A freshly built bundled Windows app separately passed
+`tests/native/file-policy.mjs`: real settings-file writes, process restart,
+keyboard cancellation, collection, file/rule watcher updates and rediscovery.
+Its desktop WebView screenshots show all ten controls in all five languages.
+
+The native test requires `PRISM_TEST_EXECUTABLE` and its known SHA-256 in
+`PRISM_TEST_APP_SHA256`, then runs with `node tests/native/file-policy.mjs`.
+It creates an isolated profile/source directory and verifies native test mode
+before mutations; it never changes an installed service or user clipboard.
+Evidence is
+`C:/Users/solso/AppData/Local/Temp/prism-q18-filename-20261114-1c455odk/qualification.json`.
+Native macOS, the full Linux app, deployed NTFS transfer/fallback, narrow native
+rendering and new app memory/performance qualification remain pending.
 
 ```sh
 cargo build --manifest-path tools/filename-qa/Cargo.toml --locked --release -j1

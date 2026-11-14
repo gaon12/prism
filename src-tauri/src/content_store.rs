@@ -1705,7 +1705,7 @@ mod tests {
         for doc in [&first, &second] {
             store.replace_document(doc, &all, &cancel()).unwrap();
         }
-        assert_eq!(search(&store, "shared", &[a.clone()]).len(), 1);
+        assert_eq!(search(&store, "shared", std::slice::from_ref(&a)).len(), 1);
         assert!(search(&store, "shared", &[]).is_empty());
         let filter = ContentSearchFilter {
             document_paths: vec![second.file_path.clone()],
@@ -1713,7 +1713,7 @@ mod tests {
             ..Default::default()
         };
         assert!(store
-            .search("shared", &filter, &[a.clone()], 20, &cancel())
+            .search("shared", &filter, std::slice::from_ref(&a), 20, &cancel())
             .unwrap()
             .is_empty());
         let filter = ContentSearchFilter {
@@ -1781,11 +1781,11 @@ mod tests {
         let doc = document(&folder, "source.txt", "reconnectable source");
         let store = ContentStore::open(&dir.path().join("index.sqlite")).unwrap();
         store
-            .replace_document(&doc, &[folder.clone()], &cancel())
+            .replace_document(&doc, std::slice::from_ref(&folder), &cancel())
             .unwrap();
         assert_eq!(
             store
-                .purge_for_scopes(&[], &[folder.clone()], &cancel())
+                .purge_for_scopes(&[], std::slice::from_ref(&folder), &cancel())
                 .unwrap(),
             0
         );

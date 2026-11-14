@@ -351,7 +351,7 @@ pub fn run() {
                 // A Flatpak may index the whole host, which includes its own
                 // `~/.var/app/<id>` data and config.
                 if matches!(location.kind, app_paths::InstallKind::Portable | app_paths::InstallKind::Packaged | app_paths::InstallKind::Flatpak) {
-                    content.exclude_paths(&[data_dir.clone()]);
+                    content.exclude_paths(std::slice::from_ref(&data_dir));
                 }
                 content.exclude_paths(&[
                     asset_dir.join("embedding"),

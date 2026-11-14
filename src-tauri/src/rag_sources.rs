@@ -98,7 +98,7 @@ fn scope_for(path: &Path, policy: &RagPolicy, selected: &[(String, String)]) -> 
             ))
         })
         .collect();
-    scopes.sort_by(|left, right| right.1.cmp(&left.1));
+    scopes.sort_by_key(|scope| std::cmp::Reverse(scope.1));
     let first = scopes.first()?;
     if scopes.get(1).is_some_and(|other| other.1 == first.1) {
         return None;
@@ -209,8 +209,10 @@ mod tests {
         // This fixture tests RAG authority against already-indexed cache data,
         // not a background extraction-policy implementation.
         service.cancel_index();
-        let mut prefs = GenerationPreferences::default();
-        prefs.retrieval = RetrievalMode::Keyword;
+        let prefs = GenerationPreferences {
+            retrieval: RetrievalMode::Keyword,
+            ..Default::default()
+        };
         let policy = RagPolicy {
             revision: 1,
             prefs,
@@ -372,7 +374,7 @@ mod tests {
             fs::write(&rules, bytes).unwrap();
             SOURCE_HASH_REQUESTS.with(|calls| calls.set(0));
             let checked = resolver
-                .revalidate(&[ignored.clone()], &[], &policy, &cancel)
+                .revalidate(std::slice::from_ref(&ignored), &[], &policy, &cancel)
                 .unwrap();
             assert_eq!(checked[0].state, SourceState::OutOfScope);
             assert!(checked[0].text.is_none());

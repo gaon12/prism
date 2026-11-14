@@ -89,6 +89,14 @@ pub struct VectorSearchResponse {
     pub exhausted: bool,
     pub hard_limit_reached: bool,
 }
+/// Per-query selection and work limits. These do not grant source access;
+/// current content identities and the admission predicate remain mandatory.
+pub struct VectorSearchOptions<'a> {
+    pub filter: &'a ContentSearchFilter,
+    pub allowed_roots: &'a [PathBuf],
+    pub top_k: usize,
+    pub max_candidates: usize,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum VectorStoreErrorCode {
@@ -741,21 +749,15 @@ impl VectorStore {
         &self,
         query_vector: &[f32],
         model_fingerprint: &str,
-        filter: &ContentSearchFilter,
         content: &ContentStore,
-        allowed_roots: &[PathBuf],
-        top_k: usize,
-        max_candidates: usize,
+        options: VectorSearchOptions<'_>,
         cancel: &AtomicBool,
     ) -> Result<VectorSearchResponse> {
         self.search_with_admission(
             query_vector,
             model_fingerprint,
-            filter,
             content,
-            allowed_roots,
-            top_k,
-            max_candidates,
+            options,
             cancel,
             &mut |_| true,
         )
@@ -768,14 +770,17 @@ impl VectorStore {
         &self,
         query_vector: &[f32],
         model_fingerprint: &str,
-        filter: &ContentSearchFilter,
         content: &ContentStore,
-        allowed_roots: &[PathBuf],
-        top_k: usize,
-        max_candidates: usize,
+        options: VectorSearchOptions<'_>,
         cancel: &AtomicBool,
         admit: &mut (dyn FnMut(&Path) -> bool + Send),
     ) -> Result<VectorSearchResponse> {
+        let VectorSearchOptions {
+            filter,
+            allowed_roots,
+            top_k,
+            max_candidates,
+        } = options;
         check_cancel(cancel)?;
         if model_fingerprint != self.model.model_fingerprint {
             return Err(error(
@@ -1125,11 +1130,13 @@ mod tests {
                 .search_with_admission(
                     &[1.0, 0.0],
                     &spec.model_fingerprint,
-                    &filter,
                     &content,
-                    &roots,
-                    1,
-                    32,
+                    VectorSearchOptions {
+                        filter: &filter,
+                        allowed_roots: &roots,
+                        top_k: 1,
+                        max_candidates: 32,
+                    },
                     &cancel(),
                     &mut |path| path.ends_with("allowed.md"),
                 )
@@ -1142,11 +1149,13 @@ mod tests {
                 .search_with_admission(
                     &[1.0, 0.0],
                     &spec.model_fingerprint,
-                    &filter,
                     &content,
-                    &roots,
-                    1,
-                    64,
+                    VectorSearchOptions {
+                        filter: &filter,
+                        allowed_roots: &roots,
+                        top_k: 1,
+                        max_candidates: 64,
+                    },
                     &cancel(),
                     &mut |path| path.ends_with("allowed.md"),
                 )
@@ -1164,11 +1173,13 @@ mod tests {
                 .search(
                     &[1.0, 0.0],
                     &spec.model_fingerprint,
-                    &filter,
                     &content,
-                    &roots,
-                    1,
-                    64,
+                    VectorSearchOptions {
+                        filter: &filter,
+                        allowed_roots: &roots,
+                        top_k: 1,
+                        max_candidates: 64,
+                    },
                     &cancel(),
                 )
                 .await
@@ -1178,11 +1189,13 @@ mod tests {
                 .search_with_admission(
                     &[1.0, 0.0],
                     &spec.model_fingerprint,
-                    &filter,
                     &content,
-                    &[],
-                    1,
-                    64,
+                    VectorSearchOptions {
+                        filter: &filter,
+                        allowed_roots: &[],
+                        top_k: 1,
+                        max_candidates: 64,
+                    },
                     &cancel(),
                     &mut |_| true,
                 )
@@ -1229,12 +1242,14 @@ mod tests {
                 .search(
                     &[1.0, 0.0],
                     &spec.model_fingerprint,
-                    &ContentSearchFilter::default(),
                     &content,
-                    &roots,
-                    1,
-                    8,
-                    &cancel()
+                    VectorSearchOptions {
+                        filter: &ContentSearchFilter::default(),
+                        allowed_roots: &roots,
+                        top_k: 1,
+                        max_candidates: 8,
+                    },
+                    &cancel(),
                 )
                 .await
                 .unwrap()
@@ -1258,12 +1273,14 @@ mod tests {
                     .search(
                         &[1.0, 0.0],
                         &spec.model_fingerprint,
-                        &ContentSearchFilter::default(),
                         &content,
-                        &roots,
-                        1,
-                        8,
-                        &cancel()
+                        VectorSearchOptions {
+                            filter: &ContentSearchFilter::default(),
+                            allowed_roots: &roots,
+                            top_k: 1,
+                            max_candidates: 8,
+                        },
+                        &cancel(),
                     )
                     .await
                     .unwrap()
@@ -1288,12 +1305,14 @@ mod tests {
                 .search(
                     &[1.0, 0.0],
                     &spec.model_fingerprint,
-                    &ContentSearchFilter::default(),
                     &content,
-                    &roots,
-                    1,
-                    8,
-                    &cancel()
+                    VectorSearchOptions {
+                        filter: &ContentSearchFilter::default(),
+                        allowed_roots: &roots,
+                        top_k: 1,
+                        max_candidates: 8,
+                    },
+                    &cancel(),
                 )
                 .await
                 .unwrap()
@@ -1531,11 +1550,13 @@ mod tests {
                 .search(
                     &[1.0, 0.0],
                     &spec.model_fingerprint,
-                    &ContentSearchFilter::default(),
                     &content,
-                    &roots,
-                    8,
-                    32,
+                    VectorSearchOptions {
+                        filter: &ContentSearchFilter::default(),
+                        allowed_roots: &roots,
+                        top_k: 8,
+                        max_candidates: 32,
+                    },
                     &cancel(),
                 )
                 .await
@@ -1628,11 +1649,13 @@ mod tests {
                 .search(
                     &[1.0, 0.0],
                     &spec.model_fingerprint,
-                    &ContentSearchFilter::default(),
                     &content,
-                    &roots,
-                    1,
-                    32,
+                    VectorSearchOptions {
+                        filter: &ContentSearchFilter::default(),
+                        allowed_roots: &roots,
+                        top_k: 1,
+                        max_candidates: 32,
+                    },
                     &cancel(),
                 )
                 .await
@@ -1791,12 +1814,14 @@ mod tests {
                     .search(
                         &[1.0, 0.0, 0.0],
                         &spec.model_fingerprint,
-                        &ContentSearchFilter::default(),
                         &content,
-                        &roots,
-                        1,
-                        32,
-                        &cancel()
+                        VectorSearchOptions {
+                            filter: &ContentSearchFilter::default(),
+                            allowed_roots: &roots,
+                            top_k: 1,
+                            max_candidates: 32,
+                        },
+                        &cancel(),
                     )
                     .await
                     .unwrap_err()
@@ -1808,12 +1833,14 @@ mod tests {
                     .search(
                         &[1.0, 0.0],
                         "wrong-model",
-                        &ContentSearchFilter::default(),
                         &content,
-                        &roots,
-                        1,
-                        32,
-                        &cancel()
+                        VectorSearchOptions {
+                            filter: &ContentSearchFilter::default(),
+                            allowed_roots: &roots,
+                            top_k: 1,
+                            max_candidates: 32,
+                        },
+                        &cancel(),
                     )
                     .await
                     .unwrap_err()
@@ -1891,11 +1918,13 @@ mod tests {
                 .search(
                     &[1.0, 0.0],
                     &spec.model_fingerprint,
-                    &ContentSearchFilter::default(),
                     &content,
-                    &roots,
-                    1,
-                    1,
+                    VectorSearchOptions {
+                        filter: &ContentSearchFilter::default(),
+                        allowed_roots: &roots,
+                        top_k: 1,
+                        max_candidates: 1,
+                    },
                     &cancel(),
                 )
                 .await
@@ -1908,14 +1937,16 @@ mod tests {
                 .search(
                     &[1.0, 0.0],
                     &spec.model_fingerprint,
-                    &ContentSearchFilter {
-                        document_paths: vec![permitted.file_path.clone()],
-                        ..Default::default()
-                    },
                     &content,
-                    &roots,
-                    1,
-                    1,
+                    VectorSearchOptions {
+                        filter: &ContentSearchFilter {
+                            document_paths: vec![permitted.file_path.clone()],
+                            ..Default::default()
+                        },
+                        allowed_roots: &roots,
+                        top_k: 1,
+                        max_candidates: 1,
+                    },
                     &cancel(),
                 )
                 .await
@@ -1933,11 +1964,13 @@ mod tests {
                 .search(
                     &[1.0, 0.0],
                     &spec.model_fingerprint,
-                    &ContentSearchFilter::default(),
                     &content,
-                    &roots,
-                    1,
-                    64,
+                    VectorSearchOptions {
+                        filter: &ContentSearchFilter::default(),
+                        allowed_roots: &roots,
+                        top_k: 1,
+                        max_candidates: 64,
+                    },
                     &cancel(),
                 )
                 .await
@@ -1960,12 +1993,14 @@ mod tests {
                 .search(
                     &[1.0, 0.0],
                     &spec.model_fingerprint,
-                    &ContentSearchFilter::default(),
                     &content,
-                    &roots,
-                    1,
-                    3,
-                    &cancel()
+                    VectorSearchOptions {
+                        filter: &ContentSearchFilter::default(),
+                        allowed_roots: &roots,
+                        top_k: 1,
+                        max_candidates: 3,
+                    },
+                    &cancel(),
                 )
                 .await
                 .unwrap()
@@ -2044,11 +2079,13 @@ mod tests {
                 .search(
                     &query,
                     &fingerprint,
-                    &ContentSearchFilter::default(),
                     &content,
-                    &roots,
-                    3,
-                    3,
+                    VectorSearchOptions {
+                        filter: &ContentSearchFilter::default(),
+                        allowed_roots: &roots,
+                        top_k: 3,
+                        max_candidates: 3,
+                    },
                     &cancel(),
                 )
                 .await

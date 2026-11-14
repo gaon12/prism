@@ -1326,11 +1326,13 @@ fn extract_hwp(bytes: &[u8], out: &mut Collector<'_>) -> Result<()> {
 }
 
 fn hwp_text(bytes: &[u8]) -> Result<String> {
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return Err(corrupt());
     }
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|b| u16::from_le_bytes([b[0], b[1]]))
         .collect();
     let mut clean = Vec::new();
@@ -1585,7 +1587,18 @@ fn emit_row(
             .filter(|s| !s.trim().is_empty())
             .unwrap_or(&generic);
         let address = format!("{}{}", column_name(column), row);
-        emit_cell(value, label, key, &address, context, row, page, out)?;
+        emit_cell(
+            TableCell {
+                value,
+                label,
+                key,
+                address: &address,
+                context,
+                row,
+                page,
+            },
+            out,
+        )?;
     }
     Ok(())
 }
@@ -2016,7 +2029,7 @@ fn excel_number(raw: &str, style: Option<&(u32, String)>, date1904: bool) -> Res
     let rendered = match kind {
         "percent" => format!("{}%", value * 100.0),
         "date" | "datetime" | "time" => {
-            if value < 0.0 || value > 2_958_465.99999 {
+            if value < 0.0 || value > 2_958_465.999_99 {
                 return Ok(format!("[number; formatId={id}; format={code}] {raw}"));
             }
             let whole = value.floor() as i64;
@@ -2282,8 +2295,8 @@ fn extract_xlsx(package: &mut OfficePackage<'_>, out: &mut Collector<'_>) -> Res
                 inferred = plain.clone();
             }
             // Emit separate fields to preserve sparse A1 addresses and per-table headers.
-            for column in 0..values.len() {
-                if values[column].is_empty() {
+            for (column, value) in values.iter().enumerate() {
+                if value.is_empty() {
                     continue;
                 }
                 let table = tables.iter().find(|t| {
@@ -2312,13 +2325,15 @@ fn extract_xlsx(package: &mut OfficePackage<'_>, out: &mut Collector<'_>) -> Res
                     .unwrap_or("");
                 let address = format!("{}{}", column_name(column), row_index);
                 emit_cell(
-                    &values[column],
-                    label,
-                    key,
-                    &address,
-                    &context,
-                    row_index,
-                    None,
+                    TableCell {
+                        value,
+                        label,
+                        key,
+                        address: &address,
+                        context: &context,
+                        row: row_index,
+                        page: None,
+                    },
                     out,
                 )?;
             }
@@ -2448,16 +2463,25 @@ fn odf_value(cell: &XmlNode, out: &Collector<'_>) -> Result<(String, String)> {
         },
     ))
 }
-fn emit_cell(
-    value: &str,
-    label: &str,
-    key: &str,
-    address: &str,
-    context: &str,
+struct TableCell<'a> {
+    value: &'a str,
+    label: &'a str,
+    key: &'a str,
+    address: &'a str,
+    context: &'a str,
     row: u32,
     page: Option<u32>,
-    out: &mut Collector<'_>,
-) -> Result<()> {
+}
+fn emit_cell(cell: TableCell<'_>, out: &mut Collector<'_>) -> Result<()> {
+    let TableCell {
+        value,
+        label,
+        key,
+        address,
+        context,
+        row,
+        page,
+    } = cell;
     if value.trim().is_empty() {
         return Ok(());
     }
@@ -2562,7 +2586,18 @@ fn odf_table(table: &XmlNode, page: Option<u32>, out: &mut Collector<'_>) -> Res
                     let generic = format!("Column {}", column_name(*c));
                     let label = headers.get(c).filter(|v| !v.is_empty()).unwrap_or(&generic);
                     let address = format!("{}{}", column_name(*c), row_number);
-                    emit_cell(value, label, key, &address, &context, row_number, page, out)?;
+                    emit_cell(
+                        TableCell {
+                            value,
+                            label,
+                            key,
+                            address: &address,
+                            context: &context,
+                            row: row_number,
+                            page,
+                        },
+                        out,
+                    )?;
                 }
             }
         }

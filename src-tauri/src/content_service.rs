@@ -8,7 +8,8 @@ use crate::{
     embedding_runtime::{EmbeddingDocument, EmbeddingPhase, EmbeddingRuntime},
     settings::SearchScope,
     vector_store::{
-        ChunkEmbedding, VectorDocumentBatch, VectorModelSpec, VectorSearchResponse, VectorStore,
+        ChunkEmbedding, VectorDocumentBatch, VectorModelSpec, VectorSearchOptions,
+        VectorSearchResponse, VectorStore,
     },
 };
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -1562,11 +1563,13 @@ impl ContentService {
             .block_on(vector.search_with_admission(
                 &query.vector,
                 &query.fingerprint,
-                filter,
                 &self.inner.store,
-                &roots,
-                limit,
-                4096,
+                VectorSearchOptions {
+                    filter,
+                    allowed_roots: &roots,
+                    top_k: limit,
+                    max_candidates: 4096,
+                },
                 cancel,
                 &mut |path| {
                     !self.is_excluded(&path.to_string_lossy()) && policy.admits(path) && admit(path)
@@ -2928,7 +2931,7 @@ mod tests {
         let id = hits.hits[0].chunk.id.clone();
         assert_eq!(
             service
-                .chunks(&[id.clone()], &AtomicBool::new(false))
+                .chunks(std::slice::from_ref(&id), &AtomicBool::new(false))
                 .unwrap()
                 .len(),
             1

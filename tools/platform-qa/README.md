@@ -345,3 +345,33 @@ its Linux result is not proof of those app integrations. These checks use owned
 SQLite/Lance fixtures and synthetic vectors, without new native GUI, model or
 deployed-service qualification. Qualification SHA-256:
 `3eda559829e1cafc13741194379cedf68ab2023b958a56adce8db186aa797435`.
+
+## Application Clippy cleanup
+
+The separate Windows application check now passes
+`cargo clippy --manifest-path src-tauri/Cargo.toml --lib --tests -- -D clippy::all`.
+It resolves 13 inherited production diagnostics and eight subsequently exposed
+test-fixture diagnostics without adding lint suppressions. Ten existing
+unused-code/compiler warnings and vendor warnings remain; this is not an
+application-wide `-D warnings` result.
+
+Vector search groups its filter, allowed roots, result count and candidate budget
+into named options. The admission callback and current content-store checks stay
+mandatory. Table extraction groups cell metadata without changing labels, row
+keys, addresses, page/row positions or chunk text. All 16 vector-test call sites
+retain their original values and limits. Other changes are equivalent slice,
+initialization, sorting and expression rewrites. Existing test assertions,
+test counts and opt-in ignores are unchanged.
+
+The actual Windows app-library suite passed 576 tests (19 opt-ins ignored).
+This Linux platform harness passed 241 tests (13 opt-ins ignored) and strict
+all-target Clippy with `-D warnings`, including the production document extractor.
+The harness still excludes the application's vector/content-service/source
+adapters and commands. Windows app checks use command-local application
+codegen64 with opt1/assertions/overflow retained, without profile or dependency
+changes. These are functional checks, not fresh native GUI, model, deployed
+service, native macOS, complete Linux app or performance qualification.
+
+Evidence:
+`C:/Users/solso/AppData/Local/Temp/prism-app-lint-20261114-r77ettyd/qualification.json`,
+SHA-256 `9307d8e84060361def69b3d9209410812bb70f242c7353176cb19a543bf3f8fa`.

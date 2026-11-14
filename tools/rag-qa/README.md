@@ -344,3 +344,7 @@ and existing vendor/compiler warnings are preserved; no suppression was added.
 This result is not a clean whole-app lint qualification. Evidence:
 `C:/Users/solso/AppData/Local/Temp/prism-q18-source-identity-20261114-sjik2ku3/qualification.json`,
 SHA-256 `8f4e43fb580d478f291a3f3c0794ad77eaa89986c15c5e3d82382c621cde7199`.
+
+The later [application Clippy cleanup](../platform-qa/README.md#application-clippy-cleanup)
+resolved those diagnostics and the subsequently exposed fixture lints. The
+historical failure above remains separate from the newer passing result.

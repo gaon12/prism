@@ -126,7 +126,7 @@ pub fn check_bytes(
     if body.len() as u64 > MAX_MANIFEST_BYTES {
         return Err("The update information is unexpectedly large.".into());
     }
-    let manifest: Manifest = serde_json::from_slice(&body)
+    let manifest: Manifest = serde_json::from_slice(body)
         .map_err(|_| "The update information is not in the expected format.".to_string())?;
     // Release tags are often written "v0.2.0"; accept both forms.
     let latest_text = manifest.version.trim();

@@ -77,9 +77,9 @@ pub fn update_verify_fixture(
             .restore_update(manifest)
             .map_err(|_| "Invalid verification fixture manifest.")?
             .ok_or("No compatible verification fixture.")?;
-        return update
+        update
             .verify(&payload)
-            .map_err(|_| "Update signature or signed version verification failed.".into());
+            .map_err(|_| "Update signature or signed version verification failed.".into())
     }
     #[cfg(not(debug_assertions))]
     {
@@ -94,7 +94,7 @@ pub fn update_fixture(
 ) -> Result<serde_json::Value, String> {
     #[cfg(debug_assertions)]
     {
-        return service(&state)?.fixture(&mode);
+        service(&state)?.fixture(&mode)
     }
     #[cfg(not(debug_assertions))]
     {

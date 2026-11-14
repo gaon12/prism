@@ -473,8 +473,10 @@ mod tests {
 
     #[test]
     fn rejects_relative_paths_invalid_shortcuts_and_future_schema() {
-        let mut settings = ClientSettings::default();
-        settings.shortcut = "A".into();
+        let mut settings = ClientSettings {
+            shortcut: "A".into(),
+            ..Default::default()
+        };
         assert!(settings.validate().is_err());
         settings.shortcut = "Ctrl+Shift+Space".into();
         assert!(settings.validate().is_ok());

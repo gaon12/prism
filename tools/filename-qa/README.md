@@ -116,6 +116,22 @@ It creates an isolated profile/source directory and verifies native test mode
 before mutations; it never changes an installed service or user clipboard.
 The content regression accepts the same executable/hash variables and runs
 with `node tests/native/content-policy.mjs`.
+
+`node tests/native/container-policy.mjs` accepts those same executable/hash
+variables. It copies the pinned public plaintext DOCX and generated EPUB fixture,
+uses the EPUB package as an actual ZIP archive, and exports a manual HWPX through
+the running app without a provider. It checks that excluding archives hides the
+ZIP filename while retaining DOCX/HWPX/EPUB filenames. A separate UI content
+grant must make the actual DOCX, HWPX and Markdown searchable while the archive
+settings remain excluded. The test restarts the app, re-enables archive filenames,
+and revokes content access, including access through previously issued chunk IDs.
+It preserves all original fixture bytes and the executable hash. EPUB is checked
+only for filename classification; this does not claim EPUB or ZIP content
+extraction, document layout fidelity, installed NTFS or another platform.
+This new container regression has passed syntax/format and independent fixture
+integrity checks; its actual native run is pending the existing 3-GiB available
+memory preflight. These preparation checks are not a native pass.
+
 Evidence is
 `C:/Users/solso/AppData/Local/Temp/prism-q18-filename-20261114-1c455odk/qualification.json`.
 The later SYSTEM-folder and minimum-viewport checks are recorded separately in

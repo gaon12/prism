@@ -187,7 +187,6 @@ compilation, controller-unlock and missing-Node fixture failures are preserved.
 Evidence: `.dev/linux-secret-service-20261114/qualification.json`, SHA-256
 `39ab8a9bfb750dc406dc5305ca8cff62e1c0a93c50071e09d0aa46e3200052ec`.
 
-
 ## Current file-inclusion policy at RAG source reads
 
 `4b75693` includes the current content categories in `RagPolicy`, supplied from
@@ -219,7 +218,6 @@ separate work. No new native UI, model/provider, macOS
 or deployed-service qualification is implied. Captured results and failed-run
 evidence have qualification SHA-256
 `6caca55f3499e5a5214d37bf567ac2c1f0af41ad219971ea8ec3f31639a61172`.
-
 
 ## Admission before retrieval limits
 

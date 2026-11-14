@@ -306,7 +306,6 @@ Each runner used a new temporary User-domain Keychain; its original default and
 search list were restored and the temporary store was deleted. This API check
 does not qualify desktop prompting, signing or locked-login behavior.
 
-
 ## Keyword candidate admission
 
 `a744009` adds a production ContentStore admission callback before keyword result

@@ -249,3 +249,31 @@ collector and ordinary search paths. Filename policy, settings controls, native
 UI/restart, fresh model inference and macOS qualification remain pending. Evidence
 qualification SHA-256:
 `3eda559829e1cafc13741194379cedf68ab2023b958a56adce8db186aa797435`.
+
+## Policy changes during answer persistence
+
+The post-generation check now has a second check after SQL completion. If current
+content categories differ from those used by the successful provider attempt, or
+the current policy cannot be read, the service withdraws only that request's
+completion before returning an error. The store checks both conversation and
+request ownership and requires a complete pair. One SQLite transaction marks
+both turns and the request failed, clears the assistant body in the search column
+and JSON payload, and updates the conversation timestamp. Pending/failed requests
+and pairs belonging to another conversation cannot be rewritten by this method.
+Previously completed history remains intact.
+
+The actual service regression first failed because an after-save category change
+still returned a successful answer. It now checks failure state, empty body,
+search/export rejection, request ownership, repeated withdrawal and preservation
+of another completed conversation. Existing external-server after-save hiding
+regressions still pass. Windows RAG QA passed 145 tests and Linux passed 143
+library tests plus three helper tests, with two Linux native opt-ins ignored.
+Strict all-target RAG Clippy passed on both hosts. The actual Windows app-library
+suite passed 567 tests with 19 opt-ins ignored.
+
+These checks use an owned SQLite profile and a synthetic local provider. They
+qualify the post-save hook and transactional withdrawal, rather than an atomic
+transaction spanning settings and every concurrent reader, native GUI/restart,
+power loss, storage failures or real model inference. Full content/filename policy
+application and controls remain separate work. Qualification SHA-256:
+`2ccd5561d226fc62858725dfbcadb8077230f147611b50d4b9fb44767662490f`.

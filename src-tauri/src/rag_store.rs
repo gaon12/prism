@@ -459,6 +459,76 @@ impl RagStore {
         tx.commit().map_err(storage)?;
         Ok(())
     }
+
+    /// A just-finished request lost its content permission while SQL completion
+    /// was in flight. Never reopen pending/failed requests or touch another pair.
+    pub fn withdraw_completion(&self, conversation: &str, request: &str) -> RagResult<()> {
+        let mut db = self.connect()?;
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let complete: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM rag_requests WHERE id=?1 AND conversation_id=?2 AND status='complete')",
+            params![request, conversation], |row| row.get(0),
+        ).map_err(storage)?;
+        if !complete {
+            return Err(RagError::new(RagErrorCode::DuplicateRequest));
+        }
+        let mut statement = tx.prepare(
+            "SELECT payload FROM conversation_turns WHERE request_id=?1 AND conversation_id=?2 AND status='complete'",
+        ).map_err(storage)?;
+        let payloads = statement
+            .query_map(params![request, conversation], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(storage)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage)?;
+        drop(statement);
+        let turns = payloads
+            .into_iter()
+            .map(decode)
+            .collect::<RagResult<Vec<_>>>()?;
+        if turns.len() != 2
+            || turns
+                .iter()
+                .filter(|turn| turn.role == TurnRole::Assistant)
+                .count()
+                != 1
+            || turns.iter().any(|turn| {
+                turn.request_id != request
+                    || turn.conversation_id != conversation
+                    || turn.status != TurnStatus::Complete
+            })
+        {
+            return Err(RagError::new(RagErrorCode::Storage));
+        }
+        for mut turn in turns {
+            turn.status = TurnStatus::Failed;
+            if turn.role == TurnRole::Assistant {
+                turn.text.clear();
+                turn.error = Some(RagError::new(RagErrorCode::PolicyChanged));
+            }
+            let changed = tx.execute(
+                "UPDATE conversation_turns SET status='failed',text=?1,payload=?2 WHERE id=?3 AND request_id=?4 AND conversation_id=?5 AND status='complete'",
+                params![turn.text, encode(&turn)?, turn.id, request, conversation],
+            ).map_err(storage)?;
+            if changed != 1 {
+                return Err(RagError::new(RagErrorCode::Storage));
+            }
+        }
+        tx.execute(
+            "UPDATE rag_requests SET status='failed' WHERE id=?1 AND conversation_id=?2 AND status='complete'",
+            params![request, conversation],
+        ).map_err(storage)?;
+        tx.execute(
+            "UPDATE conversations SET updated_ms=?1 WHERE id=?2",
+            params![now_ms(), conversation],
+        )
+        .map_err(storage)?;
+        tx.commit().map_err(storage)?;
+        Ok(())
+    }
     pub fn set_sources_hidden(&self, turn_id: &str, hidden: bool) -> RagResult<()> {
         let db = self.connect()?;
         let payload: Option<String> = db

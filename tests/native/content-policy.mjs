@@ -27,13 +27,16 @@ const source = join(root, 'sources');
 const data = join(root, 'profile');
 const evidence = join(root, 'evidence');
 await Promise.all([mkdir(source), mkdir(data), mkdir(evidence)]);
-await Promise.all(['.git', '.hidden', 'generated'].map((name) => mkdir(join(source, name))));
+await Promise.all(
+  ['.git', '.hidden', 'generated', 'system-owned'].map((name) => mkdir(join(source, name))),
+);
 const files = [
   'policyfn-note.md',
   'policyfn-code.rs',
   '.hidden/policyfn-hidden.md',
   'generated/policyfn-ignored.md',
   'policyfn-system.md',
+  'system-owned/policyfn-system-child.md',
 ];
 for (const name of files)
   await writeFile(join(source, name), `ownedcontentneedle generated evidence for ${name}`);
@@ -66,7 +69,10 @@ await writeFile(
     scopes: [scope],
   }),
 );
-function systemAttributes(flags) {
+const attributeTargets = [join(source, 'policyfn-system.md'), join(source, 'system-owned')];
+const systemChild = join(source, 'system-owned', 'policyfn-system-child.md');
+function systemAttributes(path, flags) {
+  assert(attributeTargets.includes(path) || (path === systemChild && flags === undefined));
   if (flags !== undefined) assert(Number.isInteger(flags) && flags >= 0 && flags <= 0xffffffff);
   return JSON.parse(
     execFileSync(
@@ -83,7 +89,7 @@ function systemAttributes(flags) {
         encoding: 'utf8',
         env: {
           ...process.env,
-          PRISM_POLICY_OWNED_FILE: join(source, 'policyfn-system.md'),
+          PRISM_POLICY_OWNED_FILE: path,
           PRISM_POLICY_FLAGS: flags === undefined ? '' : String(flags),
         },
       },
@@ -91,7 +97,8 @@ function systemAttributes(flags) {
   );
 }
 const checks = [];
-let instance, failure, originalAttributes, lastContent, initialGeneration;
+let instance, failure, lastContent, initialGeneration;
+const originalAttributes = [];
 let request = 0;
 async function start() {
   instance = await launch(data, {
@@ -152,6 +159,13 @@ async function filenames() {
   });
   return response.results.map((entry) => basename(entry.path)).sort();
 }
+async function expectFilenames(expected) {
+  await until(
+    async () => JSON.stringify(await filenames()) === JSON.stringify([...expected].sort()),
+    'native filename membership after policy change',
+  );
+  assert.deepEqual(await filenames(), [...expected].sort());
+}
 async function expectContent(expected) {
   await until(
     async () =>
@@ -193,8 +207,16 @@ async function capture(name, policy) {
   await instance.main.screenshot({ path: join(evidence, name) });
 }
 try {
-  originalAttributes = systemAttributes().before;
-  assert.equal(systemAttributes(originalAttributes | 4).after & 4, 4);
+  for (const path of attributeTargets) {
+    const before = systemAttributes(path).before;
+    originalAttributes.push({ path, flags: before });
+    assert.equal(systemAttributes(path, before | 4).after & 4, 4);
+  }
+  assert.equal(systemAttributes(systemChild).after & 4, 0, 'Child has no SYSTEM flag of its own');
+  checks.push({
+    name: 'owned SYSTEM file and directory attributes set; directory child is ordinary',
+    originalAttributes,
+  });
   await start();
   await until(
     async () => (await instance.invoke('index_status')).initialScanComplete,
@@ -212,10 +234,24 @@ try {
   const withoutCode = all.filter((name) => !name.endsWith('.rs')).sort();
   assert.deepEqual(await filenames(), withoutCode);
   const cached = (await content()).hits.map((hit) => hit.chunk);
-  assert.equal(cached.length, 5);
+  assert.equal(cached.length, 6);
   checks.push({
-    name: 'explicit folder content grant indexes all five categories independently of filename source-code exclusion',
+    name: 'explicit folder content grant indexes all six documents including SYSTEM-folder child independently of filename source-code exclusion',
     names: await contentNames(),
+  });
+
+  ui = await dialog();
+  await ui.filename.getByRole('checkbox', { name: '시스템 항목', exact: true }).uncheck();
+  await save(ui.modal);
+  await expectFilenames(withoutCode.filter((name) => !name.startsWith('policyfn-system')));
+  await expectContent(all);
+  ui = await dialog();
+  await ui.filename.getByRole('checkbox', { name: '시스템 항목', exact: true }).check();
+  await save(ui.modal);
+  await expectFilenames(withoutCode);
+  await expectContent(all);
+  checks.push({
+    name: 'filename SYSTEM exclusion removes both owned file and ordinary folder descendant, and re-inclusion restores both without changing content access',
   });
 
   ui = await dialog();
@@ -227,7 +263,7 @@ try {
   const denied = cached
     .filter((chunk) => !chunk.filePath.endsWith('policyfn-note.md'))
     .map((chunk) => chunk.id);
-  assert.equal(denied.length, 4);
+  assert.equal(denied.length, 5);
   assert.deepEqual(await instance.invoke('content_chunks', { ids: denied }), []);
   await expectContent(['policyfn-note.md']);
   assert.deepEqual(await filenames(), withoutCode);
@@ -286,8 +322,8 @@ try {
     failure ??= { message: `Owned app cleanup failed: ${error}` };
   }
   try {
-    if (originalAttributes !== undefined)
-      assert.equal(systemAttributes(originalAttributes).after, originalAttributes);
+    for (const { path, flags } of originalAttributes)
+      assert.equal(systemAttributes(path, flags).after, flags);
   } catch (error) {
     failure ??= { message: `Owned fixture attributes could not be restored: ${error}` };
   }

@@ -93,8 +93,10 @@ Its desktop WebView screenshots show all ten controls in all five languages.
 
 `tests/native/content-policy.mjs` separately exercises the same controls through
 actual content extraction and SQLite keyword search. After an explicit folder
-content grant, it finds five generated documents, including a real Windows
-SYSTEM-attribute file. Content exclusions hide code, hidden descendants,
+content grant, it finds six generated documents, including a real Windows
+SYSTEM-attribute file and an ordinary child of a SYSTEM-attribute folder.
+Filename SYSTEM exclusion and re-inclusion hide and restore both paths while
+content access stays unchanged. Content exclusions hide code, hidden descendants,
 repository-ignored files and system files while filename settings stay
 independent. Previously issued chunk IDs are rejected too. The regression
 restarts the app, re-includes the documents, then revokes folder content access

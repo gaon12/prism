@@ -157,6 +157,18 @@ impl<R: Read + Seek> Reader<R> {
         check: impl Fn() -> super::super::layout::Result<()>,
         mut visit: impl FnMut(FileRecord) -> io::Result<()>,
     ) -> io::Result<()> {
+        self.visit_with_attributes(drive, check, |row, _| visit(row))
+    }
+
+    /// The same verified traversal with each path's own raw NTFS attributes.
+    /// Flags come from the merged cached/replayed record, without retaining an
+    /// additional map or reading live filesystem metadata for every path.
+    pub fn visit_with_attributes(
+        &mut self,
+        drive: DriveLetter,
+        check: impl Fn() -> super::super::layout::Result<()>,
+        mut visit: impl FnMut(FileRecord, u32) -> io::Result<()>,
+    ) -> io::Result<()> {
         self.directories.directories.clear();
         let directories = &mut self.directories;
         let lookup = directories::View {
@@ -278,6 +290,94 @@ mod tests {
             .unwrap();
         rows
     }
+
+    #[test]
+    fn attributes_survive_existing_cache_replay_and_failed_visits() {
+        let mut snapshot = sample();
+        snapshot.catalog.records.get_mut(&5).unwrap().attributes = 0x12;
+        snapshot.catalog.records.get_mut(&18).unwrap().attributes = 0x8000_0024;
+        let bytes = encoded(&snapshot);
+        let mut reader = Reader::open(
+            Cursor::new(bytes.clone()),
+            snapshot.geometry,
+            DEVICE,
+            || Ok(()),
+        )
+        .unwrap();
+        for letter in *b"CDC" {
+            let drive = DriveLetter::new(letter).unwrap();
+            let mut expected = vec![];
+            snapshot
+                .catalog
+                .visit_with_attributes(drive, |row, attributes| {
+                    expected.push((row, attributes));
+                    Ok::<_, io::Error>(())
+                })
+                .unwrap();
+            let mut actual = vec![];
+            reader
+                .visit_with_attributes(
+                    drive,
+                    || Ok(()),
+                    |row, attributes| {
+                        actual.push((row, attributes));
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(actual[0].1, 0x12);
+            assert!(actual[1..]
+                .iter()
+                .all(|(_, attributes)| *attributes == 0x8000_0024));
+            assert_eq!(
+                actual.into_iter().map(|(row, _)| row).collect::<Vec<_>>(),
+                paths(&mut snapshot.catalog, drive)
+            );
+        }
+        // The new view does not change the persisted format or catalog data.
+        assert_eq!(encoded(&snapshot), bytes);
+
+        let drive = DriveLetter::new(b'C').unwrap();
+        let mut updated = snapshot.catalog.records.get(&18).unwrap().clone();
+        updated.attributes = 0x20;
+        reader.overrides.insert(18, Some(updated));
+        let mut calls = 0;
+        let failure = reader.visit_with_attributes(
+            drive,
+            || Ok(()),
+            |_, _| {
+                calls += 1;
+                Err(io::ErrorKind::Interrupted.into())
+            },
+        );
+        assert_eq!(failure.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert_eq!(calls, 1);
+        let mut actual = vec![];
+        reader
+            .visit_with_attributes(
+                drive,
+                || Ok(()),
+                |row, attributes| {
+                    actual.push((row, attributes));
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(actual.len(), 3);
+        assert_eq!(actual[0].1, 0x12);
+        assert!(actual[1..]
+            .iter()
+            .all(|(_, attributes)| *attributes == 0x20));
+        assert!(reader
+            .visit_with_attributes(
+                drive,
+                || Err(crate::layout::Error::Cancelled),
+                |_, _| panic!("cancelled visitor")
+            )
+            .is_err());
+    }
+
     #[test]
     fn rows_and_extension_ownership_match_full_load_without_retaining_file_names() {
         let mut snapshot = sample();

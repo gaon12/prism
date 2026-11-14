@@ -632,6 +632,19 @@ impl Catalog {
         drive: DriveLetter,
         mut visit: impl FnMut(FileRecord) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
+        self.visit_with_attributes(drive, |row, _| visit(row))
+    }
+
+    /// Visit the same paths with their merged, raw NTFS file attributes. These
+    /// are each record's own flags, not inherited directory policy. Keeping
+    /// them beside the row avoids a second metadata lookup or a full-path map.
+    /// Existing metadata caches already store these flags; this changes no
+    /// cache or wire format and performs no additional filesystem access.
+    pub fn visit_with_attributes<E>(
+        &mut self,
+        drive: DriveLetter,
+        mut visit: impl FnMut(FileRecord, u32) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
         // Directory paths are drive-specific. A catalog may be reused after
         // Windows assigns another drive letter to the same volume.
         self.directories.clear();
@@ -655,18 +668,21 @@ impl Catalog {
         drive: DriveLetter,
         number: u64,
         record: &MetadataRecord,
-        mut visit: impl FnMut(FileRecord) -> std::result::Result<(), E>,
+        mut visit: impl FnMut(FileRecord, u32) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
         if record.base.is_some() || record.alias() || (number < 16 && number != 5) {
             return Ok(());
         }
         if number == 5 {
-            return visit(FileRecord {
-                path: drive.root(),
-                is_dir: true,
-                size: 0,
-                modified_ms: record.modified_ms,
-            });
+            return visit(
+                FileRecord {
+                    path: drive.root(),
+                    is_dir: true,
+                    size: 0,
+                    modified_ms: record.modified_ms,
+                },
+                record.attributes,
+            );
         }
         let Some(size) = record.size.or_else(|| record.is_dir.then_some(0)) else {
             return Ok(());
@@ -675,12 +691,15 @@ impl Catalog {
             if let Some(parent) = Self::parent_path(records, directories, drive, name.parent) {
                 let path = join_path(parent, &name.name);
                 if drive.contains(&path) {
-                    visit(FileRecord {
-                        path,
-                        is_dir: record.is_dir,
-                        size,
-                        modified_ms: record.modified_ms,
-                    })?;
+                    visit(
+                        FileRecord {
+                            path,
+                            is_dir: record.is_dir,
+                            size,
+                            modified_ms: record.modified_ms,
+                        },
+                        record.attributes,
+                    )?;
                 }
             }
         }
@@ -730,6 +749,82 @@ mod tests {
             builder.insert(record).unwrap();
         }
         builder.finish().unwrap()
+    }
+
+    #[test]
+    fn attribute_visitor_preserves_merged_flags_hard_links_and_legacy_paths() {
+        let mut root = record(5, 5, "", true);
+        root.attributes = 0x10;
+        let mut directory = record(16, 5, ".hidden", true);
+        directory.attributes = 0x12;
+        let mut file = record(18, 16, "사과.md", false);
+        file.attributes = 0x8000_0024;
+        file.names.push(FileName {
+            parent: root.reference,
+            name: "hardlink.md".into(),
+            namespace: 1,
+        });
+        let mut extension = record(42, 5, "extra.md", false);
+        extension.base = Some(file.reference);
+        extension.attributes = 0x100;
+        let mut link = record(20, 5, "junction", true);
+        link.attributes = 0x410;
+        link.reparse_tag = Some(0xa000_0003);
+        let mut catalog = catalog(vec![
+            root,
+            directory,
+            file,
+            extension,
+            link,
+            record(21, 20, "must-not-escape.md", false),
+        ]);
+        let drive = DriveLetter::new(b'C').unwrap();
+        let mut legacy = vec![];
+        catalog
+            .visit(drive, |row| {
+                legacy.push(row);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        let mut attributed = vec![];
+        catalog
+            .visit_with_attributes(drive, |row, attributes| {
+                attributed.push((row, attributes));
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        assert_eq!(
+            attributed
+                .iter()
+                .map(|(row, _)| row.clone())
+                .collect::<Vec<_>>(),
+            legacy
+        );
+        assert_eq!(attributed.len(), 5);
+        assert_eq!(attributed[0].1, 0x10);
+        assert_eq!(attributed[1].1, 0x12);
+        assert!(attributed[2..]
+            .iter()
+            .all(|(_, attributes)| *attributes == 0x8000_0124));
+        assert!(attributed
+            .iter()
+            .all(|(row, _)| !row.path.contains("junction")));
+
+        let mut calls = 0;
+        let failure = catalog.visit_with_attributes(drive, |_, _| {
+            calls += 1;
+            Err("stop after the first row")
+        });
+        assert_eq!(failure, Err("stop after the first row"));
+        assert_eq!(calls, 1);
+        let mut retried = vec![];
+        catalog
+            .visit(drive, |row| {
+                retried.push(row);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        assert_eq!(retried, legacy);
     }
 
     #[test]

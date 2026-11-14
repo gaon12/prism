@@ -277,3 +277,45 @@ transaction spanning settings and every concurrent reader, native GUI/restart,
 power loss, storage failures or real model inference. Full content/filename policy
 application and controls remain separate work. Qualification SHA-256:
 `2ccd5561d226fc62858725dfbcadb8077230f147611b50d4b9fb44767662490f`.
+
+## Application content-inclusion policy
+
+The application now supplies saved content categories on startup, settings
+restoration and save. A scan captures them in its generation; a configuration
+change cancels the old scan, searches and password retries. Supported files pass
+admission before extraction, and extracted text is checked again under the
+configuration lock before storage. Excluded directories are pruned while explicit
+nested content roots retain their own attribute ancestry. Filename-only roots
+cannot reset that ancestry. Default inclusion skips the additional fact reader,
+and scoped default searches avoid extra all-folder canonicalization.
+
+Keyword/vector results apply the current service policy before filling slots.
+Search snapshots, chunk lookup and document resolution also apply it, including
+for already-cached text. A policy revision change during a query invalidates the
+response. Password retries check policy before extraction and require the same
+policy revision before hashing/publication. This controls reads and result
+visibility; it does not promise physical erasure of previously cached text.
+
+Settings get/save commands now run blocking work off the UI thread. An operation
+mutex orders saves/restoration through event emission. The settings/config-error
+locks are released before shortcut registration or window work, because native
+shortcut calls dispatch to the main thread and wait. The state/disk commit shares
+the existing settings lock with updater handoff persistence. Command names,
+arguments, responses and revision-conflict checks are unchanged.
+
+The actual Windows app-library suite passed 570 tests, with 19 explicit opt-ins
+ignored. New fixtures verify exclusion before the extraction dispatcher, filtering
+of cached results, search/chunk/snapshot/open paths, explicit nested roots, legacy
+OCR configuration, old-work cancellation and password-retry revocation. The
+ordinary app-library compile also passed, retaining nine unused-code warnings.
+An earlier lifetime compile error and memory/disk preflight stops are retained.
+The final functional suite uses 64 code-generation units for the application
+package only, retaining optimization level 1, assertions and overflow checks;
+profile manifests/dependencies are unchanged and this is not a performance run.
+
+This harness still excludes the content/index/vector application adapters. The
+new results above come from the full Windows app, not this small QA crate. A
+fresh native settings/shortcut/multi-window/restart run and Linux/macOS builds
+remain pending, as do filename inclusion and settings controls. Qualification
+SHA-256:
+`1acb284a934e2a6c9d6f6ffbeb47438871ceb47f407067256c5367d60a5a08ee`.

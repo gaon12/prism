@@ -123,6 +123,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 pub struct AppState {
     index_service: index_service::Controller,
     settings: Mutex<ClientSettings>,
+    settings_operation: Mutex<()>,
     session: Mutex<SearchSession>,
     shortcut_error: Mutex<Option<String>>,
     startup_error: Mutex<Option<String>>,
@@ -377,7 +378,11 @@ pub fn run() {
             if config_error.is_none() {
                 if let Ok(content) = &content {
                     content.set_battery_pause(settings.power.pause_on_battery);
-                    let _ = content.configure_with_ocr(settings.scopes.clone(), settings.ocr.clone());
+                    let _ = content.configure_with_policy(
+                        settings.scopes.clone(),
+                        settings.ocr.clone(),
+                        settings.file_policy.content,
+                    );
                 }
             }
             let dictionary =
@@ -471,6 +476,7 @@ pub fn run() {
             app.manage(AppState {
                 index_service: index_service::Controller::default(),
                 settings: Mutex::new(settings),
+                settings_operation: Mutex::new(()),
                 session: Mutex::new(session),
                 shortcut_error: Mutex::new(shortcut_error),
                 startup_error: Mutex::new(startup_error),

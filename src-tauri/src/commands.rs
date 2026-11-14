@@ -20,16 +20,38 @@ pub fn copy_text(state: State<'_, AppState>, text: String) -> Result<(), String>
 }
 
 #[tauri::command]
-pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> Result<ClientSettings, String> {
-    let mut config_error = state
-        .config_error
+pub async fn get_settings(app: AppHandle) -> Result<ClientSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || get_settings_inner(app))
+        .await
+        .map_err(|_| "Settings worker stopped unexpectedly.".to_string())?
+}
+fn get_settings_inner(app: AppHandle) -> Result<ClientSettings, String> {
+    let state = app.state::<AppState>();
+    let _operation = state
+        .settings_operation
         .lock()
         .map_err(|_| "Settings are unavailable.")?;
-    if config_error.is_some() {
-        let mut restored = crate::settings::read_settings(&state.data_dir.join("settings.json"))?;
-        if state.location.kind == crate::app_paths::InstallKind::Portable {
-            restored.start_on_login = false;
-        }
+    let recovering = state
+        .config_error
+        .lock()
+        .map_err(|_| "Settings are unavailable.")?
+        .is_some();
+    if recovering {
+        // Coordinate disk/state with updater persistence, then release the
+        // state lock before any main-thread shortcut or window operation.
+        let restored = {
+            let mut current = state
+                .settings
+                .lock()
+                .map_err(|_| "Settings are unavailable.")?;
+            let mut restored =
+                crate::settings::read_settings(&state.data_dir.join("settings.json"))?;
+            if state.location.kind == crate::app_paths::InstallKind::Portable {
+                restored.start_on_login = false;
+            }
+            *current = restored.clone();
+            restored
+        };
         let error = app
             .global_shortcut()
             .register(restored.shortcut.as_str())
@@ -39,28 +61,32 @@ pub fn get_settings(app: AppHandle, state: State<'_, AppState>) -> Result<Client
             .shortcut_error
             .lock()
             .map_err(|_| "Shortcut state is unavailable.")? = error;
+        let startup_error = set_autostart(&app, restored.start_on_login).err();
         *state
             .startup_error
             .lock()
-            .map_err(|_| "Startup state is unavailable.")? =
-            set_autostart(&app, restored.start_on_login).err();
-        *state
-            .settings
-            .lock()
-            .map_err(|_| "Settings are unavailable.")? = restored.clone();
+            .map_err(|_| "Startup state is unavailable.")? = startup_error;
         if let Ok(content) = &state.content {
             content.set_battery_pause(restored.power.pause_on_battery);
-            let _ = content.configure_with_ocr(restored.scopes.clone(), restored.ocr.clone());
+            let _ = content.configure_with_policy(
+                restored.scopes.clone(),
+                restored.ocr.clone(),
+                restored.file_policy.content,
+            );
         }
         state.index.configure(restored.scopes);
         state.clipboard.apply_settings(restored.clipboard)?;
-        *config_error = None;
+        *state
+            .config_error
+            .lock()
+            .map_err(|_| "Settings are unavailable.")? = None;
     }
-    Ok(state
+    let settings = state
         .settings
         .lock()
         .map_err(|_| "Settings are unavailable.")?
-        .clone())
+        .clone();
+    Ok(settings)
 }
 
 fn set_autostart(app: &AppHandle, enabled: bool) -> Result<(), String> {
@@ -94,12 +120,30 @@ pub(crate) fn apply_autostart(
 }
 
 #[tauri::command]
-pub fn save_settings(
+pub async fn save_settings(
     app: AppHandle,
-    state: State<'_, AppState>,
+    settings: ClientSettings,
+    expected_revision: u64,
+) -> Result<ClientSettings, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        save_settings_inner(app, settings, expected_revision)
+    })
+    .await
+    .map_err(|_| "Settings worker stopped unexpectedly.".to_string())?
+}
+fn save_settings_inner(
+    app: AppHandle,
     mut settings: ClientSettings,
     expected_revision: u64,
 ) -> Result<ClientSettings, String> {
+    let state = app.state::<AppState>();
+    // Serialize saves/restores through event emission, without making the UI
+    // wait on this lock. Never hold settings/config_error across shortcut calls:
+    // that plugin synchronously dispatches its native work to the main thread.
+    let _operation = state
+        .settings_operation
+        .lock()
+        .map_err(|_| "Settings are unavailable.")?;
     if let Some(error) = state
         .config_error
         .lock()
@@ -115,10 +159,11 @@ pub fn save_settings(
     if state.location.kind == crate::app_paths::InstallKind::Portable && settings.start_on_login {
         return Err("Login startup is unavailable in portable mode.".into());
     }
-    let mut current = state
+    let current = state
         .settings
         .lock()
-        .map_err(|_| "Settings are unavailable.")?;
+        .map_err(|_| "Settings are unavailable.")?
+        .clone();
     if current.revision != expected_revision {
         return Err("Settings changed in another window. Reopen settings and try again.".into());
     }
@@ -149,7 +194,24 @@ pub fn save_settings(
         .revision
         .checked_add(1)
         .ok_or("Settings revision overflow.")?;
+    // This short state/disk commit also serializes with updater handoff writes.
+    // All native callbacks and runtime configuration run outside the state lock.
+    let mut committed = state
+        .settings
+        .lock()
+        .map_err(|_| "Settings are unavailable.")?;
+    if committed.revision != expected_revision {
+        drop(committed);
+        if new_registration {
+            let _ = app.global_shortcut().unregister(new_shortcut);
+        }
+        if settings.start_on_login != current.start_on_login {
+            let _ = set_autostart(&app, current.start_on_login);
+        }
+        return Err("Settings changed in another window. Reopen settings and try again.".into());
+    }
     if let Err(error) = write_json(&state.data_dir.join("settings.json"), &settings) {
+        drop(committed);
         if new_registration {
             let _ = app.global_shortcut().unregister(new_shortcut);
         }
@@ -158,6 +220,8 @@ pub fn save_settings(
         }
         return Err(error);
     }
+    *committed = settings.clone();
+    drop(committed);
     if changing_shortcut {
         let _ = app.global_shortcut().unregister(old_shortcut);
     }
@@ -172,6 +236,7 @@ pub fn save_settings(
             .map(|scope| (&scope.id, &scope.path, scope.filename_enabled))
             .collect::<Vec<_>>();
     let changed_content = current.ocr != settings.ocr
+        || current.file_policy.content != settings.file_policy.content
         || current
             .scopes
             .iter()
@@ -182,7 +247,6 @@ pub fn save_settings(
                 .iter()
                 .map(|scope| (&scope.id, &scope.path, scope.content_enabled))
                 .collect::<Vec<_>>();
-    *current = settings.clone();
     if let Ok(updates) = &state.updates {
         updates.set_auto_check(settings.updates.auto_check);
     }
@@ -200,7 +264,11 @@ pub fn save_settings(
     }
     if changed_content {
         if let Ok(content) = &state.content {
-            let _ = content.configure_with_ocr(settings.scopes.clone(), settings.ocr.clone());
+            let _ = content.configure_with_policy(
+                settings.scopes.clone(),
+                settings.ocr.clone(),
+                settings.file_policy.content,
+            );
         }
     }
     // The persisted settings are authoritative. Runtime storage errors are reported by

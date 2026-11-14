@@ -168,12 +168,50 @@ fn error(code: &str, message: &str) -> ContentError {
 type Result<T> = std::result::Result<T, ContentError>;
 type Listener = Arc<dyn Fn(ContentStatus) + Send + Sync>;
 type PowerReader = Arc<dyn Fn() -> Option<bool> + Send + Sync>;
+#[cfg(test)]
+type ExtractObserver = Arc<dyn Fn(&Path) + Send + Sync>;
 const POWER_POLL: Duration = Duration::from_secs(5);
 struct Request {
     generation: u64,
     scopes: Vec<SearchScope>,
     cancel: Arc<AtomicBool>,
     ocr: crate::ocr::Preferences,
+    file_policy: crate::file_policy::Categories,
+}
+struct ContentPolicy {
+    revision: u64,
+    categories: crate::file_policy::Categories,
+    roots: Vec<PathBuf>,
+}
+fn admits_content(
+    categories: crate::file_policy::Categories,
+    roots: &[PathBuf],
+    path: &Path,
+    is_dir: bool,
+) -> std::io::Result<bool> {
+    if categories.unrestricted() {
+        return Ok(true);
+    }
+    let canonical = crate::path_identity::canonical(path)?;
+    let canonical_key = path_key(&canonical);
+    let root = roots
+        .iter()
+        .filter(|root| under(&canonical_key, &path_key(root)))
+        .max_by_key(|root| root.components().count())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "No content policy root",
+            )
+        })?;
+    crate::file_policy_fs::Reader::new(categories, root)
+        .check(&canonical, is_dir)
+        .map(|decision| decision == crate::file_policy::Decision::Include)
+}
+impl ContentPolicy {
+    fn admits(&self, path: &Path) -> bool {
+        admits_content(self.categories, &self.roots, path, false).unwrap_or(false)
+    }
 }
 struct SearchTask {
     id: String,
@@ -187,6 +225,10 @@ struct Inner {
     runtime: tokio::runtime::Runtime,
     scopes: Mutex<Vec<SearchScope>>,
     ocr: Mutex<crate::ocr::Preferences>,
+    file_policy: Mutex<crate::file_policy::Categories>,
+    policy_revision: AtomicU64,
+    #[cfg(test)]
+    before_extract: Mutex<Option<ExtractObserver>>,
     status: Mutex<ContentStatus>,
     pending: Mutex<Option<Request>>,
     scan_cancel: Mutex<Arc<AtomicBool>>,
@@ -244,6 +286,10 @@ impl ContentService {
                     .map_err(|_| error("worker", "Could not create the local search worker."))?,
                 scopes: Mutex::new(vec![]),
                 ocr: Mutex::new(crate::ocr::Preferences::default()),
+                file_policy: Mutex::new(crate::file_policy::Categories::default()),
+                policy_revision: AtomicU64::new(0),
+                #[cfg(test)]
+                before_extract: Mutex::new(None),
                 status: Mutex::new(ContentStatus::default()),
                 pending: Mutex::new(None),
                 scan_cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
@@ -320,7 +366,7 @@ impl ContentService {
         }
     }
     pub fn configure(&self, scopes: Vec<SearchScope>) -> Result<()> {
-        self.configure_inner(scopes, None)
+        self.configure_inner(scopes, None, None)
     }
     pub fn configure_with_ocr(
         &self,
@@ -329,14 +375,28 @@ impl ContentService {
     ) -> Result<()> {
         ocr.validate()
             .map_err(|_| error("input", "Invalid OCR settings."))?;
-        self.configure_inner(scopes, Some(ocr))
+        self.configure_inner(scopes, Some(ocr), None)
+    }
+    pub(crate) fn configure_with_policy(
+        &self,
+        scopes: Vec<SearchScope>,
+        ocr: crate::ocr::Preferences,
+        file_policy: crate::file_policy::Categories,
+    ) -> Result<()> {
+        ocr.validate()
+            .map_err(|_| error("input", "Invalid OCR settings."))?;
+        self.configure_inner(scopes, Some(ocr), Some(file_policy))
     }
     fn configure_inner(
         &self,
         scopes: Vec<SearchScope>,
         requested_ocr: Option<crate::ocr::Preferences>,
+        requested_policy: Option<crate::file_policy::Categories>,
     ) -> Result<()> {
         self.inner.paused.store(false, Ordering::Release);
+        if let Ok(cancel) = self.inner.scan_cancel.lock() {
+            cancel.store(true, Ordering::Release);
+        }
         let mut current_scopes = self
             .inner
             .scopes
@@ -348,7 +408,14 @@ impl ContentService {
             .lock()
             .map_err(|_| error("worker", "OCR settings unavailable."))?;
         let ocr = requested_ocr.unwrap_or_else(|| current_ocr.clone());
+        let mut current_policy = self
+            .inner
+            .file_policy
+            .lock()
+            .map_err(|_| error("worker", "Content policy unavailable."))?;
+        let file_policy = requested_policy.unwrap_or(*current_policy);
         let changed = *current_ocr != ocr
+            || *current_policy != file_policy
             || current_scopes.len() != scopes.len()
             || current_scopes.iter().zip(&scopes).any(|(left, right)| {
                 left.id != right.id
@@ -357,7 +424,9 @@ impl ContentService {
             });
         *current_scopes = scopes.clone();
         *current_ocr = ocr.clone();
-        self.queue(scopes, ocr, changed)?;
+        *current_policy = file_policy;
+        self.queue(scopes, ocr, file_policy, changed)?;
+        drop(current_policy);
         drop(current_ocr);
         drop(current_scopes);
         self.update(|status| {
@@ -372,9 +441,13 @@ impl ContentService {
         &self,
         scopes: Vec<SearchScope>,
         ocr: crate::ocr::Preferences,
+        file_policy: crate::file_policy::Categories,
         changed: bool,
     ) -> Result<()> {
         let generation = self.inner.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        if changed {
+            self.inner.policy_revision.fetch_add(1, Ordering::SeqCst);
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         if let Ok(mut previous) = self.inner.scan_cancel.lock() {
             previous.store(true, Ordering::Release);
@@ -389,6 +462,7 @@ impl ContentService {
             scopes,
             cancel,
             ocr,
+            file_policy,
         });
         if changed {
             self.inner.unlocks.cancel_all(false);
@@ -414,7 +488,13 @@ impl ContentService {
             .ocr
             .lock()
             .map_err(|_| error("worker", "OCR settings unavailable."))?;
-        self.queue(scopes.clone(), ocr.clone(), false)?;
+        let file_policy = self
+            .inner
+            .file_policy
+            .lock()
+            .map_err(|_| error("worker", "Content policy unavailable."))?;
+        self.queue(scopes.clone(), ocr.clone(), *file_policy, false)?;
+        drop(file_policy);
         drop(ocr);
         drop(scopes);
         self.update(|status| {
@@ -644,26 +724,58 @@ impl ContentService {
         roots.dedup();
         roots
     }
-    fn active_roots(&self, scope_id: Option<&str>) -> Result<Vec<PathBuf>> {
+    fn query_policy(&self, ids: &[String]) -> Result<(ContentPolicy, Vec<PathBuf>)> {
+        // Same lock order as configure/refresh. Explicit nested roots also
+        // define attribute ancestry when the query selected their parent.
         let scopes = self
             .inner
             .scopes
             .lock()
             .map_err(|_| error("worker", "Content scopes unavailable."))?;
-        Ok(Self::roots(&scopes, scope_id))
+        let categories = *self
+            .inner
+            .file_policy
+            .lock()
+            .map_err(|_| error("worker", "Content policy unavailable."))?;
+        let selected = if ids.is_empty() {
+            Self::roots(&scopes, None)
+        } else {
+            Self::roots(
+                &scopes
+                    .iter()
+                    .filter(|scope| ids.contains(&scope.id))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                None,
+            )
+        };
+        let roots = if categories.unrestricted() {
+            Vec::new()
+        } else if ids.is_empty() {
+            selected.clone()
+        } else {
+            Self::roots(&scopes, None)
+        };
+        Ok((
+            ContentPolicy {
+                revision: self.inner.policy_revision.load(Ordering::Acquire),
+                categories,
+                roots,
+            },
+            selected,
+        ))
     }
-    fn selected_roots(&self, ids: &[String]) -> Result<Vec<PathBuf>> {
-        let scopes = self
-            .inner
-            .scopes
-            .lock()
-            .map_err(|_| error("worker", "Content scopes unavailable."))?;
-        let selected: Vec<_> = scopes
-            .iter()
-            .filter(|scope| ids.is_empty() || ids.contains(&scope.id))
-            .cloned()
-            .collect();
-        Ok(Self::roots(&selected, None))
+    fn check_query_policy(&self, policy: &ContentPolicy) -> Result<()> {
+        if policy.revision != self.inner.policy_revision.load(Ordering::Acquire)
+            || self.inner.closed.load(Ordering::Acquire)
+        {
+            Err(error(
+                "sourceChanged",
+                "Content permissions changed. Search again.",
+            ))
+        } else {
+            Ok(())
+        }
     }
     fn issue(&self, path: &Path, code: &str, message: &str) {
         self.update(|status| {
@@ -821,10 +933,24 @@ impl ContentService {
                 .follow_links(false)
                 .into_iter()
                 .filter_entry(|entry| {
-                    !is_link(entry.path())
+                    self.current(request)
+                        && !is_link(entry.path())
                         && !excluded
                             .iter()
                             .any(|root| under(&path_key(entry.path()), root))
+                        && (!entry.file_type().is_dir()
+                            || match admits_content(request.file_policy, &roots, entry.path(), true)
+                            {
+                                Ok(allowed) => allowed,
+                                Err(_) => {
+                                    self.issue(
+                                        entry.path(),
+                                        "policy",
+                                        "Content policy evidence is unavailable.",
+                                    );
+                                    false
+                                }
+                            })
                 })
             {
                 if !self.current(request) {
@@ -874,6 +1000,14 @@ impl ContentService {
                     }
                 };
                 let path = canonical.as_path();
+                match admits_content(request.file_policy, &roots, path, false) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(_) => {
+                        self.issue(path, "policy", "Content policy evidence is unavailable.");
+                        continue;
+                    }
+                }
                 self.update(|status| {
                     status.discovered += 1;
                     status.current_path = Some(path.to_string_lossy().into());
@@ -905,6 +1039,13 @@ impl ContentService {
                 let document = if let Some(previous) = previous {
                     previous
                 } else {
+                    #[cfg(test)]
+                    if let Some(observer) = self.inner.before_extract.lock().unwrap().clone() {
+                        observer(path);
+                    }
+                    if !self.current(request) {
+                        return;
+                    }
                     let extracted = match document_extract::extract_document(
                         path,
                         &ExtractOptions {
@@ -929,12 +1070,29 @@ impl ContentService {
                     if !self.current(request) {
                         return;
                     }
-                    match self.inner.store.replace_document_versioned(
+                    // Configuration cannot change between this final authority
+                    // check and committing the extracted text.
+                    let configuration = match self.inner.scopes.lock() {
+                        Ok(configuration) => configuration,
+                        Err(_) => return,
+                    };
+                    if !self.current(request) {
+                        return;
+                    }
+                    if !matches!(
+                        admits_content(request.file_policy, &roots, path, false),
+                        Ok(true)
+                    ) {
+                        continue;
+                    }
+                    let publication = self.inner.store.replace_document_versioned(
                         &extracted,
                         &roots,
                         Some(&version),
                         &request.cancel,
-                    ) {
+                    );
+                    drop(configuration);
+                    match publication {
                         Ok(document) => document,
                         Err(error) => {
                             if !self.current(request) {
@@ -1177,7 +1335,7 @@ impl ContentService {
         }
         let filter = self.search_filter(&search.extension).map_err(Source)?;
         let scopes: Vec<_> = search.scope_id.iter().cloned().collect();
-        let roots = self.selected_roots(&scopes).map_err(Source)?;
+        let (policy, roots) = self.query_policy(&scopes).map_err(Source)?;
         self.inner
             .store
             .snapshot_keyword_files(
@@ -1186,7 +1344,7 @@ impl ContentService {
                 &roots,
                 cancel,
                 &mut |path| {
-                    if self.is_excluded(path) {
+                    if self.is_excluded(path) || !policy.admits(Path::new(path)) {
                         Ok(())
                     } else {
                         visit(path)
@@ -1205,6 +1363,7 @@ impl ContentService {
                 )),
             })?;
         let after = self.status().map_err(Source)?;
+        self.check_query_policy(&policy).map_err(Source)?;
         if cancel.load(Ordering::Acquire) {
             return Err(Source(error("cancelled", "Search cancelled.")));
         }
@@ -1253,7 +1412,7 @@ impl ContentService {
         cancel: &AtomicBool,
         admit: &mut dyn FnMut(&Path) -> bool,
     ) -> Result<ContentSearchResponse> {
-        let roots = self.selected_roots(scope_ids)?;
+        let (policy, roots) = self.query_policy(scope_ids)?;
         let mut filter = self.search_filter(extension)?;
         if let Some(paths) = documents {
             filter.document_paths = paths.to_vec();
@@ -1270,7 +1429,7 @@ impl ContentService {
             .inner
             .store
             .search_detailed_with_admission(query, &filter, &roots, 100, cancel, &mut |path| {
-                !self.is_excluded(&path.to_string_lossy()) && admit(path)
+                !self.is_excluded(&path.to_string_lossy()) && policy.admits(path) && admit(path)
             })
             .map_err(|error| ContentError {
                 code: serde_json::to_value(error.code)
@@ -1279,9 +1438,11 @@ impl ContentService {
                     .unwrap_or_else(|| "source".into()),
                 message: error.message,
             })?;
-        response
-            .hits
-            .retain(|hit| !self.is_excluded(&hit.chunk.file_path));
+        response.hits.retain(|hit| {
+            !self.is_excluded(&hit.chunk.file_path)
+                && policy.admits(Path::new(&hit.chunk.file_path))
+        });
+        self.check_query_policy(&policy)?;
         Ok(response)
     }
     pub fn semantic_search(
@@ -1393,7 +1554,7 @@ impl ContentService {
         {
             return Err(error("input", "Invalid semantic candidate budget."));
         }
-        let roots = self.selected_roots(scope_ids)?;
+        let (policy, roots) = self.query_policy(scope_ids)?;
         let vector = self.vector()?;
         let mut response = self
             .inner
@@ -1407,17 +1568,21 @@ impl ContentService {
                 limit,
                 4096,
                 cancel,
-                &mut |path| !self.is_excluded(&path.to_string_lossy()) && admit(path),
+                &mut |path| {
+                    !self.is_excluded(&path.to_string_lossy()) && policy.admits(path) && admit(path)
+                },
             ))
             .map_err(|error| ContentError {
                 code: "vector".into(),
                 message: error.message,
             })?;
         let before = response.hits.len();
-        response
-            .hits
-            .retain(|hit| !self.is_excluded(&hit.chunk.file_path));
+        response.hits.retain(|hit| {
+            !self.is_excluded(&hit.chunk.file_path)
+                && policy.admits(Path::new(&hit.chunk.file_path))
+        });
         response.filtered_out += before - response.hits.len();
+        self.check_query_policy(&policy)?;
         Ok(response)
     }
     pub fn automatic_search(
@@ -1511,10 +1676,11 @@ impl ContentService {
             return Err(error("cancelled", "Search cancelled."));
         }
         let requested_ids: Vec<_> = result.hits.iter().map(|hit| hit.chunk.id.clone()).collect();
+        let (policy, roots) = self.query_policy(&ids)?;
         let current = self
             .inner
             .store
-            .chunks_by_ids(&requested_ids, &self.selected_roots(&ids)?, cancel)
+            .chunks_by_ids(&requested_ids, &roots, cancel)
             .map_err(|value| {
                 if cancel.load(Ordering::Acquire) {
                     error("cancelled", "Search cancelled.")
@@ -1528,6 +1694,7 @@ impl ContentService {
             .collect();
         result.hits.retain(|hit| {
             !self.is_excluded(&hit.chunk.file_path)
+                && policy.admits(Path::new(&hit.chunk.file_path))
                 && current.get(&hit.chunk.id).is_some_and(|chunk| {
                     chunk.file_path == hit.chunk.file_path
                         && chunk.fingerprint == hit.chunk.fingerprint
@@ -1536,18 +1703,23 @@ impl ContentService {
         if cancel.load(Ordering::Acquire) {
             return Err(error("cancelled", "Search cancelled."));
         }
+        self.check_query_policy(&policy)?;
         Ok(result)
     }
     pub fn chunks(&self, ids: &[String], cancel: &AtomicBool) -> Result<Vec<ContentChunk>> {
+        let (policy, roots) = self.query_policy(&[])?;
         let mut chunks = self
             .inner
             .store
-            .chunks_by_ids(ids, &self.active_roots(None)?, cancel)
+            .chunks_by_ids(ids, &roots, cancel)
             .map_err(|error| ContentError {
                 code: "source".into(),
                 message: error.message,
             })?;
-        chunks.retain(|chunk| !self.is_excluded(&chunk.file_path));
+        chunks.retain(|chunk| {
+            !self.is_excluded(&chunk.file_path) && policy.admits(Path::new(&chunk.file_path))
+        });
+        self.check_query_policy(&policy)?;
         Ok(chunks)
     }
     pub(crate) fn prepare_unlock(&self, window: &str) -> Result<String> {
@@ -1601,6 +1773,17 @@ impl ContentService {
         if !canonical.is_file()
             || !roots.iter().any(|root| canonical.starts_with(root))
             || self.is_excluded(&canonical.to_string_lossy())
+            || !admits_content(
+                *self
+                    .inner
+                    .file_policy
+                    .lock()
+                    .map_err(|_| error("worker", "Content policy unavailable."))?,
+                &roots,
+                &canonical,
+                false,
+            )
+            .unwrap_or(false)
         {
             return Err(error(
                 "outsideScope",
@@ -1656,13 +1839,24 @@ impl ContentService {
                 "Document password exceeds the input budget.",
             ));
         }
-        let canonical = {
+        let (canonical, ocr, policy_revision) = {
             let scopes = self
                 .inner
                 .scopes
                 .lock()
                 .map_err(|_| error("worker", "Content scopes unavailable."))?;
-            self.unlock_path(path, &scopes)?.0
+            let canonical = self.unlock_path(path, &scopes)?.0;
+            let ocr = self
+                .inner
+                .ocr
+                .lock()
+                .map_err(|_| error("worker", "OCR settings unavailable."))?
+                .clone();
+            (
+                canonical,
+                ocr,
+                self.inner.policy_revision.load(Ordering::Acquire),
+            )
         };
         if !canonical
             .extension()
@@ -1674,12 +1868,6 @@ impl ContentService {
                 "This password command does not support that document format.",
             ));
         }
-        let ocr = self
-            .inner
-            .ocr
-            .lock()
-            .map_err(|_| error("worker", "OCR settings unavailable."))?
-            .clone();
         let extracted = document_extract::extract_document_with_password(
             &canonical,
             &ExtractOptions {
@@ -1699,7 +1887,7 @@ impl ContentService {
                 &value.message,
             )
         })?;
-        self.publish_unlocked(path, &extracted, &ocr, cancel)
+        self.publish_unlocked(path, &extracted, &ocr, cancel, policy_revision)
     }
     fn publish_unlocked(
         &self,
@@ -1707,6 +1895,7 @@ impl ContentService {
         extracted: &document_extract::ExtractedDocument,
         ocr: &crate::ocr::Preferences,
         cancel: &AtomicBool,
+        policy_revision: u64,
     ) -> Result<ContentDocumentSummary> {
         use sha2::{Digest, Sha256};
         use std::io::Read;
@@ -1718,6 +1907,12 @@ impl ContentService {
             .lock()
             .map_err(|_| error("worker", "Content scopes unavailable."))?;
         let (canonical, roots) = self.unlock_path(path, &scopes)?;
+        if policy_revision != self.inner.policy_revision.load(Ordering::Acquire) {
+            return Err(error(
+                "cancelled",
+                "Content permissions changed during the document retry.",
+            ));
+        }
         let current_ocr = self
             .inner
             .ocr
@@ -1822,15 +2017,17 @@ impl ContentService {
         Ok(document)
     }
     pub fn resolve_document(&self, path: &Path) -> Result<PathBuf> {
-        if self.is_excluded(&path.to_string_lossy()) {
+        let (policy, roots) = self.query_policy(&[])?;
+        if self.is_excluded(&path.to_string_lossy()) || !policy.admits(path) {
             return Err(error(
                 "source",
                 "App cache files cannot be used as document sources.",
             ));
         }
-        self.inner
+        let resolved = self
+            .inner
             .store
-            .document_summary(path, &self.active_roots(None)?, &AtomicBool::new(false))
+            .document_summary(path, &roots, &AtomicBool::new(false))
             .map_err(|_| error("source", "Content source is unavailable."))?
             .map(|document| PathBuf::from(document.file_path))
             .ok_or_else(|| {
@@ -1838,7 +2035,9 @@ impl ContentService {
                     "source",
                     "This document is no longer a current authorized source.",
                 )
-            })
+            })?;
+        self.check_query_policy(&policy)?;
+        Ok(resolved)
     }
 }
 
@@ -1852,6 +2051,271 @@ mod tests {
             assert!(start.elapsed() < Duration::from_secs(5), "{label}");
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    fn policy_scope(path: &Path, id: &str) -> SearchScope {
+        SearchScope {
+            id: id.into(),
+            name: id.into(),
+            path: path.to_string_lossy().into(),
+            filename_enabled: true,
+            content_enabled: true,
+            external_allowed: false,
+        }
+    }
+
+    #[test]
+    fn inclusion_policy_gates_extraction_and_cached_queries_and_survives_refresh() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("sources");
+        fs::create_dir_all(root.join(".private")).unwrap();
+        fs::create_dir_all(root.join("generated")).unwrap();
+        fs::create_dir(root.join(".git")).unwrap();
+        fs::write(root.join(".gitignore"), "/generated/\n").unwrap();
+        for name in [
+            "notes.txt",
+            "main.rs",
+            ".private/hidden.txt",
+            "generated/ignored.txt",
+        ] {
+            fs::write(root.join(name), "contentpolicycanary evidence").unwrap();
+        }
+        fs::write(root.join(".private/locked.pdf"), b"not a PDF").unwrap();
+        let service = ContentService::open(
+            &directory.path().join("index"),
+            Err("not installed".into()),
+            |_| {},
+        )
+        .unwrap();
+        let observed = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+        let recorded = observed.clone();
+        *service.inner.before_extract.lock().unwrap() = Some(Arc::new(move |path| {
+            recorded.lock().unwrap().push(path.to_path_buf());
+        }));
+        let scopes = vec![policy_scope(&root, "docs")];
+        let restricted = crate::file_policy::Categories {
+            hidden: false,
+            source_code: false,
+            repository_ignored: false,
+            ..Default::default()
+        };
+        service
+            .configure_with_policy(scopes.clone(), Default::default(), restricted)
+            .unwrap();
+        wait_ready(&service);
+        let calls = observed.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].ends_with("notes.txt"));
+        let cancel = AtomicBool::new(false);
+        assert_eq!(
+            service
+                .unlock_pdf(&root.join(".private/locked.pdf"), "unused", &cancel)
+                .unwrap_err()
+                .code,
+            "outsideScope"
+        );
+        let first = service
+            .search("contentpolicycanary", "", None, &cancel)
+            .unwrap();
+        assert_eq!(first.hits.len(), 1);
+        for name in ["main.rs", ".private/hidden.txt", "generated/ignored.txt"] {
+            assert!(service
+                .inner
+                .store
+                .document_summary(&root.join(name), std::slice::from_ref(&root), &cancel)
+                .unwrap()
+                .is_none());
+        }
+        service
+            .configure_with_policy(scopes.clone(), Default::default(), Default::default())
+            .unwrap();
+        wait_ready(&service);
+        let all = service
+            .search("contentpolicycanary", "", None, &cancel)
+            .unwrap();
+        assert_eq!(all.hits.len(), 4);
+        let denied: Vec<_> = all
+            .hits
+            .iter()
+            .filter(|hit| !hit.chunk.file_path.ends_with("notes.txt"))
+            .map(|hit| hit.chunk.id.clone())
+            .collect();
+        let old_search = service.begin_search("main", "old_policy").unwrap();
+        service
+            .configure_with_policy(scopes.clone(), Default::default(), restricted)
+            .unwrap();
+        assert!(old_search.load(Ordering::Acquire));
+        wait_ready(&service);
+        assert!(service.chunks(&denied, &cancel).unwrap().is_empty());
+        assert!(service.resolve_document(&root.join("main.rs")).is_err());
+        // The legacy OCR-only adapter must preserve an already configured policy.
+        service
+            .configure_with_ocr(scopes.clone(), Default::default())
+            .unwrap();
+        wait_ready(&service);
+        service.refresh().unwrap();
+        wait_ready(&service);
+        assert_eq!(
+            service
+                .search("contentpolicycanary", "", None, &cancel)
+                .unwrap()
+                .hits
+                .len(),
+            1
+        );
+        let status = service.status().unwrap();
+        let search = KeywordSearch {
+            query: "contentpolicycanary".into(),
+            extension: "".into(),
+            scope_id: None,
+            content_revision: status.revision,
+            settings_revision: 1,
+        };
+        let mut selected = Vec::new();
+        service
+            .snapshot_keyword_files(&search, &cancel, &mut |path| {
+                selected.push(path.to_owned());
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        assert_eq!(selected.len(), 1);
+        assert!(selected[0].ends_with("notes.txt"));
+        service
+            .configure_with_policy(scopes.clone(), Default::default(), Default::default())
+            .unwrap();
+        wait_ready(&service);
+        let mut changed = false;
+        let error = service
+            .search_selected_with_admission(
+                "contentpolicycanary",
+                "",
+                &[],
+                None,
+                &cancel,
+                &mut |_| {
+                    if !changed {
+                        changed = true;
+                        service
+                            .configure_with_policy(scopes.clone(), Default::default(), restricted)
+                            .unwrap();
+                    }
+                    true
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "sourceChanged");
+        wait_ready(&service);
+        service.shutdown();
+    }
+
+    #[test]
+    fn explicit_nested_content_root_resets_hidden_ancestry_but_filename_only_root_does_not() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = directory.path().join("sources");
+        let nested = parent.join(".private/docs");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("allowed.txt"), "nestedpolicycanary evidence").unwrap();
+        fs::write(
+            parent.join(".private/denied.txt"),
+            "nestedpolicycanary evidence",
+        )
+        .unwrap();
+        let service = ContentService::open(
+            &directory.path().join("index"),
+            Err("not installed".into()),
+            |_| {},
+        )
+        .unwrap();
+        let mut scopes = vec![
+            policy_scope(&parent, "parent"),
+            policy_scope(&nested, "nested"),
+        ];
+        let policy = crate::file_policy::Categories {
+            hidden: false,
+            ..Default::default()
+        };
+        service
+            .configure_with_policy(scopes.clone(), Default::default(), policy)
+            .unwrap();
+        wait_ready(&service);
+        let cancel = AtomicBool::new(false);
+        let hits = service
+            .search("nestedpolicycanary", "", Some("parent"), &cancel)
+            .unwrap();
+        assert_eq!(hits.hits.len(), 1);
+        assert!(hits.hits[0].chunk.file_path.ends_with("allowed.txt"));
+        scopes[1].content_enabled = false;
+        service
+            .configure_with_policy(scopes, Default::default(), policy)
+            .unwrap();
+        wait_ready(&service);
+        assert!(service
+            .search("nestedpolicycanary", "", None, &cancel)
+            .unwrap()
+            .hits
+            .is_empty());
+        service.shutdown();
+    }
+
+    #[test]
+    fn category_change_cancels_an_old_extraction_before_it_can_publish() {
+        use std::sync::mpsc;
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("sources");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("old.rs"), "oldpolicypublicationcanary").unwrap();
+        let service = ContentService::open(
+            &directory.path().join("index"),
+            Err("not installed".into()),
+            |_| {},
+        )
+        .unwrap();
+        let (started, receiving) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        let wait = Mutex::new(wait);
+        *service.inner.before_extract.lock().unwrap() = Some(Arc::new(move |_| {
+            started.send(()).unwrap();
+            wait.lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap();
+        }));
+        let scopes = vec![policy_scope(&root, "docs")];
+        service.configure(scopes.clone()).unwrap();
+        receiving.recv_timeout(Duration::from_secs(3)).unwrap();
+        service
+            .configure_with_policy(
+                scopes,
+                Default::default(),
+                crate::file_policy::Categories {
+                    source_code: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        release.send(()).unwrap();
+        wait_ready(&service);
+        assert!(service
+            .inner
+            .store
+            .document_summary(
+                &root.join("old.rs"),
+                std::slice::from_ref(&root),
+                &AtomicBool::new(false)
+            )
+            .unwrap()
+            .is_none());
+        assert!(service
+            .search(
+                "oldpolicypublicationcanary",
+                "",
+                None,
+                &AtomicBool::new(false)
+            )
+            .unwrap()
+            .hits
+            .is_empty());
+        service.shutdown();
     }
 
     #[test]
@@ -2141,15 +2605,43 @@ mod tests {
                     &path,
                     &extracted,
                     &crate::ocr::Preferences::default(),
-                    &cancel
+                    &cancel,
+                    service.inner.policy_revision.load(Ordering::Acquire),
                 )
                 .unwrap_err()
                 .code,
             "outsideScope"
         );
-        service.configure(vec![scope]).unwrap();
+        service.configure(vec![scope.clone()]).unwrap();
         service.cancel_index();
         // Equal length and restored mtime must not bypass the final raw SHA.
+        let before_policy = service.inner.policy_revision.load(Ordering::Acquire);
+        service
+            .configure_with_policy(
+                vec![scope.clone()],
+                Default::default(),
+                crate::file_policy::Categories {
+                    archives: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        service.cancel_index();
+        assert_eq!(
+            service
+                .publish_unlocked(
+                    &path,
+                    &extracted,
+                    &crate::ocr::Preferences::default(),
+                    &cancel,
+                    before_policy
+                )
+                .unwrap_err()
+                .code,
+            "cancelled"
+        );
+        service.configure(vec![scope]).unwrap();
+        service.cancel_index();
         let modified = fs::metadata(&path).unwrap().modified().unwrap();
         let mut changed = bytes.to_vec();
         changed[0] = b'!';
@@ -2166,7 +2658,8 @@ mod tests {
                     &path,
                     &extracted,
                     &crate::ocr::Preferences::default(),
-                    &cancel
+                    &cancel,
+                    service.inner.policy_revision.load(Ordering::Acquire),
                 )
                 .unwrap_err()
                 .code,

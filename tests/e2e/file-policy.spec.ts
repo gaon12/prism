@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +14,21 @@ const compatibilityNotices = new Set([
   'Something has shimmed the React DevTools global hook (__REACT_DEVTOOLS_GLOBAL_HOOK__). Fast Refresh is not compatible with this shim and will be disabled.',
 ]);
 const browserNotices = new WeakMap<Page, object[]>();
+
+async function settleDialog(dialog: Locator) {
+  // Let finite modal/switch transitions finish naturally before capturing paint.
+  await dialog.evaluate(async (element) => {
+    await Promise.all(
+      element
+        .getAnimations({ subtree: true })
+        .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
+        .map((animation) => animation.finished.catch(() => {})),
+    );
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+  });
+}
 test.afterEach(async ({ page, browser }, info) => {
   await info.attach('browser-compatibility-notices', {
     body: JSON.stringify(
@@ -114,9 +129,9 @@ test('saves independent inclusion rules, preserves folder permissions and discar
   await expect(filenames().getByRole('checkbox', { checked: true })).toHaveCount(0);
   await expect(content().getByRole('checkbox', { checked: true })).toHaveCount(4);
   await policy().scrollIntoViewIfNeeded();
+  await settleDialog(dialog);
   await page.screenshot({
     path: join(evidence, 'inclusion-desktop-saved.png'),
-    animations: 'disabled',
   });
   await filenames().getByRole('checkbox', { name: '숨김 항목', exact: true }).check();
   await dialog.getByRole('button', { name: '취소', exact: true }).click();
@@ -152,7 +167,9 @@ for (const [language, settings, scopes, title, filename, content, archive, save]
     '保存',
   ],
 ]) {
-  test(`edits localized inclusion rules on a narrow screen: ${language}`, async ({ page }) => {
+  test(`edits localized inclusion rules on a narrow screen: ${language}`, async ({
+    page,
+  }, info) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const errors = await prepare(page, language);
     await page.getByRole('button', { name: settings, exact: true }).click();
@@ -164,9 +181,45 @@ for (const [language, settings, scopes, title, filename, content, archive, save]
     const body = policy.getByRole('group', { name: content, exact: true });
     await body.getByRole('checkbox', { name: archive, exact: true }).uncheck();
     await expect(filenames.getByRole('checkbox', { name: archive, exact: true })).toBeChecked();
+    await body.scrollIntoViewIfNeeded();
+    await settleDialog(dialog);
+    const controls = await policy.evaluate((section) => {
+      const pane = section.closest('.settings-body') as HTMLElement;
+      const clip = pane.getBoundingClientRect();
+      return [...section.querySelectorAll('input')].map((input) => {
+        const rect = input.getBoundingClientRect();
+        return {
+          label: input.closest('label')?.textContent?.trim(),
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+          checked: input.checked,
+          clipLeft: clip.left,
+          clipRight: clip.left + pane.clientWidth,
+          clipTop: clip.top,
+          clipBottom: clip.top + pane.clientHeight,
+          scrollLeft: pane.scrollLeft,
+          width: rect.width,
+          background: getComputedStyle(input).backgroundColor,
+        };
+      });
+    });
+    for (const control of controls) {
+      expect(control.left, JSON.stringify(control)).toBeGreaterThanOrEqual(control.clipLeft);
+      expect(control.right, JSON.stringify(control)).toBeLessThanOrEqual(control.clipRight);
+      expect(control.width, JSON.stringify(control)).toBeGreaterThanOrEqual(24);
+    }
+    for (const control of controls.slice(5)) {
+      expect(control.top, JSON.stringify(control)).toBeGreaterThanOrEqual(control.clipTop);
+      expect(control.bottom, JSON.stringify(control)).toBeLessThanOrEqual(control.clipBottom);
+    }
+    await info.attach('switch-layout', {
+      body: JSON.stringify(controls, null, 2),
+      contentType: 'application/json',
+    });
     await page.screenshot({
       path: join(evidence, `inclusion-${language}-390.png`),
-      animations: 'disabled',
     });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,

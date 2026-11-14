@@ -6,10 +6,14 @@ mod captured_rows;
 mod cpu_clock;
 #[path = "../../../src-tauri/src/file_policy.rs"]
 mod file_policy;
+#[path = "../../../src-tauri/src/file_policy_fs.rs"]
+mod file_policy_fs;
 #[path = "../../../src-tauri/src/filename_pattern.rs"]
 mod filename_pattern;
 #[path = "../../../src-tauri/src/keyboard_pattern.rs"]
 mod keyboard_pattern;
+#[path = "../../../src-tauri/src/path_identity.rs"]
+mod path_identity;
 
 // Configuration DTO only. Settings persistence and scope normalization are not
 // exercised; filename preparation/search/catalog code is the production source.

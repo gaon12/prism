@@ -15,10 +15,14 @@ chrono = "0.4"
 unicode-normalization = "0.1"
 tempfile = "3"
 prism-ntfs-protocol = { path = "../../indexer/protocol" }
+ignore = "=0.4.33"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_Shell", "Win32_System_Com"] }
 prism-ntfs-windows = { path = "../../indexer/windows" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [patch.crates-io]
 tempfile = { path = "../../src-tauri/vendor/tempfile" }

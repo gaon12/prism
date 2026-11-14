@@ -67,6 +67,7 @@ pulldown-cmark = { version = "=0.13.6", default-features = false, features = ["h
 unicase = "=2.10.0"
 zeroize = "1"
 prism-ntfs-protocol = { path = "../indexer/protocol" }
+ignore = "=0.4.33"
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 keyring-core = "=1.0.1"

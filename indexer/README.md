@@ -91,6 +91,18 @@ Implemented:
   upgrade; source tests do not establish installed-service performance.
   It does not enable results during a cold MFT scan or qualify the memory/time
   target by itself.
+- `Catalog::visit_with_attributes` and `codec::streaming::Reader::visit_with_attributes`
+  pair those same paths with each merged record's raw NTFS attribute bits.
+  Legacy `visit` callbacks still receive identical `FileRecord` values, in the
+  same order. The attribute view uses the already-parsed metadata and cache
+  replay overlay, without a second filesystem lookup or per-path map. It does
+  not change the cache/wire format or app catalog record layout. These are own
+  record flags, not inherited directory exclusions. This prepares the hidden/
+  system-file policy work; the app settings and service/client attribute transfer
+  are still pending. Windows core all-target tests passed 64 cases and Linux 63
+  (one explicit ignored benchmark each); strict Windows workspace all-feature
+  and Linux core all-target Clippy passed. The Windows admin check used a real,
+  freshly compiled private service payload, without installing or running it.
 - Persistent metadata uses a fixed private service subdirectory, exact protected
   ownership/ACL checks and regular single-link files. Immutable read handles
   prevent changes during hash verification and decoding. Writes use a bounded

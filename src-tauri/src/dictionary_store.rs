@@ -331,7 +331,7 @@ impl DictionaryStore {
                     )
                     .map_err(|_| "Could not store dictionary word forms.")?;
             }
-            if count % 1000 == 0 {
+            if count.is_multiple_of(1000) {
                 progress(count);
             }
         }

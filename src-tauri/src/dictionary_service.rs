@@ -42,6 +42,13 @@ fn error(code: &str, message: &str) -> DictionaryError {
     }
 }
 type Result<T> = std::result::Result<T, DictionaryError>;
+
+fn download_file(directory: &Path) -> Result<tempfile::NamedTempFile> {
+    tempfile::Builder::new()
+        .prefix(".prism-dictionary-")
+        .tempfile_in(directory)
+        .map_err(|_| error("storage", "Could not create the dictionary download file."))
+}
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LookupResponse {
@@ -296,8 +303,10 @@ impl DictionaryService {
             language: Some(language.into()),
             ..Default::default()
         });
-        let temporary = self.directory.join(format!("pack-{language}.download"));
         let result = (|| {
+            // Keep the owned file alive through import. Legacy download names are
+            // never opened or removed, including failures before a response arrives.
+            let mut temporary = download_file(&self.directory)?;
             // Only this fixed official corpus host is downloaded; a word is never part of the URL.
             let url =
                 format!("https://kaikki.org/dictionary/{name}/kaikki.org-dictionary-{name}.jsonl");
@@ -340,8 +349,6 @@ impl DictionaryService {
             if let Ok(mut job) = self.job.lock() {
                 job.total_bytes = total;
             }
-            let mut output = File::create(&temporary)
-                .map_err(|_| error("storage", "Could not create the dictionary download file."))?;
             let mut bytes = 0u64;
             loop {
                 if self.cancel.load(Ordering::Acquire) {
@@ -353,7 +360,7 @@ impl DictionaryService {
                 if bytes > MAX_DOWNLOAD {
                     return Err(error("limit", "Dictionary download exceeds 4 GiB."));
                 }
-                output.write_all(&chunk).map_err(|_| {
+                temporary.write_all(&chunk).map_err(|_| {
                     error(
                         "storage",
                         "Dictionary download failed. Check free disk space.",
@@ -363,10 +370,9 @@ impl DictionaryService {
                     job.bytes = bytes;
                 }
             }
-            output
+            temporary.as_file()
                 .sync_all()
                 .map_err(|_| error("storage", "Could not save the dictionary download."))?;
-            drop(output);
             if total.is_some_and(|total| total != bytes) {
                 return Err(error(
                     "network",
@@ -389,12 +395,12 @@ impl DictionaryService {
                 job.phase = "importing".into();
             }
             let reader = BufReader::new(
-                File::open(&temporary)
+                temporary
+                    .reopen()
                     .map_err(|_| error("storage", "Could not reopen the dictionary download."))?,
             );
             self.import_reader(reader, manifest)
         })();
-        let _ = fs::remove_file(temporary);
         self.finish_job(&result);
         result
     }
@@ -440,6 +446,88 @@ impl DictionaryService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_staging_preserves_a_legacy_link_and_its_original() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("unrelated.txt");
+        let legacy = directory.path().join("pack-ko.download");
+        let expected = "원본 유지 🙂".as_bytes();
+        fs::write(&original, expected).unwrap();
+        fs::hard_link(&original, &legacy).unwrap();
+        let owned;
+        {
+            let mut file = download_file(directory.path()).unwrap();
+            owned = file.path().to_owned();
+            assert_ne!(owned, legacy);
+            file.write_all(b"new dictionary bytes").unwrap();
+        }
+        assert!(
+            !owned.exists(),
+            "only the current operation's stage is removed"
+        );
+        assert_eq!(fs::read(&original).unwrap(), expected);
+        assert_eq!(fs::read(&legacy).unwrap(), expected);
+    }
+
+    #[test]
+    fn failed_download_staging_cleans_itself_and_preserves_a_previous_stage() {
+        let directory = tempfile::tempdir().unwrap();
+        let legacy = directory.path().join("pack-ja.download");
+        fs::write(&legacy, b"previous file").unwrap();
+        let mut owned = None;
+        let result: Result<()> = (|| {
+            let mut file = download_file(directory.path())?;
+            owned = Some(file.path().to_owned());
+            file.write_all(b"partial response").unwrap();
+            Err(error("cancelled", "Synthetic cancellation."))
+        })();
+        assert_eq!(result.unwrap_err().code, "cancelled");
+        assert!(!owned.unwrap().exists());
+        assert_eq!(fs::read(&legacy).unwrap(), b"previous file");
+    }
+
+    #[test]
+    fn completed_download_reopens_from_the_start_and_cleans_after_import() {
+        let directory = tempfile::tempdir().unwrap();
+        let expected = "사전 내려받기 🙂\n".as_bytes();
+        let owned;
+        {
+            let mut file = download_file(directory.path()).unwrap();
+            owned = file.path().to_owned();
+            let split = expected.len() / 2;
+            file.write_all(&expected[..split]).unwrap();
+            file.write_all(&expected[split..]).unwrap();
+            file.as_file().sync_all().unwrap();
+            let mut reader = file.reopen().unwrap();
+            let mut actual = Vec::new();
+            reader.read_to_end(&mut actual).unwrap();
+            assert_eq!(actual, expected);
+        }
+        assert!(!owned.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_staging_never_follows_or_unlinks_an_old_symbolic_link() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("unrelated.txt");
+        let downloads = directory.path().join("downloads");
+        fs::create_dir(&downloads).unwrap();
+        fs::write(&original, b"keep original").unwrap();
+        let legacy = downloads.join("pack-zh.download");
+        std::os::unix::fs::symlink(&original, &legacy).unwrap();
+        let owned;
+        {
+            let mut file = download_file(&downloads).unwrap();
+            owned = file.path().to_owned();
+            file.write_all(b"new dictionary bytes").unwrap();
+        }
+        assert!(!owned.exists());
+        assert_eq!(fs::read_link(&legacy).unwrap(), original);
+        assert_eq!(fs::read(&original).unwrap(), b"keep original");
+    }
+
     #[test]
     fn cancellation_drops_a_stalled_network_future_promptly() {
         let directory = tempfile::tempdir().unwrap();

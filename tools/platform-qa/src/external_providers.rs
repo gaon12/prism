@@ -162,9 +162,43 @@ fn check_assembly(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Runs the three requests for one provider and returns the failures.
-async fn check(runtime: &GenerationRuntime, provider: &Provider, key: &SecretValue) -> Vec<String> {
-    let mut failures = Vec::new();
+/// Overload (5xx), rate limits and timeouts come from the provider's side,
+/// not from Prism's request or parsing, so they are reported as "provider
+/// unavailable" instead of failing the check. Everything else (a refused
+/// request shape, a wrong error class, a reply the app rejects) is a failure.
+fn provider_side(code: GenerationErrorCode) -> bool {
+    matches!(
+        code,
+        GenerationErrorCode::Server
+            | GenerationErrorCode::RateLimited
+            | GenerationErrorCode::Network
+    )
+}
+
+/// What one provider's three requests found.
+#[derive(Default)]
+struct Outcome {
+    /// Problems on Prism's side: these fail the check.
+    failures: Vec<String>,
+    /// Requests the provider could not serve right now (see `provider_side`).
+    unavailable: Vec<String>,
+}
+
+impl Outcome {
+    /// Files a request error under the right list.
+    fn request_failed(&mut self, what: &str, code: GenerationErrorCode) {
+        let line = format!("{what} request failed: {code:?}");
+        if provider_side(code) {
+            self.unavailable.push(line);
+        } else {
+            self.failures.push(line);
+        }
+    }
+}
+
+/// Runs the three requests for one provider.
+async fn check(runtime: &GenerationRuntime, provider: &Provider, key: &SecretValue) -> Outcome {
+    let mut outcome = Outcome::default();
     let cancel = GenerationCancellation::new();
     let config = |max_tokens| GenerationConfig {
         endpoint: provider.endpoint.clone(),
@@ -186,12 +220,12 @@ async fn check(runtime: &GenerationRuntime, provider: &Provider, key: &SecretVal
             started.elapsed().as_secs_f32(),
             reply.finish_reason
         ),
-        Ok(reply) => failures.push(format!(
+        Ok(reply) => outcome.failures.push(format!(
             "plain reply has no READY ({} chars, finish {:?})",
             reply.text.chars().count(),
             reply.finish_reason
         )),
-        Err(error) => failures.push(format!("plain request failed: {:?}", error.code)),
+        Err(error) => outcome.request_failed("plain", error.code),
     }
 
     let fake = SecretValue::new("prism-invalid-test-key-0000".into()).expect("header-safe");
@@ -202,11 +236,14 @@ async fn check(runtime: &GenerationRuntime, provider: &Provider, key: &SecretVal
         Err(error) if error.code == GenerationErrorCode::Auth => {
             println!("  made-up key: reported as an authentication error")
         }
-        Err(error) => failures.push(format!(
+        Err(error) if provider_side(error.code) => {
+            outcome.request_failed("made-up key", error.code)
+        }
+        Err(error) => outcome.failures.push(format!(
             "a made-up key was reported as {:?}, not Auth",
             error.code
         )),
-        Ok(_) => failures.push("a made-up key was accepted".into()),
+        Ok(_) => outcome.failures.push("a made-up key was accepted".into()),
     }
 
     let started = Instant::now();
@@ -220,14 +257,14 @@ async fn check(runtime: &GenerationRuntime, provider: &Provider, key: &SecretVal
                 "  field extraction: ok in {:.1}s",
                 started.elapsed().as_secs_f32()
             ),
-            Err(problem) => failures.push(format!(
+            Err(problem) => outcome.failures.push(format!(
                 "field extraction: {problem} (finish {:?})",
                 reply.finish_reason
             )),
         },
-        Err(error) => failures.push(format!("extraction request failed: {:?}", error.code)),
+        Err(error) => outcome.request_failed("extraction", error.code),
     }
-    failures
+    outcome
 }
 
 #[test]
@@ -243,7 +280,9 @@ fn external_providers() {
         .build()
         .expect("runtime");
     let runtime = GenerationRuntime::new();
-    let (mut ran, mut failed) = (0, Vec::new());
+    // `answered`: providers that served all three requests, so every
+    // check really ran against them.
+    let (mut answered, mut failed, mut unavailable) = (0, Vec::new(), Vec::new());
     for provider in &list.providers {
         // PRISM_PROVIDERS="groq-qwen3-32b,gemini-flash" limits the run.
         if !only.is_empty() && !only.split(',').any(|name| name.trim() == provider.name) {
@@ -261,14 +300,36 @@ fn external_providers() {
         };
         let key = SecretValue::new(key).expect("a header-safe API key");
         println!("{} ({}):", provider.name, provider.model);
-        ran += 1;
-        for failure in tokio.block_on(check(&runtime, provider, &key)) {
+        let outcome = tokio.block_on(check(&runtime, provider, &key));
+        for line in &outcome.unavailable {
+            println!("  UNAVAILABLE {line} (provider side, not counted as a failure)");
+            unavailable.push(format!("{}: {line}", provider.name));
+        }
+        for failure in &outcome.failures {
             println!("  FAIL {failure}");
             failed.push(format!("{}: {failure}", provider.name));
         }
+        if outcome.unavailable.is_empty() {
+            answered += 1;
+        }
     }
-    // A run with no key at all checked nothing, so it must not look green.
-    assert!(ran > 0, "no provider key is set; nothing was checked");
+    if !unavailable.is_empty() {
+        println!(
+            "{} request(s) hit provider-side overload, limits or timeouts:
+{}",
+            unavailable.len(),
+            unavailable.join(
+                "
+"
+            )
+        );
+    }
+    // A run where no provider answered everything checked nothing, so it
+    // must not look green (no key set, or every provider was down).
+    assert!(
+        answered > 0,
+        "no provider served all three requests; nothing was fully checked"
+    );
     assert!(
         failed.is_empty(),
         "{} failure(s):\n{}",
@@ -304,6 +365,20 @@ fn the_fixture_assembles_offline() {
         .content
         .ends_with(APPLICATION_CITATIONS_SYSTEM));
     assert_eq!(messages("READY".into())[0].content, SYSTEM);
+}
+
+#[test]
+fn provider_outages_are_not_client_failures() {
+    let mut outcome = Outcome::default();
+    outcome.request_failed("plain", GenerationErrorCode::Server);
+    outcome.request_failed("plain", GenerationErrorCode::RateLimited);
+    outcome.request_failed("plain", GenerationErrorCode::Network);
+    assert_eq!(outcome.unavailable.len(), 3);
+    // A refused request shape or a bad address is Prism's problem.
+    outcome.request_failed("plain", GenerationErrorCode::Input);
+    outcome.request_failed("plain", GenerationErrorCode::Endpoint);
+    outcome.request_failed("plain", GenerationErrorCode::Malformed);
+    assert_eq!(outcome.failures.len(), 3);
 }
 
 #[test]

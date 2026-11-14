@@ -30,6 +30,13 @@
       "tokenParameter": "maxTokens"
     },
     {
+      "name": "gemini-flash-lite",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "model": "gemini-3.1-flash-lite",
+      "keyEnv": "GEMINI_API_KEY",
+      "tokenParameter": "maxTokens"
+    },
+    {
       "name": "openai-gpt-5-mini",
       "endpoint": "https://api.openai.com/v1",
       "model": "gpt-5-mini",

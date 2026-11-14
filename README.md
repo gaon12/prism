@@ -206,6 +206,13 @@ Web input stays local until the user executes a search. It then opens a built-in
 
 Dictionary words are sent only on Enter or explicit lookup. Wiktionary/Kaikki definitions currently use English glosses, labeled in the UI. Installed offline packs are separate from temporary online-result cache; network failures may fall back to installed packs, while a missing online entry is not silently replaced. Packs can be downloaded, imported, cancelled and removed. The bundled native tests use generated four-language fixture packs; live Rust Wiktionary connectivity has not passed in this environment.
 
+Pack downloads use exclusively created temporary files. Normal failures and
+cancellation remove only the current operation's staging file; pre-existing
+`pack-<language>.download` files and links are left intact. Isolated Windows and
+Linux regressions cover preservation, completed-file reopening and cleanup. These
+filesystem checks do not qualify a live Kaikki download or cleanup after abrupt
+process termination.
+
 History is stored locally and is not encrypted. Defaults keep up to 500 unpinned items for 30 days within 256 MiB; pinned items are not automatically removed and may exceed the budget. Retention, image capture and collection can be changed in the clipboard panel. Windows history-exclusion formats are respected. Existing clipboard contents at startup and content copied while paused or disabled are skipped. Platforms without change markers rebaseline on resume and cannot detect an immediate same-content recopy until a different or confirmed empty snapshot is observed.
 
 A successful empty snapshot completes the baseline, so it does not consume the next future copy. Occupied, conversion and unknown read failures remain errors rather than empty snapshots. Native Linux X11 checks with an actual GTK clipboard owner covered text/link/image capture, observed pause/disable transitions, image preview pixels and text/image copy restoration. They used a private installed-debug profile with the real system source. The later signed CI AppImage also passed first-copy capture and actual text/image UI paste; pause/disable transfer-boundary coverage remains installed-debug evidence. The isolated state/error regressions run with `cargo test --manifest-path src-tauri/Cargo.toml --lib clipboard_history::tests`.

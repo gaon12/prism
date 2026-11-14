@@ -186,3 +186,35 @@ and 132 Windows tests, plus strict all-target Clippy on both. Earlier probe
 compilation, controller-unlock and missing-Node fixture failures are preserved.
 Evidence: `.dev/linux-secret-service-20261114/qualification.json`, SHA-256
 `39ab8a9bfb750dc406dc5305ca8cff62e1c0a93c50071e09d0aa46e3200052ec`.
+
+
+## Current file-inclusion policy at RAG source reads
+
+`4b75693` includes the current content categories in `RagPolicy`, supplied from
+the saved application settings. New retrieval and saved-source revalidation
+check the authorized file against those categories before hashing its original
+bytes. Unknown attributes or unreadable repository rules deny that source. The
+default include-all path skips the new fact reader; filename visibility remains
+independent of content permission.
+
+Policy stamps are checked before sending and after generation for local and
+external answers. A category change during generation cannot publish a complete
+answer, even if the settings revision has not advanced. The original regression
+failed because the post-generation stamp check applied only to external evidence.
+
+Windows core tests passed 144 cases and strict all-target Clippy. Linux core tests
+passed 142 cases with one native opt-in ignored; its helper passed three cases
+with one native opt-in ignored. Linux strict all-target Clippy also passed. The
+actual Windows app library passed all 564 ordinary tests, with 19 opt-ins ignored.
+Its additional cached-index fixtures verify that rejected source-code, hidden
+and repository-ignored files do not reach the original-file hasher, and allowed
+evidence below denied candidates can fill the requested result. Linux core QA
+does not include this app adapter.
+
+This is one enforcement boundary, not complete file-policy integration. Filtering
+still uses the current bounded retrieval pool. Admission into content extraction,
+backfill from earlier keyword/vector candidate stages, filename consumers and
+settings controls remain separate work. No new native UI, model/provider, macOS
+or deployed-service qualification is implied. Captured results and failed-run
+evidence have qualification SHA-256
+`6caca55f3499e5a5214d37bf567ac2c1f0af41ad219971ea8ec3f31639a61172`.

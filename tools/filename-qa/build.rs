@@ -38,7 +38,7 @@ fn main() {
     let body = &tail[start..end];
     assert!(body.contains("for key in stale {") && body.contains("catalog.entries.remove(&key);"));
     let generated = format!(
-        "fn production_update(catalog: &mut WatchCatalog, paths: &[PathBuf], sweep: u64, uncertain: &HashSet<String>) {{\n{body}\n}}\n"
+        "fn production_update(catalog: &mut WatchCatalog, paths: &[PathBuf], sweep: u64, uncertain: &HashSet<String>) {{\nlet file_policy = crate::file_policy::Categories::default();\n{body}\n}}\n"
     );
     fs::write(
         PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("watch.rs"),

@@ -295,7 +295,7 @@ pub fn run() {
             };
             let index = index::FileIndex::new();
             if config_error.is_none() {
-                index.configure(settings.scopes.clone());
+                index.configure_with_policy(settings.scopes.clone(), settings.file_policy.filename);
             }
             let mut clipboard_settings = settings.clipboard.clone();
             if config_error.is_some() {

@@ -258,6 +258,12 @@ struct WalkBatch {
     rows: Vec<Raw>,
     skipped: usize,
 }
+struct WalkContext<'a> {
+    generation: u64,
+    sweep: u64,
+    unreadable: &'a Mutex<PendingPaths>,
+    policy: inclusion::Pass<'a>,
+}
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexStatus {
@@ -318,7 +324,11 @@ struct Catalog {
     /// The very first scan's rows while its NTFS snapshot is still arriving.
     /// See `Provisional`.
     provisional: Option<Provisional>,
+    file_policy: crate::file_policy::Categories,
 }
+
+#[path = "filename_policy.rs"]
+mod inclusion;
 
 /// A first scan's catalog that searches may read before the snapshot ends.
 ///
@@ -581,15 +591,41 @@ impl FileIndex {
         this
     }
     pub fn configure(&self, scopes: Vec<SearchScope>) {
-        self.request_refresh(scopes, RefreshKind::Configure);
+        self.request_refresh(scopes, RefreshKind::Configure, None);
+    }
+    pub fn configure_with_policy(
+        &self,
+        scopes: Vec<SearchScope>,
+        policy: crate::file_policy::Categories,
+    ) {
+        self.request_refresh(scopes, RefreshKind::Configure, Some(policy));
     }
     pub fn refresh(&self, scopes: Vec<SearchScope>) {
-        self.request_refresh(scopes, RefreshKind::Refresh);
+        self.request_refresh(scopes, RefreshKind::Refresh, None);
+    }
+    pub fn refresh_with_policy(
+        &self,
+        scopes: Vec<SearchScope>,
+        policy: crate::file_policy::Categories,
+    ) {
+        self.request_refresh(scopes, RefreshKind::Refresh, Some(policy));
     }
     pub fn reset(&self, scopes: Vec<SearchScope>) {
-        self.request_refresh(scopes, RefreshKind::Reset);
+        self.request_refresh(scopes, RefreshKind::Reset, None);
     }
-    fn request_refresh(&self, scopes: Vec<SearchScope>, kind: RefreshKind) {
+    pub fn reset_with_policy(
+        &self,
+        scopes: Vec<SearchScope>,
+        policy: crate::file_policy::Categories,
+    ) {
+        self.request_refresh(scopes, RefreshKind::Reset, Some(policy));
+    }
+    fn request_refresh(
+        &self,
+        scopes: Vec<SearchScope>,
+        kind: RefreshKind,
+        policy: Option<crate::file_policy::Categories>,
+    ) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         if let Ok(mut catalog) = self.catalog.write() {
             if self.generation.load(Ordering::SeqCst) != generation {
@@ -597,10 +633,16 @@ impl FileIndex {
             }
             // An unfinished first scan belongs to the old generation.
             catalog.provisional = None;
+            let next = policy.unwrap_or(catalog.file_policy);
+            let changed_policy = next != catalog.file_policy;
+            catalog.file_policy = next;
             // Removed or disabled scopes must stop being searchable immediately. Entries under
             // scopes that are still configured unchanged stay visible while the rescan runs, so
             // adding a folder does not blank existing results.
-            if matches!(kind, RefreshKind::Reset) {
+            if matches!(kind, RefreshKind::Reset)
+                || changed_policy
+                || (matches!(kind, RefreshKind::Configure) && !next.unrestricted())
+            {
                 catalog.entries.clear();
                 catalog.roots.clear();
             } else if matches!(kind, RefreshKind::Configure) {
@@ -651,6 +693,38 @@ impl FileIndex {
     fn current(&self, generation: u64) -> bool {
         Arc::strong_count(&self.lifetime) > 1
             && self.generation.load(Ordering::SeqCst) == generation
+    }
+    fn policy_for(&self, generation: u64) -> Option<(crate::file_policy::Categories, Vec<Root>)> {
+        let catalog = self.catalog.read().ok()?;
+        self.current(generation).then(|| {
+            (
+                catalog.file_policy,
+                if catalog.file_policy.unrestricted() {
+                    vec![]
+                } else {
+                    catalog.roots.clone()
+                },
+            )
+        })
+    }
+    fn collection_roots(&self, roots: &[Root]) -> Vec<PathBuf> {
+        if self
+            .catalog
+            .read()
+            .is_ok_and(|catalog| !catalog.file_policy.unrestricted())
+        {
+            // An explicitly selected child resets attribute ancestry, even if
+            // the parent's walk prunes a hidden/ignored directory above it.
+            roots
+                .iter()
+                .filter(|root| root.available)
+                .map(|root| (root.key.clone(), root.path.clone()))
+                .collect::<BTreeMap<_, _>>()
+                .into_values()
+                .collect()
+        } else {
+            root_paths(roots)
+        }
     }
     /// The first scan's provisional rows, when searches should read them
     /// instead of the (still empty) real catalog. Lock order is always the
@@ -810,12 +884,15 @@ impl FileIndex {
                         continue;
                     }
                     if let Ok(mut catalog) = self.catalog.write() {
+                        if !self.current(generation) {
+                            continue;
+                        }
                         catalog.roots = roots.clone();
                         catalog.status.watching = watcher.is_some() && warnings.is_empty();
                         catalog.status.warnings = warnings.into_iter().take(5).collect();
                     }
                     sweep += 1;
-                    self.scan(generation, &root_paths(&roots), sweep, true);
+                    self.scan(generation, &self.collection_roots(&roots), sweep, true);
                     last_reconcile = SystemTime::now();
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -851,15 +928,15 @@ impl FileIndex {
                     continue;
                 }
                 sweep += 1;
-                self.scan(generation, &root_paths(&roots), sweep, true);
+                self.scan(generation, &self.collection_roots(&roots), sweep, true);
                 last_reconcile = SystemTime::now();
                 continue;
             }
             if paths.is_empty() && entries.is_empty() {
                 continue;
             }
-            let roots = match self.catalog.read() {
-                Ok(catalog) => catalog.roots.clone(),
+            let (roots, file_policy) = match self.catalog.read() {
+                Ok(catalog) => (catalog.roots.clone(), catalog.file_policy),
                 Err(_) => continue,
             };
             let available = |path: &PathBuf| {
@@ -867,18 +944,50 @@ impl FileIndex {
                     .iter()
                     .any(|root| root.available && under(&path_key(path), &root.key))
             };
-            let mut unique: Vec<_> = paths.into_iter().filter(available).collect();
+            let mut unique: Vec<_> = paths
+                .into_iter()
+                .filter(available)
+                .map(|path| {
+                    inclusion::watch_root(&path, file_policy)
+                        .filter(available)
+                        .unwrap_or(path)
+                })
+                .collect();
             let mut entries: Vec<_> = entries.into_iter().filter(available).collect();
+            let mut policy = inclusion::Pass::new(file_policy, &roots);
             // An entry refresh fits only a plain file or folder. A path that no
             // longer exists went away with everything below it, and a folder that
             // became a link or junction is no longer walked at all: walk such a
             // path like a removal so its cached entry and subtree are dropped.
             entries.retain(|path| {
-                let plain = fs::symlink_metadata(path).is_ok_and(|metadata| plain_entry(&metadata));
+                if let Some(folder) = inclusion::watch_root(path, file_policy).filter(available) {
+                    unique.push(folder);
+                    return false;
+                }
+                let metadata = fs::symlink_metadata(path).ok();
+                let plain = metadata.as_ref().is_some_and(plain_entry);
                 if !plain {
                     unique.push(path.clone());
+                    return false;
                 }
-                plain
+                if !file_policy.unrestricted() {
+                    let is_dir = metadata.is_some_and(|metadata| metadata.is_dir());
+                    let included = policy.check(path, is_dir).unwrap_or(false);
+                    let known = path.file_name().is_none()
+                        || self
+                            .catalog
+                            .read()
+                            .is_ok_and(|catalog| catalog.entries.contains_key(&path_key(path)));
+                    // A newly excluded file also needs removal, even if its
+                    // size/time did not change. Newly admitted folders need
+                    // their children collected again; ordinary file refreshes
+                    // already insert the file itself.
+                    if (!included && known) || (is_dir && included && !known) {
+                        unique.push(path.clone());
+                        return false;
+                    }
+                }
+                true
             });
             if !unique.is_empty() || !entries.is_empty() {
                 // Re-walk only the changed subtrees under a fresh sweep id, then drop entries in
@@ -909,6 +1018,28 @@ impl FileIndex {
         if !self.current(generation) {
             return;
         }
+        let Some((file_policy, roots)) = self.policy_for(generation) else {
+            return;
+        };
+        let expanded = (!file_policy.unrestricted()).then(|| {
+            paths
+                .iter()
+                .cloned()
+                .chain(
+                    roots
+                        .iter()
+                        .filter(|root| {
+                            root.available
+                                && paths.iter().any(|path| under(&root.key, &path_key(path)))
+                        })
+                        .map(|root| root.path.clone()),
+                )
+                .map(|path| (path_key(&path), path))
+                .collect::<BTreeMap<_, _>>()
+                .into_values()
+                .collect::<Vec<_>>()
+        });
+        let paths = expanded.as_deref().unwrap_or(paths);
         if let Ok(mut catalog) = self.catalog.write() {
             if !self.current(generation) {
                 return;
@@ -946,11 +1077,18 @@ impl FileIndex {
                 let jobs = &jobs;
                 let wake = &wake;
                 let unreadable = &unreadable;
+                let roots = &roots;
                 scope.spawn(move || {
                     background_thread();
                     let mut batch = WalkBatch {
                         rows: Vec::with_capacity(512),
                         skipped: 0,
+                    };
+                    let mut context = WalkContext {
+                        generation,
+                        sweep,
+                        unreadable,
+                        policy: inclusion::Pass::new(file_policy, roots),
                     };
                     loop {
                         let work = {
@@ -971,8 +1109,8 @@ impl FileIndex {
                         let Some((path, walk)) = work else {
                             break;
                         };
-                        let children = self
-                            .walk_directory(generation, &path, walk, sweep, &mut batch, unreadable);
+                        let children =
+                            self.walk_directory_with_policy(&path, walk, &mut batch, &mut context);
                         let mut jobs = jobs.lock().unwrap_or_else(|error| error.into_inner());
                         jobs.outstanding += children.len();
                         jobs.outstanding -= 1;
@@ -1004,11 +1142,12 @@ impl FileIndex {
                 let visited: Vec<_> = paths.iter().map(|path| path_key(path)).collect();
                 // Seen entries are kept without rebuilding their keys.
                 catalog.entries.retain_seen_or(sweep, |key, _| {
-                    uncertain.contains(key)
+                    file_policy.unrestricted()
+                        && (uncertain.contains(key)
                         // A still-configured offline parent must not hide a
                         // confirmed deletion in an available, visited child scope.
                         || (unavailable.iter().any(|root| under(key, root))
-                            && !visited.iter().any(|root| under(key, root)))
+                            && !visited.iter().any(|root| under(key, root))))
                 });
                 catalog.status.initial_scan_complete = true;
             } else {
@@ -1027,7 +1166,8 @@ impl FileIndex {
                             .filter(|entry| !entry.is_seen(sweep))
                             .filter_map(|entry| {
                                 let entry_key = entry.write_key(&mut key);
-                                (!uncertain.contains(entry_key)).then(|| entry_key.to_string())
+                                (!file_policy.unrestricted() || !uncertain.contains(entry_key))
+                                    .then(|| entry_key.to_string())
                             })
                             .collect::<Vec<_>>()
                     })
@@ -1043,15 +1183,17 @@ impl FileIndex {
             catalog.status.scanning = false;
         }
     }
-    fn walk_directory(
+    fn walk_directory_with_policy(
         &self,
-        generation: u64,
         path: &Path,
         walk: Walk,
-        sweep: u64,
         batch: &mut WalkBatch,
-        unreadable: &Mutex<PendingPaths>,
+        context: &mut WalkContext<'_>,
     ) -> Vec<PathBuf> {
+        let generation = context.generation;
+        let sweep = context.sweep;
+        let unreadable = context.unreadable;
+        let policy_skipped = std::cell::Cell::new(0usize);
         let mut children = vec![];
         // Depth one makes directory ownership explicit. Keep WalkDir's cached
         // Windows metadata and the existing symlink/junction safeguards. An
@@ -1080,7 +1222,16 @@ impl FileIndex {
                         return false;
                     }
                 }
-                true
+                match context
+                    .policy
+                    .check(entry.path(), entry.file_type().is_dir())
+                {
+                    Ok(include) => include,
+                    Err(_) => {
+                        policy_skipped.set(policy_skipped.get().saturating_add(1));
+                        false
+                    }
+                }
             });
         for entry in walker {
             if !self.current(generation) {
@@ -1138,6 +1289,7 @@ impl FileIndex {
                 }
             }
         }
+        batch.skipped = batch.skipped.saturating_add(policy_skipped.get());
         children
     }
     /// Inserts a batch. Unchanged entries only get their sweep id refreshed, so a reconcile over
@@ -1242,20 +1394,34 @@ impl FileIndex {
                 None => Candidates::Ids(vec![]),
             },
         };
-        let (mut total, mut ranked) = top_matches(entries, &candidates, limit, false, |entry| {
-            query.matches(entry).then(|| query.rank(entry))
-        });
+        let (mut total, mut ranked) = top_matches(
+            entries,
+            &candidates,
+            limit,
+            false,
+            catalog.file_policy,
+            &catalog.roots,
+            |entry| query.matches(entry).then(|| query.rank(entry)),
+        );
         let mut keyboard_corrected = false;
         if total == 0 && allow_keyboard && query.keyboard_terms.iter().any(Option::is_some) {
-            (total, ranked) = top_matches(entries, &candidates, limit, true, |entry| {
-                query.matches_keyboard(entry).then(|| {
-                    if query.keyboard_name_matches(entry) {
-                        6
-                    } else {
-                        7
-                    }
-                })
-            });
+            (total, ranked) = top_matches(
+                entries,
+                &candidates,
+                limit,
+                true,
+                catalog.file_policy,
+                &catalog.roots,
+                |entry| {
+                    query.matches_keyboard(entry).then(|| {
+                        if query.keyboard_name_matches(entry) {
+                            6
+                        } else {
+                            7
+                        }
+                    })
+                },
+            );
             keyboard_corrected = total > 0;
         }
         Ok(SearchResponse {
@@ -1292,6 +1458,13 @@ impl FileIndex {
                 "This path is outside the active file index. Refresh and search again.".into(),
             );
         }
+        if !catalog.file_policy.unrestricted()
+            && !inclusion::Pass::new(catalog.file_policy, &catalog.roots)
+                .check(&canonical, canonical.is_dir())
+                .unwrap_or(false)
+        {
+            return Err("This path is excluded by the active filename policy.".into());
+        }
         Ok(canonical)
     }
     /// Stream all matching files from one catalog revision. This deliberately
@@ -1311,6 +1484,10 @@ impl FileIndex {
         if catalog.status.revision != search.index_revision {
             return Err(SnapshotError::Index("Search results changed.".into()));
         }
+        let provisional = self.provisional(&catalog);
+        let entries = provisional.as_deref().unwrap_or(&catalog.entries);
+        let mut inclusion = inclusion::Pass::new(catalog.file_policy, &catalog.roots);
+        let mut path = String::new();
         let root = search
             .scope_id
             .as_deref()
@@ -1318,17 +1495,21 @@ impl FileIndex {
         // Entries in the selected scope (none for an unknown scope id).
         let scoped = || -> Box<dyn Iterator<Item = compact::EntryRef<'_>> + '_> {
             match (&search.scope_id, root) {
-                (None, _) => Box::new(catalog.entries.refs()),
-                (Some(_), Some(root)) => Box::new(catalog.entries.subtree(&root.key)),
+                (None, _) => Box::new(entries.refs()),
+                (Some(_), Some(root)) => Box::new(entries.subtree(&root.key)),
                 (Some(_), None) => Box::new(std::iter::empty()),
             }
         };
         let mut scratch = Scratch::default();
-        let literal =
-            scoped().any(|entry| query.matches(&entries::view(entry, &mut scratch, false)));
+        let literal = scoped().any(|entry| {
+            query.matches(&entries::view(entry, &mut scratch, false))
+                && (catalog.file_policy.unrestricted()
+                    || inclusion
+                        .check(Path::new(entry.write_path(&mut path)), entry.is_dir())
+                        .unwrap_or(false))
+        });
         let corrected =
             !literal && allow_keyboard && query.keyboard_terms.iter().any(Option::is_some);
-        let mut path = String::new();
         for entry in scoped() {
             if cancel.load(Ordering::Acquire) {
                 return Err(SnapshotError::Index("Search cancelled.".into()));
@@ -1342,11 +1523,17 @@ impl FileIndex {
             } else {
                 query.matches(&view)
             };
-            if matched {
+            if matched
+                && (catalog.file_policy.unrestricted()
+                    || inclusion
+                        .check(Path::new(entry.write_path(&mut path)), false)
+                        .unwrap_or(false))
+            {
                 visit(entry.write_path(&mut path)).map_err(SnapshotError::Visitor)?;
             }
         }
-        Ok(catalog.status.scanning
+        Ok(provisional.is_some()
+            || catalog.status.scanning
             || catalog.status.skipped > 0
             || !catalog.status.warnings.is_empty())
     }
@@ -1410,6 +1597,8 @@ fn top_matches(
     candidates: &Candidates,
     limit: usize,
     keyboard: bool,
+    file_policy: crate::file_policy::Categories,
+    roots: &[Root],
     rank: impl Fn(&View<'_>) -> Option<u8> + Sync,
 ) -> (usize, Vec<Ranked>) {
     let scan = |range: std::ops::Range<usize>| {
@@ -1417,6 +1606,9 @@ fn top_matches(
         let mut total = 0;
         let mut scratch = Scratch::default();
         let mut key = String::new();
+        let mut path = String::new();
+        let restricted = !file_policy.unrestricted();
+        let mut inclusion = inclusion::Pass::new(file_policy, roots);
         for position in range {
             let Some(entry) = entries.entry(candidates.id(position)) else {
                 continue;
@@ -1425,6 +1617,13 @@ fn top_matches(
             let Some(rank) = rank(&view) else {
                 continue;
             };
+            if restricted
+                && !inclusion
+                    .check(Path::new(entry.write_path(&mut path)), entry.is_dir())
+                    .unwrap_or(false)
+            {
+                continue;
+            }
             total += 1;
             let name = view.name();
             if heap.len() >= limit {
@@ -2424,7 +2623,15 @@ mod performance_tests {
                 .then(|| entry.name().as_bytes()[2] % 4)
         };
         let candidates = Candidates::All(entries.slots());
-        let (total, top) = top_matches(&entries, &candidates, 50, false, rank);
+        let (total, top) = top_matches(
+            &entries,
+            &candidates,
+            50,
+            false,
+            crate::file_policy::Categories::default(),
+            &[],
+            rank,
+        );
         let mut expected: Vec<(u8, &str, &str)> = owned
             .iter()
             .filter_map(|entry| {

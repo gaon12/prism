@@ -74,7 +74,9 @@ fn get_settings_inner(app: AppHandle) -> Result<ClientSettings, String> {
                 restored.file_policy.content,
             );
         }
-        state.index.configure(restored.scopes);
+        state
+            .index
+            .configure_with_policy(restored.scopes, restored.file_policy.filename);
         state.clipboard.apply_settings(restored.clipboard)?;
         *state
             .config_error
@@ -225,16 +227,17 @@ fn save_settings_inner(
     if changing_shortcut {
         let _ = app.global_shortcut().unregister(old_shortcut);
     }
-    let changed_scopes = current
-        .scopes
-        .iter()
-        .map(|scope| (&scope.id, &scope.path, scope.filename_enabled))
-        .collect::<Vec<_>>()
-        != settings
+    let changed_scopes = current.file_policy.filename != settings.file_policy.filename
+        || current
             .scopes
             .iter()
             .map(|scope| (&scope.id, &scope.path, scope.filename_enabled))
-            .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+            != settings
+                .scopes
+                .iter()
+                .map(|scope| (&scope.id, &scope.path, scope.filename_enabled))
+                .collect::<Vec<_>>();
     let changed_content = current.ocr != settings.ocr
         || current.file_policy.content != settings.file_policy.content
         || current
@@ -275,7 +278,9 @@ fn save_settings_inner(
     // clipboard_status; do not report a failed settings save after its atomic commit.
     let _ = state.clipboard.apply_settings(settings.clipboard.clone());
     if changed_scopes {
-        state.index.configure(settings.scopes.clone());
+        state
+            .index
+            .configure_with_policy(settings.scopes.clone(), settings.file_policy.filename);
     }
     *state
         .shortcut_error
@@ -345,17 +350,19 @@ pub async fn search_files(
 /// Off the main thread for the same reason as `index_status`: a refresh takes
 /// the catalog write lock.
 #[tauri::command]
-pub async fn refresh_index(state: State<'_, AppState>) -> Result<(), String> {
-    let scopes = state
-        .settings
-        .lock()
-        .map_err(|_| "Settings unavailable.")?
-        .scopes
-        .clone();
-    let index = state.index.clone();
-    tauri::async_runtime::spawn_blocking(move || index.refresh(scopes))
-        .await
-        .map_err(|error| error.to_string())
+pub async fn refresh_index(app: AppHandle) -> Result<(), String> {
+    // Read the current settings when this worker actually runs, so a queued
+    // refresh cannot restore scopes or inclusion rules removed by a later save.
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let state = app.state::<AppState>();
+        let settings = state.settings.lock().map_err(|_| "Settings unavailable.")?;
+        state
+            .index
+            .refresh_with_policy(settings.scopes.clone(), settings.file_policy.filename);
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[derive(Serialize)]
@@ -417,7 +424,9 @@ pub async fn reset_index(
         }
         match target {
             IndexResetTarget::Filename => {
-                state.index.reset(settings.scopes.clone());
+                state
+                    .index
+                    .reset_with_policy(settings.scopes.clone(), settings.file_policy.filename);
                 Ok(false)
             }
             IndexResetTarget::Content => {

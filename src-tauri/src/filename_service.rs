@@ -39,9 +39,30 @@ impl FileIndex {
         {
             return false;
         }
-        match self.collect_service_snapshot(generation, root, sweep, |cancel, receive| {
-            client::snapshot(root, cancel, receive)
-        }) {
+        let Some((policy, _)) = self.policy_for(generation) else {
+            return true;
+        };
+        let result = if policy.needs_path_attributes() {
+            self.collect_service_snapshot_mode(generation, root, sweep, true, |cancel, receive| {
+                client::snapshot_with_attributes(root, cancel, receive)
+            })
+            .or_else(|error| {
+                if error.kind() == io::ErrorKind::Unsupported {
+                    // Explicit old-service compatibility. Missing attributes
+                    // use fresh facts; they never become confirmed zero flags.
+                    self.collect_service_snapshot(generation, root, sweep, |cancel, receive| {
+                        client::snapshot(root, cancel, receive)
+                    })
+                } else {
+                    Err(error)
+                }
+            })
+        } else {
+            self.collect_service_snapshot(generation, root, sweep, |cancel, receive| {
+                client::snapshot(root, cancel, receive)
+            })
+        };
+        match result {
             Ok(()) => true,
             Err(_) if !self.current(generation) => true,
             Err(_) => {
@@ -68,6 +89,22 @@ impl FileIndex {
         sweep: u64,
         fetch: impl FnOnce(Arc<AtomicBool>, &mut dyn FnMut(Event) -> io::Result<()>) -> io::Result<u64>,
     ) -> io::Result<()> {
+        self.collect_service_snapshot_mode(generation, root, sweep, false, fetch)
+    }
+    #[cfg(any(windows, test))]
+    fn collect_service_snapshot_mode(
+        &self,
+        generation: u64,
+        root: &Path,
+        sweep: u64,
+        attributed: bool,
+        fetch: impl FnOnce(Arc<AtomicBool>, &mut dyn FnMut(Event) -> io::Result<()>) -> io::Result<u64>,
+    ) -> io::Result<()> {
+        let (file_policy, roots) = self.policy_for(generation).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::ConnectionAborted, "Collection cancelled.")
+        })?;
+        let mut policy = inclusion::Pass::new(file_policy, &roots);
+        let mut policy_skipped = 0usize;
         let started = Instant::now();
         let mut first_batch = None;
         let mut received_records = 0usize;
@@ -108,59 +145,83 @@ impl FileIndex {
                         "Collection cancelled.",
                     ));
                 }
-                match event {
-                    Event::Records(records) => {
-                        if !records.is_empty() {
-                            first_batch.get_or_insert_with(|| started.elapsed());
-                        }
-                        let callback_started = Instant::now();
-                        received_records = received_records.saturating_add(records.len());
-                        for record in &records {
-                            // Whole-drive validation needs no allocated path
-                            // key. Only validated records may reach private
-                            // workers; during transfer they are at most a
-                            // provisional search view, never the real catalog.
-                            let inside = drive.map_or_else(
-                                || under(&path_key(Path::new(&record.path)), &root_key),
-                                |drive| drive.contains(&record.path),
-                            );
-                            if !inside {
-                                return Err(io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    "Out-of-scope filename response.",
-                                ));
-                            }
-                        }
-                        if let Some(preparation) = &preparation {
-                            preparation.send(records)?;
-                            self.refresh_provisional(generation, preparation.shared(), &mut shown);
-                        } else {
-                            row_count = row_count.saturating_add(records.len());
-                            rows.push(records);
-                            // A single-core host also needs bounded raw rows;
-                            // its one preparation worker drains a one-slot queue.
-                            if initial && row_count >= 4096 {
-                                preparation = Some(pipeline::Preparation::start(
-                                    scope, self, generation, sweep, threads,
-                                )?);
-                                let preparation = preparation.as_ref().unwrap();
-                                for batch in std::mem::take(&mut rows) {
-                                    preparation.send(batch)?;
-                                }
-                                self.show_provisional(generation, preparation.shared());
-                                shown = Instant::now();
-                            }
-                        }
-                        receive_callback += callback_started.elapsed();
+                let (mut records, attributes) = match event {
+                    Event::Records(records) if !attributed => (records, None),
+                    Event::AttributedRecords(rows) if attributed => {
+                        let (records, attributes): (Vec<_>, Vec<_>) = rows
+                            .into_iter()
+                            .map(|row| (row.record, row.attributes))
+                            .unzip();
+                        (records, Some(attributes))
                     }
-                    Event::Progress { .. } => {}
-                    Event::AttributedRecords(_) | Event::Finished { .. } | Event::Removed(_) => {
+                    Event::Progress { .. } => return Ok(()),
+                    _ => {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             "Unexpected snapshot event.",
+                        ))
+                    }
+                };
+                if !records.is_empty() {
+                    first_batch.get_or_insert_with(|| started.elapsed());
+                }
+                let callback_started = Instant::now();
+                received_records = received_records.saturating_add(records.len());
+                for record in &records {
+                    // Whole-drive validation needs no allocated path
+                    // key. Only validated records may reach private
+                    // workers; during transfer they are at most a
+                    // provisional search view, never the real catalog.
+                    let inside = drive.map_or_else(
+                        || under(&path_key(Path::new(&record.path)), &root_key),
+                        |drive| drive.contains(&record.path),
+                    );
+                    if !inside {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Out-of-scope filename response.",
                         ));
                     }
                 }
+                if !file_policy.unrestricted() {
+                    let mut position = 0usize;
+                    records.retain(|record| {
+                        let flags = attributes.as_ref().and_then(|values| values[position]);
+                        position += 1;
+                        match policy.snapshot(Path::new(&record.path), record.is_dir, flags) {
+                            Ok(include) => include,
+                            Err(_) => {
+                                policy_skipped = policy_skipped.saturating_add(1);
+                                false
+                            }
+                        }
+                    });
+                }
+                if records.is_empty() {
+                    receive_callback += callback_started.elapsed();
+                    return Ok(());
+                }
+                if let Some(preparation) = &preparation {
+                    preparation.send(records)?;
+                    self.refresh_provisional(generation, preparation.shared(), &mut shown);
+                } else {
+                    row_count = row_count.saturating_add(records.len());
+                    rows.push(records);
+                    // A single-core host also needs bounded raw rows;
+                    // its one preparation worker drains a one-slot queue.
+                    if initial && row_count >= 4096 {
+                        preparation = Some(pipeline::Preparation::start(
+                            scope, self, generation, sweep, threads,
+                        )?);
+                        let preparation = preparation.as_ref().unwrap();
+                        for batch in std::mem::take(&mut rows) {
+                            preparation.send(batch)?;
+                        }
+                        self.show_provisional(generation, preparation.shared());
+                        shown = Instant::now();
+                    }
+                }
+                receive_callback += callback_started.elapsed();
                 Ok(())
             });
             validated_fetch = started.elapsed();
@@ -199,6 +260,7 @@ impl FileIndex {
             // Only the current, fully authenticated/root-validated collection
             // may replace the last successful diagnostic. No paths are kept.
             if self.current(generation) {
+                catalog.status.skipped = catalog.status.skipped.saturating_add(policy_skipped);
                 catalog.status.service_snapshots += 1;
                 catalog.status.last_service_snapshot = Some(ServiceSnapshotTiming {
                     received_records,
@@ -414,6 +476,10 @@ impl FileIndex {
 #[cfg(test)]
 #[path = "filename_service_bench.rs"]
 mod benchmark;
+
+#[cfg(test)]
+#[path = "filename_policy_tests.rs"]
+mod inclusion_tests;
 
 #[cfg(test)]
 mod tests {

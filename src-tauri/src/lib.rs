@@ -410,6 +410,7 @@ pub fn run() {
                             })?;
                             Ok(rag_service::RagPolicy {
                                 revision: settings.revision,
+                                file_policy: settings.file_policy.content,
                                 prefs: settings.generation.clone(),
                                 scopes: settings
                                     .scopes

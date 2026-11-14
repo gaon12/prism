@@ -91,8 +91,11 @@ fn scope_for(path: &Path, policy: &RagPolicy, selected: &[(String, String)]) -> 
             }
             let canonical = fs::canonicalize(root).ok()?;
             let root = key(&canonical);
-            (canonical.is_dir() && within(&path_key, &root))
-                .then_some((scope.id.clone(), root.len()))
+            (canonical.is_dir() && within(&path_key, &root)).then_some((
+                scope.id.clone(),
+                root.len(),
+                canonical,
+            ))
         })
         .collect();
     scopes.sort_by(|left, right| right.1.cmp(&left.1));
@@ -100,11 +103,21 @@ fn scope_for(path: &Path, policy: &RagPolicy, selected: &[(String, String)]) -> 
     if scopes.get(1).is_some_and(|other| other.1 == first.1) {
         return None;
     }
+    if !policy.file_policy.unrestricted()
+        && crate::file_policy_fs::Reader::new(policy.file_policy, &first.2)
+            .check(&canonical, false)
+            .ok()
+            != Some(crate::file_policy::Decision::Include)
+    {
+        return None;
+    }
     Some(first.0.clone())
 }
 // Hash the current authorized file once per preparation pass, even if size and
 // modification time were preserved by the editor. No source text is logged.
 fn current_sha(path: &Path, cancel: &AtomicBool) -> RagResult<Option<String>> {
+    #[cfg(test)]
+    SOURCE_HASH_REQUESTS.with(|calls| calls.set(calls.get() + 1));
     cancel_check(cancel)?;
     if !no_links(path) {
         return Ok(None);
@@ -152,9 +165,156 @@ fn current_sha(path: &Path, cancel: &AtomicBool) -> RagResult<Option<String>> {
 }
 
 #[cfg(test)]
+thread_local! {
+    // Thread-local so parallel fixtures cannot affect the read-gate assertion.
+    static SOURCE_HASH_REQUESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::rag_service::{GenerationPreferences, RagScope};
+
+    fn policy_fixture(files: &[&str]) -> (tempfile::TempDir, ContentSources, RagPolicy) {
+        use crate::{rag_service::RetrievalMode, settings::SearchScope};
+        let directory = tempfile::tempdir().unwrap();
+        let folder = directory.path().join("sources");
+        fs::create_dir_all(folder.join(".git")).unwrap();
+        for name in files {
+            let path = folder.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "guardedpolicycanary shared evidence").unwrap();
+        }
+        let service = ContentService::open(
+            &directory.path().join("index"),
+            Err("not installed".into()),
+            |_| {},
+        )
+        .unwrap();
+        service
+            .configure(vec![SearchScope {
+                id: "docs".into(),
+                name: "docs".into(),
+                path: folder.to_string_lossy().into(),
+                filename_enabled: true,
+                content_enabled: true,
+                external_allowed: false,
+            }])
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while service.status().unwrap().phase != "ready" {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // This fixture tests RAG authority against already-indexed cache data,
+        // not a background extraction-policy implementation.
+        service.cancel_index();
+        let mut prefs = GenerationPreferences::default();
+        prefs.retrieval = RetrievalMode::Keyword;
+        let policy = RagPolicy {
+            revision: 1,
+            prefs,
+            scopes: vec![RagScope {
+                id: "docs".into(),
+                name: "docs".into(),
+                path: folder.to_string_lossy().into(),
+                content_enabled: true,
+                external_allowed: false,
+            }],
+            file_policy: crate::file_policy::Categories::default(),
+            mcp: vec![],
+        };
+        (directory, ContentSources(service), policy)
+    }
+
+    #[test]
+    fn content_policy_blocks_sha_reads_and_backfills_allowed_lower_ranked_evidence() {
+        let (_directory, resolver, mut policy) = policy_fixture(&[
+            "a0.rs",
+            "a1.rs",
+            "a2.rs",
+            "a3.rs",
+            "a4.rs",
+            "a5.rs",
+            "a6.rs",
+            "a7.rs",
+            "z-allowed.txt",
+        ]);
+        let cancel = AtomicBool::new(false);
+        let before = resolver
+            .retrieve("guardedpolicycanary", &[], &policy, 1, &cancel)
+            .unwrap();
+        assert_eq!(before.len(), 1);
+        assert!(before[0].source.file_path.ends_with("a0.rs"));
+        policy.file_policy.source_code = false;
+        SOURCE_HASH_REQUESTS.with(|calls| calls.set(0));
+        let after = resolver
+            .retrieve("guardedpolicycanary", &[], &policy, 1, &cancel)
+            .unwrap();
+        assert_eq!(after.len(), 1);
+        assert!(after[0].source.file_path.ends_with("z-allowed.txt"));
+        assert_eq!(
+            SOURCE_HASH_REQUESTS.with(|calls| calls.get()),
+            1,
+            "Only admitted evidence may reach the hasher"
+        );
+        SOURCE_HASH_REQUESTS.with(|calls| calls.set(0));
+        let checked = resolver
+            .revalidate(&[before[0].source.clone()], &[], &policy, &cancel)
+            .unwrap();
+        assert_eq!(checked[0].state, SourceState::OutOfScope);
+        assert!(checked[0].text.is_none());
+        assert_eq!(SOURCE_HASH_REQUESTS.with(|calls| calls.get()), 0);
+        assert!(policy.scopes[0].content_enabled && !policy.scopes[0].external_allowed);
+        resolver.0.shutdown();
+    }
+
+    #[test]
+    fn hidden_ignored_and_unverifiable_rules_block_persisted_source_hash_reads() {
+        let (directory, resolver, mut policy) =
+            policy_fixture(&[".private/secret.md", "ignored.md", "allowed.md"]);
+        let cancel = AtomicBool::new(false);
+        let originals = resolver
+            .retrieve("guardedpolicycanary", &[], &policy, 8, &cancel)
+            .unwrap();
+        assert_eq!(originals.len(), 3);
+        let hidden = originals
+            .iter()
+            .find(|item| item.source.file_path.contains("secret.md"))
+            .unwrap()
+            .source
+            .clone();
+        let ignored = originals
+            .iter()
+            .find(|item| item.source.file_path.ends_with("ignored.md"))
+            .unwrap()
+            .source
+            .clone();
+        policy.file_policy.hidden = false;
+        SOURCE_HASH_REQUESTS.with(|calls| calls.set(0));
+        assert_eq!(
+            resolver
+                .revalidate(&[hidden], &[], &policy, &cancel)
+                .unwrap()[0]
+                .state,
+            SourceState::OutOfScope
+        );
+        assert_eq!(SOURCE_HASH_REQUESTS.with(|calls| calls.get()), 0);
+        policy.file_policy.hidden = true;
+        policy.file_policy.repository_ignored = false;
+        let rules = directory.path().join("sources/.gitignore");
+        for bytes in [b"/ignored.md\n".as_slice(), &[0xff, 0xfe]] {
+            fs::write(&rules, bytes).unwrap();
+            SOURCE_HASH_REQUESTS.with(|calls| calls.set(0));
+            let checked = resolver
+                .revalidate(&[ignored.clone()], &[], &policy, &cancel)
+                .unwrap();
+            assert_eq!(checked[0].state, SourceState::OutOfScope);
+            assert!(checked[0].text.is_none());
+            assert_eq!(SOURCE_HASH_REQUESTS.with(|calls| calls.get()), 0);
+        }
+        resolver.0.shutdown();
+    }
     #[test]
     fn document_requirements_do_not_break_keyword_or_unavailable_embedding_fallback() {
         use crate::{rag_service::RetrievalMode, settings::SearchScope};
@@ -185,6 +345,7 @@ mod tests {
         }
         let resolver = ContentSources(service);
         let mut policy = RagPolicy {
+            file_policy: crate::file_policy::Categories::default(),
             mcp: vec![],
             revision: 1,
             prefs: GenerationPreferences::default(),
@@ -268,6 +429,7 @@ mod tests {
         }
         let resolver = ContentSources(service);
         let policy = RagPolicy {
+            file_policy: crate::file_policy::Categories::default(),
             mcp: vec![],
             revision: 1,
             prefs: GenerationPreferences::default(),
@@ -387,6 +549,7 @@ mod tests {
         let source = child.join("source.md");
         fs::write(&source, "fixture").unwrap();
         let policy = RagPolicy {
+            file_policy: crate::file_policy::Categories::default(),
             mcp: vec![],
             revision: 1,
             prefs: GenerationPreferences::default(),
@@ -514,6 +677,8 @@ struct RetrievalPlan<'a> {
     prepared: Option<&'a crate::content_service::SemanticQuery>,
     hybrid: bool,
     limit: usize,
+    policy: &'a RagPolicy,
+    folders: &'a [(String, String)],
 }
 impl ContentSources {
     fn prepare_retrieval(
@@ -544,6 +709,8 @@ impl ContentSources {
             prepared,
             hybrid,
             limit,
+            policy,
+            folders,
         } = *plan;
         if let Some(query) = prepared {
             let filter = crate::content_store::ContentSearchFilter {
@@ -565,6 +732,16 @@ impl ContentSources {
                 Err(error) if hybrid && error.code.eq_ignore_ascii_case("invalidInput") => {}
                 Err(error) => return Err(source_error(&error.code)),
             }
+        }
+        if !policy.file_policy.unrestricted() {
+            // Filter before branch truncation/fusion so denied high-ranked
+            // matches do not consume every requested source position.
+            candidates.keyword.retain(|hit| {
+                scope_for(Path::new(&hit.chunk.file_path), policy, folders).is_some()
+            });
+            candidates.semantic.retain(|hit| {
+                scope_for(Path::new(&hit.chunk.file_path), policy, folders).is_some()
+            });
         }
         candidates.trim(limit);
         Ok(())
@@ -594,7 +771,13 @@ impl SourceResolver for ContentSources {
         let hybrid = policy.prefs.retrieval == crate::rag_service::RetrievalMode::Hybrid
             && prepared.is_some();
         let limit = top_k.clamp(1, 128);
-        let branch_limit = if hybrid { HYBRID_BRANCH_LIMIT } else { limit };
+        let branch_limit = if hybrid {
+            HYBRID_BRANCH_LIMIT
+        } else if !policy.file_policy.unrestricted() {
+            HYBRID_BRANCH_LIMIT.max(limit)
+        } else {
+            limit
+        };
         let mut after = String::new();
         let plan = RetrievalPlan {
             question,
@@ -602,6 +785,8 @@ impl SourceResolver for ContentSources {
             prepared: prepared.as_ref(),
             hybrid,
             limit: branch_limit,
+            policy,
+            folders: &folders,
         };
         let mut candidates = RetrievalCandidates::default();
         loop {
@@ -612,7 +797,12 @@ impl SourceResolver for ContentSources {
             let paths: Vec<_> = batch.into_iter().map(|file| file.path).collect();
             self.collect_retrieval(&plan, Some(&paths), &mut candidates, cancel)?;
         }
-        let best = candidates.finish(hybrid, prepared.is_some(), limit);
+        let finish_limit = if policy.file_policy.unrestricted() {
+            limit
+        } else {
+            branch_limit.max(limit)
+        };
+        let best = candidates.finish(hybrid, prepared.is_some(), finish_limit);
         authorize(best, &folders, policy, limit, cancel)
     }
     fn retrieve(
@@ -668,17 +858,30 @@ impl SourceResolver for ContentSources {
         let hybrid = policy.prefs.retrieval == crate::rag_service::RetrievalMode::Hybrid
             && prepared.is_some();
         let limit = top_k.clamp(1, 128);
-        let branch_limit = if hybrid { HYBRID_BRANCH_LIMIT } else { limit };
+        let branch_limit = if hybrid {
+            HYBRID_BRANCH_LIMIT
+        } else if !policy.file_policy.unrestricted() {
+            HYBRID_BRANCH_LIMIT.max(limit)
+        } else {
+            limit
+        };
         let plan = RetrievalPlan {
             question: query.keyword,
             ids: &ids,
             prepared: prepared.as_ref(),
             hybrid,
             limit: branch_limit,
+            policy,
+            folders: &folders,
         };
         let mut candidates = RetrievalCandidates::default();
         self.collect_retrieval(&plan, documents, &mut candidates, cancel)?;
-        let candidates = candidates.finish(hybrid, prepared.is_some(), limit);
+        let finish_limit = if policy.file_policy.unrestricted() {
+            limit
+        } else {
+            branch_limit.max(limit)
+        };
+        let candidates = candidates.finish(hybrid, prepared.is_some(), finish_limit);
         authorize(candidates, &folders, policy, top_k, cancel)
     }
     fn revalidate(

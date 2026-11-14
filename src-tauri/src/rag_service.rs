@@ -268,6 +268,10 @@ pub struct RagPolicy {
     pub revision: u64,
     pub prefs: GenerationPreferences,
     pub scopes: Vec<RagScope>,
+    /// Current content-inclusion rules, independent of filename visibility.
+    /// Included in the serialized policy stamp before every provider call.
+    #[serde(default)]
+    pub file_policy: crate::file_policy::Categories,
     /// MCP servers usable for external evidence; empty when external sources are switched
     /// off. Part of the policy stamp, so any change during a question is noticed.
     #[serde(default)]
@@ -1477,15 +1481,10 @@ impl RagService {
                     self.refresh_citations(std::slice::from_mut(&mut pair.assistant), Some(cancel))
                         .await?;
                     cancel.check()?;
-                    // An answer built on external evidence is published only if nothing
-                    // changed while it was generated (a server revoked mid-answer, etc.).
-                    if pair
-                        .assistant
-                        .provenance
-                        .iter()
-                        .any(crate::rag_external::is_external)
-                        && policy_stamp(&self.policy()?)? != prepared.stamp
-                    {
+                    // Every answer must still use the policy under which its context
+                    // was prepared. Local inclusion rules can be revoked mid-answer
+                    // just like an external evidence server, even without a revision bump.
+                    if policy_stamp(&self.policy()?)? != prepared.stamp {
                         return Err(RagError::new(RagErrorCode::PolicyChanged));
                     }
                     pair.user.status = TurnStatus::Complete;
@@ -2839,6 +2838,7 @@ mod tests {
     }
     fn policy() -> RagPolicy {
         RagPolicy {
+            file_policy: crate::file_policy::Categories::default(),
             mcp: vec![],
             revision: 1,
             prefs: GenerationPreferences {
@@ -3046,6 +3046,79 @@ mod tests {
             preferences.validate().unwrap_err().code,
             RagErrorCode::Endpoint
         );
+    }
+    #[test]
+    fn content_file_policy_defaults_and_changes_are_part_of_the_authoritative_stamp() {
+        let before = policy();
+        let mut legacy = serde_json::to_value(&before).unwrap();
+        legacy.as_object_mut().unwrap().remove("filePolicy");
+        let restored: RagPolicy = serde_json::from_value(legacy).unwrap();
+        assert!(restored.file_policy.unrestricted());
+        let mut after = before.clone();
+        after.file_policy.repository_ignored = false;
+        assert_eq!(after.revision, before.revision);
+        assert_ne!(
+            policy_stamp(&before).unwrap(),
+            policy_stamp(&after).unwrap()
+        );
+        assert_eq!(
+            after.prefs.local.as_ref().unwrap().model,
+            before.prefs.local.as_ref().unwrap().model
+        );
+    }
+
+    #[test]
+    fn content_policy_changing_during_source_checks_never_reaches_a_provider() {
+        let f = fixture();
+        let owned = f.policy.clone();
+        *f.sources.on_check.lock().unwrap() = Some(Arc::new(move |_| {
+            let mut policy = owned.write().unwrap();
+            policy.file_policy.hidden = !policy.file_policy.hidden;
+        }));
+        let conversation = f.service.create_conversation(None, None).unwrap();
+        let failure = runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &conversation.id,
+                "file_policy_unstable",
+                "Question",
+            )))
+            .unwrap_err();
+        assert_eq!(failure.code, RagErrorCode::PolicyChanged);
+        assert!(f.transport.calls.lock().unwrap().is_empty());
+        assert_eq!(f.policy.read().unwrap().revision, 1);
+    }
+
+    #[test]
+    fn content_policy_revoked_during_generation_is_not_published() {
+        let f = fixture();
+        let owned = f.policy.clone();
+        *f.transport.hook.lock().unwrap() = Some(Arc::new(move |_| {
+            owned.write().unwrap().file_policy.source_code = false;
+        }));
+        let conversation = f.service.create_conversation(None, None).unwrap();
+        let failure = runtime()
+            .block_on(f.service.ask(request(
+                &f.service,
+                &conversation.id,
+                "file_policy_during_generation",
+                "Question",
+            )))
+            .unwrap_err();
+        assert!(matches!(
+            failure.code,
+            RagErrorCode::PolicyChanged | RagErrorCode::SourceChanged
+        ));
+        let page = runtime()
+            .block_on(f.service.conversation(&conversation.id, None, 100))
+            .unwrap();
+        let answer = page
+            .turns
+            .iter()
+            .find(|turn| turn.role == TurnRole::Assistant)
+            .unwrap();
+        assert_ne!(answer.status, TurnStatus::Complete);
+        assert!(answer.text.is_empty());
     }
     #[test]
     fn local_document_grammar_is_off_for_legacy_and_ordinary_chat() {

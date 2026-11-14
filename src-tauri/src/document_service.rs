@@ -1723,6 +1723,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let prefs:GenerationPreferences=serde_json::from_value(serde_json::json!({"allowExternalQuestions":true,"maxContextChars":30000,"local":{"endpoint":"http://127.0.0.1:11434/v1","model":"fixture","maxTokens":1024,"temperature":null},"external":{"endpoint":"https://approved.example/v1","model":"fixture","maxTokens":1024,"temperature":null}})).unwrap();
         let policy = Arc::new(RwLock::new(RagPolicy {
+            file_policy: crate::file_policy::Categories::default(),
             mcp: vec![],
             revision: 1,
             prefs,

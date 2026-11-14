@@ -7,6 +7,8 @@
 
 #[path = "../../../src-tauri/src/atomic_file.rs"]
 mod atomic_file;
+#[path = "../../../src-tauri/src/file_policy.rs"]
+mod file_policy;
 #[path = "../../../src-tauri/src/settings_file.rs"]
 mod settings_file;
 

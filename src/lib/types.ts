@@ -42,6 +42,8 @@ function normalizeMcp(input: unknown): { enabled: boolean; servers: McpServer[] 
 }
 import { defaultGeneration, normalizeGeneration } from './generation';
 import type { GenerationPreferences } from './generation';
+import { normalizeFilePolicy } from './file-policy';
+import type { FilePolicy } from './file-policy';
 export type Language = 'ko' | 'en' | 'zh-CN' | 'zh-TW' | 'ja';
 export type Theme = 'system' | 'light' | 'dark';
 export type Tab = 'search' | 'chat' | 'documents' | 'collections';
@@ -69,6 +71,7 @@ export interface ClientSettings {
   closeToTray: boolean;
   startOnLogin: boolean;
   scopes: SearchScope[];
+  filePolicy: FilePolicy;
   generation: GenerationPreferences;
   updates: { autoCheck: boolean };
   ocr: { enabled: boolean; language: string; engine: 'auto' | 'system' | 'paddleVl16' };
@@ -148,6 +151,7 @@ export const defaultSettings: ClientSettings = {
   closeToTray: true,
   startOnLogin: true,
   scopes: [],
+  filePolicy: normalizeFilePolicy(undefined),
   generation: structuredClone(defaultGeneration),
   updates: { autoCheck: true },
   ocr: { enabled: false, language: 'auto', engine: 'auto' },
@@ -209,6 +213,7 @@ export function normalizeSettings(input: unknown): ClientSettings {
       angle: value.calculator?.angle === 'deg' ? 'deg' : 'rad',
     },
     generation: normalizeGeneration(value.generation),
+    filePolicy: normalizeFilePolicy(value.filePolicy),
     updates: { autoCheck: value.updates?.autoCheck !== false },
     power: { pauseOnBattery: value.power?.pauseOnBattery === true },
     documents: { defaultMode: value.documents?.defaultMode === 'fill' ? 'fill' : 'new' },

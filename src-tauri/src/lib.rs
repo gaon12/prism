@@ -34,6 +34,7 @@ mod document_store;
 mod embedding_assets;
 mod embedding_package;
 mod embedding_runtime;
+mod file_policy;
 mod filename_pattern;
 mod flatpak_startup;
 mod foreground_tracker;

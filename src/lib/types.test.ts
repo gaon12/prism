@@ -11,6 +11,67 @@ import {
 } from './types';
 
 describe('persisted client data', () => {
+  it('defaults all file categories to included and preserves independent explicit exclusions', () => {
+    const legacy = normalizeSettings({
+      scopes: [
+        {
+          id: 'names',
+          name: 'Names',
+          path: 'C:\\data',
+          filenameEnabled: true,
+          contentEnabled: false,
+          externalAllowed: false,
+        },
+      ],
+    });
+    expect(Object.values(legacy.filePolicy.filename)).toEqual([true, true, true, true, true]);
+    expect(legacy.filePolicy.content).toEqual(legacy.filePolicy.filename);
+    const saved = normalizeSettings({
+      ...legacy,
+      filePolicy: {
+        filename: { hidden: false, archives: false },
+        content: { sourceCode: false, repositoryIgnored: false },
+      },
+    });
+    const reopened = normalizeSettings(JSON.parse(JSON.stringify(saved)));
+    expect(reopened.filePolicy.filename).toEqual({
+      hidden: false,
+      system: true,
+      sourceCode: true,
+      repositoryIgnored: true,
+      archives: false,
+    });
+    expect(reopened.filePolicy.content).toEqual({
+      hidden: true,
+      system: true,
+      sourceCode: false,
+      repositoryIgnored: false,
+      archives: true,
+    });
+    expect(reopened.scopes[0]).toEqual(legacy.scopes[0]);
+    expect(reopened.generation.local).toBeNull();
+    expect(reopened.generation.external).toBeNull();
+    reopened.filePolicy.filename.system = false;
+    expect(reopened.filePolicy.content.system).toBe(true);
+    expect(normalizeSettings({}).filePolicy.filename.system).toBe(true);
+  });
+  it('normalizes malformed file policy values without sharing mutable defaults', () => {
+    for (const input of [
+      null,
+      false,
+      [],
+      'false',
+      { filename: null, content: false },
+      { filename: { hidden: 'false', system: 0 }, content: { archives: null } },
+    ]) {
+      const settings = normalizeSettings({ filePolicy: input });
+      expect(Object.values(settings.filePolicy.filename).every(Boolean)).toBe(true);
+      expect(Object.values(settings.filePolicy.content).every(Boolean)).toBe(true);
+    }
+    const fresh = normalizeSettings(undefined);
+    fresh.filePolicy.content.hidden = false;
+    expect(defaultSettings.filePolicy.content.hidden).toBe(true);
+  });
   it('keeps Enter for legacy profiles and persists an independent file opening key', () => {
     expect(normalizeSettings(undefined).fileOpenShortcut).toBe('Enter');
     expect(normalizeSettings({ shortcut: 'Ctrl+Space' }).fileOpenShortcut).toBe('Enter');

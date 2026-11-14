@@ -36,6 +36,7 @@ pub struct ClientSettings {
     pub close_to_tray: bool,
     pub start_on_login: bool,
     pub scopes: Vec<SearchScope>,
+    pub file_policy: crate::file_policy::Preferences,
     pub calculator: CalculatorSettings,
     pub clipboard: crate::clipboard_history::ClipboardSettings,
     pub generation: crate::rag_service::GenerationPreferences,
@@ -189,6 +190,7 @@ impl Default for ClientSettings {
             close_to_tray: true,
             start_on_login: true,
             scopes: vec![],
+            file_policy: crate::file_policy::Preferences::default(),
             calculator: CalculatorSettings::default(),
             clipboard: crate::clipboard_history::ClipboardSettings::default(),
             generation: crate::rag_service::GenerationPreferences::default(),
@@ -326,6 +328,31 @@ pub use crate::settings_file::write_json;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn file_policy_migrates_legacy_settings_and_round_trips_without_granting_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("settings.json");
+        fs::write(&file, r#"{"scopes":[],"filePolicy":{"filename":{"hidden":false,"archives":false},"content":{"sourceCode":false,"repositoryIgnored":false}}}"#).unwrap();
+        let settings = read_settings(&file).unwrap();
+        assert!(!settings.file_policy.filename.hidden);
+        assert!(!settings.file_policy.filename.archives);
+        assert!(settings.file_policy.filename.source_code);
+        assert!(settings.file_policy.content.hidden);
+        assert!(!settings.file_policy.content.source_code);
+        assert!(!settings.file_policy.content.repository_ignored);
+        assert!(settings.scopes.is_empty());
+        assert!(settings.generation.local.is_none() && settings.generation.external.is_none());
+        write_json(&file, &settings).unwrap();
+        assert_eq!(
+            read_settings(&file).unwrap().file_policy,
+            settings.file_policy
+        );
+        fs::write(&file, "{}").unwrap();
+        assert_eq!(
+            read_settings(&file).unwrap().file_policy,
+            crate::file_policy::Preferences::default()
+        );
+    }
     #[cfg(windows)]
     #[test]
     fn saved_scopes_keep_long_identity_and_permissions_after_an_alias_goes_offline() {

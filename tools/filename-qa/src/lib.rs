@@ -4,6 +4,8 @@
 #[path = "../../../indexer/core/examples/support/captured_rows.rs"]
 mod captured_rows;
 mod cpu_clock;
+#[path = "../../../src-tauri/src/file_policy.rs"]
+mod file_policy;
 #[path = "../../../src-tauri/src/filename_pattern.rs"]
 mod filename_pattern;
 #[path = "../../../src-tauri/src/keyboard_pattern.rs"]

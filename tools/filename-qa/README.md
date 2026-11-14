@@ -14,11 +14,12 @@ Language extensions and named build scripts identify code; archive extensions
 identify archives, while ZIP-based documents such as DOCX, HWPX and EPUB remain
 documents. This performs no content sniffing or archive extraction.
 
-The policy is a persisted model at this stage. Actual Windows app-library tests
-separately cover settings-file round trips; the fixture here cannot prove them.
-Walker/service admission, live queries/snapshots, content/vector/RAG checks and
-settings controls still need integration. Passing these tests does not establish
-an active user-facing inclusion filter or whole-application qualification.
+Actual Windows app-library tests separately cover settings-file round trips,
+content extraction/publication, keyword/vector admission, snapshots/chunks/open,
+password retry and RAG policy checks. This filename fixture cannot prove those
+app adapters. Filename walker/service admission, live filename queries/snapshots
+and settings controls still need integration. Passing these tests does not
+establish a complete user-facing inclusion filter or whole-app qualification.
 
 The shared filesystem fact reader now resolves restricted categories from
 native metadata and repository-local rules. Hidden/system attribute ancestry
@@ -42,12 +43,32 @@ bound. Directory and missing-rule caches each retain at most 4,096 keys/4 MiB;
 compiled rules retain at most 16 files. Errors remain unavailable evidence.
 Caches are not live permission state: recreate a reader for each validation pass.
 
-Windows checks passed 98 tests (seven ignored) and Linux 95 (four ignored),
-with strict all-target Clippy. The opt-in Git oracle passed separately on both.
-Actual Windows app-library normal tests passed 559 (19 ignored); two earlier
-900-second dependency-build stops are retained. Existing vendor warnings remain.
-Native macOS, GUI/restart, applied inclusion filters and a new app memory/performance
-qualification are still pending. The reader is not yet connected to runtime sinks.
+The Windows metadata-only `check_windows_snapshot` API accepts complete own
+attributes from a caller-validated snapshot. Known flags avoid a leaf stat;
+unknown attributes retain the fresh-stat fallback when facts are required.
+Negative own flags do not override hidden/system ancestors, repository rules or
+scope/link checks. Reparse entries are rejected. NTFS ARCHIVE/COMPRESSED flags
+do not identify archive filenames. Use fresh `check()` plus scope authorization
+for original-file reads/actions; snapshot facts are not access authority. The
+filename pipeline does not consume the new API yet.
+
+The selected volume entry itself is exempt from implementation hidden/system
+flags, just as ancestor roots already were. A real Windows root-metadata
+regression first failed with `Exclude(Hidden)` and now passes, including the
+actual content admission helper. These tests never enumerate a user's drive.
+An owned 4,098-directory fixture also verifies exclusions after the existing
+bounded directory/missing-rule caches reset; their implementation is unchanged.
+
+Current Windows checks passed 102 tests (seven ignored), Linux 97 (four ignored),
+with strict all-target Clippy on both. The opt-in Git oracle passed separately
+on both in the earlier fact-reader qualification. Actual Windows app-library
+tests passed 575 (19 opt-ins ignored), using command-local app codegen64 with
+opt1/assertions/overflow checks retained; no manifest/profile changes or timing
+claim. Existing vendor warnings remain. Evidence is
+`C:/Users/solso/AppData/Local/Temp/prism-q18-snapshot-facts-20261114-yyd976wh/qualification.json`,
+SHA-256 `378d43bd0fea2627f8754bed504098362ed162675bfe2c1eabe44fe6228e6871`.
+Native macOS, fresh GUI/restart, complete filename filtering and new app
+memory/performance qualification remain pending.
 
 ```sh
 cargo build --manifest-path tools/filename-qa/Cargo.toml --locked --release -j1

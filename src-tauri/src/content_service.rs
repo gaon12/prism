@@ -2065,6 +2065,22 @@ mod tests {
     }
 
     #[test]
+    fn volume_root_admission_does_not_prune_the_selected_content_drive() {
+        // Only probe root metadata. Never enumerate or extract a user's drive.
+        let temporary = tempfile::Builder::new()
+            .prefix("prism-content-root-")
+            .tempdir()
+            .unwrap();
+        let volume = temporary.path().ancestors().last().unwrap().to_path_buf();
+        let policy = crate::file_policy::Categories {
+            hidden: false,
+            system: false,
+            ..Default::default()
+        };
+        assert!(admits_content(policy, std::slice::from_ref(&volume), &volume, true).unwrap());
+    }
+
+    #[test]
     fn inclusion_policy_gates_extraction_and_cached_queries_and_survives_refresh() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("sources");

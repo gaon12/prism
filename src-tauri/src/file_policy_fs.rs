@@ -50,6 +50,38 @@ impl Reader {
     /// Resolve only facts required by exclusions. The unrestricted case does
     /// not inspect the filesystem, including for an unavailable path.
     pub fn check(&mut self, path: &Path, is_dir: bool) -> io::Result<Decision> {
+        self.check_inner(path, is_dir, None)
+    }
+
+    /// Filter a trusted Windows filename snapshot without statting each leaf.
+    /// The caller owns root/stream validation and supplies the kind and complete
+    /// own attributes from the same record. None retains the fresh-stat fallback.
+    /// Ancestors/rules are still checked. This is not an access/read authority:
+    /// original-file reads and actions must use check() and fresh authorization.
+    #[cfg(windows)]
+    pub fn check_windows_snapshot(
+        &mut self,
+        path: &Path,
+        is_dir: bool,
+        attributes: Option<u32>,
+    ) -> io::Result<Decision> {
+        if attributes.is_some_and(|flags| flags & 0x400 != 0) {
+            return Err(unsafe_path());
+        }
+        let known = if self.policy.needs_path_attributes() {
+            attributes.map(|flags| windows_attributes(path, flags))
+        } else {
+            None
+        };
+        self.check_inner(path, is_dir, known)
+    }
+
+    fn check_inner(
+        &mut self,
+        path: &Path,
+        is_dir: bool,
+        known_own_attributes: Option<(bool, bool)>,
+    ) -> io::Result<Decision> {
         if !path.is_absolute()
             || !self.root.is_absolute()
             || !within(path, &self.root)
@@ -67,6 +99,16 @@ impl Reader {
             return Ok(Decision::Include);
         }
         let mut facts = Facts::from_name(path, is_dir);
+        if let Some((hidden, system)) = known_own_attributes {
+            // Positive own flags can exclude immediately. Negative own flags
+            // say nothing about ancestors, which still need their normal checks.
+            if hidden {
+                facts.hidden = Some(true);
+            }
+            if system {
+                facts.system = Some(true);
+            }
+        }
         match self.policy.decide(&facts) {
             Decision::NeedsEvidence(_) => {}
             decision => return Ok(decision),
@@ -116,14 +158,18 @@ impl Reader {
             }
         }
         if self.policy.needs_path_attributes() {
-            let metadata = plain_metadata(path)?;
-            if metadata.is_dir() != is_dir {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "The policy path changed type.",
-                ));
-            }
-            let (hidden, system) = attributes(path, &metadata);
+            let (hidden, system) = if let Some(known) = known_own_attributes {
+                known
+            } else {
+                let metadata = plain_metadata(path)?;
+                if metadata.is_dir() != is_dir {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "The policy path changed type.",
+                    ));
+                }
+                attributes(path, &metadata)
+            };
             facts.hidden = Some(hidden);
             facts.system = Some(system || self.system_path(path)?);
         }
@@ -225,15 +271,31 @@ fn within(path: &Path, root: &Path) -> bool {
     }
 }
 
+fn dot_hidden(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.as_encoded_bytes().starts_with(b"."))
+}
+
+#[cfg(windows)]
+fn windows_attributes(path: &Path, flags: u32) -> (bool, bool) {
+    if path.file_name().is_none() {
+        return (false, false);
+    }
+    (dot_hidden(path) || flags & 2 != 0, flags & 4 != 0)
+}
+
 fn attributes(path: &Path, metadata: &fs::Metadata) -> (bool, bool) {
-    let dot = path
-        .file_name()
-        .is_some_and(|name| name.as_encoded_bytes().starts_with(b"."));
+    // The selected volume entry is also visited by filter_entry, not only as
+    // an ancestor. Its implementation flags must never prune the whole drive.
+    if path.file_name().is_none() {
+        return (false, false);
+    }
+    #[cfg(not(windows))]
+    let dot = dot_hidden(path);
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        let flags = metadata.file_attributes();
-        (dot || flags & 2 != 0, flags & 4 != 0)
+        windows_attributes(path, metadata.file_attributes())
     }
     #[cfg(target_os = "macos")]
     {
@@ -374,6 +436,196 @@ fn system_roots() -> io::Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn volume_root_entry_does_not_exclude_scope_enumeration() {
+        let temporary = tempfile::Builder::new()
+            .prefix("prism-policy-volume-")
+            .tempdir()
+            .unwrap();
+        let volume = temporary.path().ancestors().last().unwrap();
+        assert!(volume.file_name().is_none());
+        let policy = Categories {
+            hidden: false,
+            system: false,
+            ..Default::default()
+        };
+        let mut reader = Reader::new(policy, volume);
+        // Directory roots carry implementation flags on real NTFS volumes.
+        // A filter_entry(root) check must not prune the entire selected drive.
+        assert_eq!(reader.check(volume, true).unwrap(), Decision::Include);
+        #[cfg(windows)]
+        assert_eq!(
+            reader
+                .check_windows_snapshot(volume, true, Some(0x16))
+                .unwrap(),
+            Decision::Include
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_attributes_avoid_leaf_stats_but_unknown_attributes_do_not() {
+        let root = tempfile::Builder::new()
+            .prefix("prism-policy-snapshot-")
+            .tempdir()
+            .unwrap();
+        let missing = root.path().join("missing.docx");
+        let policy = Categories {
+            hidden: false,
+            system: false,
+            archives: false,
+            ..Default::default()
+        };
+        let mut reader = Reader::new(policy, root.path());
+        assert_eq!(
+            reader
+                .check_windows_snapshot(&missing, false, Some(0))
+                .unwrap(),
+            Decision::Include
+        );
+        assert_eq!(
+            reader
+                .check_windows_snapshot(&missing, false, Some(0x20 | 0x800 | 0x80000000))
+                .unwrap(),
+            Decision::Include
+        );
+        assert_eq!(
+            reader
+                .check_windows_snapshot(&missing, false, None)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            reader.check(&missing, false).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            reader
+                .check_windows_snapshot(&missing, false, Some(2))
+                .unwrap(),
+            Decision::Exclude(Category::Hidden)
+        );
+        assert_eq!(
+            reader
+                .check_windows_snapshot(&missing, false, Some(4))
+                .unwrap(),
+            Decision::Exclude(Category::System)
+        );
+        assert_eq!(
+            reader
+                .check_windows_snapshot(&root.path().join(".dot.txt"), false, Some(0))
+                .unwrap(),
+            Decision::Exclude(Category::Hidden)
+        );
+        assert_eq!(
+            reader
+                .check_windows_snapshot(&missing.with_extension("zip"), false, Some(0))
+                .unwrap(),
+            Decision::Exclude(Category::Archives)
+        );
+        assert!(!missing.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_attributes_do_not_bypass_scope_links_or_repository_rules() {
+        let root = tempfile::Builder::new()
+            .prefix("prism-policy-snapshot-")
+            .tempdir()
+            .unwrap();
+        fs::create_dir(root.path().join(".git")).unwrap();
+        fs::write(root.path().join(".gitignore"), "ignored.txt\n").unwrap();
+        let policy = Categories {
+            hidden: false,
+            repository_ignored: false,
+            ..Default::default()
+        };
+        let mut reader = Reader::new(policy, root.path());
+        assert_eq!(
+            reader
+                .check_windows_snapshot(&root.path().join("ignored.txt"), false, Some(0))
+                .unwrap(),
+            Decision::Exclude(Category::RepositoryIgnored)
+        );
+        assert!(reader
+            .check_windows_snapshot(&root.path().join("ordinary.txt"), false, Some(0x400))
+            .is_err());
+        assert!(reader
+            .check_windows_snapshot(&root.path().join("../escape.txt"), false, Some(0))
+            .is_err());
+        assert!(reader
+            .check_windows_snapshot(
+                &root.path().with_file_name("outside-snapshot.txt"),
+                false,
+                Some(0)
+            )
+            .is_err());
+        fs::create_dir(root.path().join(".private")).unwrap();
+        assert_eq!(
+            reader
+                .check_windows_snapshot(&root.path().join(".private/leaf.txt"), false, Some(0))
+                .unwrap(),
+            Decision::Exclude(Category::Hidden)
+        );
+        let target = root.path().join("actual");
+        let link = root.path().join("linked");
+        fs::create_dir(&target).unwrap();
+        crate::path_identity::junction(&link, &target);
+        assert!(reader
+            .check_windows_snapshot(&link.join("leaf.txt"), false, Some(0))
+            .is_err());
+        fs::remove_dir(&link).unwrap();
+        assert!(target.is_dir());
+    }
+
+    #[test]
+    fn directory_and_missing_rule_cache_eviction_preserves_exclusions() {
+        let root = tempfile::Builder::new()
+            .prefix("prism-policy-cache-")
+            .tempdir()
+            .unwrap();
+        fs::create_dir(root.path().join(".git")).unwrap();
+        fs::write(root.path().join(".gitignore"), "/denied/\n").unwrap();
+        for name in [".private", "denied"] {
+            fs::create_dir(root.path().join(name)).unwrap();
+            fs::write(root.path().join(name).join("leaf.txt"), "not read").unwrap();
+        }
+        let mut reader = Reader::new(
+            Categories {
+                hidden: false,
+                repository_ignored: false,
+                ..Default::default()
+            },
+            root.path(),
+        );
+        for pass in 0..2 {
+            assert_eq!(
+                reader
+                    .check(&root.path().join(".private/leaf.txt"), false)
+                    .unwrap(),
+                Decision::Exclude(Category::Hidden)
+            );
+            assert_eq!(
+                reader
+                    .check(&root.path().join("denied/leaf.txt"), false)
+                    .unwrap(),
+                Decision::Exclude(Category::RepositoryIgnored)
+            );
+            if pass == 0 {
+                for i in 0..MAX_DIRECTORIES + 2 {
+                    let directory = root.path().join(format!("ordinary-{i}"));
+                    fs::create_dir(&directory).unwrap();
+                    let path = directory.join("leaf.txt");
+                    fs::write(&path, "not read").unwrap();
+                    assert_eq!(reader.check(&path, false).unwrap(), Decision::Include);
+                    assert!(reader.directories.len() <= MAX_DIRECTORIES);
+                    assert!(reader.directory_key_bytes <= MAX_DIRECTORY_KEY_BYTES);
+                }
+            }
+        }
+    }
 
     #[test]
     fn unrestricted_and_name_only_policies_do_not_read_unavailable_files() {

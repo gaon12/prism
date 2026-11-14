@@ -20,6 +20,35 @@ Walker/service admission, live queries/snapshots, content/vector/RAG checks and
 settings controls still need integration. Passing these tests does not establish
 an active user-facing inclusion filter or whole-application qualification.
 
+The shared filesystem fact reader now resolves restricted categories from
+native metadata and repository-local rules. Hidden/system attribute ancestry
+starts at the selected root; known OS system locations are separate from user
+homes, document portals and temporary documents. Volume-root implementation
+flags do not hide an entire drive. Default inclusion skips name classification
+and filesystem queries. These predicates narrow existing scope authorization.
+
+Repository matching uses pinned `ignore` 0.4.33 with case-sensitive patterns
+from nested `.gitignore` files and common-dir `info/exclude`, including Git
+worktree pointers. Parent-directory exclusions cannot be reopened by a child
+rule. Global Git configuration and the tracking index are not consulted.
+Production checks do not execute Git. The opt-in oracle compares 16 paths with
+`git check-ignore --no-index -c core.ignorecase=false` in an owned repository,
+with system/global configuration and user templates disabled.
+
+Rule reads reject links/reparse points and multi-link files. Each file has a
+64-KiB/1,024-line worker budget; each path has at most 16 active nonempty rule
+files and 256 KiB of rule text. Gitdir/commondir pointers have a separate 4-KiB
+bound. Directory and missing-rule caches each retain at most 4,096 keys/4 MiB;
+compiled rules retain at most 16 files. Errors remain unavailable evidence.
+Caches are not live permission state: recreate a reader for each validation pass.
+
+Windows checks passed 98 tests (seven ignored) and Linux 95 (four ignored),
+with strict all-target Clippy. The opt-in Git oracle passed separately on both.
+Actual Windows app-library normal tests passed 559 (19 ignored); two earlier
+900-second dependency-build stops are retained. Existing vendor warnings remain.
+Native macOS, GUI/restart, applied inclusion filters and a new app memory/performance
+qualification are still pending. The reader is not yet connected to runtime sinks.
+
 ```sh
 cargo build --manifest-path tools/filename-qa/Cargo.toml --locked --release -j1
 cargo test --manifest-path tools/filename-qa/Cargo.toml --locked --release -j1 --lib -- --test-threads=1

@@ -90,7 +90,7 @@ The latter matches the configured minimum main-window dimensions; control bounds
 and Save/Cancel visibility passed and all ten switches appeared in the five
 760×540 screenshots. This is browser-viewport evidence, not an OS resize test.
 Both Windows Computer Use paths reported an unavailable native pipe, so actual
-minimum-window resizing remains unverified. No window manipulation occurred.
+minimum-window resizing remains unverified. Neither path sent resizing input.
 Some first headless Chromium captures omit switch paint despite passing
 interaction/layout checks; those captures remain an open visual limitation,
 not a CSS fix. A freshly built bundled Windows app separately passed
@@ -118,6 +118,8 @@ The content regression accepts the same executable/hash variables and runs
 with `node tests/native/content-policy.mjs`.
 Evidence is
 `C:/Users/solso/AppData/Local/Temp/prism-q18-filename-20261114-1c455odk/qualification.json`.
+The later SYSTEM-folder and minimum-viewport checks are recorded separately in
+`C:/Users/solso/AppData/Local/Temp/prism-q18-filename-20261114-1c455odk/system-and-layout-qualification.json`.
 Native macOS, the full Linux app, deployed NTFS transfer/fallback, narrow native
 rendering and new app memory/performance qualification remain pending.
 

@@ -75,7 +75,8 @@
     "package:msix": "node scripts/package-msix.mjs",
     "test:msix": "node --test tests/scripts/msix.test.mjs",
     "format:check": "prettier --check src tests scripts .github tools/update-verifier/README.md tools/platform-qa/README.md vite.config.ts playwright.config.ts package.json tsconfig*.json index.html .prettierrc.json README.md",
-    "test:rag-hybrid": "node tests/native/rag-hybrid.mjs"
+    "test:rag-hybrid": "node tests/native/rag-hybrid.mjs",
+    "test:providers": "node scripts/check-providers.mjs"
   },
   "dependencies": {
     "@cortex-js/compute-engine": "0.173.0",

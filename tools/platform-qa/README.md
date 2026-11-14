@@ -146,6 +146,27 @@ The same scope can wrap the Clippy command. The 13 ignored entries retain their
 original opt-in/helper contracts; this result does not newly qualify real models,
 hosted providers, OS credentials or native macOS behavior.
 
+## Hosted OpenAI-compatible providers
+
+`external_providers` (ignored by default) sends three synthetic requests to each
+provider in `tests/external-providers.json` through the production generation
+client: a plain reply, a made-up key that must be reported as an authentication
+error, and a three-field document extraction assembled by the app. Run it from
+the manual **Providers** workflow (repository secrets `GROQ_API_KEY`,
+`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) or locally:
+
+```powershell
+npm run test:providers                      # every provider with a key
+npm run test:providers -- groq-gpt-oss-20b  # only the named providers
+```
+
+The local runner reads `LLM_API_<NAME>=...` lines from the git-ignored
+`.env.txt` (or the file named by `PRISM_PROVIDER_ENV`) and passes them to cargo
+as `<NAME>_API_KEY`; values are never printed. Provider overload (5xx), rate
+limits and timeouts are listed as "unavailable" rather than failures, but the run
+fails unless at least one provider served all three requests. Model names change
+often: edit the JSON list, not the test.
+
 Ordinary tests use synthetic archives and temporary application directories. Windows
 tests additionally use DPAPI and privately owned child processes. Unix tests start
 inert localhost server fixtures through the production supervisor, exercise normal

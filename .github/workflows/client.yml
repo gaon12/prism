@@ -36,6 +36,25 @@ jobs:
       - name: Build the production client
         run: npm run build
       - name: Verify production UI interactions
+        env:
+          # Per-case results as JSON next to the readable line output.
+          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ runner.temp }}/playwright-results.json
+          # Screenshots that specs save on purpose (for example file-policy).
+          PRISM_UI_EVIDENCE: ${{ runner.temp }}/prism-ui-evidence
         run: |
           npx playwright install --with-deps chromium
-          npm run test:e2e:bundle
+          npm run test:e2e:bundle -- --reporter=line,json
+      - name: Keep the browser test evidence
+        # Also on failure: traces of failed cases are what explains them.
+        # playwright.config.ts writes them to <tmpdir>/prism-bundle-e2e-results
+        # (/tmp on this runner).
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: client-ui-evidence
+          path: |
+            ${{ runner.temp }}/playwright-results.json
+            ${{ runner.temp }}/prism-ui-evidence
+            /tmp/prism-bundle-e2e-results
+          if-no-files-found: warn
+          retention-days: 7

@@ -1,9 +1,10 @@
 # Filename status latency: source audit and proposal
 
-Baseline: `c6fffe4` (2026-11-16). This document contains the source audit and a
-separate controlled local lock experiment below. No product locking or status
-behavior has changed. The relevant index/command/pipeline/UI sources match
-those in the measured `5054b8c` CI app.
+Audit baseline: `c6fffe4` (2026-11-16). The source audit and controlled local
+experiment below describe that baseline, whose relevant index/command/pipeline/UI
+sources match the measured `5054b8c` CI app. The later developer-only timing
+hooks are described separately below. A lightweight status cache has not been
+implemented; status still reads the original catalog and prepared locks.
 
 `index_status` can wait for **two catalog locks**, despite already running off
 the Tauri main thread. Separating published status from entry storage is a
@@ -256,7 +257,66 @@ inputs remain in `status-lock-probe-controlled/`, `status-lock-probe-candidate/`
 and `status-lock-probe-v1-failed-inputs/`. Primary-source hashes and the compiler
 version are retained alongside the successful results.
 
-## Acceptance and regression plan
+## Developer-only timing hooks
+
+The follow-up adds `filenameIndex.filenameStatusProfile` to diagnostics only
+when both existing cached flags, `PRISM_DEV_FILENAME_CPU_PROFILE=1` and
+`PRISM_DEV_FILENAME_CPU_TEST_MODE=1`, enable the Windows collector. There is no
+new environment variable or normal status/search DTO field. The CPU profile's
+eight phases and schema version 2 remain unchanged; status wall windows have a
+separate schema version 1. With profiling disabled, the new hooks call no
+clocks and take no recorder mutex. This does not claim zero branch/plumbing cost.
+
+The eight read regions are `poolWait`, `catalogWait`, `catalogHold`,
+`preparedWait`, `preparedHold`, `dtoBuild`, `workerTotal` and `commandTotal`.
+`poolWait` begins immediately before `spawn_blocking` and ends at getter entry,
+so it includes dispatch/scheduling overhead. Direct Rust getter calls have no
+pool or command-total sample. DTO work covers status cloning and provisional
+count assignment, excluding serialization. Worker total ends after both data
+guards are released, before recorder acquisition; command total adds the pool
+window. Neither measures outbound Tauri/renderer work or recorder contention.
+
+Catalog writers are labeled refresh, metadata, scan start, reconcile, watch
+prune, walk publish, provisional show/refresh/swap/drop, initial publish and
+first batch. Prepared insertion has one timing span per existing batch, not
+per row. Writer summaries distinguish acquisition wait from hold, preserve
+poisoned recovery and report failed `try_write` attempts without hold samples.
+Hold endpoints are sampled immediately before unlocking, avoiding inflation
+if a woken reader preempts the background writer at unlock. Counters are
+recorded after the measured data guard is dropped. The snapshot copies fixed
+counters under its own mutex, then releases it before allocation/serialization.
+
+All acquisition/hold values are wall windows and include scheduling. Regions
+overlap: prepared waiting occurs inside catalog holding, and DTO count work
+occurs inside prepared holding. Totals and maxima must not be summed.
+`slowestWorker` and `slowestCommand` each retain one coherent completed getter
+record; maxima from separate summary rows may describe different calls.
+There are no paths, filenames, queries or row values in this profile.
+These summaries cannot identify an exact concurrent writer or attribute the
+older GUI's 1.5-2.4-second polls without new actual-app measurements.
+
+Local filename QA passed with profiling off and on: **125 tests passed and
+7 opt-in tests ignored in each process**; strict all-target Clippy passed.
+Eight new tests cover disabled clock calls, overlapping/coherent records,
+WouldBlock, poison recovery, unchanged normal DTO/privacy and data-lock release
+before recording. An actual getter regression deliberately holds the recorder
+and observes both catalog/prepared locks becoming available before the getter
+can finish recording. No background worker, GUI or service is needed for these
+synthetic checks. The off/on guarded runs took 33.375/27.828 seconds including
+Cargo overhead; these are verification durations, not performance comparisons.
+No resource stop fired and all owned processes exited after Job close/waits.
+
+The native harsh harness requires this status schema and queued calls only in
+its existing explicit profiling-on mode. The shared launch environment and
+profiling-off output are unchanged. **Full Tauri/diagnostics compilation,
+macOS/Linux CI and actual release-app on/off wiring remain pending.** Local
+lean QA does not validate those paths. Private logs and input hashes are in
+`C:/Users/solso/prism-agent-work-20261115/filename-status-timing-{off,on,clippy}-v4/`
+and `filename-status-timing-qualification.json` in the same parent. Earlier
+fixture borrow-check/lint failures are retained separately and are not counted
+as successful runs.
+
+## Status-cache acceptance and regression plan
 
 - In a synthetic controlled test, keep a catalog writer blocked on an owned
   release gate and confirm status returns before that writer is released.
@@ -278,5 +338,5 @@ Existing numeric evidence and source hashes are retained privately under
 `C:/Users/solso/prism-agent-work-20261115/status-lock-analysis.json`, referencing
 `native-hash-reuse-qualification.json` and the original four-case raw result.
 The original source audit ran no new GUI, Rust build or benchmark; the separate
-controlled experiment above adds local build/measurement evidence. No lock/cache
-implementation has been applied to the product.
+controlled experiment above adds local build/measurement evidence. The later
+timing hooks instrument the original locks; no status cache has been applied.

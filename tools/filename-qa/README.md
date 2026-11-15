@@ -1577,3 +1577,11 @@ mutex blocking with synthetic 200-ms gates (12 scenarios passed), while also
 showing that the waiting status reader preceded the writer's commit in those runs.
 The original GUI calls include CDP/IPC/worker scheduling; their backend wait
 attribution and any product status-cache implementation remain unmeasured/unapplied.
+
+The follow-up adds opt-in [status wait/hold diagnostics](status-lock-analysis.md#developer-only-timing-hooks)
+under the existing two DEV profiling flags. Separate schema-1 counters cover
+pool/catalog/prepared/DTO windows and batch writer holds; ordinary status DTOs
+and the CPU profile schema stay unchanged. Off/on filename QA each passed 125
+tests (7 opt-in tests ignored), plus strict Clippy. CI builds and actual-app
+timing/wiring are pending; this is instrumentation, not a status-cache fix or
+evidence that the 5-7 second target has been met.

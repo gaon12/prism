@@ -68,7 +68,7 @@ impl FileIndex {
             Err(_) => {
                 // Do not display service internals or paths from rejected
                 // responses. A normal walk starts immediately for this root.
-                if let Ok(mut catalog) = self.catalog.write() {
+                if let Ok(mut catalog) = self.write_catalog(status_profile::WriterKind::Metadata) {
                     if self.current(generation) && catalog.status.warnings.len() < 5 {
                         catalog
                             .status
@@ -262,7 +262,7 @@ impl FileIndex {
         }
         let total = started.elapsed();
         let millis = |duration: Duration| duration.as_millis().min(u64::MAX as u128) as u64;
-        if let Ok(mut catalog) = self.catalog.write() {
+        if let Ok(mut catalog) = self.write_catalog(status_profile::WriterKind::Metadata) {
             // Only the current, fully authenticated/root-validated collection
             // may replace the last successful diagnostic. No paths are kept.
             if self.current(generation) {
@@ -286,7 +286,8 @@ impl FileIndex {
     /// Only for a current generation whose real catalog is still empty.
     #[cfg(any(windows, test))]
     fn show_provisional(&self, generation: u64, shared: &Arc<Mutex<catalog::Prepared>>) {
-        let Ok(mut catalog) = self.catalog.write() else {
+        let Ok(mut catalog) = self.write_catalog(status_profile::WriterKind::ProvisionalShow)
+        else {
             return;
         };
         if !self.current(generation) || !catalog.entries.is_empty() || catalog.provisional.is_some()
@@ -314,7 +315,9 @@ impl FileIndex {
         if shown.elapsed() < PROVISIONAL_REFRESH {
             return;
         }
-        let Ok(mut catalog) = self.catalog.try_write() else {
+        let Ok(mut catalog) =
+            self.try_write_catalog(status_profile::WriterKind::ProvisionalRefresh)
+        else {
             return;
         };
         *shown = Instant::now();
@@ -336,8 +339,7 @@ impl FileIndex {
         shared: &Arc<Mutex<catalog::Prepared>>,
     ) -> io::Result<()> {
         let mut catalog = self
-            .catalog
-            .write()
+            .write_catalog(status_profile::WriterKind::ProvisionalSwap)
             .map_err(|_| io::Error::other("Filename catalog unavailable."))?;
         if !self.current(generation) {
             return Err(io::Error::new(
@@ -374,7 +376,8 @@ impl FileIndex {
     /// Detach this generation's provisional rows (if still shown).
     #[cfg(any(windows, test))]
     fn drop_provisional(&self, generation: u64) {
-        let Ok(mut catalog) = self.catalog.write() else {
+        let Ok(mut catalog) = self.write_catalog(status_profile::WriterKind::ProvisionalDrop)
+        else {
             return;
         };
         if catalog
@@ -440,8 +443,7 @@ impl FileIndex {
     #[cfg(any(windows, test))]
     fn publish_first_batch(&self, generation: u64, entries: Vec<Entry>) -> io::Result<()> {
         let mut catalog = self
-            .catalog
-            .write()
+            .write_catalog(status_profile::WriterKind::FirstBatch)
             .map_err(|_| io::Error::other("Filename catalog unavailable."))?;
         if !self.current(generation) {
             return Err(io::Error::new(

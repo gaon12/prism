@@ -322,7 +322,8 @@ pub fn resize_quick(app: AppHandle, expanded: bool) -> Result<(), String> {
 #[tauri::command]
 pub async fn index_status(state: State<'_, AppState>) -> Result<crate::index::IndexStatus, String> {
     let index = state.index.clone();
-    tauri::async_runtime::spawn_blocking(move || index.status())
+    let queue = crate::index::status_profile::queued();
+    tauri::async_runtime::spawn_blocking(move || index.status_queued(queue))
         .await
         .map_err(|error| error.to_string())?
 }

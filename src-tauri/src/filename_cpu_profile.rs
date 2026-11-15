@@ -157,6 +157,10 @@ fn collector() -> Option<&'static Collector> {
 pub(crate) fn snapshot() -> Option<Snapshot> {
     collector()?.snapshot()
 }
+/// Reuse the cached developer gate without sampling a clock or taking a recorder lock.
+pub(crate) fn enabled() -> bool {
+    collector().is_some()
+}
 
 struct Reading {
     wall: Instant,

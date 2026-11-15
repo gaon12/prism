@@ -78,7 +78,8 @@ impl<'scope> Preparation<'scope> {
                             }
                         }
                         let _cpu = cpu_profile::enter(cpu_profile::Phase::InsertEntries);
-                        let mut map = shared.lock().unwrap_or_else(|error| error.into_inner());
+                        let mut map = status_profile::prepared_write(&shared)
+                            .unwrap_or_else(|error| error.into_inner());
                         for entry in ready.drain(..) {
                             insert(&mut map, entry);
                         }

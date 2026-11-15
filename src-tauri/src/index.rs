@@ -26,6 +26,8 @@ pub(crate) mod cpu_profile;
 mod entries;
 #[path = "filename_service.rs"]
 mod service;
+#[path = "filename_status_profile.rs"]
+pub(crate) mod status_profile;
 use entries::{Entries, Scratch, View};
 
 fn normalized(value: &str) -> String {
@@ -575,6 +577,19 @@ pub struct SearchResponse {
 }
 
 impl FileIndex {
+    fn write_catalog(
+        &self,
+        kind: status_profile::WriterKind,
+    ) -> std::sync::LockResult<status_profile::WriteGuard<'_, Catalog>> {
+        status_profile::write(self.catalog.as_ref(), kind)
+    }
+    #[cfg(any(windows, test))]
+    fn try_write_catalog(
+        &self,
+        kind: status_profile::WriterKind,
+    ) -> std::sync::TryLockResult<status_profile::WriteGuard<'_, Catalog>> {
+        status_profile::try_write(self.catalog.as_ref(), kind)
+    }
     pub fn new() -> Self {
         let catalog = Arc::new(RwLock::new(Catalog::default()));
         let generation = Arc::new(AtomicU64::new(0));
@@ -629,7 +644,7 @@ impl FileIndex {
         policy: Option<crate::file_policy::Categories>,
     ) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        if let Ok(mut catalog) = self.catalog.write() {
+        if let Ok(mut catalog) = self.write_catalog(status_profile::WriterKind::Refresh) {
             if self.generation.load(Ordering::SeqCst) != generation {
                 return;
             }
@@ -678,17 +693,72 @@ impl FileIndex {
         let _ = self.tx.send((generation, scopes));
     }
     pub fn status(&self) -> Result<IndexStatus, String> {
-        self.catalog
-            .read()
-            .map(|catalog| self.status_of(&catalog))
-            .map_err(|_| "File index unavailable.".into())
+        self.status_queued(None)
+    }
+    pub(crate) fn status_queued(
+        &self,
+        queue: Option<status_profile::Queued>,
+    ) -> Result<IndexStatus, String> {
+        let mut timing = status_profile::begin(queue);
+        let acquired = self.catalog.read();
+        if let Some(timing) = timing.as_mut() {
+            timing.catalog_acquired();
+        }
+        let result = match acquired {
+            Ok(catalog) => {
+                let status = self.status_of(&catalog, &mut timing);
+                if let Some(timing) = timing.as_mut() {
+                    timing.catalog_releasing();
+                }
+                drop(catalog);
+                Ok(status)
+            }
+            Err(error) => {
+                if let Some(timing) = timing.as_mut() {
+                    timing.catalog_releasing();
+                }
+                drop(error);
+                Err("File index unavailable.".into())
+            }
+        };
+        // Never take a recorder mutex while a catalog/prepared guard is held.
+        if let Some(timing) = timing {
+            timing.finish(result.is_err());
+        }
+        result
     }
     /// The status a caller sees: a first scan still arriving reports the rows
     /// searches can already find.
-    fn status_of(&self, catalog: &Catalog) -> IndexStatus {
+    fn status_of(
+        &self,
+        catalog: &Catalog,
+        timing: &mut Option<status_profile::Read<'_>>,
+    ) -> IndexStatus {
+        if let Some(timing) = timing.as_mut() {
+            timing.dto_begin();
+        }
         let mut status = catalog.status.clone();
-        if let Some(entries) = self.provisional(catalog) {
+        if let Some(timing) = timing.as_mut() {
+            timing.dto_end();
+        }
+        if let Some(provisional) = self.provisional_source(catalog) {
+            if let Some(timing) = timing.as_mut() {
+                timing.prepared_begin();
+            }
+            let acquired = provisional.entries.lock();
+            if let Some(timing) = timing.as_mut() {
+                timing.prepared_acquired();
+            }
+            let entries = acquired.unwrap_or_else(|error| error.into_inner());
+            if let Some(timing) = timing.as_mut() {
+                timing.dto_begin();
+            }
             status.count = entries.len();
+            if let Some(timing) = timing.as_mut() {
+                timing.dto_end();
+                timing.prepared_releasing();
+            }
+            drop(entries);
         }
         status
     }
@@ -732,18 +802,17 @@ impl FileIndex {
     /// instead of the (still empty) real catalog. Lock order is always the
     /// catalog first, then the provisional rows.
     fn provisional<'a>(&self, catalog: &'a Catalog) -> Option<std::sync::MutexGuard<'a, Entries>> {
-        catalog
-            .provisional
-            .as_ref()
-            .filter(|provisional| {
-                catalog.entries.is_empty() && self.current(provisional.generation)
-            })
-            .map(|provisional| {
-                provisional
-                    .entries
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-            })
+        self.provisional_source(catalog).map(|provisional| {
+            provisional
+                .entries
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+        })
+    }
+    fn provisional_source<'a>(&self, catalog: &'a Catalog) -> Option<&'a Provisional> {
+        catalog.provisional.as_ref().filter(|provisional| {
+            catalog.entries.is_empty() && self.current(provisional.generation)
+        })
     }
     fn resolve_roots(&self, scopes: &[SearchScope]) -> (Vec<Root>, Vec<String>) {
         let previous = self
@@ -785,32 +854,35 @@ impl FileIndex {
         kind: Option<std::io::ErrorKind>,
     ) {
         let key = path_key(path);
-        let configured_root = self.catalog.write().is_ok_and(|mut catalog| {
-            if !self.current(generation) {
-                return false;
-            }
-            let sources: Vec<_> = catalog
-                .roots
-                .iter_mut()
-                .filter(|root| root.key == key)
-                .map(|root| {
-                    root.available = false;
-                    root.source.clone()
-                })
-                .collect();
-            if sources.is_empty() {
-                return false;
-            }
-            catalog.status.watching = false;
-            for source in sources {
-                let warning = format!("Folder unavailable: {source}");
-                if catalog.status.warnings.len() < 5 && !catalog.status.warnings.contains(&warning)
-                {
-                    catalog.status.warnings.push(warning);
+        let configured_root = self
+            .write_catalog(status_profile::WriterKind::Metadata)
+            .is_ok_and(|mut catalog| {
+                if !self.current(generation) {
+                    return false;
                 }
-            }
-            true
-        });
+                let sources: Vec<_> = catalog
+                    .roots
+                    .iter_mut()
+                    .filter(|root| root.key == key)
+                    .map(|root| {
+                        root.available = false;
+                        root.source.clone()
+                    })
+                    .collect();
+                if sources.is_empty() {
+                    return false;
+                }
+                catalog.status.watching = false;
+                for source in sources {
+                    let warning = format!("Folder unavailable: {source}");
+                    if catalog.status.warnings.len() < 5
+                        && !catalog.status.warnings.contains(&warning)
+                    {
+                        catalog.status.warnings.push(warning);
+                    }
+                }
+                true
+            });
         // A missing configured root is an unavailable scope. A missing child
         // is still a real deletion; do not extend cached identities to new paths.
         note_unreadable(unreadable, path, if configured_root { None } else { kind });
@@ -885,7 +957,9 @@ impl FileIndex {
                     if !self.current(generation) {
                         continue;
                     }
-                    if let Ok(mut catalog) = self.catalog.write() {
+                    if let Ok(mut catalog) =
+                        self.write_catalog(status_profile::WriterKind::Metadata)
+                    {
                         if !self.current(generation) {
                             continue;
                         }
@@ -920,7 +994,7 @@ impl FileIndex {
             };
             let overflowed = overflow.swap(false, Ordering::SeqCst) || queue_overflow;
             if overflowed {
-                if let Ok(mut catalog) = self.catalog.write() {
+                if let Ok(mut catalog) = self.write_catalog(status_profile::WriterKind::Metadata) {
                     catalog.status.overflow_reconciles += 1;
                 }
             }
@@ -1042,7 +1116,7 @@ impl FileIndex {
                 .collect::<Vec<_>>()
         });
         let paths = expanded.as_deref().unwrap_or(paths);
-        if let Ok(mut catalog) = self.catalog.write() {
+        if let Ok(mut catalog) = self.write_catalog(status_profile::WriterKind::ScanStart) {
             if !self.current(generation) {
                 return;
             }
@@ -1129,7 +1203,11 @@ impl FileIndex {
             paths.overflow = true;
             paths
         }));
-        if let Ok(mut catalog) = self.catalog.write() {
+        if let Ok(mut catalog) = self.write_catalog(if reconcile {
+            status_profile::WriterKind::Reconcile
+        } else {
+            status_profile::WriterKind::WatchPrune
+        }) {
             if !self.current(generation) {
                 return;
             }
@@ -1336,7 +1414,7 @@ impl FileIndex {
                 }
             })
             .collect();
-        if let Ok(mut catalog) = self.catalog.write() {
+        if let Ok(mut catalog) = self.write_catalog(status_profile::WriterKind::WalkPublish) {
             if !self.current(generation) {
                 return;
             }

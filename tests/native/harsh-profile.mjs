@@ -258,6 +258,17 @@ try {
     // Sample after reading completed phase scopes, before the later readme
     // probe. This is a separate boundary from jobAtReady above.
     result.filenameCpuProfile = diagnostics?.filenameIndex?.filenameCpuProfile ?? null;
+    result.filenameStatusProfile = diagnostics?.filenameIndex?.filenameStatusProfile ?? null;
+    assert.equal(
+      result.filenameStatusProfile?.schemaVersion,
+      1,
+      'Status timing diagnostics required',
+    );
+    assert.equal(result.filenameStatusProfile.lostMeasurements, 0);
+    assert.equal(result.filenameStatusProfile.overlappingDurationsDoNotSum, true);
+    assert.equal(result.filenameStatusProfile.holdEndsBeforeUnlock, true);
+    assert(result.filenameStatusProfile.readCalls > 0);
+    assert(result.filenameStatusProfile.queuedCalls > 0);
     result.cpuProfileSnapshotMs = since();
     result.jobAtCpuProfileSnapshot = await job.report();
     result.filenameCpuSummary = summarizeFilenameCpu(

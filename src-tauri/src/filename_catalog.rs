@@ -223,7 +223,9 @@ impl FileIndex {
         generation: u64,
         prepared: Prepared,
     ) -> io::Result<()> {
-        let mut catalog = self.catalog.write().map_err(|_| worker_error())?;
+        let mut catalog = self
+            .write_catalog(status_profile::WriterKind::InitialPublish)
+            .map_err(|_| worker_error())?;
         if !self.current(generation) {
             return Err(cancelled());
         }

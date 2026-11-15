@@ -192,9 +192,24 @@ It imports one generated CC0 seed entry, starts the product's fixed official
 Kaikki Korean HTTPS download, and waits for actual bytes in a distinct owned
 staging file before cancelling. It checks the terminal cancellation, seed-pack
 lookup, pre-existing legacy/download staging files and cleanup of the new stage.
-No response is replaced and no full corpus import is required. Syntax and format
-checks passed; an actual network/native run is still pending. External endpoint
+No response is replaced and no full corpus import is required. External endpoint
 failure is retained as a failed run rather than replaced with a synthetic pass.
+
+On 2026-11-15, the actual `6409366` Windows release candidate above passed this
+fixture at `e4e6ab2`: 185,630 official HTTPS bytes were observed both in the
+product's progress state and its distinct staging file. Cancellation returned
+the typed `cancelled` result in 110 ms. The generated seed pack and both existing
+files retained their contents; the new stage was removed. The 5.219-second run
+had 4.96 GiB minimum host availability, unchanged executable/runner hashes, no
+resource stop and no remaining owned Job processes. Evidence is
+`C:/Users/solso/prism-agent-work-20261115/dictionary-download-640-local2/result.json`
+(SHA-256 `62560e2e6a1831a5e2488c35398cb1c556c23699caea9ee3cabd4c40a198b438`).
+The first run remains recorded as failed: Playwright converted a typed IPC
+rejection into an `Error`, losing its code. The fixture now serializes the
+rejection inside the app page and retains the cancellation-code assertion;
+product code is unchanged. This is real transfer/cancellation evidence, not a
+complete corpus download/import, definition-quality, symlink or other-platform
+qualification.
 
 All seven build/check jobs in [release run
 43673534172](https://github.com/gaon12/prism/actions/runs/43673534172) at `4054072`

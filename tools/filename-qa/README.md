@@ -176,7 +176,7 @@ This was a functional Windows ordinary-filesystem check, without a CPU or
 platform, native minimum-window resizing, model inference, or app performance.
 The candidate predates vendor relocation; identical product inputs and vendor
 tree contents were checked. The following run covers the relocated app's
-functionality; cache reuse still needs an independent hosted measurement.
+functionality; the later hosted comparison below covers cache reuse separately.
 
 The subsequently produced vendor-relocated Windows app from [CI 43679179881 at
 7ba77a2](https://github.com/gaon12/prism/actions/runs/43679179881) also passed all
@@ -190,10 +190,31 @@ Evidence is `C:/Users/solso/prism-agent-work-20261115/native-policy-7ba-local1/r
 (SHA-256 `e2bd343d3ab01343bb9b79cf8379e07b7105f5cb5782b77e3f46b4e8b731da9b`).
 Terminal logs from that source also confirmed actual release-library results
 of Linux x64 578 passed/16 opt-ins ignored, Linux ARM64 578/13 and macOS ARM64
-577/17. Windows workflow checks were still running at inspection time. These
-results qualify the stated relocated app behavior, without establishing a
-warm-cache speed improvement or completing the whole workflow/native-platform
-acceptance scope.
+577/17. Windows workflow checks were still running at that inspection time.
+
+Both that run and [CI 43683382725 at
+0b6910d](https://github.com/gaon12/prism/actions/runs/43683382725) subsequently
+completed with all seven build/check jobs successful; draft publication was
+skipped. Terminal Windows logs confirm the document/export gate, official
+embedding transfer/cancellation (394 and 389 progress frames respectively),
+required actual 1.7B inference through reopening the document and answering,
+and all three actual release policy fixtures. The latter run used executable
+SHA-256 `888563849d52d0a6f7ba0a168e80ef95fbf6c130c0ad317300e6dd53d83cead1`.
+Both actual Windows release-library suites passed 586 tests with 19 explicit
+opt-ins ignored. The later run includes the eight portable-profile guard tests.
+
+The first Windows run reported no Rust cache and took 57m 22s for its first
+release compilation. The following run restored the vendor-tree-specific
+`v0-rust-vendor-be8a5ac0e08e-build-Windows_NT-x64-1ffb72bd-0fc0b59c` cache and
+reported 5m 08s for that compilation. Production app/vendor inputs did not change
+between those sources; their differences are harness, tests and documentation.
+This is one observed cold/warm hosted pair, not a repeated benchmark or a
+guaranteed build time. It concerns compiler work, not app startup performance.
+The raw terminal summaries and per-fixture JSON are retained in
+`C:/Users/solso/prism-agent-work-20261115/release-followup-20261115.json`.
+Native other-platform policy UI, deployed NTFS transfer/fallback, actual native
+minimum-window rendering and the low-end whole-app performance target remain
+separate qualifications.
 
 Earlier debug evidence was recorded at
 `C:/Users/solso/AppData/Local/Temp/prism-q18-filename-20261114-1c455odk/qualification.json`.

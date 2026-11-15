@@ -109,14 +109,31 @@ export async function launch(dataDir, options = {}) {
   if (port !== undefined) {
     assert(Number.isInteger(port) && port > 1024 && port < 65536, 'Invalid explicit test CDP port');
   }
-  // An occupied explicit port could otherwise attach a stale/foreign WebView.
-  const reservation = createServer();
-  await new Promise((done, reject) => {
-    reservation.once('error', reject);
-    reservation.listen(port ?? 0, '127.0.0.1', done);
-  });
-  port = reservation.address().port;
-  await new Promise((done) => reservation.close(done));
+  // An occupied explicit port could otherwise attach a stale/foreign WebView,
+  // so never launch while it is taken. A restart in the same test can find it
+  // briefly held by the previous instance's WebView2 processes, which may
+  // outlive prism.exe for a moment after shutdown(); wait a bounded time for
+  // them to release it (CI fixes the port to 9324) and then fail as before.
+  const reserve = () =>
+    new Promise((done, reject) => {
+      const reservation = createServer();
+      reservation.once('error', reject);
+      reservation.listen(port ?? 0, '127.0.0.1', () => {
+        const reserved = reservation.address().port;
+        reservation.close(() => done(reserved));
+      });
+    });
+  const portDeadline = Date.now() + 20_000;
+  for (;;) {
+    try {
+      port = await reserve();
+      break;
+    } catch (error) {
+      if (port === undefined || error.code !== 'EADDRINUSE' || Date.now() > portDeadline)
+        throw error;
+      await new Promise((done) => setTimeout(done, 250));
+    }
+  }
   const environment = {
     ...process.env,
     PRISM_DEV_DATA_DIR: dataDir,

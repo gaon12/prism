@@ -145,8 +145,24 @@ Evidence is
 `C:/Users/solso/AppData/Local/Temp/prism-q18-filename-20261114-1c455odk/qualification.json`.
 The later SYSTEM-folder and minimum-viewport checks are recorded separately in
 `C:/Users/solso/AppData/Local/Temp/prism-q18-filename-20261114-1c455odk/system-and-layout-qualification.json`.
-Native macOS, the full Linux app, deployed NTFS transfer/fallback, narrow native
-rendering and new app memory/performance qualification remain pending.
+All seven build/check jobs in [release run
+43673534172](https://github.com/gaon12/prism/actions/runs/43673534172) at `4054072`
+passed. The actual release-library results were:
+
+| Platform    | Passed | Explicit opt-ins ignored |
+| ----------- | -----: | -----------------------: |
+| Windows x64 |    586 |                       19 |
+| macOS ARM64 |    577 |                       17 |
+| Linux x64   |    578 |                       16 |
+| Linux ARM64 |    578 |                       13 |
+
+These include the policy/collection regressions. Windows also passed the actual
+document/export gate, official embedding transfer/cancellation (394 progress
+frames), and required 1.7B fixture inference through reopening the generated
+document and answering. This does not qualify the newer portable policy runners
+or vendor relocation. Native macOS/Linux policy UI, deployed NTFS transfer and
+fallback, narrow native rendering and new app memory/performance qualification
+remain pending.
 
 `tests/e2e/search-policy-cache.spec.ts` uses the actual React UI with synthetic
 Tauri IPC and a frozen index revision. It covers displayed and still-pending
@@ -155,8 +171,13 @@ cannot depend on a later indexing event. The [hosted Client run at
 699bb90](https://github.com/gaon12/prism/actions/runs/43674747267) passed current
 format/type checks, 154 unit assertions and all 47 production browser cases,
 including these four regressions. This is a browser regression with synthetic
-IPC, not native backend evidence. That first run did not retain its generated
-screenshots for visual inspection. The hook change requires a new frontend
+IPC, not native backend evidence. The [subsequent run at
+93733ae](https://github.com/gaon12/prism/actions/runs/43675095547) also passed all
+47 cases, with no skips, retries or unexpected results. Its preserved per-case
+JSON confirms all four cache cases passed without page/console errors or
+compatibility notices. All four 1280×840 cache screenshots were inspected: only
+the permitted filename or public excerpt remained. The downloaded artifact
+matched its GitHub SHA-256 digest. The hook change requires a new frontend
 bundle; the older frozen debug executable above does not qualify this additional
 behavior.
 

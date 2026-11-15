@@ -1248,3 +1248,68 @@ not claim a rebuilt release has exercised the renamed activation gate. A new
 CI executable is required for that final wiring check. Cycle schema 2 and all
 scan/query algorithms remain unchanged; there is no performance improvement
 claim from this activation-only follow-up.
+
+### Private single-hash insertion proposal (2026-11-16)
+
+The native collection cycle split above motivated a narrower experiment.
+`Catalog::insert` hashes a full identity key for its replacement lookup and
+again for insertion. A private copy of `e4af7ff` reuses that hash through
+private lookup/removal/insertion helpers. Production code has not been changed
+by this experiment. It retains the replacement lookup, exact key equality and
+the existing RandomState hasher; it adds no persistent cache or record fields.
+Removal and text compaction currently leave that Catalog's hasher unchanged.
+
+Both implementations were compiled into one release QA executable and ran
+A/B/B/A against the same retained 2,185,112-row PNROW001 capture. Each catalog
+received a clone of the same RandomState, so randomized table layout was held
+constant. Rows passed through the production raw mapper and Entry constructor
+in bounded batches of 2,048; only insertion differed. Preparation, decode and
+Entry destruction remained in both cases. Verification ran outside the measured
+build. Only one catalog was resident at a time. A kernel Job enforced one CPU
+and 512 MiB for both process and Job before the explicit start gate opened.
+This experiment neither contacted the service nor started the GUI.
+
+| Case | Implementation | Insert cycles (billions) | Insert wall (ms) | Build cycles (billions) |
+| ---- | -------------- | ------------------------ | ---------------- | ----------------------- |
+| A1   | Existing       | 4.832                    | 1,876.8          | 8.807                   |
+| B1   | Reuse hash     | 4.563                    | 1,700.6          | 8.134                   |
+| B2   | Reuse hash     | 4.484                    | 1,686.3          | 7.972                   |
+| A2   | Existing       | 4.965                    | 2,072.8          | 8.596                   |
+
+Mean insertion cycles decreased 7.66% and whole-build cycles 7.45% in this
+private comparison. Wall time varied more (mean insertion decreased 14.25%);
+the shared host, warm file cache and one ABBA sequence do not establish a
+general latency gain. Cycles are not converted to seconds. These numbers do
+not measure native cached startup, WebView, live service transfer, HDD behavior
+or acceptance of the 5-7 second full-list target.
+
+All four semantic SHA-256 values were
+`2050731a23fb94bb1ba25399970e97a12beed3cf1533618712447fc9794f2b2c`.
+The signature covers every stored display path, identity/search text, initials,
+keyboard projection, name/directory flag, size, optional timestamp and sweep
+value in id order. Every catalog memory breakdown was identical. Peak Job
+commit was 204.20 MiB; minimum available host RAM was 5,282,664,448 bytes.
+The 17.891-second run had no resource stop, input change or remaining owned
+process. The prototype's 21 existing compact tests and strict all-target
+Clippy passed, including randomized reference operations, duplicate replacement,
+growth, free-slot/directory reuse and text compaction. An initial private QA
+compile failed on include-documentation placement and method visibility; those
+QA-only issues were corrected before these checks. Failed logs remain retained.
+
+The proposed production change must keep hashes confined to the Catalog that
+created them. A future removal/compaction operation that reseeds its hasher
+would invalidate this reuse. Duplicate replacement, directory reclamation,
+Unix case-sensitive identity, original display spelling, projections and extreme
+timestamps must remain covered. The existing tests and exact capture signature
+support review; a production patch still requires its own checks and subsequent
+native qualification. No production performance improvement is claimed here.
+
+Frozen source copies, candidate, raw ABBA cases and checks are under
+`C:/Users/solso/prism-agent-work-20261115/insert-hash-reuse-prototype/`,
+`insert-hash-prototype-candidate/`, `insert-hash-prototype-abba/` and
+`insert-hash-prototype-{test,clippy,build}-v2/` in the same parent.
+`insert-hash-reuse-qualification.json` records hashes and scope;
+`insert-hash-reuse-proposal.patch` contains the proposed production diff without
+the QA-only shared-seed constructor or visibility changes. The same proposal
+and proof are retained in
+`D:/mini_prj/prism/.dev/insert-hash-reuse-proposal-20261116/` for peer review.

@@ -1612,3 +1612,11 @@ acquisition and about 4.6-4.7 microseconds of worker work in those calls.
 An off case still had a 437-ms probe outlier. Host/service variation and
 sequential runs prevent a latency guarantee or isolated startup-gain claim;
 off ready remained 9.84/9.67 seconds, above the 5-7 second target.
+
+The next [watch-prune DEV windows](status-lock-analysis.md#watch-prune-dev-diagnostic-windows)
+add numeric root/slot/candidate/removal/compaction counts and selection/deletion
+wall windows to the same opt-in diagnostics. Ordinary execution keeps the
+existing algorithm, clock-disabled gate and locks. Off/on QA each passed 134
+tests (7 ignored), standalone catalog QA 23, and both strict Clippy checks.
+Actual natural-workload phase costs remain pending a new CI app; the union
+optimization is deliberately after that measurement.

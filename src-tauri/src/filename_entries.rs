@@ -213,6 +213,16 @@ impl Entries {
     pub(super) fn remove(&mut self, key: &str) -> bool {
         self.inner.remove(key)
     }
+    pub(super) fn remove_profiled(
+        &mut self,
+        key: &str,
+        timing: &mut compact::RemovalTiming,
+    ) -> bool {
+        self.inner.remove_profiled(key, timing)
+    }
+    pub(super) fn directory_slots(&self) -> usize {
+        self.inner.directory_slots()
+    }
     /// Refresh the sweep id of an unchanged entry.
     pub(super) fn set_seen(&mut self, id: u32, sweep: u64) {
         self.inner.set_seen(id, sweep);

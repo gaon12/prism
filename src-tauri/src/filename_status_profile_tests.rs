@@ -6,6 +6,8 @@ fn disabled_helpers_sample_no_clocks() {
     let prepared = Mutex::new(0);
     let before = CLOCK_READS.with(|reads| reads.get());
     assert!(Read::start(None, None).is_none());
+    assert!(Prune::start(false, 3, 7, 11).is_none());
+    record_prune(None);
     *write_for(&catalog, None, WriterKind::Refresh).unwrap() = 1;
     *prepared_for(&prepared, None).unwrap() = 2;
     let reader = catalog.read().unwrap();
@@ -15,6 +17,37 @@ fn disabled_helpers_sample_no_clocks() {
     ));
     drop(reader);
     assert_eq!(CLOCK_READS.with(|reads| reads.get()), before);
+}
+
+#[test]
+fn prune_totals_saturate_and_slowest_keeps_one_coherent_record() {
+    let mut summary = PruneSummary::default();
+    summary.add(PruneRecord {
+        roots: u64::MAX,
+        node_slots: 21,
+        directory_slots: 8,
+        stale_candidates: 4,
+        removed: 3,
+        compactions: 1,
+        deletion_ns: 50,
+        compact_ns: 30,
+        total_ns: 100,
+        ..PruneRecord::default()
+    });
+    summary.add(PruneRecord {
+        roots: 2,
+        node_slots: 15,
+        total_ns: 90,
+        ..PruneRecord::default()
+    });
+    let json = serde_json::to_value(summary).unwrap();
+    assert_eq!(json["calls"], 2);
+    assert_eq!(json["totals"]["roots"], u64::MAX);
+    assert_eq!(json["totals"]["nodeSlots"], 36);
+    assert_eq!(json["slowest"]["nodeSlots"], 21);
+    assert_eq!(json["slowest"]["compactNs"], 30);
+    assert_eq!(json["slowest"]["deletionNs"], 50);
+    assert_eq!(json["slowest"]["removed"], 3);
 }
 
 #[test]

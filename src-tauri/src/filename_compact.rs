@@ -23,6 +23,13 @@
 use std::collections::HashSet;
 use std::hash::{BuildHasher, RandomState};
 
+/// Optional numeric cost of compaction during explicitly profiled removal.
+#[derive(Default)]
+pub struct RemovalTiming {
+    pub compactions: u64,
+    pub compact_ns: u64,
+}
+
 /// "No value" in 32-bit link and offset fields.
 const NONE: u32 = u32::MAX;
 /// A deleted slot in an open-addressing table (keeps probe chains intact).
@@ -1010,6 +1017,15 @@ impl Catalog {
     pub fn remove(&mut self, key: &str) -> bool {
         self.remove_hashed(key, self.hash(key))
     }
+    #[allow(dead_code)] // App DEV diagnostics; standalone QA also tests this path.
+    pub fn remove_profiled(&mut self, key: &str, timing: &mut RemovalTiming) -> bool {
+        let Some((at, id)) = self.find(key) else {
+            return false;
+        };
+        self.key_table.remove_at(at);
+        self.free_node_with_timing(id, Some(timing));
+        true
+    }
     /// `remove` with the key's hash already computed by `self.hash(key)`.
     fn remove_hashed(&mut self, key: &str, hash: u64) -> bool {
         let Some((at, id)) = self.find_hashed(key, hash) else {
@@ -1020,6 +1036,9 @@ impl Catalog {
         true
     }
     fn free_node(&mut self, id: u32) {
+        self.free_node_with_timing(id, None);
+    }
+    fn free_node_with_timing(&mut self, id: u32, timing: Option<&mut RemovalTiming>) {
         let node = self.nodes[id as usize];
         self.garbage += node.name_len as usize;
         if node.extra != NONE {
@@ -1041,7 +1060,14 @@ impl Catalog {
         self.free_nodes = id;
         self.len -= 1;
         if self.garbage > 64 * 1024 && self.garbage > self.text.used / 2 {
+            let started = timing.as_ref().map(|_| std::time::Instant::now());
             self.compact();
+            if let Some((timing, started)) = timing.zip(started) {
+                timing.compactions = timing.compactions.saturating_add(1);
+                timing.compact_ns = timing
+                    .compact_ns
+                    .saturating_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
+            }
         }
     }
 
@@ -1080,6 +1106,10 @@ impl Catalog {
     /// scan can split `0..slots()` between threads without collecting ids.
     pub fn slots(&self) -> usize {
         self.nodes.len()
+    }
+    #[allow(dead_code)] // App DEV diagnostics only; includes free directory slots.
+    pub fn directory_slots(&self) -> usize {
+        self.dirs.len()
     }
     /// The live entry with this id, or `None` for a free or unknown slot.
     pub fn entry(&self, id: u32) -> Option<EntryRef<'_>> {
@@ -1513,6 +1543,40 @@ impl<'a> EntryRef<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profiled_removal_preserves_rows_and_counts_real_arena_compactions() {
+        let mut plain = Catalog::new();
+        let mut measured = Catalog::new();
+        let paths: Vec<_> = (0..1000)
+            .map(|i| format!("C:/Docs/{}-{i}.md", "x".repeat(200)))
+            .collect();
+        let keys: Vec<_> = paths.iter().map(|p| p.to_ascii_lowercase()).collect();
+        for (path, key) in paths.iter().zip(&keys) {
+            plain.insert(&input(path, key));
+            measured.insert(&input(path, key));
+        }
+        let mut timing = RemovalTiming::default();
+        for key in keys.iter().take(850) {
+            assert_eq!(
+                plain.remove(key),
+                measured.remove_profiled(key, &mut timing)
+            );
+        }
+        assert!(
+            timing.compactions > 0,
+            "fixture must exercise whole-arena rewrite"
+        );
+        let count = timing.compactions;
+        assert!(!measured.remove_profiled("absent", &mut timing));
+        assert_eq!(timing.compactions, count);
+        assert_eq!(plain.len(), measured.len());
+        for (path, key) in paths.iter().zip(&keys).skip(850) {
+            let row = input(path, key);
+            assert_round_trip(&plain, &row);
+            assert_round_trip(&measured, &row);
+        }
+    }
 
     fn input<'a>(path: &'a str, key: &'a str) -> EntryInput<'a> {
         EntryInput {

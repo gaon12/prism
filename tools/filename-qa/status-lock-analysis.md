@@ -516,3 +516,60 @@ The original source audit ran no new GUI, Rust build or benchmark; the separate
 controlled experiment above adds local build/measurement evidence. The later
 timing hooks and published-status implementation have separate source/test and
 actual CI-app qualifications above.
+
+## Watch-prune DEV diagnostic windows
+
+The next instrumentation extends the existing gated status profile with
+`watchPrune.calls`, `totals` and one coherent `slowest` record. It changes no
+pruning decisions, root order, lock placement, entry layout or compaction
+threshold. The union algorithm and read-lock/arena moves are not applied.
+
+Each record includes input recursive-root count `roots`, starting
+`directorySlots`/`nodeSlots` (including free slots), `staleCandidates`, actual
+successful `removed` count and `compactions`. Overlapping roots can generate
+duplicate stale candidates; only successful removals are counted as removed.
+Slots in `totals` are sums of per-call starting snapshots, not unique process
+directory/file counts or direct per-row instrumentation.
+
+Four wall windows are recorded: `normalizeNs`, `membershipNs`, `selectionNs`
+and `deletionNs`. Membership covers the eager directory-membership construction
+and root lookup in `subtree`; selection covers its lazy entry scan, seen/uncertain
+filter, key construction and per-root candidate allocation. The retained
+flat-map/outer-collection bookkeeping falls between checkpoints, so normalization
+and deletion windows include that surrounding loop work. These are wall windows
+including scheduling, not pure routine CPU costs.
+
+`compactNs` counts only text-arena rewrites triggered by profiled prune removals;
+it is a **subset of deletion time** and must not be added to `deletionNs` or
+`totalNs`. It is not a global count of compactions during other insertion/update
+work. The ordinary removal API uses the same implementation with timing disabled.
+Both removal and arena rewriting remain under their original writer lock.
+
+There are no per-entry clock calls. For C actual prune compactions the timing
+path uses `6 + 2C` wall-clock samples, whatever the number of roots P. (The
+first version, before the single-pass prune in `7e060d3`, checked each root
+separately and used `3P + 3 + 2C`.) With the single pass, normalization,
+membership and selection are each measured once for all roots together, and
+`staleCandidates` counts an entry once even when roots overlap; `removed` and
+the final rows are the same as with per-root passes. This is a call-count
+description, not a measured overhead bound. Disabled hooks call
+no new clocks or recorder mutex; the existing two cached DEV flags remain the
+only activation gate. Prune records are aggregated after the catalog writer
+is released. No paths, filenames or search strings enter this numeric record.
+
+The QA build continues extracting the actual production watch body. Its
+generated wrapper has a narrow `needless_late_init` allowance because the
+literal body assigns a record that production defers until after its writer;
+no production lint is suppressed. Off/on filename QA each passed **134 tests
+with 7 opt-in tests ignored** and strict all-target Clippy. The independent
+catalog QA passed **23 tests** and strict Clippy. New checks exercise real
+compaction through profiled/plain removal with identical retained fields,
+saturating/coherent summaries and the disabled clock helper path.
+
+Verification used bounded owned Jobs and `-j1` while another library compile
+was observed on the host; these test durations are not performance evidence.
+Natural watch-root counts and phase costs still require the new CI app.
+Private input hashes/logs and initial fixture compile/lint failures are retained
+in `C:/Users/solso/prism-agent-work-20261115/watch-prune-profile-qualification.json`
+and `filename-watch-prune-{off,on,clippy}-v3/` under the same parent. No union
+optimization or startup-target acceptance follows from these verification runs.

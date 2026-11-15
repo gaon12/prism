@@ -1168,6 +1168,7 @@ impl FileIndex {
             paths.overflow = true;
             paths
         }));
+        let mut prune_record = None;
         if let Ok(mut catalog) = self.write_catalog(if reconcile {
             status_profile::WriterKind::Reconcile
         } else {
@@ -1199,13 +1200,20 @@ impl FileIndex {
                 // Keep watch updates limited to their own subtrees, without
                 // re-scanning the whole catalog or erasing failed subtrees.
                 let mut key = String::new();
+                let mut timing = status_profile::prune(paths.len(), &catalog.entries);
                 let roots: Vec<String> = paths.iter().map(|path| path_key(path)).collect();
                 let roots: Vec<&str> = roots.iter().map(String::as_str).collect();
+                if let Some(timing) = timing.as_mut() {
+                    timing.checkpoint(status_profile::PrunePhase::Normalize);
+                }
                 // One pass over the catalog for all refreshed folders (not one
                 // pass per folder) while this write lock blocks searches.
-                let stale: Vec<String> = catalog
-                    .entries
-                    .subtrees(&roots)
+                // `subtrees` decides directory membership before it returns.
+                let subtrees = catalog.entries.subtrees(&roots);
+                if let Some(timing) = timing.as_mut() {
+                    timing.checkpoint(status_profile::PrunePhase::Membership);
+                }
+                let stale: Vec<String> = subtrees
                     // Rewalked entries are seen: skip them before
                     // building a key (most of a refreshed subtree).
                     .filter(|entry| !entry.is_seen(sweep))
@@ -1215,9 +1223,21 @@ impl FileIndex {
                             .then(|| entry_key.to_string())
                     })
                     .collect();
-                for key in stale {
-                    catalog.entries.remove(&key);
+                if let Some(timing) = timing.as_mut() {
+                    timing.checkpoint(status_profile::PrunePhase::Selection);
+                    timing.candidates(stale.len());
                 }
+                for key in stale {
+                    if let Some(timing) = timing.as_mut() {
+                        timing.remove(&mut catalog.entries, &key);
+                    } else {
+                        catalog.entries.remove(&key);
+                    }
+                }
+                if let Some(timing) = timing.as_mut() {
+                    timing.checkpoint(status_profile::PrunePhase::Deletion);
+                }
+                prune_record = timing.map(status_profile::Prune::finish);
             }
             if catalog.entries.len() != before {
                 catalog.status.revision += 1;
@@ -1225,6 +1245,7 @@ impl FileIndex {
             catalog.status.count = catalog.entries.len();
             catalog.status.scanning = false;
         }
+        status_profile::record_prune(prune_record);
     }
     fn walk_directory_with_policy(
         &self,

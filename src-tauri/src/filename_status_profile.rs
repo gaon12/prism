@@ -106,6 +106,7 @@ struct State {
     writers: [WriterStat; 13],
     slowest_worker: Option<ReadRecord>,
     slowest_command: Option<ReadRecord>,
+    prune: PruneSummary,
 }
 #[derive(Default)]
 struct Collector {
@@ -191,6 +192,7 @@ impl Collector {
             dto_excludes_serialization: true,
             recording_cost_excluded: true,
             entry_storage_lock_used: false,
+            watch_prune: state.prune,
             lost_measurements: self.lost.load(Ordering::Relaxed),
             read_calls: state.read_calls,
             queued_calls: state.queued_calls,
@@ -252,6 +254,7 @@ pub(crate) struct Snapshot {
     dto_excludes_serialization: bool,
     recording_cost_excluded: bool,
     entry_storage_lock_used: bool,
+    watch_prune: PruneSummary,
     lost_measurements: u64,
     read_calls: u64,
     queued_calls: u64,
@@ -263,6 +266,135 @@ pub(crate) struct Snapshot {
 }
 pub(crate) fn snapshot() -> Option<Snapshot> {
     collector()?.snapshot()
+}
+
+#[derive(Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PruneRecord {
+    roots: u64,
+    directory_slots: u64,
+    node_slots: u64,
+    stale_candidates: u64,
+    removed: u64,
+    compactions: u64,
+    normalize_ns: u64,
+    membership_ns: u64,
+    selection_ns: u64,
+    deletion_ns: u64,
+    compact_ns: u64,
+    total_ns: u64,
+}
+#[derive(Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PruneSummary {
+    calls: u64,
+    totals: PruneRecord,
+    slowest: Option<PruneRecord>,
+}
+impl PruneSummary {
+    fn add(&mut self, record: PruneRecord) {
+        self.calls = self.calls.saturating_add(1);
+        macro_rules! add { ($($field:ident),*) => { $(
+            self.totals.$field = self.totals.$field.saturating_add(record.$field);
+        )* }; }
+        add!(
+            roots,
+            directory_slots,
+            node_slots,
+            stale_candidates,
+            removed,
+            compactions,
+            normalize_ns,
+            membership_ns,
+            selection_ns,
+            deletion_ns,
+            compact_ns,
+            total_ns
+        );
+        if self
+            .slowest
+            .is_none_or(|old| record.total_ns > old.total_ns)
+        {
+            self.slowest = Some(record);
+        }
+    }
+}
+pub(crate) enum PrunePhase {
+    Normalize,
+    Membership,
+    Selection,
+    Deletion,
+}
+pub(crate) struct Prune {
+    started: Instant,
+    last: Instant,
+    record: PruneRecord,
+    removal: super::compact::RemovalTiming,
+}
+impl Prune {
+    fn start(
+        enabled: bool,
+        roots: usize,
+        directory_slots: usize,
+        node_slots: usize,
+    ) -> Option<Self> {
+        if !enabled {
+            return None;
+        }
+        let started = now();
+        Some(Self {
+            started,
+            last: started,
+            record: PruneRecord {
+                roots: roots as u64,
+                directory_slots: directory_slots as u64,
+                node_slots: node_slots as u64,
+                ..PruneRecord::default()
+            },
+            removal: super::compact::RemovalTiming::default(),
+        })
+    }
+    pub(crate) fn checkpoint(&mut self, phase: PrunePhase) {
+        let end = now();
+        let elapsed = nanos(end.saturating_duration_since(self.last));
+        let target = match phase {
+            PrunePhase::Normalize => &mut self.record.normalize_ns,
+            PrunePhase::Membership => &mut self.record.membership_ns,
+            PrunePhase::Selection => &mut self.record.selection_ns,
+            PrunePhase::Deletion => &mut self.record.deletion_ns,
+        };
+        *target = target.saturating_add(elapsed);
+        self.last = end;
+    }
+    pub(crate) fn candidates(&mut self, count: usize) {
+        self.record.stale_candidates = count as u64;
+    }
+    pub(super) fn remove(&mut self, entries: &mut super::Entries, key: &str) {
+        self.record.removed = self
+            .record
+            .removed
+            .saturating_add(u64::from(entries.remove_profiled(key, &mut self.removal)));
+    }
+    pub(crate) fn finish(mut self) -> PruneRecord {
+        self.record.total_ns = nanos(now().saturating_duration_since(self.started));
+        self.record.compactions = self.removal.compactions;
+        self.record.compact_ns = self.removal.compact_ns;
+        self.record
+    }
+}
+pub(super) fn prune(roots: usize, entries: &super::Entries) -> Option<Prune> {
+    collector()?;
+    Prune::start(true, roots, entries.directory_slots(), entries.slots())
+}
+/// Caller has released the catalog writer. No recorder lock extends its hold.
+pub(crate) fn record_prune(record: Option<PruneRecord>) {
+    let Some(record) = record else { return };
+    let Some(collector) = collector() else { return };
+    if let Ok(mut state) = collector.state.lock() {
+        state.prune.add(record);
+    } else {
+        collector.lost.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 pub(crate) struct Queued {

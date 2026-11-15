@@ -1454,3 +1454,24 @@ owned raw file after checking its resolved location, regular-file type and
 hash. Preserve the numeric measurements, source hashes and location ledger.
 There is no automatic expiry or recursive cleanup; retaining the raw input
 here is temporary review evidence, not a corpus to distribute.
+
+### Shared harness environment contract (2026-11-16)
+
+An added spawn-boundary regression covers ordinary, test-portable and
+production-portable launches. It intercepts `launch()` immediately before OS
+process creation, using an invalid executable and synthetic environment values.
+The complete expected environment is compared as UTF-8 `key=value` bytes with
+stable key ordering, including Unicode, backslashes and a newline canary.
+Omitting `filenameCpuProfiling` and explicitly passing false give identical
+ordinary environments. Passing true adds only the two dedicated CPU flags;
+the mode's existing profile variables and generic test-mode behavior stay intact.
+The parent environment is unchanged. Existing inherited CPU-flag sanitization
+remains covered separately, including mixed-case variable names.
+
+All eight original portable-profile tests remain. Together with the new
+three-mode case, CPU-profile and evidence regressions, 21 tests passed.
+`harness.mjs` and its environment helper were not changed for this follow-up.
+No real app, service or model was launched. Frozen input hashes and the raw log
+are in `C:/Users/solso/prism-agent-work-20261115/harness-cpu-spawn-contract/`.
+The fixed-capture insertion and direct profiler-cost results above are separate
+measurements; this is a shared-harness compatibility regression only.

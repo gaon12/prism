@@ -77,6 +77,102 @@ function stopBeforeSpawn(t, callback) {
   });
 }
 
+test('profiling is opt-in and preserves the complete ordinary spawn environment', async (t) => {
+  for (const mode of [
+    { name: 'ordinary', options: {} },
+    { name: 'test portable', options: { portable: true } },
+    { name: 'production portable', options: { portable: true, productionPortable: true } },
+  ]) {
+    await t.test(mode.name, async (t) => {
+      const { executable, profile } = await fixture(t);
+      await writeFile(join(dirname(executable), 'prism.portable'), '');
+      const port = await occupiedPort(t);
+      await port.close();
+      const originalEnvironment = process.env;
+      // Synthetic values only. Even an assertion diff must not dump inherited
+      // credentials. Preserve the temp location for the owned fixture cleanup.
+      const common = {
+        SystemRoot: originalEnvironment.SystemRoot ?? 'C:\\Windows',
+        TEMP: tmpdir(),
+        TMP: tmpdir(),
+        TMPDIR: tmpdir(),
+        PATH: 'fixture-only-path',
+        PRISM_TEST_ENV_CANARY: '한글, spaces, C:\\fixture\\literal\nsecond line',
+        PRISM_WEBVIEW_SOFTWARE: '1',
+      };
+      const inherited = {
+        ...common,
+        PRISM_DEV_SHARED_CANARY: 'preserve outside production portable',
+        PRISM_DEV_TEST_MODE: 'inherited-value',
+        WEBVIEW2_USER_DATA_FOLDER: 'inherited-webview-directory',
+        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: 'inherited-browser-arguments',
+      };
+      process.env = { ...inherited };
+      t.after(() => {
+        process.env = originalEnvironment;
+      });
+      const expected = {
+        ...common,
+        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port.port} --remote-debugging-address=127.0.0.1 --disable-gpu`,
+        ...(mode.name === 'ordinary'
+          ? {
+              PRISM_DEV_SHARED_CANARY: inherited.PRISM_DEV_SHARED_CANARY,
+              PRISM_DEV_TEST_MODE: 'inherited-value',
+              PRISM_DEV_DATA_DIR: profile,
+              WEBVIEW2_USER_DATA_FOLDER: join(profile, 'webview'),
+            }
+          : mode.name === 'test portable'
+            ? {
+                PRISM_DEV_SHARED_CANARY: inherited.PRISM_DEV_SHARED_CANARY,
+                PRISM_DEV_TEST_MODE: '1',
+              }
+            : {}),
+      };
+      const encoded = (environment) =>
+        Buffer.from(
+          Object.entries(environment)
+            .sort(([left], [right]) => left.localeCompare(right, 'en'))
+            .map(([key, value]) => `${key}=${value}\0`)
+            .join(''),
+          'utf8',
+        );
+      const observed = [];
+      const stop = new Error('Stop at spawn; no executable or user profile is opened');
+      stopBeforeSpawn(t, (_file, _args, options) => {
+        observed.push(options.env);
+        throw stop;
+      });
+      for (const option of [{}, { filenameCpuProfiling: false }, { filenameCpuProfiling: true }]) {
+        await assert.rejects(
+          launch(profile, { executable, cdpPort: port.port, ...mode.options, ...option }),
+          (error) => error === stop,
+        );
+      }
+      assert.equal(observed.length, 3);
+      assert.deepEqual(
+        encoded(observed[0]),
+        encoded(expected),
+        'Omitted option preserves every byte',
+      );
+      assert.deepEqual(
+        encoded(observed[1]),
+        encoded(expected),
+        'Explicit false has the same result',
+      );
+      assert.deepEqual(
+        encoded(observed[2]),
+        encoded({
+          ...expected,
+          PRISM_DEV_FILENAME_CPU_PROFILE: '1',
+          PRISM_DEV_FILENAME_CPU_TEST_MODE: '1',
+        }),
+        'Explicit true adds only the two dedicated flags',
+      );
+      assert.deepEqual(process.env, inherited, 'Never mutate the parent environment');
+    });
+  }
+});
+
 test('a missing portable marker is rejected before creating a child', async (t) => {
   const { executable, profile } = await fixture(t);
   let spawned = false;

@@ -145,16 +145,45 @@ and revokes content access, including access through previously issued chunk IDs
 It preserves all original fixture bytes and the executable hash. EPUB is checked
 only for filename classification; this does not claim EPUB or ZIP content
 extraction, document layout fidelity, installed NTFS or another platform.
-This new container regression has passed syntax/format and independent fixture
-integrity checks; its actual native run is pending the existing 3-GiB available
-memory preflight or hosted qualification. The new portable release paths also
-remain unqualified until an actual native run. Preparation checks are not a
-native pass.
+On 2026-11-15, all three portable release fixtures passed locally against the
+actual `qa-windows-app` from [CI 43675760633 at
+6409366](https://github.com/gaon12/prism/actions/runs/43675760633), using the
+`bef809c` harness. The app SHA-256 was
+`621e17161ac760684da46bdfd58082d4488c2729f6714ab3956166aba8cece21`;
+the downloaded artifact ZIP matched GitHub's digest before extraction. That
+hosted run had passed required 1.7B inference but failed the policy fixture's
+restart because a WebView child still held the fixed CDP port. The updated
+harness reserves the port before process creation and waits at most 20 seconds
+for an occupied explicit port. The local run reused one explicit loopback port
+across the three fixtures and their real process restarts.
 
-Evidence is
+Filename collection, watcher updates, independent content restrictions and stale
+chunk rejection all passed, as did ZIP exclusion with DOCX/HWPX/EPUB filename
+retention, real DOCX/HWPX extraction and content revocation. Screenshots from
+all five languages and the filename/content/container states were inspected;
+the controls and Save/Cancel buttons were visible. Windows WebView2 reported
+`157.0.4341.46`; content checks used a 1280×840 viewport at scale 1.25.
+
+The sequential run took 34.234 seconds, with 4.33 GiB minimum host availability
+and no resource/deadline stop. The owned Job Object had no remaining processes
+at cleanup. The original executable and all nine frozen runner/fixture inputs
+retained their hashes. Evidence is preserved outside the system Temp directory
+at `C:/Users/solso/prism-agent-work-20261115/native-policy-640-local1/`, including
+per-fixture logs, screenshots and `result.json` (SHA-256
+`ca206f0c0e8415a3d4e35a156edc941c33c8ce8b89e977fb6837ad6b6a3a912f`).
+This was a functional Windows ordinary-filesystem check, without a CPU or
+512 MiB limit. It does not qualify deployed NTFS transfer/fallback, another
+platform, native minimum-window resizing, model inference, or app performance.
+The candidate predates vendor relocation; identical product inputs and vendor
+tree contents were checked, but the relocated build and cache reuse still need
+their own hosted result.
+
+Earlier debug evidence was recorded at
 `C:/Users/solso/AppData/Local/Temp/prism-q18-filename-20261114-1c455odk/qualification.json`.
 The later SYSTEM-folder and minimum-viewport checks are recorded separately in
 `C:/Users/solso/AppData/Local/Temp/prism-q18-filename-20261114-1c455odk/system-and-layout-qualification.json`.
+That old Temp worktree and its local evidence disappeared on 2026-11-15; the
+paths describe historical records, not currently available local artifacts.
 All seven build/check jobs in [release run
 43673534172](https://github.com/gaon12/prism/actions/runs/43673534172) at `4054072`
 passed. The actual release-library results were:
@@ -169,8 +198,8 @@ passed. The actual release-library results were:
 These include the policy/collection regressions. Windows also passed the actual
 document/export gate, official embedding transfer/cancellation (394 progress
 frames), and required 1.7B fixture inference through reopening the generated
-document and answering. This does not qualify the newer portable policy runners
-or vendor relocation. Native macOS/Linux policy UI, deployed NTFS transfer and
+document and answering. That run predates the portable policy qualification
+above and vendor relocation. Native macOS/Linux policy UI, deployed NTFS transfer and
 fallback, narrow native rendering and new app memory/performance qualification
 remain pending.
 

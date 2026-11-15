@@ -750,3 +750,55 @@ aggregate CPU busy during each whole case, including the benchmark itself,
 ranged from 18.2% to 27.9%. The component replay demonstrates the lower cost for
 this fixed eight-path input. It does not establish the live event count, an
 eight-second GUI stall's full cause, or the whole-app 5–7 second startup target.
+
+## Startup CPU and current-service analysis
+
+`tests/native/harsh-profile.mjs` timing schema 2 captures Job/process CPU at
+first-complete and ready, before the later `readme` search, diagnostics and CDP
+checks. Its final Job report includes those later costs. It also records status
+poll count/total/maximum delay and the first successful search command's duration.
+This instrumentation does not change the app or its processing priorities.
+
+On 2026-11-15, two software-rendered, one-CPU/512 MiB app+WebView cases used the
+admitted `7ba77a2` release executable (`512efd0c…`) and existing installed service
+(`d0b1fe5e…`). Both kernel process/job limits and affinity were read back. That
+service runs outside the app Job and its bytes do not match the candidate's
+embedded payload. No service replacement, elevation or cache reset occurred.
+The shared host was busy with two Hancom MCP Python processes and Adguard;
+average whole-host CPU busy during the cases, including this measurement, was
+57.8% and 61.3%. These are analysis cases on NVMe, not target acceptance or HDD
+results. Each completed about 2.135 million filename records.
+
+| Metric                                   | First case | Second case |
+| ---------------------------------------- | ---------: | ----------: |
+| Window ready (seconds)                   |      2.443 |       2.096 |
+| First successful search (seconds)        |      2.587 |       2.763 |
+| Complete sweep ready (seconds)           |      9.303 |       9.054 |
+| Startup app CPU (seconds)                |      5.436 |       5.124 |
+| Startup other Job process CPU (seconds)  |      3.032 |       2.938 |
+| Later probe/inspection Job CPU (seconds) |      1.063 |       2.874 |
+| Maximum status-call delay (seconds)      |      1.303 |       0.439 |
+| Peak app+WebView Job commit (MiB)        |     398.26 |      400.79 |
+
+Each case used one service snapshot with zero overflow reconciles. Service
+first-batch/validated-fetch times were 1.607/7.714 and 0.519/6.826 seconds; receive
+callbacks occupied 3.378 and 4.156 seconds within those fetch intervals. Callback
+time includes client processing/backpressure and is not additive with fetch
+time. Final catalog publication was 0–1 ms, so these cases do not identify the
+final swap as a significant cost. They do show about 8.1–8.5 CPU seconds in the
+startup Job before later probes: reducing only wall-clock waiting cannot bring
+this measured work under seven seconds on one CPU. This does not isolate all
+application preparation from queries, rendering or scheduling, and it does not
+measure the newer bundled service.
+
+The prior uninstrumented pair remains recorded too (14.629/9.677-second ready,
+54.4%/59.9% host busy). No optimization separates those pairs; their different
+times are not an A/B improvement claim. All four declared cases passed their
+functional sweep checks, retained executable/script/service hashes, triggered
+no resource stop and left no owned Job processes after cleanup. Raw reports and
+the exact scopes/hashes are retained outside Temp under
+`C:/Users/solso/prism-agent-work-20261115/harsh-current-service-7ba/`,
+`harsh-startup-cpu-7ba/` and `harsh-analysis.json` in the same parent directory.
+The next useful split is preparation/query CPU versus WebView startup, followed
+by a separately qualified service-version comparison. The 5–7-second whole-app
+target remains open.

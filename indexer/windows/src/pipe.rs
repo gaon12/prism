@@ -26,6 +26,43 @@ const CLIENT_RIGHTS: u32 = 0x0012_0083;
 const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)(A;;0x120083;;;IU)";
 const MAX_INSTANCES: u32 = 8;
 
+/// Local observer intervals for one successful exchange. Read time includes
+/// waiting for the server to prepare bytes, not just their transport. No paths,
+/// peer identity strings or server-side CPU estimates are retained.
+#[derive(Clone, Debug, Default)]
+pub struct ExchangeTiming {
+    pub read: Duration,
+    pub decode_validate: Duration,
+    pub stream_validate: Duration,
+    pub receive_callback: Duration,
+    pub request_ack: Duration,
+    pub total: Duration,
+    pub read_calls: u64,
+    pub wire_bytes: u64,
+    pub frames: u64,
+}
+
+struct TimedRead<'a> {
+    connection: &'a mut Connection,
+    timing: &'a mut ExchangeTiming,
+}
+
+#[cfg(test)]
+#[path = "pipe_profile_tests.rs"]
+mod profile_tests;
+impl Read for TimedRead<'_> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let started = Instant::now();
+        let result = self.connection.read(output);
+        self.timing.read += started.elapsed();
+        self.timing.read_calls = self.timing.read_calls.saturating_add(1);
+        if let Ok(bytes) = &result {
+            self.timing.wire_bytes = self.timing.wire_bytes.saturating_add(*bytes as u64);
+        }
+        result
+    }
+}
+
 fn cancelled() -> io::Error {
     io::Error::new(
         // read_exact/write_all automatically retry Interrupted. Persistent
@@ -182,26 +219,101 @@ impl Connection {
         request: prism_ntfs_protocol::Request,
         expected_serial: u64,
         expected_device: &str,
+        receive: impl FnMut(prism_ntfs_protocol::stream::Event) -> io::Result<()>,
+    ) -> io::Result<u64> {
+        self.exchange_inner(request, expected_serial, expected_device, receive, None)
+    }
+
+    /// The ordinary exchange with optional local timing. Authentication,
+    /// validation, deadlines, cancellation and wire bytes are unchanged.
+    pub fn exchange_profiled(
+        &mut self,
+        request: prism_ntfs_protocol::Request,
+        expected_serial: u64,
+        expected_device: &str,
+        receive: impl FnMut(prism_ntfs_protocol::stream::Event) -> io::Result<()>,
+        timing: &mut ExchangeTiming,
+    ) -> io::Result<u64> {
+        self.exchange_inner(
+            request,
+            expected_serial,
+            expected_device,
+            receive,
+            Some(timing),
+        )
+    }
+
+    fn exchange_inner(
+        &mut self,
+        request: prism_ntfs_protocol::Request,
+        expected_serial: u64,
+        expected_device: &str,
         mut receive: impl FnMut(prism_ntfs_protocol::stream::Event) -> io::Result<()>,
+        mut timing: Option<&mut ExchangeTiming>,
     ) -> io::Result<u64> {
         use prism_ntfs_protocol::{
             stream::{Error, Event, Receiver},
             Acknowledgement, Response,
         };
+        if let Some(timing) = timing.as_deref_mut() {
+            *timing = ExchangeTiming::default();
+        }
+        let started = timing.as_ref().map(|_| Instant::now());
         let drive = request.drive();
         self.set_frame_timeout(Duration::from_secs(2));
+        let request_started = timing.as_ref().map(|_| Instant::now());
         request.write(self)?;
+        if let (Some(timing), Some(started)) = (timing.as_deref_mut(), request_started) {
+            timing.request_ack += started.elapsed();
+        }
         let mut receiver = Receiver::new(request, expected_serial, expected_device);
         loop {
             self.set_frame_timeout(Duration::from_secs(20));
-            let response = Response::read_validated(self, drive)?;
-            match receiver.accept_validated(response) {
+            let response = if let Some(timing) = timing.as_deref_mut() {
+                let frame_started = Instant::now();
+                let read_before = timing.read;
+                let response = Response::read_validated(
+                    &mut TimedRead {
+                        connection: self,
+                        timing,
+                    },
+                    drive,
+                )?;
+                timing.decode_validate += frame_started
+                    .elapsed()
+                    .saturating_sub(timing.read - read_before);
+                timing.frames = timing.frames.saturating_add(1);
+                response
+            } else {
+                Response::read_validated(self, drive)?
+            };
+            let validation_started = timing.as_ref().map(|_| Instant::now());
+            let event = receiver.accept_validated(response);
+            if let (Some(timing), Some(started)) = (timing.as_deref_mut(), validation_started) {
+                timing.stream_validate += started.elapsed();
+            }
+            match event {
                 Ok(Some(Event::Finished { revision })) => {
                     self.set_frame_timeout(Duration::from_secs(2));
+                    let ack_started = timing.as_ref().map(|_| Instant::now());
                     Acknowledgement::Complete { revision }.write(self)?;
+                    if let (Some(timing), Some(ack), Some(started)) =
+                        (timing.as_deref_mut(), ack_started, started)
+                    {
+                        timing.request_ack += ack.elapsed();
+                        timing.total = started.elapsed();
+                    }
                     return Ok(revision);
                 }
-                Ok(Some(event)) => receive(event)?,
+                Ok(Some(event)) => {
+                    let callback_started = timing.as_ref().map(|_| Instant::now());
+                    let result = receive(event);
+                    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), callback_started)
+                    {
+                        timing.receive_callback += started.elapsed();
+                    }
+                    result?;
+                }
                 Ok(None) => {}
                 Err(Error::Service(code)) => {
                     self.set_frame_timeout(Duration::from_secs(2));

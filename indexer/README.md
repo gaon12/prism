@@ -284,6 +284,18 @@ separate the server's internal cache/MFT/replay work. Compare the first observed
 request and an immediate repeat separately; neither is a controlled cold-start
 measurement, and service transfer timing excludes the app's search-catalog work.
 
+The same JSON record includes `transportTiming`: root identity lookup,
+SCM/pipe authentication, pipe `Read` wall time, frame decoding/path validation,
+stream validation, callback work, request/ack writes and final root recheck.
+These opt-in local intervals use the same authenticated exchange and wire
+contract as the ordinary client; app calls to `snapshot` do not collect them.
+`pipeReadMs` includes time waiting for the service to prepare/serialize bytes
+and for I/O completion. It cannot isolate server CPU or pure pipe transport.
+`decodeValidateMs` is frame wall time minus measured reads, not a CPU counter.
+Read calls, received wire bytes and frame counts help compare runs without
+recording filenames. The callback only counts rows; it does not measure the
+app's catalog insertion or its backpressure on the service.
+
 For a constrained client comparison, add `--wait-for-start`. The probe prints
 `{"waitingForStart":true}` and waits for one ASCII `G` byte on stdin before any
 service interaction. A controller must assign the owned probe to its prepared

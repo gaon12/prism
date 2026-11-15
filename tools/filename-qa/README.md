@@ -845,3 +845,57 @@ the exact scopes/hashes are retained outside Temp under
 The next useful split is preparation/query CPU versus WebView startup, followed
 by a separately qualified service-version comparison. The 5–7-second whole-app
 target remains open.
+
+### Ordinary client transport timing, 2026-11-15
+
+The opt-in `service_timing` example now emits `transportTiming` in its existing
+aggregate JSON record. It profiles the same authenticated/validated exchange;
+ordinary app snapshots do not collect timing. Private real-pipe tests compare
+profiled and ordinary success/acknowledgement, volume mismatch before callback,
+and callback failure. Windows tests: 45 passed, one opt-in test ignored; strict
+all-target Clippy and the release example build passed.
+
+Two ordinary read-only requests used the same historical installed service
+(`d0b1fe5e...`, PID 5924 at measurement). Kernel readback confirmed one allowed
+CPU and 512 MiB process/job commit limits on the client before its explicit `G`
+start gate. The service remained outside that Job and unchanged. The callback
+only counts records/path bytes; it builds no app catalog. No elevation, service
+replacement, cache reset, app/profile access or model inference occurred.
+
+| Client metric (seconds except counts) | First request | Immediate repeat |
+| ------------------------------------- | ------------: | ---------------: |
+| Records                               |     2,137,176 |        2,137,178 |
+| First records                         |         0.870 |            1.495 |
+| Whole snapshot                        |         8.475 |            8.744 |
+| Pipe Read wall                        |         7.350 |            7.578 |
+| Frame decode/path validation wall     |         1.038 |            1.066 |
+| Receive callback wall                 |         0.086 |            0.099 |
+| Client user + kernel CPU              |         0.609 |            0.875 |
+| Received wire bytes                   |   307,970,269 |      307,970,456 |
+| Read calls                            |         3,196 |            3,173 |
+
+Stream validation, request/ack writes, authentication and root checks each took
+less than one millisecond per request. Read time includes unobserved service
+preparation/serialization, pipe I/O and scheduling wait; frame decode is wall
+time excluding reads, not a CPU counter. Thus these numbers do not split pure
+transport from server CPU or justify a server-function optimization. Callback
+wall includes destruction of received batches after counting. The old inner
+`receiveCallbackMs` measures only counting/summing and excludes that destruction.
+The separate app measurements above include catalog insertion/backpressure and
+cannot be added to or directly subtracted from these standalone requests.
+
+The shared host was 52.4/53.1% busy, including this measurement. The volume was
+NVMe; HDD latency was not emulated. Job peak commit was under 4 MiB. Both requests
+passed, all input/executable/service hashes stayed unchanged, no resource guard
+fired, and no owned Job processes remained. The initial private test fixture's non-Send descriptor construction was
+corrected and its failed compiler log is retained. The controller's read-only
+service-command-line parsing was corrected before it requested any snapshot.
+
+Raw `transport-profile-final-{test,clippy,example}/result.json`,
+`transport-profile-live2/result.json` and `transport-profile-qualification.json`
+are retained under `C:/Users/solso/prism-agent-work-20261115/`. This is diagnostic
+evidence, not a 5-7-second whole-app, current bundled service or HDD qualification.
+First search already preceded whole collection in the app cases above
+(2.587/2.763 versus 9.303/9.054 seconds); all rows are not required for first
+results. Further server-internal attribution requires server-side boundaries
+from a separately qualified build.

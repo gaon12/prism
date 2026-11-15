@@ -1,6 +1,6 @@
 //! Ordinary read-only client. Report aggregate timings without exposing paths.
-//! The three intervals are observed client boundaries, not a server profiler:
-//! the first includes connect/prepare, and the last includes final validation.
+//! Intervals are observed client boundaries, not a server profiler. Pipe read
+//! wall time includes waiting for server preparation, serialization and I/O.
 #[cfg(not(windows))]
 fn main() {
     eprintln!("The filename service timing client requires Windows.");
@@ -62,7 +62,7 @@ fn run() -> std::io::Result<()> {
     let mut path_bytes = 0u64;
     let mut progress_events = 0u64;
     let mut callback = Duration::ZERO;
-    client::snapshot(
+    let (_, timing) = client::snapshot_profiled(
         Path::new(&drive.root()),
         Arc::new(AtomicBool::new(false)),
         |event| {
@@ -95,8 +95,25 @@ fn run() -> std::io::Result<()> {
         || "null".into(),
         |last| (total - last).as_millis().to_string(),
     );
+    let exchange = timing.exchange;
+    let transport_timing = format!(
+        "{{\"timingSchemaVersion\":1,\"rootIdentityMs\":{:.3},\"connectAuthenticateMs\":{:.3},\"pipeReadMs\":{:.3},\"decodeValidateMs\":{:.3},\"streamValidateMs\":{:.3},\"profiledCallbackMs\":{:.3},\"requestAckMs\":{:.3},\"rootRecheckMs\":{:.3},\"exchangeTotalMs\":{:.3},\"snapshotTotalMs\":{:.3},\"readCalls\":{},\"wireBytes\":{},\"frames\":{},\"readIncludesServerWait\":true}}",
+        timing.root_identity.as_secs_f64() * 1000.0,
+        timing.connect_authenticate.as_secs_f64() * 1000.0,
+        exchange.read.as_secs_f64() * 1000.0,
+        exchange.decode_validate.as_secs_f64() * 1000.0,
+        exchange.stream_validate.as_secs_f64() * 1000.0,
+        exchange.receive_callback.as_secs_f64() * 1000.0,
+        exchange.request_ack.as_secs_f64() * 1000.0,
+        timing.root_recheck.as_secs_f64() * 1000.0,
+        exchange.total.as_secs_f64() * 1000.0,
+        timing.total.as_secs_f64() * 1000.0,
+        exchange.read_calls,
+        exchange.wire_bytes,
+        exchange.frames,
+    );
     println!(
-        "{{\"ordinaryClient\":true,\"protocolVersion\":{VERSION},\"records\":{records},\"pathBytes\":{path_bytes},\"progressEvents\":{progress_events},\"firstRecordsMs\":{first_ms},\"transferWindowMs\":{transfer_ms},\"afterRecordsMs\":{after_ms},\"receiveCallbackMs\":{},\"startGateUsed\":{gated},\"totalMs\":{}}}",
+        "{{\"ordinaryClient\":true,\"protocolVersion\":{VERSION},\"records\":{records},\"pathBytes\":{path_bytes},\"progressEvents\":{progress_events},\"firstRecordsMs\":{first_ms},\"transferWindowMs\":{transfer_ms},\"afterRecordsMs\":{after_ms},\"receiveCallbackMs\":{},\"startGateUsed\":{gated},\"totalMs\":{},\"transportTiming\":{transport_timing}}}",
         callback.as_millis(),
         total.as_millis(),
     );

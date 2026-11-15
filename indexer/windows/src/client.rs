@@ -12,6 +12,7 @@ use std::{
     path::{Component, Path, Prefix},
     ptr::{null, null_mut},
     sync::{atomic::AtomicBool, Arc},
+    time::{Duration, Instant},
 };
 use windows_sys::Win32::{Foundation::*, Storage::FileSystem::*};
 
@@ -120,6 +121,27 @@ pub fn snapshot(
     snapshot_mode(root, cancel, receive, false)
 }
 
+/// Ordinary authenticated snapshot with local timing only. Read wait includes
+/// unobserved server work; these intervals are not a server-side profiler.
+#[derive(Clone, Debug, Default)]
+pub struct SnapshotTiming {
+    pub root_identity: Duration,
+    pub connect_authenticate: Duration,
+    pub exchange: crate::pipe::ExchangeTiming,
+    pub root_recheck: Duration,
+    pub total: Duration,
+}
+
+pub fn snapshot_profiled(
+    root: &Path,
+    cancel: Arc<AtomicBool>,
+    receive: impl FnMut(Event) -> io::Result<()>,
+) -> io::Result<(u64, SnapshotTiming)> {
+    let mut timing = SnapshotTiming::default();
+    let revision = snapshot_inner(root, cancel, receive, false, Some(&mut timing))?;
+    Ok((revision, timing))
+}
+
 /// Explicit metadata mode. A legacy service's rejection is Unsupported, not
 /// permission to substitute rows that lack the requested attributes.
 /// Individual rows may still report None when complete flags are unavailable.
@@ -151,27 +173,60 @@ fn snapshot_mode(
     receive: impl FnMut(Event) -> io::Result<()>,
     attributes: bool,
 ) -> io::Result<u64> {
+    snapshot_inner(root, cancel, receive, attributes, None)
+}
+
+fn snapshot_inner(
+    root: &Path,
+    cancel: Arc<AtomicBool>,
+    receive: impl FnMut(Event) -> io::Result<()>,
+    attributes: bool,
+    mut timing: Option<&mut SnapshotTiming>,
+) -> io::Result<u64> {
+    let started = timing.as_ref().map(|_| Instant::now());
+    let root_started = timing.as_ref().map(|_| Instant::now());
     let identity = root_identity(root)?;
+    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), root_started) {
+        timing.root_identity = started.elapsed();
+    }
+    let connect_started = timing.as_ref().map(|_| Instant::now());
     let mut connection = Connection::connect(cancel)?;
-    let revision = connection.exchange(
-        if attributes {
-            Request::SnapshotWithAttributes {
-                drive: identity.drive,
-            }
-        } else {
-            Request::Snapshot {
-                drive: identity.drive,
-            }
-        },
-        identity.serial,
-        &identity.device,
-        receive,
-    )?;
-    if root_identity(root)? != identity {
+    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), connect_started) {
+        timing.connect_authenticate = started.elapsed();
+    }
+    let request = if attributes {
+        Request::SnapshotWithAttributes {
+            drive: identity.drive,
+        }
+    } else {
+        Request::Snapshot {
+            drive: identity.drive,
+        }
+    };
+    let revision = if let Some(timing) = timing.as_deref_mut() {
+        connection.exchange_profiled(
+            request,
+            identity.serial,
+            &identity.device,
+            receive,
+            &mut timing.exchange,
+        )?
+    } else {
+        connection.exchange(request, identity.serial, &identity.device, receive)?
+    };
+    let recheck_started = timing.as_ref().map(|_| Instant::now());
+    let current = root_identity(root)?;
+    if let (Some(timing), Some(started)) = (timing.as_deref_mut(), recheck_started) {
+        timing.root_recheck = started.elapsed();
+    }
+    if current != identity {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "The registered volume changed while collecting filenames.",
         ));
+    }
+    if let (Some(timing), Some(started)) = (timing, started) {
+        timing.total = started.elapsed();
     }
     Ok(revision)
 }

@@ -308,6 +308,27 @@ jobs:
           $env:PRISM_TEST_APP_SHA256 = (Get-FileHash -LiteralPath $env:PRISM_TEST_EXECUTABLE -Algorithm SHA256).Hash.ToLowerInvariant()
           node tests/native/real-generation.mjs
           exit $LASTEXITCODE
+      - name: Verify file inclusion policies in the actual app
+        # Filename, content and archive (ZIP-based documents) inclusion rules
+        # through the release prism.exe: settings, collection, search, restart
+        # and revocation. Each runner copies the exe into its own portable
+        # folder (prism.portable + PrismData) before launch, so it never uses an
+        # installed profile, and checks the original and the copy by SHA-256.
+        # Placed after the model gate so a failure here never hides that result.
+        if: matrix.platform == 'windows'
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          PRISM_TEST_EXECUTABLE: ${{ github.workspace }}/src-tauri/target/release/prism.exe
+          PRISM_TEST_EXPECT_RELEASE: '1'
+          PRISM_APP_CDP_PORT: '9324'
+        run: |
+          $env:PRISM_TEST_APP_SHA256 = (Get-FileHash -LiteralPath $env:PRISM_TEST_EXECUTABLE -Algorithm SHA256).Hash.ToLowerInvariant()
+          foreach ($check in 'file-policy', 'content-policy', 'container-policy') {
+            Write-Host "== $check"
+            node "tests/native/$check.mjs"
+            if ($LASTEXITCODE -ne 0) { Write-Error "$check failed with exit code $LASTEXITCODE"; exit $LASTEXITCODE }
+          }
       - name: Keep native model gate evidence on success or failure
         if: always() && matrix.platform == 'windows'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -320,6 +341,12 @@ jobs:
             ${{ runner.temp }}/prism-documents-*/evidence/**
             ${{ runner.temp }}/prism-document-source-pdf-*/*.pdf
             ${{ runner.temp }}/prism-document-source-pdf-*/*.hwpx
+            ${{ runner.temp }}/prism-native-file-policy-*/result.json
+            ${{ runner.temp }}/prism-native-file-policy-*/evidence/**
+            ${{ runner.temp }}/prism-native-content-policy-*/result.json
+            ${{ runner.temp }}/prism-native-content-policy-*/evidence/**
+            ${{ runner.temp }}/prism-native-container-policy-*/result.json
+            ${{ runner.temp }}/prism-native-container-policy-*/evidence/**
           if-no-files-found: warn
           compression-level: 0
       - name: Collect Windows setup

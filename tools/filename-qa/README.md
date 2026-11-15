@@ -1051,13 +1051,11 @@ and `filename-cpu-precision-qualification.json` in the same stable parent.
 The earlier schema-1 raw ticks are retained, but their phase seconds and
 subtracted residual are superseded by the cycle-based interpretation.
 
-Full Tauri diagnostics compilation and actual app CPU attribution remain to be
-verified in a new CI executable. The planned native comparison uses the same
-verified release PE, historical installed service and software one-CPU/512 MiB
-profile in off/on/on/off order. It must report all four cases and their shared
-host/cache/service limitations, startup CPU and the later profiling sample.
-No CPU optimization or cached 5–7-second/cold-HDD acceptance follows from these
-instrumentation checks.
+The first instrumentation build passed the complete build-only CI
+`43730173059` at `1f9dddb`, including full Tauri compilation. The schema-2
+Windows release at `4275b4e` then ran the actual GUI comparison below. Those
+results distinguish startup process CPU from the later cycle snapshot; they
+are not an exhaustive attribution or a product optimization qualification.
 
 ### Headless live FileIndex cycle qualification, 2026-11-16
 
@@ -1135,5 +1133,85 @@ are under `C:/Users/solso/prism-agent-work-20261115/` in
 in `filename-live-cpu-abba/`; its exact hashed inputs/executable were archived
 in `filename-live-cpu-schema1-archive/` before rebuilding the mutable Cargo
 output. Its raw phase ticks are historical diagnostics, not precise phase time.
-Actual GUI attribution and its off/on/on/off comparison still require a newly
-built profiling-capable app.
+The actual GUI comparison below uses a subsequently admitted schema-2 app;
+these headless results retain their separate component scope.
+
+### Actual Windows GUI CPU and cycle comparison, 2026-11-16
+
+All four off/on/on/off cases passed against the same admitted release PE from
+CI `43733332457` at `4275b4e`. Artifact `14169299386` matched the recorded ZIP
+digest; the executable was 379,792,896 bytes, SHA-256
+`9a480f6ceefe02ce290f5364ad13a313e5754917e15c21e71fe573bd01809c91`.
+Its product source matched the runner tree (only QA/docs differed). Runtime
+checks confirmed native portable release and software rendering. Each launch
+used a fresh owned portable profile; service cache was retained, while WebView
+profile caches started fresh. No user app/profile, clipboard, model, service
+upgrade or UAC action was used.
+
+Kernel limits were one CPU and 512 MiB for the app plus its WebView processes.
+The historical installed service remained PID 5924 with SHA `d0b1fe5e...`,
+outside that Job; its raw image bytes were not found in the admitted executable.
+Each case had one validated service snapshot and zero overflow reconciles,
+covering about 2.141 million rows. Live file changes caused small count changes.
+
+| Case | Profile | First search (s) | Entire first scan complete (s) | Idle-ready (s) | Startup Job CPU (s) | Live Prism CPU (s) | Live WebView CPU (s) |
+| ---- | ------- | ---------------: | -----------------------------: | -------------: | ------------------: | -----------------: | -------------------: |
+| A1   | off     |            3.166 |                          9.873 |          9.922 |               7.608 |              4.249 |                3.370 |
+| B1   | on      |            3.056 |                         13.253 |         13.302 |               9.655 |              5.906 |                3.746 |
+| B2   | on      |            3.393 |                         11.196 |         11.245 |               8.124 |              4.562 |                3.555 |
+| A2   | off     |            2.729 |                          9.506 |          9.557 |               7.718 |              4.421 |                3.292 |
+
+The CPU columns use `jobAtReady`, before the later `readme`/DOM probes.
+Job accounting and individual process reads are not atomic: their sums can
+differ by several milliseconds (11 ms in A1). Live process buckets also omit
+exited processes. These are observed samples, not exact synchronous partitions.
+The profiled cases were slower; with changing live data, different query/event
+counts and shared-host load, this sequence does not isolate causal profiler
+overhead or establish a performance improvement.
+
+The one validated initial collection finished its preparation workers before
+publication. These completed collection scopes therefore identify initial
+collection work even when the later diagnostic command is delayed:
+
+| Collection phase         | B1 exclusive cycles (billions) | B2 exclusive cycles (billions) | B1/B2 share of collection cycles |
+| ------------------------ | -----------------------------: | -----------------------------: | -------------------------------: |
+| Compact insertion        |                          5.376 |                          5.537 |                  51.71% / 51.52% |
+| Fetch outside callback   |                          2.350 |                          2.439 |                  22.61% / 22.70% |
+| Row/Entry preparation    |                          1.635 |                          1.686 |                  15.73% / 15.69% |
+| Callback outside queue   |                          0.998 |                          1.048 |                    9.60% / 9.75% |
+| Queue submission/retries |                          0.036 |                          0.037 |                    0.35% / 0.34% |
+| Terminal publication     |                    below 0.001 |                    below 0.001 |                      below 0.01% |
+
+Insertion used about 3.3 times the cycles of row preparation in both native
+cases, consistent with its prominence in the headless component. This supports
+investigating compact insertion before temporary Entry allocation. It does not
+identify a specific hash, directory or copy operation for optimization yet.
+No cycles are converted to seconds.
+
+Query/scan totals need a different scope label: the diagnostic cycle sample
+arrived at 13.368/13.727 seconds, 66/2,482 ms after idle-ready. It contained
+7/8 completed queries using 2.931/3.952 billion cycles, including possible
+post-ready automatic searches. These cannot be called exact startup query
+cost. All completed phase scopes covered 69.96%/76.47% of Prism process cycles
+at those later samples. Unfinished/uninstrumented work and instrumentation
+remain outside that coverage; no residual CPU seconds are inferred. The
+second profile sample reported Prism/WebView CPU of 6.280/3.790 seconds,
+which must not be substituted for its earlier startup values of 4.562/3.555.
+
+All cases finished in 68.250 seconds overall, with no resource stop, unchanged
+inputs/executable/service identity and no owned processes after cleanup.
+Minimum available host RAM was 4,590,489,600 bytes; peak inner Job commit was
+400.6-406.1 MiB. The shared host was 69.3-72.8% busy, on NVMe. Neither service
+CPU/RAM nor the host's other processes were constrained. There was no HDD or
+controlled cold-MFT test. First search is partial availability, not full cached
+readiness; the unprofiled whole-list values here still exceed 5-7 seconds.
+
+Raw cases and frozen input hashes are retained under
+`C:/Users/solso/prism-agent-work-20261115/harsh-cpu-schema2-4275/`,
+`native-filename-cpu-inputs/`, `candidate-4275b4e/` and
+`native-filename-cpu-qualification.json` in the same parent. After all processes
+exited, four redundant fixture `app/prism.exe` copies were removed only after
+hash equality, resolved non-reparse ownership and inactive-path checks, freeing
+1,519,171,584 bytes. The original candidate/ZIP, profiles, logs, results and
+evidence remain. `native-filename-cpu-copy-cleanup.json` records the single-file
+removals; copied-executable paths in historical outputs are no longer present.

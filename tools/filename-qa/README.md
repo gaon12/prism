@@ -304,6 +304,15 @@ process cleanup passed. Raw RED/GREEN/Clippy/corpus records are retained under
 These are importer/component checks; the new app's end-to-end native completion
 qualification remains separate.
 
+After these runs ended, 13 generated native-fixture executable copies were
+removed, freeing 4,938,077,184 bytes. Each was inside a resolved, non-reparse
+owned run directory, matched a retained original candidate's SHA-256 and had no
+active Prism process using it. No directories or profiles were removed. Original
+candidate executables/ZIPs, source, SQLite state, results, logs and screenshots
+remain. Thus the copied `app/prism.exe` paths in historical result JSONs describe
+the run rather than files kept indefinitely. The exact file/hash cleanup ledger
+is `C:/Users/solso/prism-agent-work-20261115/fixture-copy-cleanup.json`.
+
 All seven build/check jobs in [release run
 43673534172](https://github.com/gaon12/prism/actions/runs/43673534172) at `4054072`
 passed. The actual release-library results were:

@@ -130,6 +130,7 @@ function startJob() {
 
 const result = {
   passed: false,
+  timingSchemaVersion: 2,
   profile: { cpus, memoryMB, scope: scopePath },
   limitations: [
     'The installed NTFS service process is not confined (LocalSystem needs administrator rights).',
@@ -183,9 +184,15 @@ try {
   // Each change of the row count or scan state, with its time since launch,
   // so a slow run shows which stage the time went to.
   result.timeline = [];
+  result.statusPolls = { count: 0, totalMs: 0, maxMs: 0 };
   await until(
     async () => {
+      const statusStart = performance.now();
       status = await invoke('index_status');
+      const statusMs = Math.round(performance.now() - statusStart);
+      result.statusPolls.count += 1;
+      result.statusPolls.totalMs += statusMs;
+      result.statusPolls.maxMs = Math.max(result.statusPolls.maxMs, statusMs);
       const last = result.timeline.at(-1);
       if (last?.count !== status.count || last?.scanning !== status.scanning)
         result.timeline.push({
@@ -198,8 +205,10 @@ try {
       // The first moment a search can find files: a first scan's rows are
       // searchable before the whole snapshot is validated.
       if (result.firstSearchableMs === undefined && status.count > 0) {
+        const searchStart = performance.now();
         const partial = await invoke('search_files', { query: '', extension: '', scopeId });
         if (partial.total > 0) {
+          result.firstSearchableQueryMs = Math.round(performance.now() - searchStart);
           result.firstSearchableMs = Math.round(performance.now() - spawnedAt);
           result.firstSearchableTotal = partial.total;
         }
@@ -207,14 +216,19 @@ try {
       // The whole first catalog is published and searchable. Collection may
       // still run afterwards (live updates, or a repeat after lost events),
       // which readyMs below includes.
-      if (result.firstCompleteMs === undefined && status.initialScanComplete)
+      if (result.firstCompleteMs === undefined && status.initialScanComplete) {
         result.firstCompleteMs = Math.round(performance.now() - spawnedAt);
+        result.jobAtFirstComplete = await job.report();
+      }
       return status.initialScanComplete && !status.scanning;
     },
     'first complete filename sweep',
     timeoutMs,
   );
   result.readyMs = Math.round(performance.now() - spawnedAt);
+  // Capture startup CPU before the readme probe, diagnostic commands and CDP
+  // inspections below. The final job report includes those later costs too.
+  result.jobAtReady = await job.report();
   result.count = status.count;
   result.skipped = status.skipped;
   const diagnostics = await invoke('diagnostics_snapshot');

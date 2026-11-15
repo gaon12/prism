@@ -249,6 +249,15 @@ product code is unchanged. This is real transfer/cancellation evidence, not a
 complete corpus download/import, definition-quality, symlink or other-platform
 qualification.
 
+Set `PRISM_TEST_DICTIONARY_COMPLETE=1` as a second explicit opt-in to continue
+after cancellation with a complete official Korean corpus download/import.
+The fixture limits that transfer to 512 MiB, retains failures, checks actual
+offline lookup and rendered attribution, then restarts the real app and checks
+the imported pack and lookup again. The generated seed and both earlier staging
+files must still be unchanged. This completion mode has passed syntax/format
+checks; its native execution is pending. It does not imply other-language corpus
+coverage or general definition quality.
+
 All seven build/check jobs in [release run
 43673534172](https://github.com/gaon12/prism/actions/runs/43673534172) at `4054072`
 passed. The actual release-library results were:

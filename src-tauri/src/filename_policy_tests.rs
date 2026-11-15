@@ -20,7 +20,9 @@ fn root(path: &Path, id: &str) -> Root {
 fn fixture(path: &Path, categories: Categories) -> (FileIndex, FileIndex) {
     let (tx, _) = mpsc::channel();
     let index = FileIndex {
+        published: Arc::new(status::Store::default()),
         catalog: Arc::new(RwLock::new(Catalog {
+            generation: 1,
             roots: vec![root(path, "fixture")],
             file_policy: categories,
             ..Default::default()
@@ -40,7 +42,9 @@ fn record(path: &Path) -> FileRecord {
     }
 }
 fn seed(index: &FileIndex, paths: &[PathBuf]) {
-    let mut state = index.catalog.write().unwrap();
+    let mut state = index
+        .write_catalog(status_profile::WriterKind::Metadata)
+        .unwrap();
     for path in paths {
         state
             .entries
@@ -148,7 +152,7 @@ fn reconfiguration_detaches_cached_and_provisional_rows_and_preserves_legacy_pol
         .lock()
         .unwrap()
         .insert(&Entry::new(catalog::raw(record(&path)), 1));
-    temporary.show_provisional(1, &shared);
+    temporary.show_provisional(1, &shared, &Arc::new(status::Progress::default()));
     assert!(temporary.catalog.read().unwrap().provisional.is_some());
     temporary.configure_with_policy(vec![scope], policy);
     assert!(temporary.catalog.read().unwrap().provisional.is_none());
@@ -301,7 +305,7 @@ fn legacy_service_rows_are_filtered_and_provisional_snapshots_use_the_same_polic
             .unwrap()
             .insert(&Entry::new(catalog::raw(record(path)), 1));
     }
-    temporary.show_provisional(1, &shared);
+    temporary.show_provisional(1, &shared, &Arc::new(status::Progress::default()));
     let (paths, partial) = snapshot(&temporary, &selection(&temporary, "owned", ""));
     assert!(partial);
     assert_eq!(paths.len(), 1);

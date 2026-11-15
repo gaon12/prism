@@ -44,7 +44,7 @@ const WRITERS: [WriterKind; 13] = [
     WriterKind::FirstBatch,
     WriterKind::PreparedInsert,
 ];
-const READS: [&str; 8] = [
+const READS: [&str; 10] = [
     "poolWait",
     "catalogWait",
     "catalogHold",
@@ -53,6 +53,8 @@ const READS: [&str; 8] = [
     "dtoBuild",
     "workerTotal",
     "commandTotal",
+    "snapshotWait",
+    "snapshotHold",
 ];
 
 #[derive(Clone, Copy, Default, Serialize)]
@@ -91,6 +93,8 @@ struct ReadRecord {
     dto_build_ns: u64,
     worker_total_ns: u64,
     command_total_ns: Option<u64>,
+    snapshot_wait_ns: Option<u64>,
+    snapshot_hold_ns: Option<u64>,
     failed: bool,
 }
 #[derive(Clone, Copy, Default)]
@@ -98,7 +102,7 @@ struct State {
     read_calls: u64,
     queued_calls: u64,
     read_failures: u64,
-    reads: [Stat; 8],
+    reads: [Stat; 10],
     writers: [WriterStat; 13],
     slowest_worker: Option<ReadRecord>,
     slowest_command: Option<ReadRecord>,
@@ -128,6 +132,8 @@ impl Collector {
             Some(record.dto_build_ns),
             Some(record.worker_total_ns),
             record.command_total_ns,
+            record.snapshot_wait_ns,
+            record.snapshot_hold_ns,
         ]) {
             if let Some(value) = value {
                 stat.add(value);
@@ -184,6 +190,7 @@ impl Collector {
             acquisition_includes_scheduling: true,
             dto_excludes_serialization: true,
             recording_cost_excluded: true,
+            entry_storage_lock_used: false,
             lost_measurements: self.lost.load(Ordering::Relaxed),
             read_calls: state.read_calls,
             queued_calls: state.queued_calls,
@@ -244,6 +251,7 @@ pub(crate) struct Snapshot {
     acquisition_includes_scheduling: bool,
     dto_excludes_serialization: bool,
     recording_cost_excluded: bool,
+    entry_storage_lock_used: bool,
     lost_measurements: u64,
     read_calls: u64,
     queued_calls: u64,
@@ -268,10 +276,9 @@ pub(crate) struct Read<'a> {
     collector: &'a Collector,
     start: Instant,
     record: ReadRecord,
-    catalog_held: Option<Instant>,
-    prepared_started: Option<Instant>,
-    prepared_held: Option<Instant>,
     dto_started: Option<Instant>,
+    snapshot_started: Option<Instant>,
+    snapshot_held: Option<Instant>,
 }
 pub(crate) fn begin(queue: Option<Queued>) -> Option<Read<'static>> {
     Read::start(collector(), queue)
@@ -288,35 +295,24 @@ impl<'a> Read<'a> {
                     .map(|queue| nanos(start.saturating_duration_since(queue.since))),
                 ..ReadRecord::default()
             },
-            catalog_held: None,
-            prepared_started: None,
-            prepared_held: None,
             dto_started: None,
+            snapshot_started: None,
+            snapshot_held: None,
         })
     }
-    pub(crate) fn catalog_acquired(&mut self) {
-        let mark = now();
-        self.record.catalog_wait_ns = nanos(mark.saturating_duration_since(self.start));
-        self.catalog_held = Some(mark);
+    pub(crate) fn snapshot_begin(&mut self) {
+        self.snapshot_started = Some(now());
     }
-    pub(crate) fn catalog_releasing(&mut self) {
-        if let Some(start) = self.catalog_held.take() {
-            self.record.catalog_hold_ns = nanos(now().saturating_duration_since(start));
-        }
-    }
-    pub(crate) fn prepared_begin(&mut self) {
-        self.prepared_started = Some(now());
-    }
-    pub(crate) fn prepared_acquired(&mut self) {
-        if let Some(start) = self.prepared_started.take() {
+    pub(crate) fn snapshot_acquired(&mut self) {
+        if let Some(start) = self.snapshot_started.take() {
             let mark = now();
-            self.record.prepared_wait_ns = Some(nanos(mark.saturating_duration_since(start)));
-            self.prepared_held = Some(mark);
+            self.record.snapshot_wait_ns = Some(nanos(mark.saturating_duration_since(start)));
+            self.snapshot_held = Some(mark);
         }
     }
-    pub(crate) fn prepared_releasing(&mut self) {
-        if let Some(start) = self.prepared_held.take() {
-            self.record.prepared_hold_ns = Some(nanos(now().saturating_duration_since(start)));
+    pub(crate) fn snapshot_releasing(&mut self) {
+        if let Some(start) = self.snapshot_held.take() {
+            self.record.snapshot_hold_ns = Some(nanos(now().saturating_duration_since(start)));
         }
     }
     pub(crate) fn dto_begin(&mut self) {

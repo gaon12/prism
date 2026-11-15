@@ -3,13 +3,15 @@
 Audit baseline: `c6fffe4` (2026-11-16). The source audit and controlled local
 experiment below describe that baseline, whose relevant index/command/pipeline/UI
 sources match the measured `5054b8c` CI app. The later developer-only timing
-hooks are described separately below. A lightweight status cache has not been
-implemented; status still reads the original catalog and prepared locks.
+hooks and lightweight published-status implementation are described separately
+below. Search and RAG continue to use canonical storage; the status getter now
+uses a separate progress snapshot.
 
-`index_status` can wait for **two catalog locks**, despite already running off
-the Tauri main thread. Separating published status from entry storage is a
-reasonable next change. The existing measurements do not yet establish which
-lock, worker scheduling or IPC/rendering stage caused the observed long polls.
+At that baseline, `index_status` can wait for **two catalog locks**, despite
+already running off the Tauri main thread. The new implementation removes
+those dependencies from the getter. The existing measurements do not yet
+establish which lock, worker scheduling or IPC/rendering stage caused the
+observed long polls, or quantify the new implementation's actual GUI latency.
 
 ## Measured boundary
 
@@ -316,19 +318,81 @@ and `filename-status-timing-qualification.json` in the same parent. Earlier
 fixture borrow-check/lint failures are retained separately and are not counted
 as successful runs.
 
-## Status-cache acceptance and regression plan
+## Lightweight published status
 
-- In a synthetic controlled test, keep a catalog writer blocked on an owned
-  release gate and confirm status returns before that writer is released.
-  Repeat while the provisional mutex is held. Gate/order assertions are the
-  correctness check; avoid a fragile sub-millisecond CI timing assertion.
-- Cover coherent generation/revision/flags, sticky initial completion during
-  watch work, provisional progress, out-of-order batches, failure-detach and
-  replacement by a concurrent live writer. Test stale callbacks after refresh,
-  a second attempt in one generation, owner loss and poisoned storage.
-- Preserve all filename/search/snapshot/policy regressions and strict Clippy,
-  and verify Windows/macOS/Linux compilation. Normal IPC JSON and disabled
-  native-launch environment remain unchanged.
+`FileIndex::status` now clones a coherent progress snapshot from a separate
+short `Mutex`, without acquiring catalog or prepared storage. The mutex guards
+an immutable `Arc<IndexStatus>` and its optional provisional generation/attempt
+token. The getter captures that Arc and the attempt's count together, releases
+the mutex, then clones the DTO outside it. It still checks the catalog's atomic
+poison flag and returns the existing error for poisoned storage. No settings
+mutex or worker join is involved. The normal IPC JSON is unchanged.
+
+The existing central `write_catalog`/`try_write_catalog` guards commit status
+before releasing their canonical writer, including early returns. Arc creation
+and previous-snapshot destruction occur outside the status mutex. A canonical
+generation tag rejects a writer revoked during its work or snapshot creation.
+Panic unwinding does not publish partially modified state. A poll during a
+long writer returns the preceding committed status, rather than waiting for
+the in-progress mutation. This is a progress projection, never authority for
+search filtering, opening a result or RAG revision validation.
+
+Each preparation owns a separate small `Arc<Progress>` containing only its
+atomic row count. Workers update that count after releasing their insertion
+guard; `fetch_max` tolerates batches completing their callbacks out of order.
+The published snapshot references that token only while its exact attempt is
+the current provisional source and the real catalog remains empty. A token
+does not own the prepared map or rows. Late updates to an old attempt cannot
+affect a replacement attempt, even in the same generation. Metadata commits
+retain the token instead of replacing its newer count with an older DTO count.
+
+Generation/owner revocation hides provisional progress immediately on the
+getter's next snapshot read, even if its canonical detach is still waiting
+behind a search. Failed/detached attempts, validated swaps and concurrent live
+writers stop overlaying that token. Live counts can decrease; monotonic merging
+is confined to one unfinished preparation. Refresh, completion, watcher state,
+warnings, revision and diagnostic service timing still come from the canonical
+writer commits. Existing search/RAG paths keep their original data locks and
+revision/permission checks.
+
+The existing DEV wall profile adds `snapshotWait` and `snapshotHold` read rows
+and optional fields in its coherent slowest-call records. Legacy catalog and
+prepared read columns remain for comparison; the new getter never samples
+those entry locks (`entryStorageLockUsed: false`). Its catalog numeric columns
+are zero and prepared columns absent; those zeros are not acquisition samples
+from a real catalog read. Snapshot hold ends before unlock and DTO cloning
+occurs afterward. CPU schema 2, the two-flag gate and disabled clock behavior
+are unchanged. No measured wall windows should be added together.
+
+Seven new snapshot regressions check completion while both data locks remain
+held, generation/owner revocation, stale same-generation attempts, out-of-order
+counts, coherent revision/flags, arena release, count decreases and an actual
+concurrent first-batch writer followed by validated provisional merging. The
+earlier status-lock test is updated to the separate-snapshot contract. Existing
+scan, service-failure/cancellation, policy, search and snapshot tests remain.
+Final local off/on filename QA each passed **132 tests with 7 opt-in tests
+ignored**; strict all-target Clippy and the 21 Node compatibility tests passed.
+The guarded off/on runs took 33.109/28.328 seconds including Cargo overhead,
+with minimum available host RAM 5,851,738,112/5,972,967,424 bytes. No resource
+stop fired and all owned processes exited after Job close/waits. These run
+durations are test verification, not an on/off performance experiment.
+The input hashes, logs and two initial fixture compilation failures are recorded in
+`C:/Users/solso/prism-agent-work-20261115/filename-status-snapshot-qualification.json`.
+Full Tauri/nonWindows CI and actual-app GUI comparisons are still pending.
+This implementation does not establish a maximum latency guarantee, attribute
+the historical 2-second polls, or accept the 5-7 second startup target.
+
+## Regression coverage and remaining native acceptance
+
+- The synthetic getter test confirms completion before either held data lock
+  is released. Its timeout bounds failure; there is no fragile sub-millisecond
+  latency assertion.
+- Local regressions cover coherent revision/flags, sticky initial completion
+  during watch work, provisional progress, out-of-order batches, failure-detach,
+  concurrent live writers, stale generations/attempts, owner loss and poison.
+- Filename/search/snapshot/policy regressions and strict Clippy passed locally.
+  Full app Windows/macOS/Linux compilation remains for CI. Normal IPC JSON and
+  the shared disabled native-launch environment remain unchanged.
 - With the approved implementation, compare the same actual CI apps and owned
   profiles under one CPU/512 MiB, recording backend wait and end-to-end status
   separately. A lower status-call latency is its own outcome; it does not
@@ -339,4 +403,5 @@ Existing numeric evidence and source hashes are retained privately under
 `native-hash-reuse-qualification.json` and the original four-case raw result.
 The original source audit ran no new GUI, Rust build or benchmark; the separate
 controlled experiment above adds local build/measurement evidence. The later
-timing hooks instrument the original locks; no status cache has been applied.
+timing hooks and published-status implementation have their own source/test
+qualification; actual GUI latency remains unmeasured for that new code.

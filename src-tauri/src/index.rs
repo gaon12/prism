@@ -26,6 +26,8 @@ pub(crate) mod cpu_profile;
 mod entries;
 #[path = "filename_service.rs"]
 mod service;
+#[path = "filename_status.rs"]
+mod status;
 #[path = "filename_status_profile.rs"]
 pub(crate) mod status_profile;
 use entries::{Entries, Scratch, View};
@@ -321,6 +323,7 @@ struct Root {
 }
 #[derive(Default)]
 struct Catalog {
+    generation: u64,
     /// Compact storage: each directory once, each entry as a small record.
     entries: Entries,
     roots: Vec<Root>,
@@ -346,6 +349,7 @@ mod inclusion;
 /// from (or told apart in) the real catalog.
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 struct Provisional {
+    progress: Arc<status::Progress>,
     generation: u64,
     entries: Arc<Mutex<Entries>>,
 }
@@ -557,6 +561,7 @@ fn root_paths(roots: &[Root]) -> Vec<PathBuf> {
 }
 #[derive(Clone)]
 pub struct FileIndex {
+    published: Arc<status::Store>,
     catalog: Arc<RwLock<Catalog>>,
     generation: Arc<AtomicU64>,
     tx: mpsc::Sender<(u64, Vec<SearchScope>)>,
@@ -580,21 +585,36 @@ impl FileIndex {
     fn write_catalog(
         &self,
         kind: status_profile::WriterKind,
-    ) -> std::sync::LockResult<status_profile::WriteGuard<'_, Catalog>> {
-        status_profile::write(self.catalog.as_ref(), kind)
+    ) -> std::sync::LockResult<status::CatalogGuard<'_>> {
+        match status_profile::write(self.catalog.as_ref(), kind) {
+            Ok(inner) => Ok(status::CatalogGuard::new(self, inner)),
+            Err(error) => Err(std::sync::PoisonError::new(status::CatalogGuard::new(
+                self,
+                error.into_inner(),
+            ))),
+        }
     }
     #[cfg(any(windows, test))]
     fn try_write_catalog(
         &self,
         kind: status_profile::WriterKind,
-    ) -> std::sync::TryLockResult<status_profile::WriteGuard<'_, Catalog>> {
-        status_profile::try_write(self.catalog.as_ref(), kind)
+    ) -> std::sync::TryLockResult<status::CatalogGuard<'_>> {
+        match status_profile::try_write(self.catalog.as_ref(), kind) {
+            Ok(inner) => Ok(status::CatalogGuard::new(self, inner)),
+            Err(std::sync::TryLockError::Poisoned(error)) => Err(
+                std::sync::TryLockError::Poisoned(std::sync::PoisonError::new(
+                    status::CatalogGuard::new(self, error.into_inner()),
+                )),
+            ),
+            Err(std::sync::TryLockError::WouldBlock) => Err(std::sync::TryLockError::WouldBlock),
+        }
     }
     pub fn new() -> Self {
         let catalog = Arc::new(RwLock::new(Catalog::default()));
         let generation = Arc::new(AtomicU64::new(0));
         let (tx, rx) = mpsc::channel();
         let this = Self {
+            published: Arc::new(status::Store::default()),
             catalog,
             generation,
             tx,
@@ -648,6 +668,7 @@ impl FileIndex {
             if self.generation.load(Ordering::SeqCst) != generation {
                 return;
             }
+            catalog.generation = generation;
             // An unfinished first scan belongs to the old generation.
             catalog.provisional = None;
             let next = policy.unwrap_or(catalog.file_policy);
@@ -700,67 +721,11 @@ impl FileIndex {
         queue: Option<status_profile::Queued>,
     ) -> Result<IndexStatus, String> {
         let mut timing = status_profile::begin(queue);
-        let acquired = self.catalog.read();
-        if let Some(timing) = timing.as_mut() {
-            timing.catalog_acquired();
-        }
-        let result = match acquired {
-            Ok(catalog) => {
-                let status = self.status_of(&catalog, &mut timing);
-                if let Some(timing) = timing.as_mut() {
-                    timing.catalog_releasing();
-                }
-                drop(catalog);
-                Ok(status)
-            }
-            Err(error) => {
-                if let Some(timing) = timing.as_mut() {
-                    timing.catalog_releasing();
-                }
-                drop(error);
-                Err("File index unavailable.".into())
-            }
-        };
-        // Never take a recorder mutex while a catalog/prepared guard is held.
+        let result = self.published.read(self, &mut timing);
         if let Some(timing) = timing {
             timing.finish(result.is_err());
         }
         result
-    }
-    /// The status a caller sees: a first scan still arriving reports the rows
-    /// searches can already find.
-    fn status_of(
-        &self,
-        catalog: &Catalog,
-        timing: &mut Option<status_profile::Read<'_>>,
-    ) -> IndexStatus {
-        if let Some(timing) = timing.as_mut() {
-            timing.dto_begin();
-        }
-        let mut status = catalog.status.clone();
-        if let Some(timing) = timing.as_mut() {
-            timing.dto_end();
-        }
-        if let Some(provisional) = self.provisional_source(catalog) {
-            if let Some(timing) = timing.as_mut() {
-                timing.prepared_begin();
-            }
-            let acquired = provisional.entries.lock();
-            if let Some(timing) = timing.as_mut() {
-                timing.prepared_acquired();
-            }
-            let entries = acquired.unwrap_or_else(|error| error.into_inner());
-            if let Some(timing) = timing.as_mut() {
-                timing.dto_begin();
-            }
-            status.count = entries.len();
-            if let Some(timing) = timing.as_mut() {
-                timing.dto_end();
-                timing.prepared_releasing();
-            }
-            drop(entries);
-        }
-        status
     }
     fn current(&self, generation: u64) -> bool {
         Arc::strong_count(&self.lifetime) > 1
@@ -2010,7 +1975,11 @@ mod tests {
     fn explicit_reset_clears_catalog_and_prevents_old_scan_publication() {
         let (tx, _rx) = mpsc::channel();
         let index = FileIndex {
-            catalog: Arc::new(RwLock::new(Catalog::default())),
+            published: Arc::new(status::Store::default()),
+            catalog: Arc::new(RwLock::new(Catalog {
+                generation: 1,
+                ..Default::default()
+            })),
             generation: Arc::new(AtomicU64::new(1)),
             tx,
             lifetime: Arc::new(()),
@@ -2043,7 +2012,11 @@ mod tests {
         // deterministically so a short idle interval cannot hide the transition.
         let (tx, _rx) = mpsc::channel();
         let index = FileIndex {
-            catalog: Arc::new(RwLock::new(Catalog::default())),
+            published: Arc::new(status::Store::default()),
+            catalog: Arc::new(RwLock::new(Catalog {
+                generation: 1,
+                ..Default::default()
+            })),
             generation: Arc::new(AtomicU64::new(1)),
             tx,
             lifetime: Arc::new(()),
@@ -2487,7 +2460,11 @@ mod performance_tests {
     fn an_entry_refresh_reads_the_folder_alone_and_keeps_its_contents() {
         let (tx, _rx) = mpsc::channel();
         let index = FileIndex {
-            catalog: Arc::new(RwLock::new(Catalog::default())),
+            published: Arc::new(status::Store::default()),
+            catalog: Arc::new(RwLock::new(Catalog {
+                generation: 1,
+                ..Default::default()
+            })),
             generation: Arc::new(AtomicU64::new(1)),
             tx,
             lifetime: Arc::new(()),
@@ -2770,7 +2747,9 @@ mod performance_tests {
         );
         // An entry whose file vanished without a watcher event is removed by the next sweep.
         {
-            let mut catalog = index.catalog.write().unwrap();
+            let mut catalog = index
+                .write_catalog(status_profile::WriterKind::Metadata)
+                .unwrap();
             let ghost = Entry::new(raw(&roots[0].join("ghost.txt").to_string_lossy(), 1), 1_000);
             catalog.entries.insert(&ghost);
         }

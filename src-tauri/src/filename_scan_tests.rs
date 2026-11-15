@@ -36,7 +36,9 @@ fn uncertain_paths_preserve_only_covered_subtrees_and_handle_bounded_overflow() 
 fn isolated(root: &Path) -> (FileIndex, FileIndex) {
     let (tx, _) = mpsc::channel();
     let index = FileIndex {
+        published: Arc::new(status::Store::default()),
         catalog: Arc::new(RwLock::new(Catalog {
+            generation: 1,
             roots: vec![Root {
                 id: "fixture".into(),
                 key: path_key(root),
@@ -157,7 +159,11 @@ fn unavailable_parent_does_not_mask_changes_in_an_available_child_scope() {
     // The old canonical target still exists; it must not be enumerated through
     // that unavailable scope. The real child is independently configured.
     let missing_alias = root.join("missing-alias");
-    index.catalog.write().unwrap().roots[0].source = missing_alias.to_string_lossy().into_owned();
+    index
+        .write_catalog(status_profile::WriterKind::Metadata)
+        .unwrap()
+        .roots[0]
+        .source = missing_alias.to_string_lossy().into_owned();
     fs::write(root.join("outside-cached.md"), "changed while unavailable").unwrap();
     fs::write(root.join("outside-new.md"), "must not discover").unwrap();
     fs::remove_file(child.join("deleted.md")).unwrap();
@@ -168,7 +174,10 @@ fn unavailable_parent_does_not_mask_changes_in_an_available_child_scope() {
     assert!(!warnings.is_empty());
     let paths = root_paths(&roots);
     assert_eq!(paths, [child]);
-    index.catalog.write().unwrap().roots = roots;
+    index
+        .write_catalog(status_profile::WriterKind::Metadata)
+        .unwrap()
+        .roots = roots;
     index.scan(1, &paths, 2, true);
     assert_eq!(
         index

@@ -14,7 +14,11 @@ use std::{
 fn isolated() -> (FileIndex, FileIndex) {
     let (tx, _) = mpsc::channel();
     let index = FileIndex {
-        catalog: Arc::new(RwLock::new(Catalog::default())),
+        published: Arc::new(status::Store::default()),
+        catalog: Arc::new(RwLock::new(Catalog {
+            generation: 1,
+            ..Default::default()
+        })),
         generation: Arc::new(AtomicU64::new(1)),
         tx,
         lifetime: Arc::new(()),
@@ -102,7 +106,12 @@ fn large_snapshot_catalog_assembly() {
                     .publish_service_rows(1, rows, 1, true, threads)
                     .unwrap();
                 let elapsed = start.elapsed().as_millis();
-                let entries = std::mem::take(&mut index.catalog.write().unwrap().entries);
+                let entries = std::mem::take(
+                    &mut index
+                        .write_catalog(status_profile::WriterKind::Metadata)
+                        .unwrap()
+                        .entries,
+                );
                 (elapsed, entries)
             } else {
                 let start = Instant::now();

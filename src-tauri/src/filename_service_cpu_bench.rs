@@ -235,7 +235,7 @@ fn synthetic_preparation_cpu_stages() {
     let before = timed(&mut verify, || stored_checksum(&prepared));
     let shared = timed(&mut setup, || {
         let shared = Arc::new(Mutex::new(prepared));
-        index.show_provisional(1, &shared);
+        index.show_provisional(1, &shared, &Arc::new(status::Progress::default()));
         assert!(index.catalog.read().unwrap().provisional.is_some());
         assert!(index.catalog.read().unwrap().entries.is_empty());
         shared

@@ -1585,3 +1585,12 @@ and the CPU profile schema stay unchanged. Off/on filename QA each passed 125
 tests (7 opt-in tests ignored), plus strict Clippy. CI builds and actual-app
 timing/wiring are pending; this is instrumentation, not a status-cache fix or
 evidence that the 5-7 second target has been met.
+
+The next [published-status implementation](status-lock-analysis.md#lightweight-published-status)
+removes catalog/prepared acquisition from the getter. A coherent Arc snapshot
+and generation/attempt-scoped progress token retain provisional counts without
+retaining row storage; search/RAG still use the canonical catalog. Dedicated
+regressions cover held data locks, revocation/retries and concurrent live-row
+publication. The DEV profile adds separate snapshot-mutex wait/hold windows.
+Actual release-app latency and cross-platform CI remain pending; the cached
+5-7 second startup target is still open.

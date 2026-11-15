@@ -3,7 +3,11 @@ use super::*;
 fn isolated() -> (FileIndex, FileIndex) {
     let (tx, _) = mpsc::channel();
     let index = FileIndex {
-        catalog: Arc::new(RwLock::new(Catalog::default())),
+        published: Arc::new(status::Store::default()),
+        catalog: Arc::new(RwLock::new(Catalog {
+            generation: 1,
+            ..Default::default()
+        })),
         generation: Arc::new(AtomicU64::new(1)),
         tx,
         lifetime: Arc::new(()),

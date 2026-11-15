@@ -3,7 +3,11 @@ use super::*;
 fn isolated() -> (FileIndex, FileIndex) {
     let (tx, _) = mpsc::channel();
     let index = FileIndex {
-        catalog: Arc::new(RwLock::new(Catalog::default())),
+        published: Arc::new(status::Store::default()),
+        catalog: Arc::new(RwLock::new(Catalog {
+            generation: 1,
+            ..Default::default()
+        })),
         generation: Arc::new(AtomicU64::new(1)),
         tx,
         lifetime: Arc::new(()),
@@ -87,6 +91,7 @@ fn full_bounded_queue_still_notices_generation_and_owner_revocation() {
                 sender: Some(sender),
                 workers: vec![],
                 prepared: Arc::new(Mutex::new(Prepared::new())),
+                progress: Arc::new(status::Progress::default()),
                 stop: Arc::new(AtomicBool::new(false)),
                 processed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };

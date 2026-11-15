@@ -13,6 +13,7 @@ pub(super) struct Preparation<'scope> {
     /// Unicode work runs in parallel outside the lock; only the cheap compact
     /// insertion is serialized, and no whole-catalog merge remains at the end.
     prepared: Arc<Mutex<Prepared>>,
+    progress: Arc<status::Progress>,
     stop: Arc<AtomicBool>,
     #[cfg(test)]
     processed: Arc<std::sync::atomic::AtomicUsize>,
@@ -42,6 +43,7 @@ impl<'scope> Preparation<'scope> {
             sender: Some(sender),
             workers: Vec::new(),
             prepared: Arc::new(Mutex::new(Prepared::new())),
+            progress: Arc::new(status::Progress::default()),
             stop: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             processed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -50,6 +52,7 @@ impl<'scope> Preparation<'scope> {
             let receiver = receiver.clone();
             let stop = preparation.stop.clone();
             let shared = preparation.prepared.clone();
+            let progress = preparation.progress.clone();
             #[cfg(test)]
             let processed = preparation.processed.clone();
             let worker = std::thread::Builder::new()
@@ -83,6 +86,9 @@ impl<'scope> Preparation<'scope> {
                         for entry in ready.drain(..) {
                             insert(&mut map, entry);
                         }
+                        let inserted = map.len();
+                        drop(map);
+                        progress.inserted(inserted);
                         #[cfg(test)]
                         processed.fetch_add(count, Ordering::Release);
                     }
@@ -137,6 +143,10 @@ impl<'scope> Preparation<'scope> {
     /// The private catalog the workers fill. Searches may read it while the
     /// first scan runs (`Provisional` in `index.rs`); only the caller ever
     /// publishes it, after validation.
+    pub(super) fn progress(&self) -> &Arc<status::Progress> {
+        &self.progress
+    }
+
     pub(super) fn shared(&self) -> &Arc<Mutex<Prepared>> {
         &self.prepared
     }

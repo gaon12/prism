@@ -30,6 +30,8 @@ fn read_snapshot_keeps_one_slowest_command_and_overlapping_regions_separate() {
         worker_total_ns: 59,
         command_total_ns: Some(66),
         failed: false,
+        snapshot_wait_ns: None,
+        snapshot_hold_ns: None,
     });
     collector.read(ReadRecord {
         worker_total_ns: 3,
@@ -49,7 +51,7 @@ fn read_snapshot_keeps_one_slowest_command_and_overlapping_regions_separate() {
     assert_eq!(snapshot["slowestCommand"]["preparedWaitNs"], 13);
     assert_eq!(snapshot["overlappingDurationsDoNotSum"], true);
     assert_eq!(snapshot["holdEndsBeforeUnlock"], true);
-    assert_eq!(snapshot["reads"].as_array().unwrap().len(), 8);
+    assert_eq!(snapshot["reads"].as_array().unwrap().len(), 10);
     assert_eq!(snapshot["writers"].as_array().unwrap().len(), 13);
 }
 
@@ -137,7 +139,11 @@ fn isolated() -> (super::super::FileIndex, super::super::FileIndex) {
     use std::sync::Arc;
     let (tx, _) = std::sync::mpsc::channel();
     let index = FileIndex {
-        catalog: Arc::new(RwLock::new(Catalog::default())),
+        published: Arc::new(super::super::status::Store::default()),
+        catalog: Arc::new(RwLock::new(Catalog {
+            generation: 1,
+            ..Default::default()
+        })),
         generation: Arc::new(AtomicU64::new(1)),
         tx,
         lifetime: Arc::new(()),
@@ -151,9 +157,10 @@ fn actual_status_hooks_follow_the_cached_gate_without_dto_or_private_text_change
     use std::sync::Arc;
     let (index, _owner) = isolated();
     {
-        let mut catalog = index.catalog.write().unwrap();
+        let mut catalog = index.write_catalog(WriterKind::Metadata).unwrap();
         catalog.status.warnings = vec!["private-path-and-query-canary".into()];
         catalog.provisional = Some(Provisional {
+            progress: Arc::new(super::super::status::Progress::default()),
             generation: 1,
             entries: Arc::new(Mutex::new(Entries::new())),
         });
@@ -187,7 +194,7 @@ fn poisoned_actual_catalog_remains_an_error() {
     std::thread::scope(|scope| {
         assert!(scope
             .spawn(|| {
-                let _guard = index.catalog.write().unwrap();
+                let _guard = index.write_catalog(WriterKind::Metadata).unwrap();
                 panic!("owned status poison fixture");
             })
             .join()
@@ -197,16 +204,8 @@ fn poisoned_actual_catalog_remains_an_error() {
 }
 
 #[test]
-fn actual_status_releases_both_data_locks_before_recording() {
-    use super::super::{Entries, Provisional};
-    use std::sync::Arc;
+fn actual_status_releases_snapshot_lock_before_recording() {
     let (index, _owner) = isolated();
-    let shared = Arc::new(Mutex::new(Entries::new()));
-    index.catalog.write().unwrap().provisional = Some(Provisional {
-        generation: 1,
-        entries: shared.clone(),
-    });
-    let held = shared.lock().unwrap();
     let recorder = collector().map(|collector| collector.state.lock().unwrap());
     std::thread::scope(|scope| {
         let (result_tx, result_rx) = std::sync::mpsc::channel();
@@ -214,30 +213,13 @@ fn actual_status_releases_both_data_locks_before_recording() {
         let worker = scope.spawn(move || {
             result_tx.send(worker_index.status().unwrap()).unwrap();
         });
-        let started = Instant::now();
-        // Status has taken the catalog reader and is waiting for our prepared mutex.
-        while index.catalog.try_write().is_ok() {
-            assert!(started.elapsed() < Duration::from_secs(3));
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        drop(held);
-        let started = Instant::now();
-        loop {
-            if index.catalog.try_write().is_ok() {
-                break;
-            }
-            assert!(started.elapsed() < Duration::from_secs(3));
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert!(shared.try_lock().is_ok());
-        if recorder.is_some() {
-            // On: DTO is complete and both data locks are free, but recording
-            // still waits for the recorder that this thread deliberately holds.
-            assert!(matches!(
-                result_rx.try_recv(),
-                Err(std::sync::mpsc::TryRecvError::Empty)
-            ));
-        }
+        // The main thread can read the same snapshot even while recording is
+        // blocked: snapshot acquisition never depends on the recorder mutex.
+        let mut no_profile = None;
+        assert_eq!(
+            index.published.read(&index, &mut no_profile).unwrap().count,
+            0
+        );
         drop(recorder);
         assert_eq!(
             result_rx

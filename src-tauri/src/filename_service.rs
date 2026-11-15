@@ -219,7 +219,11 @@ impl FileIndex {
                         for batch in std::mem::take(&mut rows) {
                             preparation.send(batch)?;
                         }
-                        self.show_provisional(generation, preparation.shared());
+                        self.show_provisional(
+                            generation,
+                            preparation.shared(),
+                            preparation.progress(),
+                        );
                         shown = Instant::now();
                     }
                 }
@@ -285,7 +289,12 @@ impl FileIndex {
     /// Let searches read the first scan's private rows while they arrive.
     /// Only for a current generation whose real catalog is still empty.
     #[cfg(any(windows, test))]
-    fn show_provisional(&self, generation: u64, shared: &Arc<Mutex<catalog::Prepared>>) {
+    fn show_provisional(
+        &self,
+        generation: u64,
+        shared: &Arc<Mutex<catalog::Prepared>>,
+        progress: &Arc<status::Progress>,
+    ) {
         let Ok(mut catalog) = self.write_catalog(status_profile::WriterKind::ProvisionalShow)
         else {
             return;
@@ -295,10 +304,12 @@ impl FileIndex {
             return;
         }
         catalog.provisional = Some(Provisional {
+            progress: progress.clone(),
             generation,
             entries: shared.clone(),
         });
         catalog.status.count = shared.lock().unwrap_or_else(|e| e.into_inner()).len();
+        progress.inserted(catalog.status.count);
         catalog.status.revision += 1;
     }
 
@@ -499,7 +510,11 @@ mod tests {
     fn isolated() -> (FileIndex, FileIndex) {
         let (tx, _) = mpsc::channel();
         let index = FileIndex {
-            catalog: Arc::new(RwLock::new(Catalog::default())),
+            published: Arc::new(status::Store::default()),
+            catalog: Arc::new(RwLock::new(Catalog {
+                generation: 1,
+                ..Default::default()
+            })),
             generation: Arc::new(AtomicU64::new(1)),
             tx,
             lifetime: Arc::new(()),
@@ -922,13 +937,17 @@ mod tests {
         // A real file, so opening a provisional result can be checked too.
         fs::write(root.path().join("private-0-0.md"), "x").unwrap();
         let canonical = fs::canonicalize(root.path()).unwrap();
-        index.catalog.write().unwrap().roots.push(Root {
-            id: "root".into(),
-            key: path_key(&canonical),
-            path: canonical.clone(),
-            source: root.path().to_string_lossy().into_owned(),
-            available: true,
-        });
+        index
+            .write_catalog(status_profile::WriterKind::Metadata)
+            .unwrap()
+            .roots
+            .push(Root {
+                id: "root".into(),
+                key: path_key(&canonical),
+                path: canonical.clone(),
+                source: root.path().to_string_lossy().into_owned(),
+                available: true,
+            });
         let opened = canonical.join("private-0-0.md");
         let mut revision_while_streaming = 0;
         index
@@ -1062,5 +1081,35 @@ mod tests {
         assert_eq!(english.results[0].name, "Report.MD");
         assert_eq!(english.results[0].size, 84);
         assert_eq!(english.results[0].modified_ms, Some(99));
+    }
+    #[test]
+    fn a_concurrent_live_writer_wins_then_validated_rows_merge_without_old_progress() {
+        let (index, _owner) = isolated();
+        let progress = Arc::new(status::Progress::default());
+        let shared = Arc::new(Mutex::new(Entries::new()));
+        index.show_provisional(1, &shared, &progress);
+        let entry = |name: &str| {
+            let path = format!("/status/{name}.md");
+            crate::index::Entry::new(
+                crate::index::Raw {
+                    key: path.clone(),
+                    path,
+                    has_name: true,
+                    is_dir: false,
+                    size: 1,
+                    modified_ms: None,
+                },
+                1,
+            )
+        };
+        shared.lock().unwrap().insert(&entry("prepared"));
+        progress.inserted(1);
+        index.publish_first_batch(1, vec![entry("live")]).unwrap();
+        progress.inserted(900);
+        assert_eq!(index.status().unwrap().count, 1);
+        index.publish_provisional(1, &shared).unwrap();
+        progress.inserted(1000);
+        assert_eq!(index.status().unwrap().count, 2);
+        assert_eq!(index.catalog.read().unwrap().entries.len(), 2);
     }
 }

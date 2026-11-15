@@ -1603,3 +1603,12 @@ That confirms a real backend dependency without identifying the exact blocking
 writer or pairing backend/end-to-end maxima by ID. The snapshot product's GUI
 comparison remains pending, and live service/shared-host variation prevents
 startup or profiling-overhead conclusions from these four cases.
+
+The subsequent [actual snapshot comparison](status-lock-analysis.md#actual-published-status-comparison)
+passed four cases with CI `43756415303@599762a`. DEV-on probe maxima fell from
+2,363/2,987 ms to 59/31 ms, and means from 69.91/81.05 ms to 9.34/8.75 ms.
+The new slowest backend commands were pool-dominated, with no entry-lock
+acquisition and about 4.6-4.7 microseconds of worker work in those calls.
+An off case still had a 437-ms probe outlier. Host/service variation and
+sequential runs prevent a latency guarantee or isolated startup-gain claim;
+off ready remained 9.84/9.67 seconds, above the 5-7 second target.

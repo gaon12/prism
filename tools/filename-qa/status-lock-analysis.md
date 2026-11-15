@@ -440,9 +440,59 @@ stop fired and all owned processes exited after Job close/waits. These run
 durations are test verification, not an on/off performance experiment.
 The input hashes, logs and two initial fixture compilation failures are recorded in
 `C:/Users/solso/prism-agent-work-20261115/filename-status-snapshot-qualification.json`.
-Full Tauri/nonWindows CI and actual-app GUI comparisons are still pending.
+At local qualification, full app/nonWindows CI and actual-app comparison were
+pending; the next section records the subsequent CI/native evidence.
 This implementation does not establish a maximum latency guarantee, attribute
 the historical 2-second polls, or accept the 5-7 second startup target.
+
+## Actual published-status comparison
+
+CI `43756415303@599762a` passed all platform jobs. Its Windows artifact
+`14178709482` has ZIP SHA-256
+`fada2753e7ecd6c840ff11930519e45eda0c35e9c9352531b88108b41e586e84`;
+the 379,692,032-byte executable has SHA-256
+`083c6a7b190b55a50741f465a57c721adb2faf889082f7fcb2647e4f6e8e8f14`.
+The same admitted release workflow, harness, software renderer, one-CPU/512-MiB
+kernel limits, historical service and fresh owned portable profiles were used
+in off/on/on/off order. All four cases passed.
+
+| Timing-on case | Probe maximum ms, before → after | Probe mean ms, before → after | Process-wide backend command mean ms, before → after |
+| -------------- | -------------------------------- | ----------------------------- | ---------------------------------------------------- |
+| First          | 2,363 → 59                       | 69.907 → 9.338                | 96.526 → 1.375                                       |
+| Second         | 2,987 → 31                       | 81.051 → 8.745                | 94.480 → 2.436                                       |
+
+The probe populations were 54/59 calls before and 65/55 after. The backend
+profile includes other UI and diagnostic calls, so its means are a separate
+population, not an IPC component subtracted from probe means. Before and after
+runs were sequential rather than interleaved.
+
+New coherent slowest backend commands were 115.743/161.816 ms, almost entirely
+pool windows of 115.738/161.811 ms. Their worker windows were 0.0047/0.0046 ms,
+with snapshot-mutex wait 0.0004/0.0002 ms. Catalog acquisition/hold were zero
+and prepared acquisition/hold absent: the release app exposed the intended
+new snapshot path. These records do not identify all UI scheduling costs or
+guarantee a maximum latency for future calls. One profiling-off probe still
+took 437 ms; the other off case's maximum was 32 ms.
+
+Off ready times were 9,843/9,670 ms versus the earlier 16,622/11,363 ms. Those
+are observations, not an isolated startup gain. New mean host CPU busy ranged
+from 60.2% to 68.5%, versus baseline 69.5-71.9%, and service validated-fetch
+times ranged from 6,127 to 7,862 ms. Live counts also changed to about 2.15
+million. The 5-7 second cached whole-list target remains unaccepted.
+
+The new four-case run took 56.453 seconds, minimum available RAM was
+4,842,065,920 bytes, no resource stop fired and no owned process remained.
+Executable/harness/service hashes were unchanged, and the service remained
+PID 5924 / SHA `d0b1fe5e...` outside the app Job. No user Prism profile/process,
+UAC, service upgrade, cache reset or physical HDD was involved.
+
+Private proof is
+`C:/Users/solso/prism-agent-work-20261115/native-status-snapshot-qualification.json`,
+with raw runs in `harsh-status-snapshot-599-abba/`, candidate provenance in
+`candidate-599762a/` and frozen production/harness inputs in
+`status-snapshot-native-inputs/` under the same parent. No local raw evidence
+was uploaded. The next investigation is watch-prune writer cost, independent
+of the now-separated status getter.
 
 ## Regression coverage and remaining native acceptance
 
@@ -452,18 +502,17 @@ the historical 2-second polls, or accept the 5-7 second startup target.
 - Local regressions cover coherent revision/flags, sticky initial completion
   during watch work, provisional progress, out-of-order batches, failure-detach,
   concurrent live writers, stale generations/attempts, owner loss and poison.
-- Filename/search/snapshot/policy regressions and strict Clippy passed locally.
-  Full app Windows/macOS/Linux compilation remains for CI. Normal IPC JSON and
-  the shared disabled native-launch environment remain unchanged.
-- With the approved implementation, compare the same actual CI apps and owned
-  profiles under one CPU/512 MiB, recording backend wait and end-to-end status
-  separately. A lower status-call latency is its own outcome; it does not
-  establish faster service transfer, full startup or the 5-7 second target.
+- Filename/search/snapshot/policy regressions and strict Clippy passed locally;
+  the subsequent full app CI passed Windows/macOS/Linux jobs. Normal IPC JSON
+  and the shared disabled native-launch environment remain unchanged.
+- Actual CI-app comparisons above separate backend and end-to-end populations.
+  Lower observed status latency is its own outcome; it does not establish
+  faster service transfer, an isolated startup gain or the 5-7 second target.
 
 Existing numeric evidence and source hashes are retained privately under
 `C:/Users/solso/prism-agent-work-20261115/status-lock-analysis.json`, referencing
 `native-hash-reuse-qualification.json` and the original four-case raw result.
 The original source audit ran no new GUI, Rust build or benchmark; the separate
 controlled experiment above adds local build/measurement evidence. The later
-timing hooks and published-status implementation have their own source/test
-qualification; actual GUI latency remains unmeasured for that new code.
+timing hooks and published-status implementation have separate source/test and
+actual CI-app qualifications above.

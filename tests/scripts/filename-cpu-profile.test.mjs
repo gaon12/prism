@@ -11,10 +11,13 @@ function fixture() {
   });
   return {
     profile: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sinceProcessStart: true,
       completedScopesOnly: true,
       lostMeasurements: 0,
+      threadCpuTicksAreCoarse: true,
+      cyclesConvertedToTime: false,
+      processCycles: 10_000,
       phases: [
         'receiveFetch',
         'receiveCallback',
@@ -38,11 +41,17 @@ function fixture() {
   };
 }
 
-test('adds exclusive CPU only and keeps unlisted/exited process CPU visible', () => {
+test('adds exclusive cycles without converting them to time and keeps unlisted CPU visible', () => {
   const { profile, job } = fixture();
   const result = summarizeFilenameCpu(profile, job);
-  assert.equal(result.exclusivePhaseTotalMs, 8);
-  assert.equal(result.prismCpuOutsideCompletedPhasesMs, 4);
+  assert.equal(result.completedPhaseCycles, 8_000);
+  assert.equal(result.processCyclesOutsideCompletedPhases, 2_000);
+  assert.equal(result.completedPhaseCycleCoverage, 0.8);
+  assert.equal(result.fractionOfCompletedPhaseCycles.query, 0.125);
+  assert.equal(result.cyclesConvertedToTime, false);
+  assert.equal(result.threadCpuTicksAreCoarse, true);
+  assert.equal(result.prismCpuMs, 12);
+  assert.equal(result.prismCpuOutsideCompletedPhasesMs, undefined);
   assert.equal(result.liveWebViewCpuMs, 22);
   assert.equal(result.liveOtherCpuMs, 2);
   assert.equal(result.exitedOrUnlistedCpuMs, 4);
@@ -52,6 +61,9 @@ test('rejects unavailable or incomplete counter evidence', () => {
   for (const mutate of [
     (p) => {
       p.lostMeasurements = 1;
+    },
+    (p) => {
+      p.processCycles = 7_999;
     },
     (p) => {
       p.phases.pop();

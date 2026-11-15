@@ -11,15 +11,20 @@ const phases = [
   'queryScan',
 ];
 
-// Completed scopes since process start. Thread-exclusive CPU is additive;
-// inclusive CPU and wall time overlap and must not be added across phases.
+// Completed scopes since process start. Keep coarse thread-time ticks as raw
+// diagnostic values, not exact short-phase seconds or a residual CPU estimate.
+// Exclusive cycles are not converted to time; wall/inclusive values overlap.
 export function summarizeFilenameCpu(profile, job) {
-  assert.equal(profile?.schemaVersion, 1, 'The app must support filename CPU profiling');
+  assert.equal(profile?.schemaVersion, 2, 'The app must support filename cycle attribution');
   assert.equal(profile.sinceProcessStart, true);
   assert.equal(profile.completedScopesOnly, true);
   assert.equal(profile.lostMeasurements, 0, 'Counter failures invalidate CPU attribution');
+  assert.equal(profile.threadCpuTicksAreCoarse, true);
+  assert.equal(profile.cyclesConvertedToTime, false);
+  assert(Number.isSafeInteger(profile.processCycles) && profile.processCycles >= 0);
   assert.deepEqual(profile.phases.map((row) => row.phase).sort(), [...phases].sort());
-  const exclusivePhaseCpuMs = {};
+  const reportedThreadCpuTickMs = {};
+  const exclusivePhaseCycles = {};
   for (const row of profile.phases) {
     assert(Number.isSafeInteger(row.calls) && row.calls >= 0);
     for (const metric of ['wallNs', 'userCpu100ns', 'kernelCpu100ns', 'threadCycles']) {
@@ -27,8 +32,9 @@ export function summarizeFilenameCpu(profile, job) {
       assert(Number.isSafeInteger(row.exclusive[metric]) && row.exclusive[metric] >= 0);
       assert(row.exclusive[metric] <= row.inclusive[metric]);
     }
-    exclusivePhaseCpuMs[row.phase] =
+    reportedThreadCpuTickMs[row.phase] =
       (row.exclusive.userCpu100ns + row.exclusive.kernelCpu100ns) / 10_000;
+    exclusivePhaseCycles[row.phase] = row.exclusive.threadCycles;
   }
   const cpu = (row) => {
     assert(Number.isFinite(row.cpuUserMs) && row.cpuUserMs >= 0);
@@ -44,15 +50,26 @@ export function summarizeFilenameCpu(profile, job) {
     else liveOtherCpuMs += cpu(row);
   }
   const jobCpuMs = cpu(job);
-  const exclusivePhaseTotalMs = Object.values(exclusivePhaseCpuMs).reduce((a, b) => a + b, 0);
-  // Job helper milliseconds are rounded down; the Rust counters keep 100ns
-  // ticks. Sampling follows diagnostics, so allow only rounding slack here.
-  assert(exclusivePhaseTotalMs <= prismCpuMs + 10, 'Phase CPU cannot exceed sampled Prism CPU');
+  const completedPhaseCycles = Object.values(exclusivePhaseCycles).reduce((a, b) => a + b, 0);
+  assert(completedPhaseCycles <= profile.processCycles);
   return {
-    exclusivePhaseCpuMs,
-    exclusivePhaseTotalMs,
+    reportedThreadCpuTickMs,
+    threadCpuTicksAreCoarse: true,
+    exclusivePhaseCycles,
+    completedPhaseCycles,
+    fractionOfCompletedPhaseCycles: Object.fromEntries(
+      Object.entries(exclusivePhaseCycles).map(([phase, cycles]) => [
+        phase,
+        completedPhaseCycles ? cycles / completedPhaseCycles : null,
+      ]),
+    ),
+    processCycles: profile.processCycles,
+    completedPhaseCycleCoverage: profile.processCycles
+      ? completedPhaseCycles / profile.processCycles
+      : null,
+    processCyclesOutsideCompletedPhases: profile.processCycles - completedPhaseCycles,
+    cyclesConvertedToTime: false,
     prismCpuMs,
-    prismCpuOutsideCompletedPhasesMs: Math.max(0, prismCpuMs - exclusivePhaseTotalMs),
     liveWebViewCpuMs,
     liveOtherCpuMs,
     exitedOrUnlistedCpuMs: Math.max(0, jobCpuMs - prismCpuMs - liveWebViewCpuMs - liveOtherCpuMs),

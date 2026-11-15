@@ -82,6 +82,9 @@ pub(crate) struct Snapshot {
     since_process_start: bool,
     completed_scopes_only: bool,
     lost_measurements: u64,
+    thread_cpu_ticks_are_coarse: bool,
+    cycles_converted_to_time: bool,
+    process_cycles: Option<u64>,
     phases: Vec<PhaseSample>,
 }
 struct Collector {
@@ -114,10 +117,13 @@ impl Collector {
     fn snapshot(&self) -> Option<Snapshot> {
         let samples = self.samples.lock().ok()?;
         Some(Snapshot {
-            schema_version: 1,
+            schema_version: 2,
             since_process_start: true,
             completed_scopes_only: true,
             lost_measurements: self.lost.load(Ordering::Relaxed),
+            thread_cpu_ticks_are_coarse: true,
+            cycles_converted_to_time: false,
+            process_cycles: process_cycles(),
             phases: PHASES
                 .into_iter()
                 .zip(samples.iter().copied())
@@ -205,6 +211,23 @@ fn thread_usage() -> Option<Cost> {
 }
 #[cfg(not(windows))]
 fn thread_usage() -> Option<Cost> {
+    None
+}
+
+#[cfg(windows)]
+fn process_cycles() -> Option<u64> {
+    use windows_sys::Win32::{Foundation::HANDLE, System::Threading::GetCurrentProcess};
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        #[link_name = "QueryProcessCycleTime"]
+        fn query_process_cycles(process: HANDLE, cycles: *mut u64) -> windows_sys::core::BOOL;
+    }
+    let mut cycles = 0;
+    // SAFETY: current-process pseudo handle needs no closing; valid numeric output.
+    (unsafe { query_process_cycles(GetCurrentProcess(), &mut cycles) } != 0).then_some(cycles)
+}
+#[cfg(not(windows))]
+fn process_cycles() -> Option<u64> {
     None
 }
 
@@ -338,6 +361,9 @@ mod tests {
         let json = serde_json::to_value(snapshot).unwrap();
         assert_eq!(json["phases"].as_array().unwrap().len(), 8);
         assert_eq!(json["completedScopesOnly"], true);
+        assert_eq!(json["threadCpuTicksAreCoarse"], true);
+        assert_eq!(json["cyclesConvertedToTime"], false);
+        assert!(json["processCycles"].as_u64().unwrap() > 0);
         assert!(json["phases"][0].get("path").is_none());
     }
 }

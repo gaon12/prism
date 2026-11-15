@@ -980,9 +980,24 @@ completed scopes since process startup; they do not reset per generation.
 Each phase records calls, inclusive/exclusive wall nanoseconds, user/kernel CPU
 in 100-nanosecond Windows ticks, and unconverted thread cycles. Nested scopes
 on the same thread are subtracted from exclusive costs; workers read their own
-thread counters. Add only exclusive CPU across phases. Wall durations overlap
-across threads, and inclusive phases must not be added. Counter failures are
-reported as `lostMeasurements`, and invalidate attribution in the fixture.
+thread counters. Short-batch `GetThreadTimes` deltas proved too coarse for
+precise phase seconds on the measured host: observed values use 15.625 ms
+steps and disagree substantially with the stable cycle distribution. Preserve
+those reported ticks for diagnostics, without subtracting their sum from
+process CPU to invent unclassified seconds. Wall durations overlap across
+threads, and inclusive phases must not be added. Counter failures are reported
+as `lostMeasurements`, and invalidate attribution in the fixture.
+
+Profile schema 2 explicitly marks coarse thread-time ticks and returns a
+`QueryProcessCycleTime` sample alongside unconverted phase cycles. The summary
+adds exclusive cycles, reports their fraction of the completed-phase cycle
+sum and their coverage of process cycles, and leaves cycles outside completed
+scopes separate. These fractions describe cycle counts, not elapsed-time
+fractions. Microsoft explicitly advises against converting
+[thread cycles to elapsed time](https://learn.microsoft.com/en-us/windows/win32/api/realtimeapiset/nf-realtimeapiset-querythreadcycletime).
+The 100 ns fields are storage units documented by
+[GetThreadTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes),
+not a measured resolution guarantee for these short scopes.
 
 | Phase             | Measured calling-thread work                                                               |
 | ----------------- | ------------------------------------------------------------------------------------------ |
@@ -1003,8 +1018,9 @@ unfinished scope is absent from a snapshot, not reported as zero completed work.
 service snapshot with no overflow reconciliation. It samples the diagnostic
 before the later `readme` probe and records `jobAtCpuProfileSnapshot` separately
 from the existing `jobAtReady` boundary. `filenameCpuSummary` reports exclusive
-phase CPU, remaining Prism CPU outside completed phases, live WebView/other
-process CPU, and exited/unlisted Job CPU. Process-name buckets cover live
+phase/process cycles and the original coarse thread-time ticks separately from
+Prism, live WebView/other process CPU and exited/unlisted Job CPU. It does not
+derive a residual in seconds from phase ticks. Process-name buckets cover live
 processes only. This separate sample may be later than ready; inspect its
 `cpuProfileSnapshotMs` rather than treating the boundaries as identical.
 
@@ -1014,7 +1030,7 @@ strict all-target Clippy. A 5,000-row integration test checks unchanged streamed
 results and actual receive/preparation/insertion/publish/query hook coverage.
 Three profiler unit tests check opt-in parsing, nested exclusive accounting,
 counter-error reporting, actual current/worker-thread scopes and numeric output.
-Two Node tests validate exclusive aggregation, live/exited process accounting
+Two Node tests validate exclusive cycle aggregation, live/exited process accounting
 and invalid measurements; these pure tests join `test:release`, with no native
 or network operation added to that command. Formatting and syntax checks passed.
 
@@ -1026,6 +1042,14 @@ refers to the QA Cargo manifest, not a native PE. Resource/input guards passed;
 two owned helpers in the off run were signaled after Job close, and on/Clippy
 had no remaining owned processes before close. Unit-suite elapsed times are
 correctness results, not a profiling overhead or optimization comparison.
+
+The schema-2 precision follow-up passed the same 116 Windows regressions with
+profiling enabled, strict all-target Clippy, a release headless build and the
+updated two Node tests. Its raw evidence is separate under
+`filename-cpu-precision-on/`, `filename-cpu-live-precision-{clippy,build}/`
+and `filename-cpu-precision-qualification.json` in the same stable parent.
+The earlier schema-1 raw ticks are retained, but their phase seconds and
+subtracted residual are superseded by the cycle-based interpretation.
 
 Full Tauri diagnostics compilation and actual app CPU attribution remain to be
 verified in a new CI executable. The planned native comparison uses the same

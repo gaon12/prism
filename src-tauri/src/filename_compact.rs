@@ -890,8 +890,12 @@ impl Catalog {
     }
     /// Returns (table slot, entry id).
     fn find(&self, key: &str) -> Option<(usize, u32)> {
+        self.find_hashed(key, self.hash(key))
+    }
+    /// `find` with the key's hash already computed by `self.hash(key)`.
+    fn find_hashed(&self, key: &str, hash: u64) -> Option<(usize, u32)> {
         let mut scratch = String::new();
-        let at = self.key_table.find(self.hash(key), |id| {
+        let at = self.key_table.find(hash, |id| {
             (EntryRef { catalog: self, id }).write_key(&mut scratch) == key
         })?;
         Some((at, self.key_table.slots[at]))
@@ -899,12 +903,24 @@ impl Catalog {
 
     /// Insert a new entry or replace the one with the same key. Returns the id.
     pub fn insert(&mut self, input: &EntryInput<'_>) -> u32 {
-        self.remove(input.key);
-        self.insert_new(input)
+        // Hash the key once and use it for both the removal lookup and the new
+        // table slot. This is safe because the hash depends only on the key and
+        // this catalog's fixed seed (`hasher` is set once in the constructor),
+        // never on the table size, so removing an entry cannot change it.
+        let hash = self.hash(input.key);
+        self.remove_hashed(input.key, hash);
+        self.insert_new_hashed(input, hash)
     }
     /// Insert an entry whose key is known to be absent (bulk builds of a fresh
     /// catalog). Skips the lookup that `insert` needs for replacement.
     pub fn insert_new(&mut self, input: &EntryInput<'_>) -> u32 {
+        self.insert_new_hashed(input, self.hash(input.key))
+    }
+    /// `insert_new` with the key's hash already computed by `self.hash`.
+    fn insert_new_hashed(&mut self, input: &EntryInput<'_>, hash: u64) -> u32 {
+        // Catches a future change that would make a reused hash stale (for
+        // example re-seeding `hasher`) in every debug build and test run.
+        debug_assert_eq!(hash, self.hash(input.key), "stale reused key hash");
         debug_assert!(
             !self.contains_key(input.key),
             "insert_new with an existing key"
@@ -959,7 +975,6 @@ impl Catalog {
                 own_dir,
             ])
         };
-        let hash = self.hash(input.key);
         let node = Node {
             dir,
             name,
@@ -992,7 +1007,11 @@ impl Catalog {
 
     /// Remove an entry by key. Returns true when it existed.
     pub fn remove(&mut self, key: &str) -> bool {
-        let Some((at, id)) = self.find(key) else {
+        self.remove_hashed(key, self.hash(key))
+    }
+    /// `remove` with the key's hash already computed by `self.hash(key)`.
+    fn remove_hashed(&mut self, key: &str, hash: u64) -> bool {
+        let Some((at, id)) = self.find_hashed(key, hash) else {
             return false;
         };
         self.key_table.remove_at(at);

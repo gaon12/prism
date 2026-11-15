@@ -851,6 +851,14 @@ average whole-host CPU busy during the cases, including this measurement, was
 57.8% and 61.3%. These are analysis cases on NVMe, not target acceptance or HDD
 results. Each completed about 2.135 million filename records.
 
+The product target distinguishes full cached-catalog readiness (5–7 seconds)
+from progressive results during an initial cold scan. `First successful search`
+means a partial result is already searchable; `Complete sweep ready` means the
+whole collected catalog is ready. The former does not satisfy the cached full
+readiness target. No service cache was cleared for these cases, so their early
+search results demonstrate progressive publication in this startup only. They
+do not qualify cold MFT scanning, cold first-result latency or HDD behavior.
+
 | Metric                                   | First case | Second case |
 | ---------------------------------------- | ---------: | ----------: |
 | Window ready (seconds)                   |      2.443 |       2.096 |
@@ -936,7 +944,8 @@ are retained under `C:/Users/solso/prism-agent-work-20261115/`. This is diagnost
 evidence, not a 5-7-second whole-app, current bundled service or HDD qualification.
 First search already preceded whole collection in the app cases above
 (2.587/2.763 versus 9.303/9.054 seconds); all rows are not required for first
-results. Further server-internal attribution requires server-side boundaries
+results. This is not a controlled cold-scan qualification, and first search is
+not the full cached readiness metric. Further server-internal attribution requires server-side boundaries
 from a separately qualified build.
 
 Two additional requests bracketed the unchanged service process with

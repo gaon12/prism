@@ -313,7 +313,7 @@ system capture, physical paste and power-loss durability remain separate checks.
 
 On Linux, login startup follows an absolute `XDG_CONFIG_HOME`, with
 `HOME/.config` as the fallback for unset, empty or relative values. The
-[local dependency patch](src-tauri/vendor/auto-launch/PRISM_PATCH.md) records the
+[local dependency patch](vendor/auto-launch/PRISM_PATCH.md) records the
 release reproduction and isolated regression. Run it with the app's dependency
 versions; its subprocess fixtures never change the user's login settings:
 

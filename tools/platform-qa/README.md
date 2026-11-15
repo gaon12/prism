@@ -182,7 +182,7 @@ passwords, raw source fingerprints, original page numbers and extraction budgets
 Registry tests cover early cancellation, replay, window isolation and parser-slot
 lifetimes. The same locally patched PDF dependencies are used by the app and this
 crate; upstream provenance and the narrow legacy owner-key correction are recorded
-under `src-tauri/vendor/`. This crate does not exercise the app's retry dialog or
+under `vendor/`. This crate does not exercise the app's retry dialog or
 embedding of unlocked text; use the native PDF test for that flow.
 
 The shared OCR module validates opt-in requests, cancellation, admission leases and

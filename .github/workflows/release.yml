@@ -108,13 +108,26 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
+      - name: Pin vendored crate timestamps for the build cache
+        # vendor/ holds patched crates that Cargo checks by file time, not by
+        # content. A fresh checkout gives every file "now", so Cargo would
+        # rebuild them and everything above them (lance, datafusion: 15-22
+        # minutes) even with a warm cache. Give them one fixed old time and key
+        # the cache by vendor/'s git tree hash, so cached builds are reused only
+        # for byte-identical vendor sources.
+        shell: bash
+        run: |
+          echo "VENDOR_TREE=$(git rev-parse --short=12 HEAD:vendor)" >> "$GITHUB_ENV"
+          find vendor -type f -exec touch -d '2000-01-01T00:00:00Z' {} +
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           # Save the compiled dependencies even when a later step fails. The
           # Windows job has been failing at the model gate, so it never saved a
           # cache and rebuilt every dependency from scratch (about 63 minutes).
-          # Only third-party build outputs are cached, never this repo's crates.
+          # Third-party and vendor/ build outputs are cached, never the app's
+          # own crates.
           cache-on-failure: true
+          key: vendor-${{ env.VENDOR_TREE }}
           workspaces: |
             src-tauri
             installer/src-tauri
@@ -481,11 +494,22 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
           rustup target add ${{ matrix.arch }}-apple-darwin
+      - name: Pin vendored crate timestamps for the build cache
+        # vendor/ holds patched crates that Cargo checks by file time, not by
+        # content. A fresh checkout gives every file "now", so Cargo would
+        # rebuild them and everything above them (lance, datafusion: 15-22
+        # minutes) even with a warm cache. Give them one fixed old time and key
+        # the cache by vendor/'s git tree hash, so cached builds are reused only
+        # for byte-identical vendor sources.
+        shell: bash
+        run: |
+          echo "VENDOR_TREE=$(git rev-parse --short=12 HEAD:vendor)" >> "$GITHUB_ENV"
+          find vendor -type f -exec touch -d '2000-01-01T00:00:00Z' {} +
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           cache-on-failure: true
           # One cache per processor: they compile different files.
-          key: ${{ matrix.arch }}
+          key: ${{ matrix.arch }}-vendor-${{ env.VENDOR_TREE }}
           workspaces: src-tauri
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:

@@ -83,5 +83,5 @@ opt-level = 3
 opt-level = 3
 
 [patch.crates-io]
-pdf-extract = { path = "../../src-tauri/vendor/pdf-extract" }
-lopdf = { path = "../../src-tauri/vendor/lopdf" }
+pdf-extract = { path = "../../vendor/pdf-extract" }
+lopdf = { path = "../../vendor/lopdf" }

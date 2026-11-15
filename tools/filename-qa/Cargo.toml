@@ -25,7 +25,7 @@ prism-ntfs-windows = { path = "../../indexer/windows" }
 libc = "0.2"
 
 [patch.crates-io]
-tempfile = { path = "../../src-tauri/vendor/tempfile" }
+tempfile = { path = "../../vendor/tempfile" }
 
 [profile.dev]
 debug = 0

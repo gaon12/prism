@@ -50,4 +50,4 @@ tempfile = "3"
 
 [patch.crates-io]
 # Match the application's Windows long-path persistence dependency.
-tempfile = { path = "../../src-tauri/vendor/tempfile" }
+tempfile = { path = "../../vendor/tempfile" }

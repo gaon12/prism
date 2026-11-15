@@ -125,6 +125,7 @@ export function useContentSearch(active: boolean) {
     scopesKey,
     settings.hybridSearch,
     settings.automaticSemantic,
+    settings.filePolicy.content,
   ]);
   const activity = useIndexActivity();
   const [localStatus, setStatus] = useState(emptyStatus);

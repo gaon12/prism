@@ -60,6 +60,7 @@ export function useSearch(quick = false) {
     scopesKey,
     settings.keyboardCorrection,
     session.mode,
+    settings.filePolicy.filename,
   ]);
   const utilityKey = JSON.stringify([session.query, settings.calculator]);
   const utilityWorker = useRef<{ worker: Worker; ready: boolean } | null>(null);

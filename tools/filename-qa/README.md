@@ -139,6 +139,14 @@ The later SYSTEM-folder and minimum-viewport checks are recorded separately in
 Native macOS, the full Linux app, deployed NTFS transfer/fallback, narrow native
 rendering and new app memory/performance qualification remain pending.
 
+`tests/e2e/search-policy-cache.spec.ts` uses the actual React UI with synthetic
+Tauri IPC and a frozen index revision. It covers displayed and still-pending
+filename/content responses when inclusion settings change, so cache invalidation
+cannot depend on a later indexing event. This is a browser regression, not native
+backend evidence. Its rendered run is pending local resources or CI. The hook
+change requires a new frontend bundle; the older frozen debug executable above
+does not qualify this additional behavior.
+
 ```sh
 cargo build --manifest-path tools/filename-qa/Cargo.toml --locked --release -j1
 cargo test --manifest-path tools/filename-qa/Cargo.toml --locked --release -j1 --lib -- --test-threads=1

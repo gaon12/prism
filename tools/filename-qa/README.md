@@ -1568,3 +1568,9 @@ remain local; no private inputs or local GUI evidence were uploaded. The
 original `4b78710` implementation qualification remains a separate immutable
 record; the integrated source has the same release algorithm with additional
 comments and a revised debug-assert message/test.
+
+The next read-only audit, [status lock analysis](status-lock-analysis.md), traces
+`index_status` through the catalog read lock and provisional prepared mutex,
+lists writer work and proposes a coherent lightweight status snapshot. The
+recorded long calls include CDP/IPC/worker scheduling; backend wait attribution
+and any status-cache implementation remain unmeasured/unapplied.

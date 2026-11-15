@@ -963,3 +963,74 @@ and owned-Job cleanup checks (18.797 seconds overall). Raw reports are in
 `transport-profile-server-cpu/result.json`, with scope/hash in
 `transport-service-cpu-qualification.json`, under the same stable parent above.
 No source optimization separates these requests from the first pair.
+
+### Opt-in application thread CPU instrumentation
+
+`PRISM_PROFILE_FILENAME_CPU=1` enables numeric Windows filename CPU diagnostics
+in a newly built app. With the variable absent or `0`, the added hooks return
+`None`: no profiling clocks, TLS scopes or counter locks are used after the
+one-time opt-in check. Existing product deadlines remain in force. This flag
+changes no scan/query algorithm, queue bound, publication rule or priority.
+Other platforms keep this profiler disabled. No paths, queries, thread IDs,
+user content or settings are retained by the counters.
+
+The explicit diagnostic projection contains
+`filenameIndex.filenameCpuProfile` only when enabled. Counters accumulate
+completed scopes since process startup; they do not reset per generation.
+Each phase records calls, inclusive/exclusive wall nanoseconds, user/kernel CPU
+in 100-nanosecond Windows ticks, and unconverted thread cycles. Nested scopes
+on the same thread are subtracted from exclusive costs; workers read their own
+thread counters. Add only exclusive CPU across phases. Wall durations overlap
+across threads, and inclusive phases must not be added. Counter failures are
+reported as `lostMeasurements`, and invalidate attribution in the fixture.
+
+| Phase             | Measured calling-thread work                                                               |
+| ----------------- | ------------------------------------------------------------------------------------------ |
+| `receiveFetch`    | Authenticated fetch/codec and I/O handling; exclusive CPU excludes callback/queue children |
+| `receiveCallback` | Event/row validation, inclusion policy and provisional updates; excludes queue child CPU   |
+| `receiveQueue`    | Bounded preparation queue submission/retries; sleep/wait appears in wall, not CPU          |
+| `prepareRows`     | Stream workers' raw key normalization and temporary Entry construction                     |
+| `insertEntries`   | Stream workers' compact insertion, including lock acquisition CPU                          |
+| `publish`         | Terminal catalog publication on its caller; no implied worker CPU coverage                 |
+| `query`           | Query parse/candidates/result construction and dispatch; excludes same-thread scan CPU     |
+| `queryScan`       | Matching/ranking scans, measured in each actual scanning thread                            |
+
+These hooks target the large initial NTFS streaming path. They do not cover all
+filesystem walk/watch, startup, IPC, serialization or other Prism threads. An
+unfinished scope is absent from a snapshot, not reported as zero completed work.
+
+`harsh-profile.mjs` accepts the same opt-in and requires exactly one validated
+service snapshot with no overflow reconciliation. It samples the diagnostic
+before the later `readme` probe and records `jobAtCpuProfileSnapshot` separately
+from the existing `jobAtReady` boundary. `filenameCpuSummary` reports exclusive
+phase CPU, remaining Prism CPU outside completed phases, live WebView/other
+process CPU, and exited/unlisted Job CPU. Process-name buckets cover live
+processes only. This separate sample may be later than ready; inspect its
+`cpuProfileSnapshotMs` rather than treating the boundaries as identical.
+
+The exact production filename source passed 116 Windows regressions with the
+profiler both disabled and enabled (seven existing opt-in tests ignored), and
+strict all-target Clippy. A 5,000-row integration test checks unchanged streamed
+results and actual receive/preparation/insertion/publish/query hook coverage.
+Three profiler unit tests check opt-in parsing, nested exclusive accounting,
+counter-error reporting, actual current/worker-thread scopes and numeric output.
+Two Node tests validate exclusive aggregation, live/exited process accounting
+and invalid measurements; these pure tests join `test:release`, with no native
+or network operation added to that command. Formatting and syntax checks passed.
+
+Raw checks and scope are retained under
+`C:/Users/solso/prism-agent-work-20261115/filename-cpu-profile-final-{off,on,clippy}/`,
+`filename-cpu-profile-node.log` and `filename-cpu-profile-qualification.json`.
+The controller's `originalExecutableUnchanged` field in these component runs
+refers to the QA Cargo manifest, not a native PE. Resource/input guards passed;
+two owned helpers in the off run were signaled after Job close, and on/Clippy
+had no remaining owned processes before close. Unit-suite elapsed times are
+correctness results, not a profiling overhead or optimization comparison.
+
+Full Tauri diagnostics compilation and actual app CPU attribution remain to be
+verified in a new CI executable. The planned native comparison uses the same
+verified release PE, historical installed service and software one-CPU/512 MiB
+profile in off/on/on/off order. It must report all four cases and their shared
+host/cache/service limitations, startup CPU and the later profiling sample.
+No CPU optimization or cached 5–7-second/cold-HDD acceptance follows from these
+instrumentation checks.

@@ -68,12 +68,16 @@ impl<'scope> Preparation<'scope> {
                         let Ok(batch) = batch else { break };
                         #[cfg(test)]
                         let count = batch.len();
-                        for (position, record) in batch.into_iter().enumerate() {
-                            if position % 512 == 0 && !active(index, generation, &stop) {
-                                return Err(cancelled());
+                        {
+                            let _cpu = cpu_profile::enter(cpu_profile::Phase::PrepareRows);
+                            for (position, record) in batch.into_iter().enumerate() {
+                                if position % 512 == 0 && !active(index, generation, &stop) {
+                                    return Err(cancelled());
+                                }
+                                ready.push(Entry::new(raw(record), sweep));
                             }
-                            ready.push(Entry::new(raw(record), sweep));
                         }
+                        let _cpu = cpu_profile::enter(cpu_profile::Phase::InsertEntries);
                         let mut map = shared.lock().unwrap_or_else(|error| error.into_inner());
                         for entry in ready.drain(..) {
                             insert(&mut map, entry);
@@ -106,6 +110,7 @@ impl<'scope> Preparation<'scope> {
     }
 
     fn send_batch(&self, mut batch: Vec<FileRecord>) -> io::Result<()> {
+        let _cpu = cpu_profile::enter(cpu_profile::Phase::ReceiveQueue);
         loop {
             if !active(self.index, self.generation, &self.stop) {
                 return Err(cancelled());

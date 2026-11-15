@@ -20,6 +20,8 @@
 //
 // Optional: PRISM_HARSH_SCOPE (default C:\), PRISM_HARSH_CPUS (1),
 // PRISM_HARSH_MEMORY_MB (512), PRISM_HARSH_TIMEOUT_MS (600000).
+// PRISM_PROFILE_FILENAME_CPU=1 requires a profiling-capable app and records
+// completed thread CPU scopes plus live Prism/WebView process CPU buckets.
 // PRISM_WEBVIEW_SOFTWARE=1 makes the app draw without the GPU, as it does on
 // a machine with 4 GiB or less; the run then checks that the app reports it.
 import assert from 'node:assert/strict';
@@ -30,6 +32,7 @@ import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { launch, shutdown, until } from './harness.mjs';
+import { summarizeFilenameCpu } from './support/filename-cpu.mjs';
 
 /**
  * Add each WebView process's role (`--type=renderer`, `gpu-process`, ...;
@@ -61,6 +64,8 @@ const scopePath = resolve(process.env.PRISM_HARSH_SCOPE ?? 'C:\\');
 const cpus = Number(process.env.PRISM_HARSH_CPUS ?? 1);
 const memoryMB = Number(process.env.PRISM_HARSH_MEMORY_MB ?? 512);
 const timeoutMs = Number(process.env.PRISM_HARSH_TIMEOUT_MS ?? 600_000);
+const cpuProfileMode = process.env.PRISM_PROFILE_FILENAME_CPU ?? '0';
+assert(['0', '1'].includes(cpuProfileMode), 'PRISM_PROFILE_FILENAME_CPU must be 0 or 1');
 const helperPath = fileURLToPath(new URL('./support/job-limit.ps1', import.meta.url));
 
 // Own a fresh portable copy: the user's profile and the candidate stay untouched.
@@ -237,6 +242,27 @@ try {
   // live-update events (absent in builds before these counters existed).
   result.serviceSnapshots = diagnostics?.filenameIndex?.serviceSnapshots ?? null;
   result.overflowReconciles = diagnostics?.filenameIndex?.overflowReconciles ?? null;
+  if (cpuProfileMode === '1') {
+    assert.equal(
+      result.serviceSnapshots,
+      1,
+      'CPU split requires exactly one validated service snapshot',
+    );
+    assert.equal(
+      result.overflowReconciles,
+      0,
+      'Repeated sweeps invalidate the startup CPU comparison',
+    );
+    // Sample after reading completed phase scopes, before the later readme
+    // probe. This is a separate boundary from jobAtReady above.
+    result.filenameCpuProfile = diagnostics?.filenameIndex?.filenameCpuProfile ?? null;
+    result.cpuProfileSnapshotMs = since();
+    result.jobAtCpuProfileSnapshot = await job.report();
+    result.filenameCpuSummary = summarizeFilenameCpu(
+      result.filenameCpuProfile,
+      result.jobAtCpuProfileSnapshot,
+    );
+  }
   // A search over the full catalog must also stay usable inside the budget.
   const searchStart = performance.now();
   const search = await invoke('search_files', { query: 'readme', extension: '', scopeId });

@@ -20,6 +20,8 @@ use unicode_normalization::UnicodeNormalization;
 use walkdir::WalkDir;
 #[path = "filename_compact.rs"]
 mod compact;
+#[path = "filename_cpu_profile.rs"]
+pub(crate) mod cpu_profile;
 #[path = "filename_entries.rs"]
 mod entries;
 #[path = "filename_service.rs"]
@@ -1379,6 +1381,7 @@ impl FileIndex {
         limit: usize,
         allow_keyboard: bool,
     ) -> Result<SearchResponse, String> {
+        let _cpu = cpu_profile::enter(cpu_profile::Phase::Query);
         let query = Query::parse(query, extension)?;
         let catalog = self.catalog.read().map_err(|_| "File index unavailable.")?;
         let provisional = self.provisional(&catalog);
@@ -1602,6 +1605,7 @@ fn top_matches(
     rank: impl Fn(&View<'_>) -> Option<u8> + Sync,
 ) -> (usize, Vec<Ranked>) {
     let scan = |range: std::ops::Range<usize>| {
+        let _cpu = cpu_profile::enter(cpu_profile::Phase::QueryScan);
         let mut heap: BinaryHeap<Ranked> = BinaryHeap::with_capacity(limit + 1);
         let mut total = 0;
         let mut scratch = Scratch::default();

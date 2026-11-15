@@ -90,6 +90,8 @@ struct FilenameSummary {
     last_service_snapshot: Option<crate::index::ServiceSnapshotTiming>,
     service_snapshots: u32,
     overflow_reconciles: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    filename_cpu_profile: Option<crate::index::cpu_profile::Snapshot>,
 }
 impl From<crate::index::IndexStatus> for FilenameSummary {
     fn from(status: crate::index::IndexStatus) -> Self {
@@ -102,6 +104,7 @@ impl From<crate::index::IndexStatus> for FilenameSummary {
             last_service_snapshot: status.last_service_snapshot,
             service_snapshots: status.service_snapshots,
             overflow_reconciles: status.overflow_reconciles,
+            filename_cpu_profile: crate::index::cpu_profile::snapshot(),
         }
     }
 }

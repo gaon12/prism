@@ -138,7 +138,9 @@ impl FileIndex {
                     }
                 }
             });
+            let fetch_cpu = cpu_profile::enter(cpu_profile::Phase::ReceiveFetch);
             let result = fetch(cancel.clone(), &mut |event| {
+                let _cpu = cpu_profile::enter(cpu_profile::Phase::ReceiveCallback);
                 if !self.current(generation) {
                     return Err(io::Error::new(
                         io::ErrorKind::ConnectionAborted,
@@ -224,6 +226,7 @@ impl FileIndex {
                 receive_callback += callback_started.elapsed();
                 Ok(())
             });
+            drop(fetch_cpu);
             validated_fetch = started.elapsed();
             drop(stop);
             if result? == 0 {
@@ -242,10 +245,13 @@ impl FileIndex {
             // Only the successful terminal/root-validated path may merge them.
             preparation.map(pipeline::Preparation::join).transpose()
         });
-        let published = match prepared {
-            Ok(Some(shared)) => self.publish_provisional(generation, &shared),
-            Ok(None) => self.publish_service_rows(generation, rows, sweep, initial, threads),
-            Err(error) => Err(error),
+        let published = {
+            let _cpu = cpu_profile::enter(cpu_profile::Phase::Publish);
+            match prepared {
+                Ok(Some(shared)) => self.publish_provisional(generation, &shared),
+                Ok(None) => self.publish_service_rows(generation, rows, sweep, initial, threads),
+                Err(error) => Err(error),
+            }
         };
         if let Err(error) = published {
             // Failure, cancellation, an out-of-scope frame or a revoked owner:
@@ -504,6 +510,60 @@ mod tests {
             is_dir: false,
             size: 42,
             modified_ms: Some(17),
+        }
+    }
+
+    #[test]
+    fn cpu_profile_hooks_preserve_streamed_rows_and_query_results() {
+        let profile = || cpu_profile::snapshot().map(|value| serde_json::to_value(value).unwrap());
+        let before = profile();
+        let (index, _owner) = isolated();
+        let dir = tempfile::tempdir().unwrap();
+        index
+            .collect_service_snapshot(1, dir.path(), 1, |_, receive| {
+                for start in (0..5_000).step_by(2_048) {
+                    let rows = (start..(start + 2_048).min(5_000))
+                        .map(|number| record(dir.path(), &format!("ProfileHook-{number:04}.md")))
+                        .collect();
+                    receive(Event::Records(rows))?;
+                }
+                Ok(7)
+            })
+            .unwrap();
+        assert_eq!(index.status().unwrap().count, 5_000);
+        assert_eq!(
+            index.search("ProfileHook", "", None, 20).unwrap().total,
+            5_000
+        );
+        match (before, profile()) {
+            (None, None) => {}
+            (Some(before), Some(after)) => {
+                assert_eq!(after["lostMeasurements"], before["lostMeasurements"]);
+                for phase in [
+                    "receiveFetch",
+                    "receiveCallback",
+                    "receiveQueue",
+                    "prepareRows",
+                    "insertEntries",
+                    "publish",
+                    "query",
+                    "queryScan",
+                ] {
+                    let calls = |value: &serde_json::Value| {
+                        value["phases"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|row| row["phase"] == phase)
+                            .unwrap()["calls"]
+                            .as_u64()
+                            .unwrap()
+                    };
+                    assert!(calls(&after) > calls(&before), "Missing {phase} hook");
+                }
+                assert!(!after.to_string().contains("ProfileHook"));
+            }
+            _ => panic!("Profiling opt-in must be fixed for the process lifetime"),
         }
     }
 

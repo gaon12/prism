@@ -1345,3 +1345,76 @@ appeared at 3.258/2.811 seconds, while full idle-ready was 13.443/13.321 seconds
 The busy shared NVMe host, existing service cache and service outside the Job
 remain limitations. The 5-7 second cached whole-list target, controlled cold
 MFT/HDD behavior and exact startup query attribution remain unqualified.
+
+### Direct profiler cost versus the observed GUI difference (2026-11-16)
+
+The earlier `4275b4e` GUI comparison had slower on cases, but those elapsed
+times alone cannot identify profiler overhead. Mean idle-ready was 9,739.5 ms
+off versus 12,273.5 ms on, an observational difference of 2,534 ms. The recorded
+completed-scope counts at the later diagnostic snapshots were:
+
+| Phase           | First on case | Second on case |
+| --------------- | ------------- | -------------- |
+| receiveFetch    | 1             | 1              |
+| receiveCallback | 1,062         | 1,064          |
+| receiveQueue    | 1,046         | 1,046          |
+| prepareRows     | 1,046         | 1,046          |
+| insertEntries   | 1,046         | 1,046          |
+| publish         | 1             | 1              |
+| query           | 7             | 8              |
+| queryScan       | 7             | 8              |
+| Total           | 4,216         | 4,220          |
+
+Each enabled scope makes two `thread_usage` readings; each reading calls
+`GetThreadTimes` and `QueryThreadCycleTime` once. These counts therefore imply
+8,432/8,440 calls to each API. Collection hooks are batch scopes, not per-row
+scopes. As above, the snapshots can include post-ready queries and exclude
+unfinished scopes; they are not exact counts at the startup boundary.
+
+A private microbenchmark used the exact `e4af7ff` profiler source, adding only
+a QA include. One release executable ran disabled scope, two counter readings,
+empty enabled scope, empty enabled scope, two counter readings, disabled scope.
+Every case warmed 1,024 operations, then measured 128 fixed batches of 2,048
+operations (262,144 measured operations). The same indirect function dispatch
+and black-box barrier were included. The enabled cases recorded all 263,168
+scopes, including warmup, with zero lost measurements. The empty enabled scope
+includes Instant, TLS stack handling and the uncontended collector mutex in
+addition to both counter readings. It does not model nested-body interactions
+or contention between threads. A kernel Job enforced one CPU and 512 MiB
+process/Job limits before the start gate. No GUI or service was started.
+
+| Operation                | Mean ns, first / second | Largest batch-mean ns per operation |
+| ------------------------ | ----------------------- | ----------------------------------- |
+| Disabled enter/drop      | 2.99 / 2.78             | 20.31                               |
+| Two counter readings     | 873.80 / 886.55         | 2,435.99                            |
+| Empty enabled enter/drop | 1,035.46 / 995.32       | 6,096.14                            |
+
+Multiplying the two-case mean cost by 4,216/4,220 completed scopes estimates
+3.711/3.714 ms for counter readings alone and 4.281/4.285 ms for an empty full
+scope. Using the largest observed batch mean instead gives conservative
+observed envelopes of 10.270/10.280 ms and 25.701/25.726 ms, respectively.
+No disabled-loop cost was subtracted. These are wall-clock measurements from
+Instant, not time inferred from CPU cycles.
+
+The envelope is a maximum of **batch means**, not a measured individual-call
+maximum or a guaranteed future wall-time upper bound. Scheduler delays,
+contended locks and effects on query/body execution remain unmodeled. Under
+these measured conditions, direct counter/empty-scope cost is milliseconds;
+it does not account for the historical 2.534-second mean ready difference.
+That difference must remain unattributed: shared-host load, differing queries,
+body work and scheduling effects have not been separated. This does not prove
+the profiler has zero influence on startup. Further decomposition stays at
+batch boundaries; no per-entry clocks were added.
+
+The six cases passed in 3.297 seconds with unchanged inputs, no resource stop,
+minimum available RAM 5,411,602,432 bytes and no owned processes after Job close
+and handle waits. Profiler tests (3), strict all-target Clippy and the release
+build passed. Raw cases and source/candidate are retained in
+`C:/Users/solso/prism-agent-work-20261115/cpu-overhead-fixed-six/`,
+`cpu-overhead-prototype/`, `cpu-overhead-candidate/` and
+`cpu-overhead-{test,clippy,build}-v4/` in the same parent;
+`filename-cpu-overhead-qualification.json` contains the counts and arithmetic.
+Earlier private QA include-placement failures remain in the v2/v3 Clippy logs.
+The separate insertion proposal above uses the fixed real path capture; this
+overhead check uses fixed operation counts. Product code and the outstanding
+5-7 second cached startup criterion are unchanged.

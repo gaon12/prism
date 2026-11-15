@@ -289,6 +289,21 @@ The updated completion fixture still needs a newly built app for that final
 native qualification; the earlier release PE is deliberately not treated as
 containing this source fix.
 
+A follow-up regression covers exact record sizes of 1 MiB minus one byte,
+1 MiB, 1 MiB plus one byte and 8 MiB, including the newline. All are accepted;
+8 MiB plus one byte is rejected without replacing the preceding pack. Another
+regression first reproduced the large-record projection losing a
+`prismDictionary` header marker. The projection now preserves presence even
+when its value is `null` or `false`, matching the existing small-record behavior.
+This recognizes a header rather than treating it as a word without a headword.
+The follow-up passed nine store tests, strict all-target Clippy and the same
+complete official corpus (76,689 meanings and five queried definitions after
+reopening, 11.521 seconds excluding compilation). Source/input guards and owned
+process cleanup passed. Raw RED/GREEN/Clippy/corpus records are retained under
+`C:/Users/solso/prism-agent-work-20261115/dictionary-boundary-{red,green,clippy,corpus}/`.
+These are importer/component checks; the new app's end-to-end native completion
+qualification remains separate.
+
 All seven build/check jobs in [release run
 43673534172](https://github.com/gaon12/prism/actions/runs/43673534172) at `4054072`
 passed. The actual release-library results were:

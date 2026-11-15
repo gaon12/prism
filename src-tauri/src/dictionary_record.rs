@@ -107,8 +107,22 @@ impl<'de> Deserialize<'de> for Forms {
     }
 }
 
+#[derive(Default)]
+struct Presence(bool);
+
+impl<'de> Deserialize<'de> for Presence {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Presence matters even for null or false. Option<IgnoredAny> would
+        // turn a present JSON null into the same state as a missing field.
+        IgnoredAny::deserialize(deserializer)?;
+        Ok(Self(true))
+    }
+}
+
 #[derive(Deserialize)]
 struct LargeRecord {
+    #[serde(default, rename = "prismDictionary")]
+    header: Presence,
     term: Option<String>,
     word: Option<String>,
     lang_code: Option<String>,
@@ -136,6 +150,9 @@ pub(super) fn parse(line: &str) -> Result<Value, serde_json::Error> {
         return serde_json::from_str(line);
     }
     let record: LargeRecord = serde_json::from_str(line)?;
+    if record.header.0 {
+        return Ok(serde_json::json!({ "prismDictionary": null }));
+    }
     let mut fields = Map::new();
     for (key, value) in [
         ("term", record.term),

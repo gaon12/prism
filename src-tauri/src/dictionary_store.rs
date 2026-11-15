@@ -606,4 +606,61 @@ mod tests {
         assert_eq!(store.lookup("ko", "previous").unwrap()[0].text, "keep me");
         assert!(store.lookup("ko", "replacement").unwrap().is_empty());
     }
+
+    #[test]
+    fn dictionary_records_accept_exact_small_and_large_byte_boundaries() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = DictionaryStore::open(directory.path()).unwrap();
+        let cancel = AtomicBool::new(false);
+        let record = |bytes: usize| {
+            let prefix = r#"{"word":"edge","definitions":["boundary"],"unused":""#;
+            let suffix = "\"}\n";
+            let value = format!(
+                "{prefix}{}{suffix}",
+                "x".repeat(bytes - prefix.len() - suffix.len())
+            );
+            assert_eq!(value.len(), bytes);
+            value.into_bytes()
+        };
+        for bytes in [1_048_575, 1_048_576, 1_048_577, 8 * 1024 * 1024] {
+            let pack = store
+                .import(record(bytes).as_slice(), manifest(), &cancel, |_| {})
+                .unwrap();
+            assert_eq!(pack.entries, 1);
+            assert_eq!(store.lookup("ko", "edge").unwrap()[0].text, "boundary");
+        }
+        let mut oversized = std::io::Cursor::new(record(8 * 1024 * 1024 + 1));
+        assert!(store
+            .import(&mut oversized, manifest(), &cancel, |_| {})
+            .is_err());
+        assert_eq!(oversized.position(), 8 * 1024 * 1024 + 1);
+        assert_eq!(store.lookup("ko", "edge").unwrap()[0].text, "boundary");
+        assert_eq!(store.packs().unwrap()[0].entries, 1);
+    }
+
+    #[test]
+    fn large_prism_header_presence_is_kept() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = DictionaryStore::open(directory.path()).unwrap();
+        for marker in [
+            serde_json::Value::Null,
+            serde_json::json!(false),
+            serde_json::json!({"schemaVersion": 1}),
+        ] {
+            let mut data = serde_json::to_string(&serde_json::json!({
+                "prismDictionary": marker,
+                "unused": "x".repeat(1_048_576),
+            }))
+            .unwrap();
+            data.push_str("\n{\"word\":\"header word\",\"definitions\":[\"after header\"]}\n");
+            let pack = store
+                .import(data.as_bytes(), manifest(), &AtomicBool::new(false), |_| {})
+                .unwrap();
+            assert_eq!(pack.entries, 1);
+            assert_eq!(
+                store.lookup("ko", "header word").unwrap()[0].text,
+                "after header"
+            );
+        }
+    }
 }

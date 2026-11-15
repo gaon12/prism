@@ -175,8 +175,25 @@ This was a functional Windows ordinary-filesystem check, without a CPU or
 512 MiB limit. It does not qualify deployed NTFS transfer/fallback, another
 platform, native minimum-window resizing, model inference, or app performance.
 The candidate predates vendor relocation; identical product inputs and vendor
-tree contents were checked, but the relocated build and cache reuse still need
-their own hosted result.
+tree contents were checked. The following run covers the relocated app's
+functionality; cache reuse still needs an independent hosted measurement.
+
+The subsequently produced vendor-relocated Windows app from [CI 43679179881 at
+7ba77a2](https://github.com/gaon12/prism/actions/runs/43679179881) also passed all
+three local policy fixtures with the same `bef809c` harness. Its artifact ZIP
+SHA-256 matched GitHub's `a92dd4c699dfb12abdd003dbad330eae43576c46ee458cfa09c210f84070a9e8`
+digest; the extracted executable SHA-256 was
+`512efd0c91dfe8ddb9b5b37b1be80d1aaf97becc6ef1f56bf3e71dd666a46401`.
+The run took 34.610 seconds, with 4.79 GiB minimum host availability, unchanged
+inputs/executable, no resource stop and no remaining owned Job processes.
+Evidence is `C:/Users/solso/prism-agent-work-20261115/native-policy-7ba-local1/result.json`
+(SHA-256 `e2bd343d3ab01343bb9b79cf8379e07b7105f5cb5782b77e3f46b4e8b731da9b`).
+Terminal logs from that source also confirmed actual release-library results
+of Linux x64 578 passed/16 opt-ins ignored, Linux ARM64 578/13 and macOS ARM64
+577/17. Windows workflow checks were still running at inspection time. These
+results qualify the stated relocated app behavior, without establishing a
+warm-cache speed improvement or completing the whole workflow/native-platform
+acceptance scope.
 
 Earlier debug evidence was recorded at
 `C:/Users/solso/AppData/Local/Temp/prism-q18-filename-20261114-1c455odk/qualification.json`.

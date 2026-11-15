@@ -1,0 +1,41 @@
+# Fast check of the web client only: format, types, unit tests, the production
+# build and the same browser assertions the release runs (test:e2e:bundle).
+# No Rust is built, so a UI change gets an answer in minutes instead of waiting
+# about an hour behind the native build in release.yml. This does not replace
+# the release gate, which still runs every check below on the real app build.
+name: Client
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  # One run per commit; a newer dispatch for the same ref waits for the last.
+  group: client-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Web client checks
+    # Same OS as the release job that runs the browser tests.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Format, types and unit tests
+        run: |
+          npm run format:check
+          npm run check
+          npm test
+      - name: Build the production client
+        run: npm run build
+      - name: Verify production UI interactions
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e:bundle

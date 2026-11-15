@@ -1243,11 +1243,10 @@ under `filename-cpu-dev-gate-{on,legacy,missing-marker,clippy}/` and
 `filename-cpu-dev-gate-qualification.json` in the stable evidence parent above.
 
 The `4275b4e` native measurements in the preceding sections used the historical
-legacy flag. Their immutable sources/results are retained as measured; they do
-not claim a rebuilt release has exercised the renamed activation gate. A new
-CI executable is required for that final wiring check. Cycle schema 2 and all
-scan/query algorithms remain unchanged; there is no performance improvement
-claim from this activation-only follow-up.
+legacy flag. Their immutable sources/results are retained as measured. The
+separate `e4af7ff` native check below verifies the renamed activation gate.
+Cycle schema 2 and all scan/query algorithms remain unchanged; there is no
+performance improvement claim from this activation-only follow-up.
 
 ### Private single-hash insertion proposal (2026-11-16)
 
@@ -1313,3 +1312,36 @@ Frozen source copies, candidate, raw ABBA cases and checks are under
 the QA-only shared-seed constructor or visibility changes. The same proposal
 and proof are retained in
 `D:/mini_prj/prism/.dev/insert-hash-reuse-proposal-20261116/` for peer review.
+
+### Native developer-gate wiring verification (2026-11-16)
+
+The actual Windows portable release from CI `43740093087` (`e4af7ff`), artifact
+`14172660004`, passed two explicit off/on launches. Its executable SHA-256 is
+`117ae97a1dd103178d15e98023bec3c70521685a1d43c0501f14e593c163ec0e`;
+the artifact ZIP matched GitHub's reported digest. Admission verified the same
+repository, release workflow, dispatch event and source commit. Product sources
+were unchanged between that commit and the local harness.
+
+Both launches reported native Windows, portable installation, development mode
+false and software rendering true. The kernel Job readback confirmed one CPU
+and 512 MiB process/Job limits for the app and WebView. The off launch recorded
+`filenameCpuProfilingRequested: false` with no profile or summary. The explicit
+on launch recorded true, profile schema 2, zero lost measurements and no
+cycles-to-time conversion. Thus the migrated CPU-specific developer gate works
+in an actual release fixture without enabling generic development behavior.
+
+The two wiring cases took 37.265 seconds altogether, with no resource stop,
+unchanged executable/input hashes and no remaining owned process. Minimum host
+available RAM was 4,603,850,752 bytes. The historical installed service stayed
+at PID 5924 with SHA `d0b1fe5e...`, outside the app Job; its raw image was not
+found in this candidate. There was no service replacement, elevation or access
+to the user's Prism profile. Evidence is retained in
+`C:/Users/solso/prism-agent-work-20261115/harsh-cpu-dev-gate-e4/`,
+`native-filename-cpu-dev-gate-inputs-v2/`, `candidate-e4af7ff/` and
+`native-filename-cpu-dev-gate-qualification.json` in the same parent.
+
+These are activation checks, not a performance ABBA. First searchable results
+appeared at 3.258/2.811 seconds, while full idle-ready was 13.443/13.321 seconds.
+The busy shared NVMe host, existing service cache and service outside the Job
+remain limitations. The 5-7 second cached whole-list target, controlled cold
+MFT/HDD behavior and exact startup query attribution remain unqualified.

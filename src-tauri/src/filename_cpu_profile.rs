@@ -132,8 +132,8 @@ impl Collector {
         })
     }
 }
-fn requested(value: Option<&str>) -> bool {
-    value == Some("1")
+fn requested(value: Option<&str>, test_mode: Option<&str>) -> bool {
+    value == Some("1") && test_mode == Some("1")
 }
 fn collector() -> Option<&'static Collector> {
     static PROFILE: OnceLock<Option<Collector>> = OnceLock::new();
@@ -142,7 +142,14 @@ fn collector() -> Option<&'static Collector> {
             // Read once; no clocks, TLS stack, allocations or counter locks on the
             // normal disabled path after initialization. Unsupported OS stays off.
             (cfg!(windows)
-                && requested(std::env::var("PRISM_PROFILE_FILENAME_CPU").ok().as_deref()))
+                && requested(
+                    std::env::var("PRISM_DEV_FILENAME_CPU_PROFILE")
+                        .ok()
+                        .as_deref(),
+                    std::env::var("PRISM_DEV_FILENAME_CPU_TEST_MODE")
+                        .ok()
+                        .as_deref(),
+                ))
             .then(Collector::default)
         })
         .as_ref()
@@ -298,9 +305,10 @@ mod tests {
     #[test]
     fn only_explicit_opt_in_enables_collection() {
         for value in [None, Some(""), Some("0"), Some("true"), Some("2")] {
-            assert!(!requested(value));
+            assert!(!requested(value, Some("1")));
+            assert!(!requested(Some("1"), value));
         }
-        assert!(requested(Some("1")));
+        assert!(requested(Some("1"), Some("1")));
     }
     #[test]
     fn nested_cpu_is_excluded_and_invalid_subtraction_is_reported() {

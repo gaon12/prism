@@ -1,6 +1,37 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { summarizeFilenameCpu } from '../native/support/filename-cpu.mjs';
+import { configureFilenameCpuTestEnvironment } from '../native/support/filename-cpu-env.mjs';
+
+test('normal fixture launch removes inherited profiler activation', () => {
+  const env = {
+    PRISM_PROFILE_FILENAME_CPU: '1',
+    PRISM_DEV_FILENAME_CPU_PROFILE: '1',
+    PRISM_DEV_FILENAME_CPU_TEST_MODE: '1',
+    prism_profile_filename_cpu: '1',
+    prism_dev_filename_cpu_profile: '1',
+    Prism_Dev_Filename_Cpu_Test_Mode: '1',
+    PRISM_DEV_TEST_MODE: 'unchanged',
+    WEBVIEW2_USER_DATA_FOLDER: 'owned-profile',
+  };
+  configureFilenameCpuTestEnvironment(env, false);
+  assert.deepEqual(env, {
+    PRISM_DEV_TEST_MODE: 'unchanged',
+    WEBVIEW2_USER_DATA_FOLDER: 'owned-profile',
+  });
+});
+
+test('explicit profiling restores only its dedicated flags after production sanitization', () => {
+  const env = { WEBVIEW2_USER_DATA_FOLDER: 'owned-profile' };
+  configureFilenameCpuTestEnvironment(env, true);
+  assert.deepEqual(env, {
+    WEBVIEW2_USER_DATA_FOLDER: 'owned-profile',
+    PRISM_DEV_FILENAME_CPU_PROFILE: '1',
+    PRISM_DEV_FILENAME_CPU_TEST_MODE: '1',
+  });
+  assert.equal(env.PRISM_DEV_TEST_MODE, undefined);
+  assert.equal(env.PRISM_DEV_DATA_DIR, undefined);
+});
 
 function fixture() {
   const cost = (cpu) => ({

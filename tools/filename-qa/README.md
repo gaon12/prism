@@ -966,8 +966,12 @@ No source optimization separates these requests from the first pair.
 
 ### Opt-in application thread CPU instrumentation
 
-`PRISM_PROFILE_FILENAME_CPU=1` enables numeric Windows filename CPU diagnostics
-in a newly built app. With the variable absent or `0`, the added hooks return
+`PRISM_DEV_FILENAME_CPU_PROFILE=1` together with
+`PRISM_DEV_FILENAME_CPU_TEST_MODE=1` enables numeric Windows filename CPU
+diagnostics in a newly built app. The two values are cached together once in
+`OnceLock`; the legacy `PRISM_PROFILE_FILENAME_CPU` is ignored. The dedicated
+CPU test marker does not set the app's generic `PRISM_DEV_TEST_MODE` or change
+release behavior. With either required value absent or not `1`, hooks return
 `None`: no profiling clocks, TLS scopes or counter locks are used after the
 one-time opt-in check. Existing product deadlines remain in force. This flag
 changes no scan/query algorithm, queue bound, publication rule or priority.
@@ -1060,7 +1064,8 @@ are not an exhaustive attribution or a product optimization qualification.
 ### Headless live FileIndex cycle qualification, 2026-11-16
 
 The standalone QA CLI has a separate `live-cpu --drive C` mode. It requires
-`PRISM_FILENAME_LIVE_CPU=1` and explicit `PRISM_PROFILE_FILENAME_CPU=0|1`.
+`PRISM_DEV_FILENAME_LIVE_CPU=1`, `PRISM_DEV_FILENAME_CPU_TEST_MODE=1` and
+explicit `PRISM_DEV_FILENAME_CPU_PROFILE=0|1`.
 A controller must apply/read back the owned process Job limits before sending
 its initial `G` byte; the CLI itself rejects more than one usable CPU and an
 elevated caller before contacting the already-running service. It never starts,
@@ -1215,3 +1220,31 @@ hash equality, resolved non-reparse ownership and inactive-path checks, freeing
 1,519,171,584 bytes. The original candidate/ZIP, profiles, logs, results and
 evidence remain. `native-filename-cpu-copy-cleanup.json` records the single-file
 removals; copied-executable paths in historical outputs are no longer present.
+
+### Developer-only activation follow-up
+
+The native harness now removes inherited old/new CPU-profiler variables with
+case-insensitive key matching. Normal launches do not inherit profiling.
+`harsh-profile.mjs` reads `PRISM_DEV_FILENAME_CPU_PROFILE=0|1`; only an explicit
+`filenameCpuProfiling: true` launch option restores the two CPU-specific developer
+flags after production-portable environment sanitization. The result records
+`filenameCpuProfilingRequested` so controllers can reject a mismatched mode.
+Other developer variables remain stripped, including the generic test mode/data-directory flags.
+Thus profiling a release fixture does not enable the app's unrelated debug-test
+behaviors. The headless CLI requires its explicit developer live/test flags too.
+
+The migrated gate passed 116 Windows filename regressions with both new values
+set. Separate actual 5,000-row stream/query tests confirm that the legacy flag
+alone or the new profile flag without the dedicated marker leaves the global
+profiler disabled. Strict all-target Clippy, 17 related Node tests (profiler,
+portable-profile and evidence handling), formatting and syntax checks passed.
+The Node tests also cover mixed-case inherited flag names. Raw checks/scope are
+under `filename-cpu-dev-gate-{on,legacy,missing-marker,clippy}/` and
+`filename-cpu-dev-gate-qualification.json` in the stable evidence parent above.
+
+The `4275b4e` native measurements in the preceding sections used the historical
+legacy flag. Their immutable sources/results are retained as measured; they do
+not claim a rebuilt release has exercised the renamed activation gate. A new
+CI executable is required for that final wiring check. Cycle schema 2 and all
+scan/query algorithms remain unchanged; there is no performance improvement
+claim from this activation-only follow-up.

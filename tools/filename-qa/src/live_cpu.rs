@@ -14,12 +14,18 @@ pub(crate) fn run(args: &[String]) -> std::io::Result<()> {
         io::{self, Read, Write},
         time::{Duration, Instant},
     };
-    if std::env::var("PRISM_FILENAME_LIVE_CPU").ok().as_deref() != Some("1")
+    if std::env::var("PRISM_DEV_FILENAME_LIVE_CPU").ok().as_deref() != Some("1")
+        || std::env::var("PRISM_DEV_FILENAME_CPU_TEST_MODE")
+            .ok()
+            .as_deref()
+            != Some("1")
         || args.len() != 2
         || args[0] != "--drive"
         || args[1].len() != 1
         || !matches!(
-            std::env::var("PRISM_PROFILE_FILENAME_CPU").ok().as_deref(),
+            std::env::var("PRISM_DEV_FILENAME_CPU_PROFILE")
+                .ok()
+                .as_deref(),
             Some("0" | "1")
         )
     {

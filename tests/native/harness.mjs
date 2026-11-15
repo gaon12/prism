@@ -5,6 +5,7 @@ import { lstat } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { chromium } from '@playwright/test';
+import { configureFilenameCpuTestEnvironment } from './support/filename-cpu-env.mjs';
 
 export async function until(check, label, timeout = 25_000) {
   const deadline = Date.now() + timeout;
@@ -148,11 +149,12 @@ export async function launch(dataDir, options = {}) {
     delete environment.WEBVIEW2_USER_DATA_FOLDER;
     if (options.productionPortable) {
       for (const key of Object.keys(environment))
-        if (key.startsWith('PRISM_DEV_')) delete environment[key];
+        if (key.toUpperCase().startsWith('PRISM_DEV_')) delete environment[key];
     } else {
       environment.PRISM_DEV_TEST_MODE = '1';
     }
   }
+  configureFilenameCpuTestEnvironment(environment, options.filenameCpuProfiling === true);
   const child = spawn(resolve(options.executable ?? 'src-tauri/target/debug/prism.exe'), [], {
     windowsHide: true,
     stdio: 'ignore',

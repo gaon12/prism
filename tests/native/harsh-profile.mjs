@@ -20,7 +20,7 @@
 //
 // Optional: PRISM_HARSH_SCOPE (default C:\), PRISM_HARSH_CPUS (1),
 // PRISM_HARSH_MEMORY_MB (512), PRISM_HARSH_TIMEOUT_MS (600000).
-// PRISM_PROFILE_FILENAME_CPU=1 requires a profiling-capable app and records
+// PRISM_DEV_FILENAME_CPU_PROFILE=1 requires a profiling-capable app and records
 // completed thread CPU scopes plus live Prism/WebView process CPU buckets.
 // PRISM_WEBVIEW_SOFTWARE=1 makes the app draw without the GPU, as it does on
 // a machine with 4 GiB or less; the run then checks that the app reports it.
@@ -64,8 +64,8 @@ const scopePath = resolve(process.env.PRISM_HARSH_SCOPE ?? 'C:\\');
 const cpus = Number(process.env.PRISM_HARSH_CPUS ?? 1);
 const memoryMB = Number(process.env.PRISM_HARSH_MEMORY_MB ?? 512);
 const timeoutMs = Number(process.env.PRISM_HARSH_TIMEOUT_MS ?? 600_000);
-const cpuProfileMode = process.env.PRISM_PROFILE_FILENAME_CPU ?? '0';
-assert(['0', '1'].includes(cpuProfileMode), 'PRISM_PROFILE_FILENAME_CPU must be 0 or 1');
+const cpuProfileMode = process.env.PRISM_DEV_FILENAME_CPU_PROFILE ?? '0';
+assert(['0', '1'].includes(cpuProfileMode), 'PRISM_DEV_FILENAME_CPU_PROFILE must be 0 or 1');
 const helperPath = fileURLToPath(new URL('./support/job-limit.ps1', import.meta.url));
 
 // Own a fresh portable copy: the user's profile and the candidate stay untouched.
@@ -136,6 +136,7 @@ function startJob() {
 const result = {
   passed: false,
   timingSchemaVersion: 2,
+  filenameCpuProfilingRequested: cpuProfileMode === '1',
   profile: { cpus, memoryMB, scope: scopePath },
   limitations: [
     'The installed NTFS service process is not confined (LocalSystem needs administrator rights).',
@@ -154,6 +155,7 @@ try {
     executable,
     portable: true,
     productionPortable: true,
+    filenameCpuProfiling: cpuProfileMode === '1',
     // One CPU can keep the window waiting for well over the usual 25 s; a
     // late window is a result to record (stages.windowReadyMs), not an error.
     windowTimeout: 120_000,

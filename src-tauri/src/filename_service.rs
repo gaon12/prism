@@ -517,6 +517,19 @@ mod tests {
     fn cpu_profile_hooks_preserve_streamed_rows_and_query_results() {
         let profile = || cpu_profile::snapshot().map(|value| serde_json::to_value(value).unwrap());
         let before = profile();
+        #[cfg(windows)]
+        assert_eq!(
+            before.is_some(),
+            std::env::var("PRISM_DEV_FILENAME_CPU_PROFILE")
+                .ok()
+                .as_deref()
+                == Some("1")
+                && std::env::var("PRISM_DEV_FILENAME_CPU_TEST_MODE")
+                    .ok()
+                    .as_deref()
+                    == Some("1"),
+            "Only the dedicated developer test opt-in may enable profiling"
+        );
         let (index, _owner) = isolated();
         let dir = tempfile::tempdir().unwrap();
         index

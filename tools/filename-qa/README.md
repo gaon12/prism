@@ -304,6 +304,25 @@ process cleanup passed. Raw RED/GREEN/Clippy/corpus records are retained under
 These are importer/component checks; the new app's end-to-end native completion
 qualification remains separate.
 
+The large-record reader also follows the small reader's field-shape rules:
+null/non-array list fields contribute no items, non-string array members do not
+count toward string limits, and non-object senses/forms contribute no fields.
+A present non-string headword field still blocks fallback to the second field,
+so a present null `term` does not unexpectedly become a valid `word` record.
+The parser tracks that presence while discarding unused values through
+`IgnoredAny`; it does not buffer an untagged fallback as a complete Value tree.
+Malformed JSON and oversized records still fail with the old pack preserved.
+Two new comparisons first failed (nine passed/two failed), then all eleven store
+tests and strict all-target Clippy passed. Mixed arrays, null fields, POS/language
+handling and stored results are compared with actual small-record imports.
+The fixed official corpus again imported 76,689 meanings and reopened with five
+queried definitions, in 12.756 seconds excluding compilation; this is a
+correctness replay, not a speed comparison. Final frozen-input/resource/cleanup
+records are under
+`C:/Users/solso/prism-agent-work-20261115/dictionary-shapes-final-{green,clippy,corpus}/`,
+with the original failing cases under `dictionary-shapes-red/`. Full-app/native
+qualification is still required for the resulting release executable.
+
 After these runs ended, 13 generated native-fixture executable copies were
 removed, freeing 4,938,077,184 bytes. Each was inside a resolved, non-reparse
 owned run directory, matched a retained original candidate's SHA-256 and had no

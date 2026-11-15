@@ -1,145 +1,246 @@
-//! Bounded projection of large Wiktextract records. Most dictionary records
-//! keep the existing Value parser; large records discard unrelated metadata
-//! while deserializing instead of building its complete object/array tree.
+//! Bounded projection of large dictionary records. Small records keep the
+//! existing Value parser. Large records validate but discard unused JSON shapes
+//! without constructing their complete object/array trees.
 use serde::{
-    de::{IgnoredAny, SeqAccess, Visitor},
+    de::{IgnoredAny, MapAccess, SeqAccess, Visitor},
     Deserialize, Deserializer,
 };
 use serde_json::{Map, Value};
-use std::fmt;
+use std::{fmt, marker::PhantomData};
 
 pub(super) const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 const SMALL_LINE_BYTES: usize = 1024 * 1024;
 
+/// Each projection reads its relevant JSON shape. Other shapes have the same
+/// meaning as Value::as_str/as_array/get returning None in the small parser.
+trait Projection: Default {
+    fn ignored() -> Self {
+        Self::default()
+    }
+    fn text(_: &str) -> Self {
+        Self::ignored()
+    }
+    fn sequence<'de, A: SeqAccess<'de>>(mut seq: A) -> Result<Self, A::Error> {
+        while seq.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(Self::ignored())
+    }
+    fn object<'de, A: MapAccess<'de>>(mut map: A) -> Result<Self, A::Error> {
+        while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+        Ok(Self::ignored())
+    }
+}
+
+fn project<'de, D: Deserializer<'de>, T: Projection>(deserializer: D) -> Result<T, D::Error> {
+    struct ProjectionVisitor<T>(PhantomData<T>);
+    impl<'de, T: Projection> Visitor<'de> for ProjectionVisitor<T> {
+        type Value = T;
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a dictionary field")
+        }
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<T, E> {
+            Ok(T::text(value))
+        }
+        fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<T, E> {
+            Ok(T::ignored())
+        }
+        fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<T, E> {
+            Ok(T::ignored())
+        }
+        fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<T, E> {
+            Ok(T::ignored())
+        }
+        fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<T, E> {
+            Ok(T::ignored())
+        }
+        fn visit_unit<E: serde::de::Error>(self) -> Result<T, E> {
+            Ok(T::ignored())
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<T, A::Error> {
+            T::sequence(seq)
+        }
+        fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
+            T::object(map)
+        }
+    }
+    deserializer.deserialize_any(ProjectionVisitor::<T>(PhantomData))
+}
+
+macro_rules! deserialize_projection {
+    ($($ty:ty),+ $(,)?) => {$(
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                project(deserializer)
+            }
+        }
+    )+};
+}
+
+/// A present non-string must remain present: a null term blocks fallback to
+/// word, whereas a missing term permits it. Language/POS fields behave likewise.
+#[derive(Default)]
+struct Scalar {
+    present: bool,
+    text: Option<String>,
+}
+impl Projection for Scalar {
+    fn ignored() -> Self {
+        Self {
+            present: true,
+            text: None,
+        }
+    }
+    fn text(value: &str) -> Self {
+        Self {
+            present: true,
+            text: Some(value.into()),
+        }
+    }
+}
+
 #[derive(Default)]
 struct Strings<const LIMIT: usize, const NONEMPTY: bool>(Vec<String>);
-
+impl<const LIMIT: usize, const NONEMPTY: bool> Projection for Strings<LIMIT, NONEMPTY> {
+    fn sequence<'de, A: SeqAccess<'de>>(mut seq: A) -> Result<Self, A::Error> {
+        let mut values = Vec::new();
+        while values.len() < LIMIT {
+            let Some(value) = seq.next_element::<Scalar>()? else {
+                return Ok(Self(values));
+            };
+            if let Some(value) = value.text {
+                if !NONEMPTY || !value.trim().is_empty() {
+                    values.push(value);
+                }
+            }
+        }
+        // Validate all remaining input, retaining neither strings nor objects.
+        while seq.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(Self(values))
+    }
+}
 impl<'de, const LIMIT: usize, const NONEMPTY: bool> Deserialize<'de> for Strings<LIMIT, NONEMPTY> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct ListVisitor<const LIMIT: usize, const NONEMPTY: bool>;
-        impl<'de, const LIMIT: usize, const NONEMPTY: bool> Visitor<'de> for ListVisitor<LIMIT, NONEMPTY> {
-            type Value = Strings<LIMIT, NONEMPTY>;
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("an array of dictionary strings")
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-                let mut values = Vec::new();
-                while values.len() < LIMIT {
-                    let Some(value) = seq.next_element::<String>()? else {
-                        return Ok(Strings(values));
-                    };
-                    if !NONEMPTY || !value.trim().is_empty() {
-                        values.push(value);
-                    }
-                }
-                // Still validate the rest of the JSON, without retaining it.
-                while seq.next_element::<IgnoredAny>()?.is_some() {}
-                Ok(Strings(values))
-            }
-        }
-        deserializer.deserialize_seq(ListVisitor::<LIMIT, NONEMPTY>)
+        project(deserializer)
     }
 }
 
+#[derive(Default)]
+struct GlossField {
+    glosses: Strings<40, true>,
+}
+impl Projection for GlossField {
+    fn object<'de, A: MapAccess<'de>>(mut map: A) -> Result<Self, A::Error> {
+        let mut value = Self::default();
+        while let Some(key) = map.next_key::<String>()? {
+            if key == "glosses" {
+                value.glosses = map.next_value()?;
+            } else {
+                map.next_value::<IgnoredAny>()?;
+            }
+        }
+        Ok(value)
+    }
+}
 #[derive(Default)]
 struct SenseGlosses(Vec<String>);
-
-impl<'de> Deserialize<'de> for SenseGlosses {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        struct Sense {
-            #[serde(default)]
-            glosses: Strings<40, true>,
+impl Projection for SenseGlosses {
+    fn sequence<'de, A: SeqAccess<'de>>(mut seq: A) -> Result<Self, A::Error> {
+        let mut values = Vec::new();
+        while values.len() < 40 {
+            let Some(sense) = seq.next_element::<GlossField>()? else {
+                return Ok(Self(values));
+            };
+            let remaining = 40 - values.len();
+            values.extend(sense.glosses.0.into_iter().take(remaining));
         }
-        struct SensesVisitor;
-        impl<'de> Visitor<'de> for SensesVisitor {
-            type Value = SenseGlosses;
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("an array of dictionary senses")
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-                let mut values = Vec::new();
-                while values.len() < 40 {
-                    let Some(sense) = seq.next_element::<Sense>()? else {
-                        return Ok(SenseGlosses(values));
-                    };
-                    let remaining = 40 - values.len();
-                    values.extend(sense.glosses.0.into_iter().take(remaining));
-                }
-                while seq.next_element::<IgnoredAny>()?.is_some() {}
-                Ok(SenseGlosses(values))
-            }
-        }
-        deserializer.deserialize_seq(SensesVisitor)
+        while seq.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(Self(values))
     }
 }
 
+#[derive(Default)]
+struct FormField {
+    form: Scalar,
+}
+impl Projection for FormField {
+    fn object<'de, A: MapAccess<'de>>(mut map: A) -> Result<Self, A::Error> {
+        let mut value = Self::default();
+        while let Some(key) = map.next_key::<String>()? {
+            if key == "form" {
+                value.form = map.next_value()?;
+            } else {
+                map.next_value::<IgnoredAny>()?;
+            }
+        }
+        Ok(value)
+    }
+}
 #[derive(Default)]
 struct Forms(Vec<String>);
-
-impl<'de> Deserialize<'de> for Forms {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        struct Form {
-            form: Option<String>,
-        }
-        struct FormsVisitor;
-        impl<'de> Visitor<'de> for FormsVisitor {
-            type Value = Forms;
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("an array of dictionary forms")
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-                let mut values = Vec::new();
-                while values.len() < 300 {
-                    let Some(form) = seq.next_element::<Form>()? else {
-                        return Ok(Forms(values));
-                    };
-                    if let Some(value) = form.form {
-                        values.push(value);
-                    }
-                }
-                while seq.next_element::<IgnoredAny>()?.is_some() {}
-                Ok(Forms(values))
+impl Projection for Forms {
+    fn sequence<'de, A: SeqAccess<'de>>(mut seq: A) -> Result<Self, A::Error> {
+        let mut values = Vec::new();
+        while values.len() < 300 {
+            let Some(form) = seq.next_element::<FormField>()? else {
+                return Ok(Self(values));
+            };
+            if let Some(value) = form.form.text {
+                values.push(value);
             }
         }
-        deserializer.deserialize_seq(FormsVisitor)
+        while seq.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(Self(values))
     }
 }
 
 #[derive(Default)]
-struct Presence(bool);
-
-impl<'de> Deserialize<'de> for Presence {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        // Presence matters even for null or false. Option<IgnoredAny> would
-        // turn a present JSON null into the same state as a missing field.
-        IgnoredAny::deserialize(deserializer)?;
-        Ok(Self(true))
-    }
-}
-
-#[derive(Deserialize)]
 struct LargeRecord {
-    #[serde(default, rename = "prismDictionary")]
-    header: Presence,
-    term: Option<String>,
-    word: Option<String>,
-    lang_code: Option<String>,
-    #[serde(rename = "partOfSpeech")]
-    part_of_speech: Option<String>,
-    pos: Option<String>,
-    #[serde(default)]
+    header: bool,
+    term: Scalar,
+    word: Scalar,
+    lang_code: Scalar,
+    part_of_speech: Scalar,
+    pos: Scalar,
     definitions: Strings<40, true>,
-    #[serde(default)]
     senses: SenseGlosses,
-    #[serde(default)]
     examples: Strings<4, false>,
-    #[serde(default)]
     aliases: Strings<300, false>,
-    #[serde(default)]
     forms: Forms,
 }
+impl Projection for LargeRecord {
+    fn object<'de, A: MapAccess<'de>>(mut map: A) -> Result<Self, A::Error> {
+        let mut record = Self::default();
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "prismDictionary" => {
+                    map.next_value::<IgnoredAny>()?;
+                    record.header = true;
+                }
+                "term" => record.term = map.next_value()?,
+                "word" => record.word = map.next_value()?,
+                "lang_code" => record.lang_code = map.next_value()?,
+                "partOfSpeech" => record.part_of_speech = map.next_value()?,
+                "pos" => record.pos = map.next_value()?,
+                "definitions" => record.definitions = map.next_value()?,
+                "senses" => record.senses = map.next_value()?,
+                "examples" => record.examples = map.next_value()?,
+                "aliases" => record.aliases = map.next_value()?,
+                "forms" => record.forms = map.next_value()?,
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(record)
+    }
+}
+deserialize_projection!(
+    Scalar,
+    GlossField,
+    SenseGlosses,
+    FormField,
+    Forms,
+    LargeRecord
+);
 
 fn strings(values: impl Iterator<Item = String>) -> Value {
     Value::Array(values.map(Value::String).collect())
@@ -150,7 +251,7 @@ pub(super) fn parse(line: &str) -> Result<Value, serde_json::Error> {
         return serde_json::from_str(line);
     }
     let record: LargeRecord = serde_json::from_str(line)?;
-    if record.header.0 {
+    if record.header {
         return Ok(serde_json::json!({ "prismDictionary": null }));
     }
     let mut fields = Map::new();
@@ -161,8 +262,8 @@ pub(super) fn parse(line: &str) -> Result<Value, serde_json::Error> {
         ("partOfSpeech", record.part_of_speech),
         ("pos", record.pos),
     ] {
-        if let Some(value) = value {
-            fields.insert(key.into(), Value::String(value));
+        if value.present {
+            fields.insert(key.into(), value.text.map_or(Value::Null, Value::String));
         }
     }
     fields.insert(

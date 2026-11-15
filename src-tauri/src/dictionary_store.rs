@@ -663,4 +663,91 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn large_projection_matches_small_records_with_mixed_shapes() {
+        let cases = [
+            serde_json::json!({
+                "word": "mixed", "lang_code": 5, "partOfSpeech": null, "pos": "ignored fallback",
+                "definitions": [null, false, 1, [], {}, " ", "direct"],
+                "senses": [null, [], 1, "unused", {"glosses": null},
+                    {"glosses": [null, false, {}, "sense"]}, {"glosses": true}],
+                "examples": [null, "one", 1, {}, "two", "three", "four", "excluded"],
+                "aliases": [null, 1, {}, "alias"],
+                "forms": [false, [], {}, {"form": null}, {"form": 1}, {"form": "form"}],
+            }),
+            serde_json::json!({
+                "word": "mixed", "definitions": null,
+                "senses": [null, false, {"glosses": [null, "sense only"]}],
+                "examples": null, "aliases": null, "forms": null,
+            }),
+            serde_json::json!({
+                "word": "mixed", "definitions": ["direct"], "senses": null,
+                "examples": false, "aliases": [false, "alias"], "forms": {}, "pos": 5,
+            }),
+        ];
+        for small in cases {
+            let mut large = small.clone();
+            large["unused_metadata"] = serde_json::Value::String("x".repeat(1_048_576));
+            let first = tempfile::tempdir().unwrap();
+            let second = tempfile::tempdir().unwrap();
+            let first = DictionaryStore::open(first.path()).unwrap();
+            let second = DictionaryStore::open(second.path()).unwrap();
+            let cancel = AtomicBool::new(false);
+            let a = first
+                .import(
+                    serde_json::to_vec(&small).unwrap().as_slice(),
+                    manifest(),
+                    &cancel,
+                    |_| {},
+                )
+                .unwrap();
+            let b = second
+                .import(
+                    serde_json::to_vec(&large).unwrap().as_slice(),
+                    manifest(),
+                    &cancel,
+                    |_| {},
+                )
+                .unwrap();
+            assert_eq!(a.entries, b.entries);
+            for query in ["mixed", "alias", "form"] {
+                assert_eq!(
+                    serde_json::to_value(first.lookup("ko", query).unwrap()).unwrap(),
+                    serde_json::to_value(second.lookup("ko", query).unwrap()).unwrap(),
+                    "lookup differs for {query}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn present_null_headword_does_not_fall_back_to_a_second_field() {
+        let cancel = AtomicBool::new(false);
+        let directory = tempfile::tempdir().unwrap();
+        let store = DictionaryStore::open(directory.path()).unwrap();
+        store
+            .import(
+                b"{\"word\":\"previous\",\"definitions\":[\"keep me\"]}".as_slice(),
+                manifest(),
+                &cancel,
+                |_| {},
+            )
+            .unwrap();
+        let small = serde_json::json!({"term": null, "word": "mixed", "definitions": ["meaning"]});
+        let mut large = small.clone();
+        large["unused_metadata"] = serde_json::Value::String("x".repeat(1_048_576));
+        for record in [small, large] {
+            assert!(store
+                .import(
+                    serde_json::to_vec(&record).unwrap().as_slice(),
+                    manifest(),
+                    &cancel,
+                    |_| {}
+                )
+                .is_err());
+            assert_eq!(store.lookup("ko", "previous").unwrap()[0].text, "keep me");
+            assert!(store.lookup("ko", "mixed").unwrap().is_empty());
+        }
+    }
 }

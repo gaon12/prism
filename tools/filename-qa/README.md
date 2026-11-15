@@ -1571,6 +1571,9 @@ comments and a revised debug-assert message/test.
 
 The next read-only audit, [status lock analysis](status-lock-analysis.md), traces
 `index_status` through the catalog read lock and provisional prepared mutex,
-lists writer work and proposes a coherent lightweight status snapshot. The
-recorded long calls include CDP/IPC/worker scheduling; backend wait attribution
-and any status-cache implementation remain unmeasured/unapplied.
+lists writer work and proposes a coherent lightweight status snapshot. Its
+separate local Rust 1.99 futex experiment confirms queued-writer and prepared
+mutex blocking with synthetic 200-ms gates (12 scenarios passed), while also
+showing that the waiting status reader preceded the writer's commit in those runs.
+The original GUI calls include CDP/IPC/worker scheduling; their backend wait
+attribution and any product status-cache implementation remain unmeasured/unapplied.

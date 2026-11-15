@@ -1,8 +1,9 @@
 # Filename status latency: source audit and proposal
 
-Baseline: `c6fffe4` (2026-11-16). This is a code-reading proposal; no product
-locking or status behavior has changed. The relevant index/command/pipeline/UI
-sources match those in the measured `5054b8c` CI app.
+Baseline: `c6fffe4` (2026-11-16). This document contains the source audit and a
+separate controlled local lock experiment below. No product locking or status
+behavior has changed. The relevant index/command/pipeline/UI sources match
+those in the measured `5054b8c` CI app.
 
 `index_status` can wait for **two catalog locks**, despite already running off
 the Tauri main thread. Separating published status from entry storage is a
@@ -182,6 +183,79 @@ next step. Aggregate maxima alone do not identify an individual blocking writer;
 bounded numeric interval evidence can be added if needed. Do not promote an
 observed maximum to a guaranteed latency upper bound.
 
+## Controlled local lock experiment
+
+The local compiler is Rust 1.99.0, commit
+`b940084d7eb6a299eb4bfeb8e34901bc051e7ac4`, target
+`x86_64-pc-windows-msvc`. Its
+[backend selection](https://raw.githubusercontent.com/rust-lang/rust/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/sync/rwlock/mod.rs)
+selects the futex RwLock for this Windows target, rather than SRW. The Windows
+[futex operations](https://raw.githubusercontent.com/rust-lang/rust/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/sync/futex/windows.rs)
+use WaitOnAddress/WakeByAddress. The
+[reader admission check](https://raw.githubusercontent.com/rust-lang/rust/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/std/src/sys/sync/rwlock/futex.rs)
+rejects a new reader when waiting flags are set. These are implementation facts
+about this pinned local toolchain, not a portable queue-order promise or a
+verification of the exact standard library in the earlier CI app.
+
+A private source copy added thread-local wall timers around the production
+status path's catalog and prepared lock acquisitions. No shared recorder lock
+was added inside those regions. The normal lock order and status logic were
+retained. Synthetic FileIndex state was constructed directly without starting
+its background worker. There was no Tauri, GUI, service, filesystem enumeration
+or real user input. A fresh process Job enforced one CPU and 512 MiB before the
+start gate. Writer/holder threads called the production background-priority
+helper; effective thread priorities were not separately read back.
+
+Four conditions ran three times each, with deliberately configured 200-ms
+holds. A compatible reader-only condition provided a control. The queued-writer
+condition kept an initial reader held, started a writer, and waited until a new
+`try_read` returned WouldBlock before starting status. No writer could own the
+lock at that checkpoint, so the failed new read identifies queued-writer
+admission blocking. Release/response gates and recorded status revisions then
+observed the ordering after the initial reader was released.
+
+| Condition                           | Status total wall ms (range, 3 runs) | Dominant measured acquisition wall ms         | Observation                                                                                                       |
+| ----------------------------------- | ------------------------------------ | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Existing reader only                | 0.0004-0.0096                        | Catalog: at most 0.0001                       | Status returned while that reader remained held.                                                                  |
+| Existing reader plus waiting writer | 202.4-207.3                          | Catalog: 202.4-207.3                          | Status remained pending during the initial reader's 200-ms hold after a writer queued.                            |
+| Writer already holding catalog      | 200.1-203.5                          | Catalog: 200.1-203.5                          | Status returned after the held writer released.                                                                   |
+| Prepared mutex already held         | 202.0-232.4                          | Prepared: 202.0-232.4; catalog at most 0.0001 | Status held a catalog read guard while blocked on the second mutex; its result saw the synthetic provisional row. |
+
+All 12 scenarios passed. The waiting writer therefore **can delay a fresh
+status reader even while an existing reader would otherwise be compatible**.
+The second prepared-mutex dependency is independently observable.
+
+Post-release ordering needs a qualification: in all three queued-writer runs, status read
+the old revision and completed before the writer committed. That writer still
+subsequently held the lock for its own configured 200 ms. Status did not wait
+for that additional hold. The first fixture incorrectly required writer commit
+before the waiting status returned; its ordering assertion failed and that
+attempt was retained. The revised fixture preserves the queued-writer
+precondition but records the acquisition/commit outcome instead of prescribing it.
+Do not assume a strictly additive reader-hold-plus-writer-hold wait.
+
+These numbers measure acquisition wall windows, including scheduling during
+the calls. The critical sections intentionally wait on release gates: they do
+not measure the natural duration of a real search, publish, scan or watch job.
+The original GUI's 1.5-2.4-second delay is still unattributed. The experiment
+supports decoupling status from both locks; the earlier backend/IPC diagnostic
+split remains necessary to attribute that specific production observation.
+
+The successful run took 2.922 seconds, minimum available host RAM was
+4,965,675,008 bytes, and no resource guard fired. Inputs/executable hashes were
+unchanged. All case threads joined, and Job close plus handle waits confirmed
+no owned process remained. Strict all-target Clippy and the release build
+passed for the private fixture. No product cache or timing hooks were applied.
+
+Private evidence is in
+`C:/Users/solso/prism-agent-work-20261115/status-lock-probe-controlled-v2/`,
+`status-lock-probe-source/`, `status-lock-probe-candidate-v2/`,
+`status-lock-primary-sources/` and `status-lock-controlled-qualification.json`
+in the same parent. The unsuccessful first run, its binary and its frozen
+inputs remain in `status-lock-probe-controlled/`, `status-lock-probe-candidate/`
+and `status-lock-probe-v1-failed-inputs/`. Primary-source hashes and the compiler
+version are retained alongside the successful results.
+
 ## Acceptance and regression plan
 
 - In a synthetic controlled test, keep a catalog writer blocked on an owned
@@ -203,5 +277,6 @@ observed maximum to a guaranteed latency upper bound.
 Existing numeric evidence and source hashes are retained privately under
 `C:/Users/solso/prism-agent-work-20261115/status-lock-analysis.json`, referencing
 `native-hash-reuse-qualification.json` and the original four-case raw result.
-This audit ran no new GUI, Rust build or benchmark. No lock/cache implementation
-has been applied.
+The original source audit ran no new GUI, Rust build or benchmark; the separate
+controlled experiment above adds local build/measurement evidence. No lock/cache
+implementation has been applied to the product.

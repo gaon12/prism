@@ -899,3 +899,19 @@ First search already preceded whole collection in the app cases above
 (2.587/2.763 versus 9.303/9.054 seconds); all rows are not required for first
 results. Further server-internal attribution requires server-side boundaries
 from a separately qualified build.
+
+Two additional requests bracketed the unchanged service process with
+`GetProcessTimes` through `PROCESS_QUERY_LIMITED_INFORMATION`, without elevation.
+Its creation time and image/PID stayed unchanged. Client snapshots took
+7.950/9.365 seconds, including Read wall of 6.562/8.030 seconds; client CPU was
+0.734/0.984 seconds. Service-process CPU increased by 2.594/3.641 seconds
+(user 2.125/3.047, kernel 0.469/0.594). These intervals include any other clients
+or asynchronous cache saving, so they are not CPU attributed to this request.
+They show why all Read wait cannot be called server CPU; I/O, scheduling and
+queueing still need separate attribution. Whole-host busy was 51.5/54.1%.
+
+Both additional requests passed their guards, limits, unchanged-input/service
+and owned-Job cleanup checks (18.797 seconds overall). Raw reports are in
+`transport-profile-server-cpu/result.json`, with scope/hash in
+`transport-service-cpu-qualification.json`, under the same stable parent above.
+No source optimization separates these requests from the first pair.

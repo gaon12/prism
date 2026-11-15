@@ -1519,6 +1519,18 @@ mod tests {
         assert!(entry.is_seen(expected.seen));
     }
 
+    // The debug assertion in `insert_new_hashed` must reject a reused hash
+    // that no longer matches this catalog's hasher.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "stale reused key hash")]
+    fn a_mismatched_precomputed_hash_is_rejected_before_insertion() {
+        let mut catalog = Catalog::new();
+        let row = input(r"C:\Docs\a.txt", "c:/docs/a.txt");
+        let mismatched = catalog.hash(row.key) ^ 1;
+        catalog.insert_new_hashed(&row, mismatched);
+    }
+
     #[test]
     fn cached_hashes_survive_growth_reuse_and_text_compaction() {
         let mut catalog = Catalog::new();

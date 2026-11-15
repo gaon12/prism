@@ -1475,3 +1475,38 @@ No real app, service or model was launched. Frozen input hashes and the raw log
 are in `C:/Users/solso/prism-agent-work-20261115/harness-cpu-spawn-contract/`.
 The fixed-capture insertion and direct profiler-cost results above are separate
 measurements; this is a shared-harness compatibility regression only.
+
+### Reviewed single-hash production implementation (2026-11-16)
+
+Following review of the fixed-capture proposal, `Catalog::insert` now computes
+the identity hash once and passes it to private replacement/removal and insertion
+helpers. Public replacement semantics and exact key comparisons are retained.
+The known-absent `insert_new` path and public `remove` compute their own hash.
+No persistent fields, hash algorithm, directory/text layout or lookup policy
+changed. Reuse stays within the Catalog whose RandomState produced the hash;
+removal and text compaction do not replace that state.
+
+`insert_new_hashed` also checks `debug_assert_eq!(hash, self.hash(input.key))`
+before insertion, so debug tests catch a stale/foreign precomputed hash if this
+invariant changes. A debug-only negative regression passes a deliberately
+mismatched hash and verifies rejection. This assertion is not additional work
+in profiles with debug assertions disabled.
+
+The default Windows filename QA passed 117 tests (the previous 116 plus the
+guard regression), with seven existing opt-in tests ignored. Its compact tests
+include randomized reference operations, replacement, growth, directory/free-slot
+reuse and text compaction. Independent catalog QA passed all 22 tests too.
+Both crates passed strict all-target Clippy; the changed production module
+passed rustfmt. Checks used `--locked --offline -j1`, available-RAM guards and
+owned process Jobs. Raw checks and source hashes are retained under
+`C:/Users/solso/prism-agent-work-20261115/product-hash-reuse-{test,clippy,catalog-test,catalog-clippy}/`
+and `product-hash-reuse-qualification.json` in the same parent.
+
+The earlier 7.66% reduction is a private fixed-capture **insertion-cycle**
+measurement. It is not a measured whole-app startup improvement from this
+production patch. Integration/CI and a native comparison remain next: use the
+new CI executable and the retained `e4af7ff` executable with profiling off,
+preferably A/B/B/A with two launches of each under the same harness, software
+rendering and one-CPU/512-MiB app/WebView Job. Record first searchable results,
+full ready, process CPU and memory separately, along with shared-host/service
+limitations. The 5-7 second cached full-list target remains open.

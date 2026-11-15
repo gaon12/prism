@@ -241,7 +241,7 @@ try {
     const lookupArgs = { language: 'ko', word: '사과', offline: true };
     const lookup = await instance.invoke('dictionary_lookup', lookupArgs);
     assert.equal(lookup.source, 'offline');
-    const official = lookup.definitions.find((value) => value.source_name === pack.manifest.name);
+    const official = lookup.definitions.find((value) => value.sourceName === pack.manifest.name);
     assert(official?.text?.trim(), 'The requested word must have an actual corpus definition');
     assert.equal(official.license, pack.manifest.license);
     await instance.main.getByRole('textbox', { name: '검색어', exact: true }).fill('dict:ko 사과');
@@ -266,7 +266,7 @@ try {
       observedPhases,
       elapsedMs: Date.now() - completionStarted,
       officialDefinitionCount: lookup.definitions.filter(
-        (value) => value.source_name === pack.manifest.name,
+        (value) => value.sourceName === pack.manifest.name,
       ).length,
     });
   }

@@ -1504,9 +1504,67 @@ and `product-hash-reuse-qualification.json` in the same parent.
 
 The earlier 7.66% reduction is a private fixed-capture **insertion-cycle**
 measurement. It is not a measured whole-app startup improvement from this
-production patch. Integration/CI and a native comparison remain next: use the
-new CI executable and the retained `e4af7ff` executable with profiling off,
-preferably A/B/B/A with two launches of each under the same harness, software
-rendering and one-CPU/512-MiB app/WebView Job. Record first searchable results,
-full ready, process CPU and memory separately, along with shared-host/service
-limitations. The 5-7 second cached full-list target remains open.
+production patch. The integrated `5054b8c` CI executable completed the planned
+profiling-off native A/B/B/A below, two launches per executable. First searchable
+results, full ready, process CPU and memory remain separate metrics with the
+shared-host/service limitations retained. The 5-7 second cached full-list target
+remains open.
+
+### Integrated hash-reuse app: native off comparison (2026-11-16)
+
+The integrated release from CI `43743816823` (`5054b8c`), artifact `14173444508`,
+was compared against the retained `e4af7ff` release from CI `43740093087`.
+The new executable SHA-256 is
+`70c8b9d879990c78a6c49cfa6b0c34115a6ed7d9a88a27b9e6ebffb0511e4a38`;
+its ZIP matched GitHub's artifact digest. Admission checked the repository,
+release workflow, dispatch event and source commit. The product-source diff
+between the two CI commits was limited to `filename_compact.rs`. The same
+harness launched A/B/B/A, with profiling explicitly off in every case.
+
+All four actual native runs passed. Every run used a fresh owned portable
+profile, reported development false/software rendering true, and confirmed one
+CPU plus 512-MiB process/Job limits for the app and WebView. Each completed one
+validated service snapshot with zero overflow reconciles and no profile/summary.
+
+| Case | App         | First search (s) | First complete (s) | Idle ready (s) | Prism CPU at ready (s) | WebView CPU at ready (s) | Final peak Job (MiB) |
+| ---- | ----------- | ---------------- | ------------------ | -------------- | ---------------------- | ------------------------ | -------------------- |
+| A1   | e4 baseline | 3.284            | 12.145             | 12.196         | 5.968                  | 3.666                    | 405.12               |
+| B1   | Hash reuse  | 3.235            | 10.055             | 12.345         | 6.046                  | 3.571                    | 401.64               |
+| B2   | Hash reuse  | 2.703            | 10.690             | 10.730         | 5.077                  | 3.181                    | 399.64               |
+| A2   | e4 baseline | 2.873            | 10.215             | 12.813         | 5.515                  | 3.979                    | 405.84               |
+
+Observed mean ready was 12.5045 seconds for the baseline and 11.5375 seconds
+for the new app, 967 ms apart. Prism CPU means were 5.7415/5.5615 seconds,
+with overlapping case values. The service snapshot took 9.947/9.847 seconds
+for the baseline versus 7.517/9.014 seconds for the new runs. These live-input
+and scheduling differences prevent attributing the ready-time difference to
+hash reuse. The fixed-input 7.66% insertion-cycle result remains its own metric;
+this comparison does not establish a whole-app startup gain.
+
+B1 and A2 first reported `complete: true, scanning: true`, then reached idle
+2,290/2,598 ms later as counts changed by 9/100 rows. The maximum status-poll
+durations across A/B/B/A were 1,984/2,133/1,549/2,449 ms. Catalog locking, IPC/UI
+scheduling and watch work have not been separated in that tail; the data only
+identifies a useful next measurement boundary. Job and live-process CPU reads
+are not atomic and their sums can differ slightly. CPU in the table is sampled
+at ready, whereas final memory peaks also include post-ready fixture queries/UI.
+
+All four runs finished in 64.531 seconds with no resource stop, unchanged
+executable/harness/service hashes and no remaining owned processes. Minimum
+available host RAM was 4,502,159,360 bytes. The shared host was 69.0-74.6% busy,
+and live entry counts rose from 2,143,889 to 2,144,651. The historical service
+remained PID 5924 / SHA `d0b1fe5e...`, outside the app Job; its raw image was
+not found in either candidate. There was no service upgrade or elevation,
+HDD test, cache reset or access to the user's Prism profile. The service cache
+was retained but each WebView profile was fresh. The 5-7 second cached full-list
+target remains unaccepted.
+
+The private evidence is retained outside all worktrees in
+`C:/Users/solso/prism-agent-work-20261115/harsh-hash-reuse-ci-abba/`,
+`native-hash-reuse-inputs/`, `candidate-hash-reuse-ci/`, `candidate-e4af7ff/`
+and `native-hash-reuse-qualification.json` in the same parent. The raw numeric
+cases, frozen harness/production modules, candidate provenance and screenshots
+remain local; no private inputs or local GUI evidence were uploaded. The
+original `4b78710` implementation qualification remains a separate immutable
+record; the integrated source has the same release algorithm with additional
+comments and a revised debug-assert message/test.

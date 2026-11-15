@@ -5,6 +5,13 @@ and private metadata-capture reader without linking Tauri, a WebView or vector
 runtime. The settings type is only a DTO fixture. No service is started, upgraded
 or contacted by the benchmark. Captures must stay private.
 
+Real captures contain user filenames and paths. Keep them outside every Git
+checkout/worktree, including ignored `.dev` folders. Never commit them, send
+them to CI or include them in uploaded artifacts. Use an absolute private input
+path when invoking capture-based commands; relative input names in examples
+are placeholders. Hosted profiling uses synthetic rows. Retain numeric results,
+source/input hashes and an explicit raw-input retention/cleanup plan separately.
+
 The crate also imports the production Q18 file-category policy. Its tests cover
 independent filename/content defaults, unknown facts, and filename-derived code
 and archive categories. Default inclusion needs no facts; exclusions cannot turn
@@ -1418,3 +1425,32 @@ Earlier private QA include-placement failures remain in the v2/v3 Clippy logs.
 The separate insertion proposal above uses the fixed real path capture; this
 overhead check uses fixed operation counts. Product code and the outstanding
 5-7 second cached startup criterion are unchanged.
+
+### Local capture location and retention (2026-11-16)
+
+The real capture used by these measurements contains 2,185,112 rows in
+316,776,030 bytes, SHA-256
+`385f1bc9ed23051f0cdb9686eaca82327b4d0f4a66d7814d8629f32f32232a95`.
+It is now retained as one read-only raw input outside all registered worktrees:
+`C:/Users/solso/prism-agent-work-20261115/private-inputs/ntfs-service-capture-20261113/capture.pnrows`.
+The private copy was flushed, synced and rehashed before removing the old
+regular capture file from the ignored repository-local `.dev` folder. Both
+copies matched again immediately before source removal, and the retained copy
+matched afterward. Existing metadata, source copies and historical run records
+were preserved; no directory was removed.
+
+Historical evidence still names the previous input path. Resolve it through
+`C:/Users/solso/prism-agent-work-20261115/private-capture-location-ledger.json`;
+the former capture directory contains a numeric `capture-location.json`
+reference. Do not rewrite the recorded paths or input hashes of completed runs.
+New runs must use the external private path. The raw capture is not tracked,
+and current workflow upload paths do not reference it. The filename QA workflow
+uploads an executable/provenance and optional synthetic CPU evidence.
+
+Keep the single private raw input while the hash-reuse proposal is under review
+and any approved before/after validation still needs identical rows. Once that
+evidence is accepted and no active reader needs the input, remove only that
+owned raw file after checking its resolved location, regular-file type and
+hash. Preserve the numeric measurements, source hashes and location ledger.
+There is no automatic expiry or recursive cleanup; retaining the raw input
+here is temporary review evidence, not a corpus to distribute.

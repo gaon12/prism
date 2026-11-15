@@ -250,6 +250,13 @@ impl Entries {
     pub(super) fn subtree<'a>(&'a self, root: &'a str) -> impl Iterator<Item = EntryRef<'a>> + 'a {
         self.inner.subtree(root)
     }
+    /// Every entry at or below any of `roots`, each once, in one pass.
+    pub(super) fn subtrees<'a>(
+        &'a self,
+        roots: &[&str],
+    ) -> impl Iterator<Item = EntryRef<'a>> + 'a {
+        self.inner.subtrees(roots)
+    }
     /// All live entries in storage order.
     pub(super) fn refs(&self) -> impl Iterator<Item = EntryRef<'_>> + '_ {
         self.inner.iter()

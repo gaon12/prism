@@ -20,6 +20,7 @@
 //!
 //! This module has no dependencies: callers pass already-normalized strings.
 
+use std::collections::HashSet;
 use std::hash::{BuildHasher, RandomState};
 
 /// "No value" in 32-bit link and offset fields.
@@ -1096,22 +1097,38 @@ impl Catalog {
 
     /// The entry at `root` and every entry below it (`root/...`).
     pub fn subtree<'a>(&'a self, root: &'a str) -> impl Iterator<Item = EntryRef<'a>> + 'a {
-        // Decide once per directory whether it is the root or below it.
+        self.subtrees(&[root])
+    }
+
+    /// Every entry at or below any of `roots`, each one once, in storage order.
+    ///
+    /// Asking `subtree` once per root walks every directory and every entry
+    /// slot once per root. A watcher refresh of 10 folders on a 2 million
+    /// entry drive then visits 20 million slots while holding the catalog's
+    /// write lock. This walks them once, whatever the number of roots.
+    pub fn subtrees<'a>(&'a self, roots: &[&str]) -> impl Iterator<Item = EntryRef<'a>> + 'a {
+        let wanted: HashSet<&str> = roots.iter().copied().collect();
+        // Decide once per directory whether it is a root or below one.
         let mut scratch = String::new();
         let inside: Vec<bool> = (0..self.dirs.len() as u32)
             .map(|id| {
                 id != 0
                     && self.dirs[id as usize].children > 0
-                    && under(self.write_dir_key(id, &mut scratch), root)
+                    && under_any(self.write_dir_key(id, &mut scratch), &wanted)
             })
             .collect();
-        // The root entry itself lives in its parent directory. Look it up by
-        // key once instead of rebuilding the key of every entry outside the
+        // A root entry itself lives in its parent directory. Look each one up
+        // by key once instead of rebuilding the key of every entry outside the
         // subtree: on a 2.2 million entry drive that rebuild cost about 0.3 s
         // of one CPU for each scoped search and each refreshed folder.
-        let root_id = self.find(root).map(|(_, id)| id);
-        self.iter()
-            .filter(move |entry| inside[entry.node().dir as usize] || Some(entry.id) == root_id)
+        let mut root_ids: Vec<u32> = wanted
+            .iter()
+            .filter_map(|root| self.find(root).map(|(_, id)| id))
+            .collect();
+        root_ids.sort_unstable();
+        self.iter().filter(move |entry| {
+            inside[entry.node().dir as usize] || root_ids.binary_search(&entry.id).is_ok()
+        })
     }
 
     /// Rewrite the text arena without removed names, paths and blocks.
@@ -1213,6 +1230,19 @@ fn under(path: &str, root: &str) -> bool {
         || path
             .strip_prefix(root)
             .is_some_and(|tail| tail.starts_with('/'))
+}
+
+/// `under(path, root)` for at least one root in `roots`.
+///
+/// `under` holds exactly when the root is the whole path or the part of the
+/// path before one of its `/` characters. So instead of comparing against
+/// every root, look up the path and each of those parts: the cost follows the
+/// path's depth, not the number of roots.
+fn under_any(path: &str, roots: &HashSet<&str>) -> bool {
+    roots.contains(path)
+        || path
+            .match_indices('/')
+            .any(|(at, _)| roots.contains(&path[..at]))
 }
 
 /// A whole-path input split into its directory part and its own name part.
@@ -2106,6 +2136,84 @@ mod tests {
         }
         assert_eq!(catalog.subtree("c:/gone").count(), 1);
         assert_eq!(catalog.subtree("c:/none").count(), 0);
+    }
+
+    #[test]
+    fn subtrees_of_many_roots_match_the_union_of_single_subtrees() {
+        // A small fixed pseudo-random generator keeps the test repeatable.
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |limit: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % limit
+        };
+        let mut catalog = Catalog::new();
+        let mut keys = vec![];
+        for _ in 0..600 {
+            // Folders a0..a3 / b0..b3 / c0..c2, with sibling-prefix names
+            // (`a1` and `a10`) and folders that also have an entry of their own.
+            let depth = 1 + next(3);
+            let mut key = String::from("c:");
+            for level in 0..depth {
+                let name = match level {
+                    0 => ["a0", "a1", "a10", "a2"][next(4) as usize],
+                    1 => ["b0", "b1", "b10", "b2"][next(4) as usize],
+                    _ => ["c0", "c1", "c10"][next(3) as usize],
+                };
+                key.push('/');
+                key.push_str(name);
+            }
+            if next(2) == 0 {
+                key.push_str(&format!("/f{}.txt", next(5)));
+            }
+            let path = key.replacen("c:", "C:", 1).replace('/', "\\");
+            catalog.insert(&input(&path, &key));
+            keys.push(key);
+        }
+        // Remove some entries so freed slots and emptied folders are present.
+        for key in keys.iter().step_by(7) {
+            catalog.remove(key);
+        }
+        let mut candidates: Vec<String> = keys.clone();
+        candidates.extend(
+            [
+                "c:/a1",
+                "c:/a10",
+                "c:/a1/b1",
+                "c:/none",
+                "c:/a2/b0/c0/deeper",
+            ]
+            .map(String::from),
+        );
+        let mut buffer = String::new();
+        let mut sorted = |entries: Vec<EntryRef<'_>>| {
+            let mut found: Vec<String> = entries
+                .into_iter()
+                .map(|entry| entry.write_key(&mut buffer).to_string())
+                .collect();
+            found.sort();
+            found
+        };
+        for round in 0..200 {
+            // Sets of 0..8 roots, including repeats and nested roots.
+            let roots: Vec<&str> = (0..next(9))
+                .map(|_| candidates[next(candidates.len() as u64) as usize].as_str())
+                .collect();
+            let once = sorted(catalog.subtrees(&roots).collect());
+            let mut union = sorted(
+                roots
+                    .iter()
+                    .flat_map(|root| catalog.subtree(root))
+                    .collect(),
+            );
+            union.dedup();
+            assert_eq!(once, union, "round {round}, roots {roots:?}");
+            // Each entry appears once even when roots overlap.
+            let mut unique = once.clone();
+            unique.dedup();
+            assert_eq!(unique, once, "round {round}");
+        }
     }
 
     #[test]

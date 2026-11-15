@@ -1199,22 +1199,20 @@ impl FileIndex {
                 // Keep watch updates limited to their own subtrees, without
                 // re-scanning the whole catalog or erasing failed subtrees.
                 let mut key = String::new();
-                let stale: Vec<String> = paths
-                    .iter()
-                    .flat_map(|path| {
-                        let root = path_key(path);
-                        catalog
-                            .entries
-                            .subtree(&root)
-                            // Rewalked entries are seen: skip them before
-                            // building a key (most of a refreshed subtree).
-                            .filter(|entry| !entry.is_seen(sweep))
-                            .filter_map(|entry| {
-                                let entry_key = entry.write_key(&mut key);
-                                (!file_policy.unrestricted() || !uncertain.contains(entry_key))
-                                    .then(|| entry_key.to_string())
-                            })
-                            .collect::<Vec<_>>()
+                let roots: Vec<String> = paths.iter().map(|path| path_key(path)).collect();
+                let roots: Vec<&str> = roots.iter().map(String::as_str).collect();
+                // One pass over the catalog for all refreshed folders (not one
+                // pass per folder) while this write lock blocks searches.
+                let stale: Vec<String> = catalog
+                    .entries
+                    .subtrees(&roots)
+                    // Rewalked entries are seen: skip them before
+                    // building a key (most of a refreshed subtree).
+                    .filter(|entry| !entry.is_seen(sweep))
+                    .filter_map(|entry| {
+                        let entry_key = entry.write_key(&mut key);
+                        (!file_policy.unrestricted() || !uncertain.contains(entry_key))
+                            .then(|| entry_key.to_string())
                     })
                     .collect();
                 for key in stale {

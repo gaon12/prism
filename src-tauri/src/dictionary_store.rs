@@ -10,6 +10,9 @@ use std::{
 };
 use unicode_normalization::UnicodeNormalization;
 
+#[path = "dictionary_record.rs"]
+mod record;
+
 pub const LANGUAGES: [&str; 4] = ["ko", "en", "zh", "ja"];
 fn key(word: &str) -> String {
     word.trim().nfc().collect::<String>().to_lowercase()
@@ -231,19 +234,19 @@ impl DictionaryStore {
             line.clear();
             // Bound each record without first allocating an untrusted giant line.
             let read = (&mut reader)
-                .take(1_048_577)
+                .take((record::MAX_LINE_BYTES + 1) as u64)
                 .read_line(&mut line)
                 .map_err(|_| "Could not read dictionary data.")?;
             if read == 0 {
                 break;
             }
-            if read > 1_048_576 {
-                return Err("A dictionary record exceeds 1 MiB.".into());
+            if read > record::MAX_LINE_BYTES {
+                return Err("A dictionary record exceeds 8 MiB.".into());
             }
             if line.trim().is_empty() {
                 continue;
             }
-            let record: serde_json::Value = serde_json::from_str(&line)
+            let record = record::parse(&line)
                 .map_err(|_| "Invalid dictionary JSONL record. No changes were applied.")?;
             if record.get("prismDictionary").is_some() {
                 continue;
@@ -420,5 +423,187 @@ mod tests {
         assert_eq!(store.packs().unwrap().len(), 1);
         store.remove(&pack.id).unwrap();
         assert!(store.lookup("ko", "사과").unwrap().is_empty());
+    }
+
+    #[test]
+    fn large_wiktextract_metadata_keeps_bounded_glosses_and_aliases() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = DictionaryStore::open(directory.path()).unwrap();
+        let senses: Vec<_> = (0..45)
+            .map(|index| {
+                serde_json::json!({
+                    "glosses": [" ", format!("meaning {index}")],
+                    "categories": ["generated ignored metadata ".repeat(1200)],
+                })
+            })
+            .collect();
+        let value = serde_json::json!({
+            "word": "큰사전", "lang_code": "ko", "pos": "noun", "senses": senses,
+            "forms": [{"form": "큰사전들"}],
+            "head_templates": [{"args": {"unused": "generated metadata"}}],
+        });
+        let data = serde_json::to_vec(&value).unwrap();
+        assert!(data.len() > 1_048_576 && data.len() < 8 * 1024 * 1024);
+        let pack = store
+            .import(data.as_slice(), manifest(), &AtomicBool::new(false), |_| {})
+            .unwrap();
+        assert_eq!(pack.entries, 40);
+        let definitions = store.lookup("ko", "큰사전들").unwrap();
+        assert_eq!(definitions.len(), 40);
+        assert_eq!(definitions.first().unwrap().text, "meaning 0");
+        assert_eq!(definitions.last().unwrap().text, "meaning 39");
+        assert!(definitions.iter().all(|value| value.term == "큰사전"));
+    }
+
+    #[test]
+    fn oversized_record_stays_bounded_and_rolls_back_the_previous_pack() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = DictionaryStore::open(directory.path()).unwrap();
+        let cancel = AtomicBool::new(false);
+        store
+            .import(
+                b"{\"word\":\"previous\",\"definitions\":[\"keep me\"]}\n".as_slice(),
+                manifest(),
+                &cancel,
+                |_| {},
+            )
+            .unwrap();
+        let mut input = std::io::Cursor::new(vec![b' '; 9 * 1024 * 1024]);
+        assert!(store
+            .import(&mut input, manifest(), &cancel, |_| {})
+            .is_err());
+        assert!(input.position() <= 8 * 1024 * 1024 + 1);
+        assert_eq!(store.lookup("ko", "previous").unwrap()[0].text, "keep me");
+        assert_eq!(store.packs().unwrap()[0].entries, 1);
+    }
+
+    #[test]
+    fn large_projection_matches_the_existing_small_record_import() {
+        let mut aliases: Vec<String> = (0..301).map(|index| format!("alias {index}")).collect();
+        aliases[0] = "x".repeat(257);
+        let small = serde_json::json!({
+            "word": "사전", "lang_code": "ko", "partOfSpeech": "noun",
+            "definitions": [" ", "direct"],
+            "senses": [{}, {"glosses": ["", "sense", format!("{}suffix", " ".repeat(8001))]}],
+            "examples": ["one", "two", "three", "four", "excluded fifth"],
+            "aliases": aliases,
+            "forms": [{}, {"form": "excluded form"}],
+        });
+        let mut large = small.clone();
+        large["unused_metadata"] = serde_json::Value::String("x".repeat(1_048_576));
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let first = DictionaryStore::open(first.path()).unwrap();
+        let second = DictionaryStore::open(second.path()).unwrap();
+        let cancel = AtomicBool::new(false);
+        let a = first
+            .import(
+                serde_json::to_vec(&small).unwrap().as_slice(),
+                manifest(),
+                &cancel,
+                |_| {},
+            )
+            .unwrap();
+        let b = second
+            .import(
+                serde_json::to_vec(&large).unwrap().as_slice(),
+                manifest(),
+                &cancel,
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(a.entries, b.entries);
+        for query in [
+            "사전",
+            "alias 0",
+            "alias 1",
+            "alias 299",
+            "alias 300",
+            "excluded form",
+        ] {
+            assert_eq!(
+                serde_json::to_value(first.lookup("ko", query).unwrap()).unwrap(),
+                serde_json::to_value(second.lookup("ko", query).unwrap()).unwrap(),
+                "lookup differs for {query}",
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_metadata_after_retained_glosses_rolls_back_the_update() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = DictionaryStore::open(directory.path()).unwrap();
+        let cancel = AtomicBool::new(false);
+        store
+            .import(
+                b"{\"word\":\"previous\",\"definitions\":[\"keep me\"]}\n".as_slice(),
+                manifest(),
+                &cancel,
+                |_| {},
+            )
+            .unwrap();
+        let mut data = serde_json::to_string(&serde_json::json!({
+            "word": "replacement",
+            "senses": [{"glosses": (0..40).map(|n| format!("meaning {n}")).collect::<Vec<_>>()}],
+            "unused": "x".repeat(1_048_576),
+        }))
+        .unwrap();
+        data.pop();
+        data.push_str(",\"invalid_metadata\":{\"unfinished\":[}");
+        assert!(store
+            .import(data.as_bytes(), manifest(), &cancel, |_| {})
+            .is_err());
+        assert_eq!(store.lookup("ko", "previous").unwrap()[0].text, "keep me");
+        assert!(store.lookup("ko", "replacement").unwrap().is_empty());
+        assert_eq!(store.packs().unwrap()[0].entries, 1);
+    }
+
+    #[test]
+    fn cancellation_while_reading_a_large_record_preserves_the_previous_pack() {
+        struct CancellingRead<'a> {
+            input: std::io::Cursor<Vec<u8>>,
+            cancel: &'a AtomicBool,
+        }
+        impl Read for CancellingRead<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let read = self.input.read(buffer)?;
+                if self.input.position() == self.input.get_ref().len() as u64 {
+                    self.cancel.store(true, Ordering::Relaxed);
+                }
+                Ok(read)
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let store = DictionaryStore::open(directory.path()).unwrap();
+        let cancel = AtomicBool::new(false);
+        store
+            .import(
+                b"{\"word\":\"previous\",\"definitions\":[\"keep me\"]}\n".as_slice(),
+                manifest(),
+                &cancel,
+                |_| {},
+            )
+            .unwrap();
+        let data = serde_json::to_vec(&serde_json::json!({
+            "word": "replacement", "definitions": ["new meaning"],
+            "unused": "x".repeat(1_048_576),
+        }))
+        .unwrap();
+        let reader = std::io::BufReader::with_capacity(
+            4096,
+            CancellingRead {
+                input: std::io::Cursor::new(data),
+                cancel: &cancel,
+            },
+        );
+        assert_eq!(
+            store
+                .import(reader, manifest(), &cancel, |_| {})
+                .unwrap_err(),
+            "Dictionary import cancelled."
+        );
+        assert!(cancel.load(Ordering::Relaxed));
+        assert_eq!(store.lookup("ko", "previous").unwrap()[0].text, "keep me");
+        assert!(store.lookup("ko", "replacement").unwrap().is_empty());
     }
 }

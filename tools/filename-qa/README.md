@@ -254,9 +254,40 @@ after cancellation with a complete official Korean corpus download/import.
 The fixture limits that transfer to 512 MiB, retains failures, checks actual
 offline lookup and rendered attribution, then restarts the real app and checks
 the imported pack and lookup again. The generated seed and both earlier staging
-files must still be unchanged. This completion mode has passed syntax/format
-checks; its native execution is pending. It does not imply other-language corpus
-coverage or general definition quality.
+files must still be unchanged. It does not imply other-language corpus coverage
+or general definition quality.
+
+The first actual completion run reproduced a product failure in the `7ba77a2`
+release app: all 207,649,961 official bytes downloaded, but import failed at the
+old 1 MiB record limit. The captured corpus (SHA-256
+`c160b1dadd49b14109c2c1a29a616cc44064a738f91d2b98c1cdf457b90fde7f`)
+has 64,457 records; nine exceed 1 MiB and the largest is 3,691,949 bytes, mostly
+unused sense metadata. The failed native run is retained at
+`C:/Users/solso/prism-agent-work-20261115/dictionary-complete-7ba-local1/result.json`.
+
+The importer now bounds a record at 8 MiB. Records up to 1 MiB retain their
+existing parser. Larger records project known dictionary fields while parsing,
+without constructing unrelated metadata trees. Selected arrays retain only the
+existing 40 nonempty meanings, 300 aliases and four examples; the existing
+stored string limits and transaction/cancellation checks still apply. The rest
+of the JSON is validated rather than silently skipped as an accepted record.
+Malformed, cancelled and over-limit replacements preserve the previous pack.
+
+The old parser failed the new large-record regression. The fixed production
+store passed seven tests and strict all-target Clippy in a lean harness with
+the app's exact serde, serde_json, rusqlite, URL, normalization and SHA-256
+dependency versions. The tests compare small/large selected-field results and
+cover malformed trailing metadata, the 8 MiB read bound and mid-read cancellation.
+The same captured official corpus then imported 76,689 meanings and returned
+five definitions for the tested word after reopening the store, in 10.477 seconds
+excluding build time. Frozen source/input checks and resource guards passed;
+owned process handles were signaled after Job cleanup. Results are under
+`C:/Users/solso/prism-agent-work-20261115/dictionary-rust-verified-{green,clippy,corpus}/`.
+This proves the production importer with that corpus, not a full Tauri app,
+rendered lookup, network transfer after the fix or a 512 MiB whole-app budget.
+The updated completion fixture still needs a newly built app for that final
+native qualification; the earlier release PE is deliberately not treated as
+containing this source fix.
 
 All seven build/check jobs in [release run
 43673534172](https://github.com/gaon12/prism/actions/runs/43673534172) at `4054072`

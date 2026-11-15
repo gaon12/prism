@@ -109,10 +109,21 @@ try {
   assert.equal(before.definitions[0].text, definition);
   checks.push({ name: 'owned portable startup and generated offline seed', runtime });
 
-  operation = instance.invoke('dictionary_download', { language: 'ko' }).then(
-    (value) => (settled = { ok: true, value }),
-    (error) => (settled = { ok: false, error }),
-  );
+  // Keep the typed command rejection inside the page. Rejecting evaluate()
+  // itself makes Playwright convert a non-Error IPC rejection to Error and
+  // discard its dictionary-specific code before it reaches this process.
+  operation = instance.main
+    .evaluate(async () => {
+      try {
+        const value = await window.__TAURI_INTERNALS__.invoke('dictionary_download', {
+          language: 'ko',
+        });
+        return { ok: true, value };
+      } catch (error) {
+        return { ok: false, error };
+      }
+    })
+    .then((value) => (settled = value));
   await until(
     async () => {
       lastJob = await instance.invoke('dictionary_job');

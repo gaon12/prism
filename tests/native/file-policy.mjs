@@ -4,15 +4,17 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { expect } from '@playwright/test';
 import { launch, shutdown, until } from './harness.mjs';
 
 assert.equal(process.platform, 'win32');
-assert(process.env.PRISM_TEST_EXECUTABLE, 'Supply the newly built bundled debug executable');
-const executable = resolve(process.env.PRISM_TEST_EXECUTABLE);
+assert(process.env.PRISM_TEST_EXECUTABLE, 'Supply the source-qualified bundled executable');
+const expectedRelease = process.env.PRISM_TEST_EXPECT_RELEASE ?? '0';
+assert(['0', '1'].includes(expectedRelease), 'PRISM_TEST_EXPECT_RELEASE must be 0 or 1');
+const originalExecutable = resolve(process.env.PRISM_TEST_EXECUTABLE);
 const expectedSha = process.env.PRISM_TEST_APP_SHA256;
 assert.match(expectedSha ?? '', /^[a-f0-9]{64}$/);
 async function hash(path) {
@@ -20,12 +22,19 @@ async function hash(path) {
   for await (const chunk of createReadStream(path)) value.update(chunk);
   return value.digest('hex');
 }
-assert.equal(await hash(executable), expectedSha);
+assert.equal(await hash(originalExecutable), expectedSha);
 const root = await mkdtemp(join(tmpdir(), 'prism-native-file-policy-'));
 const source = join(root, 'sources');
-const data = join(root, 'profile');
+const application = join(root, 'app');
+const data = join(application, 'PrismData');
 const evidence = join(root, 'evidence');
-await Promise.all([mkdir(source), mkdir(data), mkdir(evidence)]);
+await Promise.all([mkdir(source), mkdir(data, { recursive: true }), mkdir(evidence)]);
+// A copied executable and portable marker isolate even an accidentally supplied
+// release binary before it starts; it must never fall back to an installed profile.
+const executable = join(application, 'prism.exe');
+await copyFile(originalExecutable, executable);
+await writeFile(join(application, 'prism.portable'), '');
+assert.equal(await hash(executable), expectedSha);
 await Promise.all([mkdir(join(source, '.git')), mkdir(join(source, '.hidden'))]);
 const files = [
   'inclusionneedle-ordinary.md',
@@ -70,13 +79,20 @@ let lastResponse;
 async function start() {
   instance = await launch(data, {
     executable,
+    portable: true,
+    productionPortable: expectedRelease === '1',
     cdpPort: process.env.PRISM_APP_CDP_PORT ? Number(process.env.PRISM_APP_CDP_PORT) : undefined,
   });
   const runtime = await instance.invoke('runtime_info');
   assert.equal(runtime.native, true);
-  assert.equal(runtime.development, true);
-  assert.equal(runtime.installKind, 'isolated');
-  assert.equal((await instance.invoke('paste_fixture')).clipboard, null);
+  assert.equal(runtime.development, expectedRelease !== '1');
+  assert.equal(runtime.installKind, 'portable');
+  if (expectedRelease === '0')
+    assert.equal((await instance.invoke('paste_fixture')).clipboard, null);
+  const settings = await instance.invoke('get_settings');
+  assert.equal(settings.clipboard.enabled, false);
+  assert.equal(settings.scopes[0].id, scope.id);
+  assert.equal(settings.scopes[0].path, source);
   await until(
     async () => (await instance.invoke('index_status')).initialScanComplete,
     'owned filename sweep',
@@ -181,6 +197,7 @@ try {
   for (const [name, digest] of Object.entries(sourceHashes))
     assert.equal(await hash(join(source, name)), digest);
   assert.equal(await hash(executable), expectedSha);
+  assert.equal(await hash(originalExecutable), expectedSha);
   assert.deepEqual(instance.errors, []);
   checks.push({
     name: 'restoring filename inclusion rediscovers pruned entries without changing content policy or sources',
@@ -217,6 +234,7 @@ try {
     root,
     executable,
     executableSha256: expectedSha,
+    expectedRelease,
     checks,
     failure,
     limits: [

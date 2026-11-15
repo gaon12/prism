@@ -12,8 +12,10 @@ import { expect } from '@playwright/test';
 import { launch, shutdown, until } from './harness.mjs';
 
 assert.equal(process.platform, 'win32');
-assert(process.env.PRISM_TEST_EXECUTABLE, 'Supply the source-qualified bundled debug executable');
-const executable = resolve(process.env.PRISM_TEST_EXECUTABLE);
+assert(process.env.PRISM_TEST_EXECUTABLE, 'Supply the source-qualified bundled executable');
+const expectedRelease = process.env.PRISM_TEST_EXPECT_RELEASE ?? '0';
+assert(['0', '1'].includes(expectedRelease), 'PRISM_TEST_EXPECT_RELEASE must be 0 or 1');
+const originalExecutable = resolve(process.env.PRISM_TEST_EXECUTABLE);
 const expectedSha = process.env.PRISM_TEST_APP_SHA256;
 assert.match(expectedSha ?? '', /^[a-f0-9]{64}$/);
 async function hash(path) {
@@ -21,7 +23,7 @@ async function hash(path) {
   for await (const chunk of createReadStream(path)) digest.update(chunk);
   return digest.digest('hex');
 }
-assert.equal(await hash(executable), expectedSha);
+assert.equal(await hash(originalExecutable), expectedSha);
 const fixtures = fileURLToPath(new URL('../fixtures/', import.meta.url));
 const docxFixture = join(fixtures, 'encrypted-office', 'example.docx');
 const epubFixture = join(fixtures, 'epub', 'spine.epub');
@@ -33,9 +35,16 @@ assert.equal(await hash(docxFixture), docxMetadata.sha256.toLowerCase());
 const fixtureHashes = { docx: await hash(docxFixture), epub: await hash(epubFixture) };
 const root = await mkdtemp(join(tmpdir(), 'prism-native-container-policy-'));
 const source = join(root, 'sources');
-const data = join(root, 'profile');
+const application = join(root, 'app');
+const data = join(application, 'PrismData');
 const evidence = join(root, 'evidence');
-await Promise.all([mkdir(source), mkdir(data), mkdir(evidence)]);
+await Promise.all([mkdir(source), mkdir(data, { recursive: true }), mkdir(evidence)]);
+// The private portable copy is used for both build flavors, so release
+// isolation never depends on a debug-only data-directory override.
+const executable = join(application, 'prism.exe');
+await copyFile(originalExecutable, executable);
+await writeFile(join(application, 'prism.portable'), '');
+assert.equal(await hash(executable), expectedSha);
 const names = {
   docx: 'containerfn-document.docx',
   hwpx: 'containerfn-document.hwpx',
@@ -81,14 +90,20 @@ let instance, failure, initialGeneration, lastContent;
 async function start() {
   instance = await launch(data, {
     executable,
+    portable: true,
+    productionPortable: expectedRelease === '1',
     cdpPort: process.env.PRISM_APP_CDP_PORT ? Number(process.env.PRISM_APP_CDP_PORT) : undefined,
   });
   const runtime = await instance.invoke('runtime_info');
   assert.equal(runtime.native, true);
-  assert.equal(runtime.development, true);
-  assert.equal(runtime.installKind, 'isolated');
-  assert.equal((await instance.invoke('paste_fixture')).clipboard, null);
+  assert.equal(runtime.development, expectedRelease !== '1');
+  assert.equal(runtime.installKind, 'portable');
+  if (expectedRelease === '0')
+    assert.equal((await instance.invoke('paste_fixture')).clipboard, null);
   const settings = await instance.invoke('get_settings');
+  assert.equal(settings.clipboard.enabled, false);
+  assert.equal(settings.scopes[0].id, scope.id);
+  assert.equal(settings.scopes[0].path, source);
   initialGeneration ??= settings.generation;
   assert.equal(initialGeneration.local, null);
   assert.equal(initialGeneration.external, null);
@@ -286,6 +301,7 @@ try {
     assert.equal(await hash(docxFixture), fixtureHashes.docx);
     assert.equal(await hash(epubFixture), fixtureHashes.epub);
     assert.equal(await hash(executable), expectedSha);
+    assert.equal(await hash(originalExecutable), expectedSha);
   } catch (error) {
     failure ??= {
       message: `Owned app cleanup or source preservation failed: ${error}`,
@@ -297,6 +313,7 @@ try {
     root,
     executable,
     executableSha256: expectedSha,
+    expectedRelease,
     fixtureHashes,
     sourceHashes,
     checks,

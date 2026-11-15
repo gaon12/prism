@@ -112,8 +112,15 @@ owned fixture's original attributes are preserved; no model or provider runs.
 
 The native test requires `PRISM_TEST_EXECUTABLE` and its known SHA-256 in
 `PRISM_TEST_APP_SHA256`, then runs with `node tests/native/file-policy.mjs`.
-It creates an isolated profile/source directory and verifies native test mode
-before mutations; it never changes an installed service or user clipboard.
+All three policy fixtures copy that executable into their own temporary app
+directory and create its portable marker and `PrismData` before launch. They
+verify the original and copied hashes, runtime build flavor, portable mode,
+scope identity and disabled clipboard history. `PRISM_TEST_EXPECT_RELEASE=0`
+(the default) requires a debug build and checks its synthetic clipboard fixture.
+Set `PRISM_TEST_EXPECT_RELEASE=1` explicitly for a release candidate; that path
+strips debug overrides and never calls debug-only fixture commands. Portable
+isolation applies to both flavors, including a mistakenly supplied release
+binary. The tests never change an installed service or user clipboard.
 The content regression accepts the same executable/hash variables and runs
 with `node tests/native/content-policy.mjs`.
 
@@ -130,7 +137,9 @@ only for filename classification; this does not claim EPUB or ZIP content
 extraction, document layout fidelity, installed NTFS or another platform.
 This new container regression has passed syntax/format and independent fixture
 integrity checks; its actual native run is pending the existing 3-GiB available
-memory preflight. These preparation checks are not a native pass.
+memory preflight or hosted qualification. The new portable release paths also
+remain unqualified until an actual native run. Preparation checks are not a
+native pass.
 
 Evidence is
 `C:/Users/solso/AppData/Local/Temp/prism-q18-filename-20261114-1c455odk/qualification.json`.
@@ -142,10 +151,14 @@ rendering and new app memory/performance qualification remain pending.
 `tests/e2e/search-policy-cache.spec.ts` uses the actual React UI with synthetic
 Tauri IPC and a frozen index revision. It covers displayed and still-pending
 filename/content responses when inclusion settings change, so cache invalidation
-cannot depend on a later indexing event. This is a browser regression, not native
-backend evidence. Its rendered run is pending local resources or CI. The hook
-change requires a new frontend bundle; the older frozen debug executable above
-does not qualify this additional behavior.
+cannot depend on a later indexing event. The [hosted Client run at
+699bb90](https://github.com/gaon12/prism/actions/runs/43674747267) passed current
+format/type checks, 154 unit assertions and all 47 production browser cases,
+including these four regressions. This is a browser regression with synthetic
+IPC, not native backend evidence. That first run did not retain its generated
+screenshots for visual inspection. The hook change requires a new frontend
+bundle; the older frozen debug executable above does not qualify this additional
+behavior.
 
 ```sh
 cargo build --manifest-path tools/filename-qa/Cargo.toml --locked --release -j1

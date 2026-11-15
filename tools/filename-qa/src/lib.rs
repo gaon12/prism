@@ -41,8 +41,15 @@ mod index {
     mod watch {
         include!("watch.rs");
     }
+    pub(super) mod live_cpu {
+        include!("live_cpu.rs");
+    }
 }
 
 pub fn run() -> std::io::Result<()> {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "live-cpu") {
+        return index::live_cpu::run(&args[1..]);
+    }
     index::run_stages()
 }

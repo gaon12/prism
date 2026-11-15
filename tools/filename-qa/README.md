@@ -1058,3 +1058,82 @@ profile in off/on/on/off order. It must report all four cases and their shared
 host/cache/service limitations, startup CPU and the later profiling sample.
 No CPU optimization or cached 5–7-second/cold-HDD acceptance follows from these
 instrumentation checks.
+
+### Headless live FileIndex cycle qualification, 2026-11-16
+
+The standalone QA CLI has a separate `live-cpu --drive C` mode. It requires
+`PRISM_FILENAME_LIVE_CPU=1` and explicit `PRISM_PROFILE_FILENAME_CPU=0|1`.
+A controller must apply/read back the owned process Job limits before sending
+its initial `G` byte; the CLI itself rejects more than one usable CPU and an
+elevated caller before contacting the already-running service. It never starts,
+installs or replaces that service. The actual production `FileIndex::new`,
+configuration, streaming/preparation and `search_with_keyboard` run with one
+filename-only scope and empty periodic searches. Only aggregate counts/timings
+are printed. A final `Q` gate holds the owned process long enough for the
+controller to sample process CPU; EOF/wrong tokens fail. No GUI, WebView, Tauri
+IPC, user app profile, clipboard, file contents or model is involved.
+
+The release QA executable (2,586,624 bytes, SHA-256
+`63ea3915ec4409569708c717d25cdb4494b23b4a3223926749f5c550e098b453`)
+passed a schema-2 off/on/on/off sequence against the unchanged historical
+`d0b1fe5e...` service (PID 5924). Kernel readback confirmed affinity mask 1 and
+536,870,912-byte per-process and whole-Job limits before `G`. Each case completed
+one validated snapshot with zero overflow reconciles/warnings and three empty
+searches. Live data changed slightly between cases; no cache reset occurred.
+
+| Case | Profile |   Records | First search (s) | Entire catalog ready (s) | Process user+kernel CPU at result (s) |
+| ---- | ------- | --------: | ---------------: | -----------------------: | ------------------------------------: |
+| A1   | off     | 2,139,415 |            0.771 |                    6.243 |                                 4.078 |
+| B1   | on      | 2,139,417 |            1.315 |                    6.424 |                                 3.672 |
+| B2   | on      | 2,139,418 |            1.922 |                    7.569 |                                 3.984 |
+| A2   | off     | 2,139,419 |            1.527 |                    6.711 |                                 3.828 |
+
+The following shares are of **completed phase cycles**, not CPU seconds or
+wall time. Process-cycle coverage was 99.02% and 93.72%; remaining cycles cover
+uncompleted/uninstrumented work and instrumentation, without a function-level
+attribution. No cycle counts are converted to time.
+
+| Exclusive phase                | B1 cycle share | B2 cycle share |
+| ------------------------------ | -------------: | -------------: |
+| Compact insertion              |         43.02% |         43.14% |
+| Fetch outside callbacks        |         19.62% |         19.60% |
+| Row/Entry preparation          |         13.58% |         13.56% |
+| Query dispatch + scans         |         15.00% |         14.84% |
+| Receive callback outside queue |          8.58% |          8.65% |
+| Queue submission/retries       |          0.20% |          0.21% |
+| Terminal publication           |    below 0.01% |    below 0.01% |
+
+This suggests investigating compact insertion before removing temporary Entry
+construction in this component. It does not identify hashing, directory lookup,
+copying or rehashing individually. In particular, the earlier coarse thread
+ticks made queue submission appear much larger: that phase-seconds interpretation
+is superseded. Phase cycles do not support calling the queue a CPU bottleneck.
+
+All four cases passed in 28.563 seconds, with unchanged executable/source/service
+hashes, no resource guard and no remaining owned Job processes. Minimum available
+host RAM was 5,210,963,968 bytes. Job peak commit, cumulative across cases, was
+201.324 MiB. The service was outside the constrained Job. Whole-host CPU busy was
+59.9-62.6%, on NVMe with background user processes; HDD was not emulated. Off/on
+wall and process-CPU differences are not a causal overhead/improvement estimate.
+These headless values cannot be added to or subtracted from previous GUI values,
+and do not qualify cached whole-app 5-7-second readiness or cold MFT progress.
+
+Four native refusal cases also passed: absent live opt-in and invalid CPU flag
+exit before the start gate; wrong start byte and EOF fail before collection.
+The first scaffolding compile caught a visibility issue and use of a test-only
+search wrapper, corrected to the actual production method. The first guard
+controller mistakenly treated a delayed Job PID-list update as a live process;
+all four refusals were already correct, and the final controller verifies owned
+process handles are signaled after Job close. Those initial failures remain
+retained, not counted as passing qualifications.
+
+Raw schema-2 cases, refusal checks, immutable candidate/source inputs and scope
+are under `C:/Users/solso/prism-agent-work-20261115/` in
+`filename-live-cpu-schema2-abba/`, `filename-live-cpu-guards-final/`,
+`filename-live-cpu-schema2-candidate/`, `filename-live-cpu-schema2-inputs/` and
+`filename-headless-cpu-qualification.json`. The prior schema-1 sequence is kept
+in `filename-live-cpu-abba/`; its exact hashed inputs/executable were archived
+in `filename-live-cpu-schema1-archive/` before rebuilding the mutable Cargo
+output. Its raw phase ticks are historical diagnostics, not precise phase time.
+Actual GUI attribution and its off/on/on/off comparison still require a newly
+built profiling-capable app.

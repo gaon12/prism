@@ -121,6 +121,16 @@ Set `PRISM_TEST_EXPECT_RELEASE=1` explicitly for a release candidate; that path
 strips debug overrides and never calls debug-only fixture commands. Portable
 isolation applies to both flavors, including a mistakenly supplied release
 binary. The tests never change an installed service or user clipboard.
+
+The portable-profile safety suite also exercises fixed CDP-port reuse with real
+loopback listeners. A transient holder must release the port before the runner
+reaches process creation; a persistent holder must produce `EADDRINUSE` after the
+bounded deadline without a connection or process creation. Process creation is
+intercepted, so these checks never start Prism or a WebView. With identical test
+input, the pre-retry harness passes six checks and fails these two, while
+`bef809c` passes all eight. This verifies the reservation guard, not an actual
+WebView child lifetime or the native policy flows.
+
 The content regression accepts the same executable/hash variables and runs
 with `node tests/native/content-policy.mjs`.
 

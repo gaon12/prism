@@ -310,13 +310,75 @@ No resource stop fired and all owned processes exited after Job close/waits.
 
 The native harsh harness requires this status schema and queued calls only in
 its existing explicit profiling-on mode. The shared launch environment and
-profiling-off output are unchanged. **Full Tauri/diagnostics compilation,
-macOS/Linux CI and actual release-app on/off wiring remain pending.** Local
-lean QA does not validate those paths. Private logs and input hashes are in
+profiling-off output are unchanged. At this local qualification, full app,
+cross-platform CI and actual release wiring were pending; the later native
+baseline below adds separate evidence. Local lean QA alone does not validate
+those paths. Private logs and input hashes are in
 `C:/Users/solso/prism-agent-work-20261115/filename-status-timing-{off,on,clippy}-v4/`
 and `filename-status-timing-qualification.json` in the same parent. Earlier
 fixture borrow-check/lint failures are retained separately and are not counted
 as successful runs.
+
+## Actual release baseline with timing hooks
+
+CI `43755090886` built the timing-only `b7e46d7` source. Artifact
+`14177698569` was admitted from this repository's `main` dispatch of
+`.github/workflows/release.yml`; its ZIP SHA-256 is
+`c42f72ec9efc1008bd57188167bc8774a758acef6ac19a31db8d63b66e98d008`.
+The 379,890,688-byte executable has SHA-256
+`ad9bf7606abd0eb0c8bd5bd805bb864cc299abc15d72101dc0b0539c6821485c`.
+The local source already contained the snapshot follow-up, but the executed
+binary was this pinned timing-only CI app; its harness/environment files were
+byte-identical to `b7e46d7`. Baseline production sources are frozen separately.
+
+Four fresh owned portable profiles ran software rendering and a kernel-read-back
+one-CPU/512-MiB app/WebView Job, in off/on/on/off order:
+
+| Case | Timing | First searchable ms | Idle-ready ms | End-to-end poll maximum ms | Slowest backend command ms | Catalog wait in that backend call ms |
+| ---- | ------ | ------------------- | ------------- | -------------------------- | -------------------------- | ------------------------------------ |
+| 1    | Off    | 6,877               | 16,622        | 2,903                      | Not recorded               | Not recorded                         |
+| 2    | On     | 2,923               | 12,216        | 2,363                      | 2,352.997                  | 2,352.963                            |
+| 3    | On     | 2,799               | 13,657        | 2,987                      | 2,958.627                  | 2,958.594                            |
+| 4    | Off    | 2,929               | 11,363        | 1,859                      | Not recorded               | Not recorded                         |
+
+All four passed. Off emitted neither CPU nor status profiles; on emitted the
+expected schemas with zero lost measurements. The two coherent slowest backend
+records were dominated by **catalog acquisition**, with pool windows only
+0.0325/0.0324 ms and catalog hold 0.0005/0.0006 ms in those same calls. This
+directly observes second-scale backend lock acquisition in a real release app.
+Prepared-mutex acquisition maxima in other calls were 370.473/507.877 ms.
+Its nested hold/wait windows must not be added to catalog hold or command totals.
+
+Watch-prune writer hold maxima were 1,951.343/2,176.188 ms; prepared-insert hold
+maxima were 65.665/60.314 ms. The numeric aggregates have no common call/holder
+IDs or absolute span timeline, so they do not establish which writer or search
+blocked a particular getter. Likewise, the end-to-end maxima and backend maxima
+are not paired by ID: do not subtract their values to claim measured IPC cost.
+Profiles include UI, harness and direct diagnostic getters completed before
+the post-ready diagnostic snapshot. These are new calls, not identification of
+the original historical four-case calls.
+
+The run took 70.125 seconds; minimum available RAM was 4,856,197,120 bytes.
+No resource guard fired, executable/harness/service hashes stayed unchanged
+and no owned process remained after Job close. Mean host CPU busy per case
+ranged from 69.5% to 71.9%. Live counts increased from 2,146,732 to 2,147,463;
+service validated-fetch times ranged from 7,599 to 12,971 ms. These variations
+prevent treating the on/off ready times as causal profiling overhead or a
+startup improvement. This establishes timing activation and a baseline for
+the snapshot product change, whose GUI effect is still unmeasured.
+
+The historical installed service stayed PID 5924 / SHA `d0b1fe5e...`, outside
+the app Job. Its exact image was not present in this candidate. There was no
+upgrade, UAC, user-profile access, service-cache reset or physical HDD test.
+At observation, macOS checks/universal build and Linux x64 CI had passed;
+Windows later gates and Linux ARM64 Flatpak were still running. This baseline
+does not claim overall release-CI success or the 5-7 second startup target.
+
+Private evidence is retained outside worktrees in
+`C:/Users/solso/prism-agent-work-20261115/harsh-status-baseline-b7-abba/`,
+`candidate-b7e46d7/`, `status-baseline-b7-inputs/` and
+`native-status-baseline-b7-qualification.json` in the same parent. Numeric
+proofs, raw logs and owned local screenshots remain private; none was uploaded.
 
 ## Lightweight published status
 

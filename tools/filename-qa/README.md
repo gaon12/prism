@@ -1594,3 +1594,12 @@ regressions cover held data locks, revocation/retries and concurrent live-row
 publication. The DEV profile adds separate snapshot-mutex wait/hold windows.
 Actual release-app latency and cross-platform CI remain pending; the cached
 5-7 second startup target is still open.
+
+The [actual timing-only baseline](status-lock-analysis.md#actual-release-baseline-with-timing-hooks)
+now passed four native off/on/on/off cases using CI `43755090886@b7e46d7`.
+On cases directly recorded coherent backend maxima of 2.353/2.959 seconds,
+almost entirely catalog acquisition; separate prepared waits reached 370/508 ms.
+That confirms a real backend dependency without identifying the exact blocking
+writer or pairing backend/end-to-end maxima by ID. The snapshot product's GUI
+comparison remains pending, and live service/shared-host variation prevents
+startup or profiling-overhead conclusions from these four cases.

@@ -1127,7 +1127,22 @@ impl Catalog {
 
     /// The entry at `root` and every entry below it (`root/...`).
     pub fn subtree<'a>(&'a self, root: &'a str) -> impl Iterator<Item = EntryRef<'a>> + 'a {
-        self.subtrees(&[root])
+        // Decide once per directory whether it is the root or below it.
+        let mut scratch = String::new();
+        let inside: Vec<bool> = (0..self.dirs.len() as u32)
+            .map(|id| {
+                id != 0
+                    && self.dirs[id as usize].children > 0
+                    && under(self.write_dir_key(id, &mut scratch), root)
+            })
+            .collect();
+        // The root entry itself lives in its parent directory. Look it up by
+        // key once instead of rebuilding the key of every entry outside the
+        // subtree: on a 2.2 million entry drive that rebuild cost about 0.3 s
+        // of one CPU for each scoped search and each refreshed folder.
+        let root_id = self.find(root).map(|(_, id)| id);
+        self.iter()
+            .filter(move |entry| inside[entry.node().dir as usize] || Some(entry.id) == root_id)
     }
 
     /// Every entry at or below any of `roots`, each one once, in storage order.
@@ -1138,9 +1153,16 @@ impl Catalog {
     /// write lock. This walks them once, whatever the number of roots.
     pub fn subtrees<'a>(&'a self, roots: &[&str]) -> impl Iterator<Item = EntryRef<'a>> + 'a {
         let wanted: HashSet<&str> = roots.iter().copied().collect();
+        // No roots (a watcher batch of single-entry changes only): nothing is
+        // inside, so skip both the directory pass and the entry pass.
+        let (dirs, slots) = if wanted.is_empty() {
+            (0, 0)
+        } else {
+            (self.dirs.len() as u32, self.nodes.len() as u32)
+        };
         // Decide once per directory whether it is a root or below one.
         let mut scratch = String::new();
-        let inside: Vec<bool> = (0..self.dirs.len() as u32)
+        let inside: Vec<bool> = (0..dirs)
             .map(|id| {
                 id != 0
                     && self.dirs[id as usize].children > 0
@@ -1156,9 +1178,12 @@ impl Catalog {
             .filter_map(|root| self.find(root).map(|(_, id)| id))
             .collect();
         root_ids.sort_unstable();
-        self.iter().filter(move |entry| {
-            inside[entry.node().dir as usize] || root_ids.binary_search(&entry.id).is_ok()
-        })
+        (0..slots)
+            .filter(|&id| self.nodes[id as usize].dir != NONE)
+            .map(|id| EntryRef { catalog: self, id })
+            .filter(move |entry| {
+                inside[entry.node().dir as usize] || root_ids.binary_search(&entry.id).is_ok()
+            })
     }
 
     /// Rewrite the text arena without removed names, paths and blocks.
@@ -2203,6 +2228,71 @@ mod tests {
     }
 
     #[test]
+    fn under_any_matches_under_for_each_root() {
+        // Empty, drive, Unix, UNC, doubled-separator and non-ASCII keys.
+        let roots = [
+            "",
+            "c:",
+            "c:/",
+            "c:/a",
+            "c:/a/",
+            "/",
+            "/home",
+            "/home/u",
+            "//server/share",
+            "//server",
+            "c:/한글",
+            "c:/a//b",
+        ];
+        let paths = [
+            "",
+            "c:",
+            "c:/",
+            "c:/a",
+            "c:/ab",
+            "c:/a/b",
+            "c:/a//b",
+            "c:/a//b/c",
+            "/",
+            "/home",
+            "/home/u/x",
+            "/homer",
+            "//server/share/f",
+            "//server/sharex",
+            "//server",
+            "c:/한글/파일",
+            "c:/한글2",
+            "c://x",
+        ];
+        for path in paths {
+            for size in 0..=roots.len() {
+                for start in 0..roots.len() {
+                    let chosen: Vec<&str> = roots
+                        .iter()
+                        .cycle()
+                        .skip(start)
+                        .take(size)
+                        .copied()
+                        .collect();
+                    let set: HashSet<&str> = chosen.iter().copied().collect();
+                    assert_eq!(
+                        under_any(path, &set),
+                        chosen.iter().any(|root| under(path, root)),
+                        "path {path:?}, roots {chosen:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn subtrees_without_roots_visit_nothing() {
+        let mut catalog = Catalog::new();
+        catalog.insert(&input(r"C:\a\x.txt", "c:/a/x.txt"));
+        assert_eq!(catalog.subtrees(&[]).count(), 0);
+    }
+
+    #[test]
     fn subtrees_of_many_roots_match_the_union_of_single_subtrees() {
         // A small fixed pseudo-random generator keeps the test repeatable.
         let mut seed = 0x2545_f491_4f6c_dd1du64;
@@ -2265,6 +2355,19 @@ mod tests {
                 .map(|_| candidates[next(candidates.len() as u64) as usize].as_str())
                 .collect();
             let once = sorted(catalog.subtrees(&roots).collect());
+            // An oracle that shares no code with `subtrees`: every live entry's
+            // full key, compared with each root by `under`.
+            let direct = sorted(
+                catalog
+                    .iter()
+                    .filter(|entry| {
+                        let mut own = String::new();
+                        let key = entry.write_key(&mut own);
+                        roots.iter().any(|root| under(key, root))
+                    })
+                    .collect(),
+            );
+            assert_eq!(once, direct, "round {round}, roots {roots:?}");
             let mut union = sorted(
                 roots
                     .iter()

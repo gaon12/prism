@@ -184,6 +184,18 @@ The later SYSTEM-folder and minimum-viewport checks are recorded separately in
 `C:/Users/solso/AppData/Local/Temp/prism-q18-filename-20261114-1c455odk/system-and-layout-qualification.json`.
 That old Temp worktree and its local evidence disappeared on 2026-11-15; the
 paths describe historical records, not currently available local artifacts.
+
+`tests/native/dictionary-download.mjs` is an independent opt-in Windows portable
+regression for real dictionary download cancellation. In addition to the same
+executable/hash/build variables, it requires `PRISM_TEST_DICTIONARY_NETWORK=1`.
+It imports one generated CC0 seed entry, starts the product's fixed official
+Kaikki Korean HTTPS download, and waits for actual bytes in a distinct owned
+staging file before cancelling. It checks the terminal cancellation, seed-pack
+lookup, pre-existing legacy/download staging files and cleanup of the new stage.
+No response is replaced and no full corpus import is required. Syntax and format
+checks passed; an actual network/native run is still pending. External endpoint
+failure is retained as a failed run rather than replaced with a synthetic pass.
+
 All seven build/check jobs in [release run
 43673534172](https://github.com/gaon12/prism/actions/runs/43673534172) at `4054072`
 passed. The actual release-library results were:

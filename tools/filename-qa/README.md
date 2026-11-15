@@ -285,9 +285,9 @@ owned process handles were signaled after Job cleanup. Results are under
 `C:/Users/solso/prism-agent-work-20261115/dictionary-rust-verified-{green,clippy,corpus}/`.
 This proves the production importer with that corpus, not a full Tauri app,
 rendered lookup, network transfer after the fix or a 512 MiB whole-app budget.
-The updated completion fixture still needs a newly built app for that final
-native qualification; the earlier release PE is deliberately not treated as
-containing this source fix.
+At that point, native qualification awaited a new app; the earlier release PE
+did not contain this source fix. The later `b65c93d` native run below qualifies
+that bounded follow-up scope.
 
 A follow-up regression covers exact record sizes of 1 MiB minus one byte,
 1 MiB, 1 MiB plus one byte and 8 MiB, including the newline. All are accepted;
@@ -320,8 +320,47 @@ queried definitions, in 12.756 seconds excluding compilation; this is a
 correctness replay, not a speed comparison. Final frozen-input/resource/cleanup
 records are under
 `C:/Users/solso/prism-agent-work-20261115/dictionary-shapes-final-{green,clippy,corpus}/`,
-with the original failing cases under `dictionary-shapes-red/`. Full-app/native
-qualification is still required for the resulting release executable.
+with the original failing cases under `dictionary-shapes-red/`. These component
+checks are separate from the subsequent native qualification below.
+
+On 2026-11-16 (KST), the actual Windows portable release from CI `43725136692`
+at `b65c93d` passed `PRISM_TEST_DICTIONARY_NETWORK=1` and
+`PRISM_TEST_DICTIONARY_COMPLETE=1`. Artifact `14166288703` matched its API ZIP
+digest `e9920fb8b501233f783903d4a502bbe57b736555c61fab9ad64dc2e88feafbda`;
+the admitted executable SHA-256 was
+`cbc8633904638f944a33933cd989fc8e0ade5be21c10f10032c48ed3de21317c`.
+Its dictionary, UI and backend source matches that commit. The runner tree's
+only product-path differences were the subsequent optional indexer profiling
+and its timing example/docs; this fixture uses empty filename scopes.
+
+The fixture cancelled an actual 185,630-byte HTTPS transfer in 111 ms, preserving
+its generated CC0 seed pack and two pre-existing staging files. A second
+operation downloaded the complete official 207,649,961-byte Korean corpus and
+imported 76,689 meanings, observing downloading/importing/ready. Five official
+definitions of `사과` were returned offline alongside the preserved seed.
+The real UI rendered the corpus definition and source/license attribution;
+the saved PNG was visually inspected. A real process restart returned identical
+packs and lookup results. No responses were replaced. Complete download, import,
+display and restart took 27.970 seconds; the whole cancellation/completion case
+took 34.281 seconds.
+
+Executable and runner input hashes stayed unchanged, the 3 GiB start/1 GiB stop
+resource guard did not fire (minimum available 5,100,310,528 bytes), and the
+owned Job contained no remaining processes. Only an owned portable profile was
+used; user Prism, clipboard, models and installed services were untouched.
+Raw controller/fixture records, the offline-definition PNG, portable state and
+candidate provenance are retained under
+`C:/Users/solso/prism-agent-work-20261115/dictionary-complete-b65-local1/` and
+`candidate-b65c93d/`; `dictionary-native-completion-qualification.json` in the
+same parent records their hashes and scope. This closes that Windows corpus
+completion regression, not general dictionary quality, other-language live
+corpora, other platforms, abrupt-kill recovery or a 512 MiB app budget.
+After process cleanup, its duplicate fixture `app/prism.exe` was removed after
+matching the retained candidate hash and checking its resolved non-reparse
+location and inactive state. The original candidate, profiles, logs, results and
+PNGs remain; `dictionary-b65-fixture-copy-cleanup.json` records that single-file
+removal. Historical copied-executable paths in the raw result are no longer
+present.
 
 After these runs ended, 13 generated native-fixture executable copies were
 removed, freeing 4,938,077,184 bytes. Each was inside a resolved, non-reparse

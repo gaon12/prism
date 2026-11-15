@@ -210,8 +210,14 @@ Pack downloads use exclusively created temporary files. Normal failures and
 cancellation remove only the current operation's staging file; pre-existing
 `pack-<language>.download` files and links are left intact. Isolated Windows and
 Linux regressions cover preservation, completed-file reopening and cleanup. These
-filesystem checks do not qualify a live Kaikki download or cleanup after abrupt
-process termination.
+filesystem checks do not qualify cleanup after abrupt process termination.
+Separately, the Windows release at `b65c93d` passed an opt-in live Korean Kaikki
+download of 207,649,961 bytes and import of 76,689 meanings. The same native
+fixture verified cancellation preserving the preceding pack/stages, rendered
+offline definitions with attribution, and reopening after a real app restart.
+This covers one corpus and one queried word; other-language live corpora,
+general definition quality and other platforms remain unqualified. See the
+[dictionary qualification evidence](tools/filename-qa/README.md).
 
 History is stored locally and is not encrypted. Defaults keep up to 500 unpinned items for 30 days within 256 MiB; pinned items are not automatically removed and may exceed the budget. Retention, image capture and collection can be changed in the clipboard panel. Windows history-exclusion formats are respected. Existing clipboard contents at startup and content copied while paused or disabled are skipped. Platforms without change markers rebaseline on resume and cannot detect an immediate same-content recopy until a different or confirmed empty snapshot is observed.
 

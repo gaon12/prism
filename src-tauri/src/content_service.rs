@@ -281,7 +281,8 @@ impl ContentService {
                 embedding,
                 vector: Mutex::new(None),
                 runtime: tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(2)
+                    .worker_threads(crate::resource_policy::WorkBudget::current().io_threads())
+                    .on_thread_start(crate::resource_policy::background_thread)
                     .enable_all()
                     .build()
                     .map_err(|_| error("worker", "Could not create the local search worker."))?,
@@ -534,6 +535,7 @@ impl ContentService {
         }
     }
     fn monitor(&self) {
+        crate::resource_policy::background_thread();
         let mut last_scan = Instant::now();
         // Idle scans share this cache. A running scan has its own bounded observer
         // because this scheduler waits synchronously for extraction to finish.

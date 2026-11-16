@@ -77,6 +77,7 @@ mod rag_external;
 mod rag_search_snapshot;
 mod rag_service;
 mod rag_sources;
+mod resource_policy;
 mod rag_store;
 mod runtime_process;
 mod runtime_supervisor;

@@ -87,6 +87,7 @@ pub(super) fn spawn(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    crate::resource_policy::background_command(&mut owner);
     let mut owned = crate::runtime_process::OwnedRuntimeProcess::supervised(owner.spawn()?)?;
     owned.handshake()?;
     Ok(owned)

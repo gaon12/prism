@@ -56,6 +56,7 @@ fn owned<T: Send + 'static>(
     std::thread::Builder::new()
         .name("prism-os-ocr".into())
         .spawn(move || {
+            crate::resource_policy::background_thread();
             // This guard intentionally lives beyond a caller's cancellation. It
             // prevents repeated retries from creating unbounded outstanding OS work.
             let _guard = guard;

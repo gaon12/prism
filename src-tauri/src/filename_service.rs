@@ -119,7 +119,7 @@ impl FileIndex {
             .catalog
             .read()
             .is_ok_and(|catalog| catalog.entries.is_empty());
-        let threads = usable_cpus().clamp(1, 8);
+        let threads = crate::resource_policy::WorkBudget::current().cpu_threads();
         let mut rows = Vec::new();
         let mut row_count = 0usize;
         let mut shown = Instant::now();

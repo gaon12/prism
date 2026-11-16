@@ -286,6 +286,9 @@ impl EmbeddingRuntime {
             let runtime_dir = self.inner.root.join(&runtime.directory);
             self.verify_runtime(&runtime_dir)?;
             let client = local_client(Duration::from_secs(2))?;
+            let threads = crate::resource_policy::WorkBudget::current()
+                .inference_threads()
+                .to_string();
             for _attempt in 0..3 {
                 self.check_cancel()?;
                 let reservation = TcpListener::bind(("127.0.0.1", 0))
@@ -320,9 +323,9 @@ impl EmbeddingRuntime {
                         "--parallel",
                         "1",
                         "--threads",
-                        "4",
+                        &threads,
                         "--threads-batch",
-                        "4",
+                        &threads,
                         "--n-gpu-layers",
                         "0",
                         "--no-mmproj",

@@ -35,6 +35,8 @@ impl OwnedRuntimeProcess {
             let job = crate::process_job::OwnedJobGuard::new()?;
             let mut child = command.spawn()?;
             #[cfg(windows)]
+            crate::resource_policy::background_child(&child);
+            #[cfg(windows)]
             if let Err(error) = job.assign(&child) {
                 let _ = child.kill();
                 let _ = child.wait();

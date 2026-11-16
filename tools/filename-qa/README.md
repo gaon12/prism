@@ -1821,3 +1821,11 @@ versus 11.6722/9.6413 ms in the old app. GUI probe values overlapped, so no
 user-visible latency gain is claimed. New-app off whole-list completion was
 7.633/7.938 seconds, idle ready 7.791/7.986 seconds: the cached 5-7 second
 target remains open. Overall release CI was still running at the final check.
+
+The next [adaptive background resource policy](resource-policy.md) replaces
+embedding's fixed four threads and filename's eight-worker ceiling with effective
+CPU/available-memory budgets, while keeping async readiness separately bounded
+and background priority below the UI. Real owned-Job probes selected 1/1/1
+CPU/inference/I/O threads at one CPU versus 8/8/4 at eight allowed CPUs.
+Content/OCR concurrency and actual new-app performance qualification remain
+follow-ups; parameter selection is not a measured startup or inference gain.

@@ -52,17 +52,7 @@ fn path_key(path: &Path) -> String {
 /// 1-CPU limit the first results appeared after 9-20 s instead of about 2 s.
 /// So on Windows the count is capped by the process affinity mask.
 fn usable_cpus() -> usize {
-    let all = std::thread::available_parallelism().map_or(1, usize::from);
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
-        let (mut process, mut system) = (0usize, 0usize);
-        // SAFETY: the pseudo handle needs no closing; both pointers are valid locals.
-        if unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) } != 0 {
-            return cpus_allowed(all, process);
-        }
-    }
-    all
+    crate::resource_policy::available_cpus()
 }
 
 /// Run the calling indexing thread below normal priority (Windows).
@@ -73,31 +63,13 @@ fn usable_cpus() -> usize {
 /// and search answer first; collection still uses every idle moment, so it is
 /// not throttled when nothing else needs the CPU. Disk priority is unchanged.
 fn background_thread() {
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::System::Threading::{
-            GetCurrentThread, SetThreadPriority, SetThreadPriorityBoost,
-            THREAD_PRIORITY_BELOW_NORMAL,
-        };
-        // SAFETY: the pseudo handle names the calling thread and needs no closing.
-        // A failure only leaves the normal priority in place.
-        unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) };
-        // Windows briefly raises a thread's priority each time its I/O completes.
-        // The snapshot reader completes a pipe read for every batch, so with the
-        // boost it ran at 9-11 most of the time: above the window's renderer (8),
-        // which made below-normal useless on one CPU (window ready at 12-14 s).
-        // SAFETY: as above; TRUE (1) disables the boost for this thread only.
-        unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) };
-    }
+    crate::resource_policy::background_thread();
 }
 
 /// `all` CPUs limited to the CPUs set in an affinity `mask` (at least one).
-#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+#[cfg(test)]
 fn cpus_allowed(all: usize, mask: usize) -> usize {
-    match mask.count_ones() as usize {
-        0 => all.max(1),
-        allowed => allowed.min(all).max(1),
-    }
+    crate::resource_policy::cpus_allowed(all, mask)
 }
 fn path_key_text(value: &str) -> String {
     let value = value
@@ -1121,7 +1093,7 @@ impl FileIndex {
         });
         let wake = Condvar::new();
         let unreadable = Mutex::new(PendingPaths::default());
-        let threads = usable_cpus().clamp(1, 8);
+        let threads = crate::resource_policy::WorkBudget::current().cpu_threads();
         std::thread::scope(|scope| {
             for _ in 0..threads {
                 let jobs = &jobs;
@@ -1722,7 +1694,12 @@ fn top_matches(
         }
         (total, heap)
     };
-    let threads = usable_cpus().min(8);
+    // A single CPU cannot gain parallel scans; skip memory/cgroup probes too.
+    let threads = if usable_cpus() == 1 {
+        1
+    } else {
+        crate::resource_policy::WorkBudget::current().cpu_threads()
+    };
     let count = candidates.len();
     let (total, heap) = if count < 20_000 || threads < 2 {
         scan(0..count)
@@ -1733,7 +1710,10 @@ fn top_matches(
                 .step_by(size)
                 .map(|start| {
                     let scan = &scan;
-                    scope.spawn(move || scan(start..(start + size).min(count)))
+                    scope.spawn(move || {
+                        background_thread();
+                        scan(start..(start + size).min(count))
+                    })
                 })
                 .collect();
             let mut total = 0;

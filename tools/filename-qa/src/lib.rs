@@ -14,6 +14,8 @@ mod filename_pattern;
 mod keyboard_pattern;
 #[path = "../../../src-tauri/src/path_identity.rs"]
 mod path_identity;
+#[path = "../../../src-tauri/src/resource_policy.rs"]
+mod resource_policy;
 
 // Configuration DTO only. Settings persistence and scope normalization are not
 // exercised; filename preparation/search/catalog code is the production source.

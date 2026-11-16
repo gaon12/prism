@@ -95,11 +95,11 @@ const messages = {
     '元のウィンドウに切り替えられません。コピー済みなので、目的のアプリでCtrl+Vを押してください。',
   ],
   pasteUnsupported: [
-    '이 플랫폼의 자동 붙여넣기는 아직 지원하지 않습니다. 내용은 복사되었습니다.',
-    'Automatic paste is not available on this platform yet. Content was copied.',
-    '此平台尚不支持自动粘贴。内容已复制。',
-    '此平台尚未支援自動貼上。內容已複製。',
-    'この環境では自動貼り付けは未対応です。内容はコピー済みです。',
+    '이 데스크톱에서는 자동 붙여넣기를 쓸 수 없습니다. Wayland에서는 데스크톱의 원격 입력 권한(GNOME, KDE)이나 wtype이 필요합니다. 내용은 복사되었습니다.',
+    'Automatic paste is not available on this desktop. On Wayland it needs the desktop’s remote input permission (GNOME, KDE) or wtype. Content was copied.',
+    '此桌面无法自动粘贴。在 Wayland 上需要桌面的远程输入权限（GNOME、KDE）或 wtype。内容已复制。',
+    '此桌面無法自動貼上。在 Wayland 上需要桌面的遠端輸入權限（GNOME、KDE）或 wtype。內容已複製。',
+    'このデスクトップでは自動貼り付けを使えません。Wayland ではデスクトップのリモート入力の許可（GNOME、KDE）か wtype が必要です。内容はコピー済みです。',
   ],
   pasteCopyFailed: [
     '클립보드에 복사하지 못했습니다. 다시 시도하세요.',

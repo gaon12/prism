@@ -449,7 +449,9 @@ mod win {
 /// - macOS: `lsappinfo` reads the front app (no permission needed); `osascript` with System
 ///   Events activates it and presses Cmd+V. That needs the Accessibility permission for
 ///   Prism; without it the tool fails and the paste reports `InputBlocked` (copy is kept).
-/// - Linux: native X11/XTest requests. Pure Wayland is reported as unsupported.
+/// - Linux: native X11/XTest requests on X11 desktops. In a Wayland session the desktop's
+///   remote-desktop portal (or the `wtype` tool) sends the keys to whatever app gets focus back
+///   after Prism hides; see `paste_wayland.rs`.
 ///
 /// "Window" here is the app's process id on macOS and the X11 window id on Linux.
 /// Every tool runs without a shell, with fixed arguments and a short timeout.
@@ -499,7 +501,7 @@ impl InputBackend for SystemBackend {
 
 /// Runs a system tool with fixed arguments and returns its stdout when it exits successfully
 /// within `timeout`. A tool that hangs is killed, so it can never freeze Prism.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run_tool(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
     use std::process::{Command, Stdio};
     let mut child = Command::new(program)
@@ -585,7 +587,70 @@ mod unix_desktop {
 #[path = "paste_x11.rs"]
 mod native_x11;
 #[cfg(target_os = "linux")]
-use native_x11 as unix_desktop;
+#[path = "paste_wayland.rs"]
+mod wayland;
+
+/// Linux picks one desktop route per run: Wayland sessions use the portal route, because X11
+/// there only sees apps that run through the X11 compatibility layer.
+#[cfg(target_os = "linux")]
+mod unix_desktop {
+    use super::{native_x11, wayland, WindowId};
+    use std::sync::OnceLock;
+
+    fn wayland_session() -> bool {
+        static WAYLAND: OnceLock<bool> = OnceLock::new();
+        *WAYLAND.get_or_init(wayland::session)
+    }
+    pub fn supported() -> bool {
+        if wayland_session() {
+            wayland::supported()
+        } else {
+            native_x11::supported()
+        }
+    }
+    pub fn foreground() -> Option<WindowId> {
+        if wayland_session() {
+            wayland::foreground()
+        } else {
+            native_x11::foreground()
+        }
+    }
+    pub fn window_pid(window: WindowId) -> Option<u32> {
+        if wayland_session() {
+            wayland::window_pid(window)
+        } else {
+            native_x11::window_pid(window)
+        }
+    }
+    pub fn focus(window: WindowId) -> bool {
+        if wayland_session() {
+            wayland::focus(window)
+        } else {
+            native_x11::focus(window)
+        }
+    }
+    pub fn keys_released() -> bool {
+        if wayland_session() {
+            wayland::keys_released()
+        } else {
+            native_x11::keys_released()
+        }
+    }
+    pub fn paste(window: WindowId, pid: u32) -> bool {
+        if wayland_session() {
+            wayland::paste(window, pid)
+        } else {
+            native_x11::paste(window, pid)
+        }
+    }
+    pub fn shutdown() {
+        if wayland_session() {
+            wayland::shutdown();
+        } else {
+            native_x11::shutdown();
+        }
+    }
+}
 
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 mod unix_desktop {

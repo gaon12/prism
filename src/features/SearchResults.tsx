@@ -10,6 +10,8 @@ import {
   Globe,
   Search,
   AlertCircle,
+  ArrowDown,
+  ArrowUp,
 } from 'lucide-react';
 import { setSession } from '../lib/store';
 import { native } from '../lib/bridge';
@@ -149,14 +151,14 @@ export function FileResults({
   search: SearchController;
   quick?: boolean;
 }) {
-  const { t, data, selected, error, loading, status, session, language } = search;
+  const { t, data, selected, error, loading, status, session, language, sort } = search;
   const list = useRef<HTMLDivElement>(null);
   const end = useRef<HTMLDivElement>(null);
   // Rows opened by scrolling (see result-window.ts). A new query starts from
   // one page again; a refresh of the same query keeps what was opened.
   const [shown, setShown] = useState(RESULT_PAGE);
   useEffect(() => setShown(RESULT_PAGE), [session.query]);
-  const results = data?.results ?? [];
+  const results = search.results;
   const drawn = drawnRows(
     results.length,
     shown,
@@ -179,9 +181,10 @@ export function FileResults({
     observer.observe(element);
     return () => observer.disconnect();
   }, [drawn, results.length]);
+  // Keep the selected row in view, also when a new order moves it.
   useEffect(() => {
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
-  }, [selected?.path]);
+  }, [selected?.path, sort]);
   if (!native)
     return (
       <EmptyState icon={<Search size={44} />} title={t('nativeOnly')}>
@@ -254,16 +257,47 @@ export function FileResults({
           {t('keyboardCorrectedNotice')}
         </p>
       ) : null}
-      {/* Column names. Hidden from assistive technology: each option is read as a whole. */}
-      <div className="file-result-columns" aria-hidden="true">
-        <span>{t('columnName')}</span>
-        <span>{t('folder')}</span>
-        {!quick ? (
-          <>
-            <span>{t('columnSize')}</span>
-            <span>{t('modified')}</span>
-          </>
-        ) : null}
+      {/* Column names. Pressing one sorts the rows by it (ascending, descending, best match). */}
+      <div className="file-result-columns" role="group" aria-label={t('sortResults')}>
+        {(
+          [
+            ['name', 'columnName'],
+            ['folder', 'folder'],
+            ...(quick
+              ? []
+              : ([
+                  ['size', 'columnSize'],
+                  ['modified', 'modified'],
+                ] as const)),
+          ] as const
+        ).map(([column, label]) => {
+          const active = sort?.key === column ? sort : null;
+          return (
+            <button
+              key={column}
+              type="button"
+              className={`column-sort${active ? ' active' : ''}`}
+              aria-pressed={active !== null}
+              title={t(
+                active?.descending
+                  ? 'sortedDescending'
+                  : active
+                    ? 'sortedAscending'
+                    : 'sortByColumn',
+              )}
+              onClick={() => search.sortBy(column)}
+            >
+              {t(label)}
+              {active ? (
+                active.descending ? (
+                  <ArrowDown size={12} aria-hidden="true" />
+                ) : (
+                  <ArrowUp size={12} aria-hidden="true" />
+                )
+              ) : null}
+            </button>
+          );
+        })}
       </div>
       <div
         id={search.listId}
@@ -275,13 +309,13 @@ export function FileResults({
         onKeyDown={search.keyDown}
         ref={list}
       >
-        {data.results.slice(0, drawn).map((file, index) => (
+        {results.slice(0, drawn).map((file, index) => (
           <div
             key={file.path}
             id={`${search.listId}-${index}`}
             role="option"
             // Assistive technology still hears the full count.
-            aria-setsize={data.results.length}
+            aria-setsize={results.length}
             aria-posinset={index + 1}
             tabIndex={-1}
             aria-selected={file.path === selected?.path}

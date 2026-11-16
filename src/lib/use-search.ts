@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { bridge, native } from './bridge';
 import { errorMessage, setSession, showToast, submitSearch, useClient } from './store';
@@ -14,6 +14,8 @@ import { useContentSearch } from './content';
 import { automaticBodyEligible } from './automatic-search';
 import { useIndexActivity } from './index-activity';
 import { useScanRefreshRevision } from './scan-refresh';
+import { nextSort, sortResults } from './result-sort';
+import type { FileSort, FileSortKey } from './result-sort';
 
 const emptyStatus: IndexStatus = {
   scanning: false,
@@ -23,6 +25,15 @@ const emptyStatus: IndexStatus = {
   skipped: 0,
   warnings: [],
   watching: false,
+};
+/**
+ * Opening errors the app's file commands report in English, shown in the person's language.
+ * Anything else (an OS error from the opener, for example) is shown as it was reported.
+ */
+const fileErrors: Record<string, 'openMissing' | 'openOutside' | 'openExcluded'> = {
+  'This file no longer exists or is unavailable.': 'openMissing',
+  'This path is outside the active file index. Refresh and search again.': 'openOutside',
+  'This path is excluded by the active filename policy.': 'openExcluded',
 };
 export function useSearch(quick = false) {
   const listId = useId();
@@ -201,6 +212,9 @@ export function useSearch(quick = false) {
     };
   }, [utilityKey, request.kind, request.input, settings.calculator]);
   const data = response?.key === key ? response.data : null;
+  // The order the rows are shown in. Each window keeps its own, for this run only.
+  const [sort, setSort] = useState<FileSort>(null);
+  const results = useMemo(() => sortResults(data?.results ?? [], sort), [data, sort]);
   const error = failure?.key === key ? failure.message : null;
   const utility = answerState?.key === utilityKey ? answerState : null;
   const automaticFallback =
@@ -224,16 +238,17 @@ export function useSearch(quick = false) {
     (!quick || Boolean(request.input)) &&
     !data &&
     !error;
-  const selected =
-    data?.results.find((file) => file.path === session.selectedPath) ?? data?.results[0];
-  const report = (cause: unknown) =>
-    showToast(
-      errorMessage(cause) === 'NATIVE_ONLY'
-        ? t('nativeOnly')
-        : errorMessage(cause) === 'OFFLINE'
-          ? t('offline')
-          : errorMessage(cause),
-    );
+  const selected = results.find((file) => file.path === session.selectedPath) ?? results[0];
+  const report = (cause: unknown) => {
+    const message = errorMessage(cause);
+    const known =
+      message === 'NATIVE_ONLY'
+        ? 'nativeOnly'
+        : message === 'OFFLINE'
+          ? 'offline'
+          : fileErrors[message];
+    showToast(known ? t(known) : message);
+  };
   const copy = async (text: string) => {
     await bridge.copyText(text);
     showToast(t('copied'));
@@ -259,6 +274,13 @@ export function useSearch(quick = false) {
   };
   const keyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (isComposing(event.nativeEvent)) return;
+    // Escape cancels the search in the main window: the box and its results are cleared.
+    // The quick window keeps Escape for hiding itself (handled by the window).
+    if (event.key === 'Escape' && !quick && session.query) {
+      event.preventDefault();
+      setSession({ query: '', selectedPath: null });
+      return;
+    }
     if (
       request.kind === 'files' &&
       matchesFileShortcut(settings.fileOpenShortcut, event.nativeEvent, runtime.platform, true)
@@ -281,7 +303,7 @@ export function useSearch(quick = false) {
         clips.move(event.key === 'ArrowDown' ? 1 : -1);
         return;
       }
-      const files = data?.results ?? [];
+      const files = results;
       if (!files.length) return;
       event.preventDefault();
       const current = files.findIndex((file) => file.path === selected?.path);
@@ -304,7 +326,7 @@ export function useSearch(quick = false) {
             ? `${clips.listId}-${clips.selected.id}`
             : undefined
           : selected && data
-            ? `${listId}-${data.results.indexOf(selected)}`
+            ? `${listId}-${results.indexOf(selected)}`
             : undefined,
     clips,
     dict,
@@ -313,6 +335,17 @@ export function useSearch(quick = false) {
     request,
     status: data?.status.revision && data.status.revision > status.revision ? data.status : status,
     data,
+    /** The filename rows in display order (see `sort`). */
+    results,
+    sort,
+    /**
+     * Change the order by one column. The selected row stays selected: it is pinned by path
+     * first, because without an explicit selection the first row is selected and would change.
+     */
+    sortBy: (column: FileSortKey) => {
+      if (selected) setSession({ selectedPath: selected.path });
+      setSort((current) => nextSort(current, column));
+    },
     error,
     loading: loading || awaitingFilename,
     utility,

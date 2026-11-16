@@ -88,10 +88,35 @@
   font-size: 0.75rem;
   font-weight: 500;
 }
-.file-result-columns > span:nth-child(n + 3),
+.file-result-columns > :nth-child(n + 3),
 .file-result-size,
 .file-result-date {
   text-align: right;
+}
+/* Column headings are plain text that sorts when pressed; no button chrome. */
+.column-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.file-result-columns > .column-sort:nth-child(n + 3) {
+  justify-content: flex-end;
+}
+.column-sort:hover,
+.column-sort.active {
+  color: var(--text);
+}
+.column-sort:focus-visible {
+  outline: 2px solid var(--focus, var(--accent));
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
 }
 .file-result-list {
   overflow-y: auto;

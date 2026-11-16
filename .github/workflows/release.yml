@@ -343,7 +343,7 @@ jobs:
           PRISM_APP_CDP_PORT: '9324'
         run: |
           $env:PRISM_TEST_APP_SHA256 = (Get-FileHash -LiteralPath $env:PRISM_TEST_EXECUTABLE -Algorithm SHA256).Hash.ToLowerInvariant()
-          foreach ($check in 'file-policy', 'content-policy', 'container-policy') {
+          foreach ($check in 'file-policy', 'content-policy', 'container-policy', 'search-interactions') {
             Write-Host "== $check"
             node "tests/native/$check.mjs"
             if ($LASTEXITCODE -ne 0) { Write-Error "$check failed with exit code $LASTEXITCODE"; exit $LASTEXITCODE }

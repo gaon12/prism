@@ -53,12 +53,17 @@ their block queue and reads the kernel's
 [rotational indicator](https://github.com/torvalds/linux/blob/master/Documentation/ABI/stable/sysfs-block).
 All stacked-device slaves must also be known nonrotational. Missing/invalid
 values, cycles, excessive graph sizes and virtual leaves with unknown backing
-storage are serial. macOS has no seek-penalty probe. Every current Mac boots
-from an internal SSD, so only the boot volume (`/` and `/System/Volumes/Data`,
-matched by device id) may read in parallel; external, network and other
-volumes stay serial, and a failed boot-volume lookup keeps everything serial.
-This is an assumption, not a device measurement; native Mac parallel throughput
-is not measured.
+storage are serial. macOS has no physical seek-penalty probe in this module.
+Under the permitted Mac exception, only the boot volume (`/`) and its
+`/System/Volumes/Data` partner, matched by device id, are assumed non-seek.
+External, network and other volumes remain serial. This is an assumption,
+not a device measurement; native Mac parallel throughput is not measured.
+
+The two macOS boot device ids are read once, lazily, per scan request. If
+either lookup fails, every device stays serial for that request. A failed
+snapshot is retained until a new request; a CPU/RAM single-worker scan never
+performs these boot lookups. Pure tests check both partial-failure orders,
+repeat calls across different devices and a fresh snapshot on the next request.
 
 An SSD root can contain a mounted HDD or network filesystem. The producer
 therefore resolves each candidate file's actual device. A newly encountered

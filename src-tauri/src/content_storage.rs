@@ -37,6 +37,8 @@ impl<K: Eq + Hash> Cache<K> {
 #[derive(Default)]
 pub(crate) struct ReadPolicy {
     cache: Cache<platform::Device>,
+    #[cfg(target_os = "macos")]
+    boot: BootSnapshot,
 }
 impl ReadPolicy {
     pub(crate) fn all_roots_nonseek(&mut self, roots: &[PathBuf]) -> bool {
@@ -45,7 +47,13 @@ impl ReadPolicy {
     pub(crate) fn permits_parallel(&mut self, path: &Path) -> bool {
         // Resolve the actual mounted device for every path. A selected SSD root
         // does not authorize parallel reads from a nested HDD/network mount.
-        self.cache.admits(platform::device(path), platform::nonseek)
+        #[cfg(target_os = "macos")]
+        let boot = &self.boot;
+        #[cfg(target_os = "macos")]
+        let probe = |device: &platform::Device| platform::nonseek(device, boot);
+        #[cfg(not(target_os = "macos"))]
+        let probe = platform::nonseek;
+        self.cache.admits(platform::device(path), probe)
     }
 }
 
@@ -271,16 +279,31 @@ mod platform {
         })
     }
 }
-/// True when `device` is one of the boot volume's device ids. `None` entries
-/// (a failed lookup) never match, so a failed lookup keeps reads serial.
+/// Only a complete two-device snapshot can admit either boot device. One
+/// failed lookup makes every device unknown for this request, not just that id.
 #[cfg(any(target_os = "macos", test))]
-fn on_boot_volume(device: u64, boot: &[Option<u64>]) -> bool {
-    boot.iter().flatten().any(|known| *known == device)
+fn on_boot_volume(device: u64, boot: &[Option<u64>; 2]) -> bool {
+    boot.iter().all(Option::is_some) && boot.iter().flatten().any(|known| *known == device)
 }
-/// macOS has no simple seek-penalty query. Every current Mac boots from an internal
-/// SSD, so only the boot volume (`/` and its `/System/Volumes/Data` partner, which
-/// holds user files) may read in parallel. External, network and any other volumes
-/// under `/Volumes` stay serial, as an unknown device does on the other systems.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+struct BootSnapshot {
+    devices: std::cell::OnceCell<[Option<u64>; 2]>,
+}
+#[cfg(any(target_os = "macos", test))]
+impl BootSnapshot {
+    fn allows(&self, device: u64, mut read: impl FnMut(&str) -> Option<u64>) -> bool {
+        // Lazy and request-local: a serial scan never calls the reader. Failed
+        // snapshots also stay cached; a fresh request gets a fresh observation.
+        let boot = self
+            .devices
+            .get_or_init(|| [read("/"), read("/System/Volumes/Data")]);
+        on_boot_volume(device, boot)
+    }
+}
+/// The permitted macOS heuristic assumes only the boot volume and its Data
+/// partner are non-seek. It is not a physical-media probe. External/network
+/// devices remain serial; either boot lookup failing keeps all devices serial.
 #[cfg(target_os = "macos")]
 mod platform {
     use super::*;
@@ -289,10 +312,10 @@ mod platform {
     pub(super) fn device(path: &Path) -> Option<Device> {
         std::fs::metadata(path).ok().map(|meta| meta.dev())
     }
-    pub(super) fn nonseek(device: &Device) -> bool {
-        let boot = ["/", "/System/Volumes/Data"]
-            .map(|path| std::fs::metadata(path).ok().map(|meta| meta.dev()));
-        on_boot_volume(*device, &boot)
+    pub(super) fn nonseek(device: &Device, boot: &BootSnapshot) -> bool {
+        boot.allows(*device, |path| {
+            std::fs::metadata(path).ok().map(|meta| meta.dev())
+        })
     }
 }
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
@@ -392,6 +415,47 @@ mod tests {
         assert!(!on_boot_volume(6, &[Some(1), Some(5)]));
         // Failed boot-volume lookups never admit anything.
         assert!(!on_boot_volume(5, &[None, None]));
+        assert!(!on_boot_volume(5, &[Some(5), None]));
+        assert!(!on_boot_volume(5, &[None, Some(5)]));
+    }
+    #[test]
+    fn boot_snapshot_reads_both_ids_once_per_request_across_different_devices() {
+        let boot = BootSnapshot::default();
+        let calls = std::cell::Cell::new(0);
+        for (device, expected) in [(1, true), (5, true), (6, false), (1, true)] {
+            assert_eq!(
+                boot.allows(device, |path| {
+                    calls.set(calls.get() + 1);
+                    match path {
+                        "/" => Some(1),
+                        "/System/Volumes/Data" => Some(5),
+                        _ => panic!("unexpected boot metadata path"),
+                    }
+                }),
+                expected
+            );
+        }
+        assert_eq!(calls.get(), 2);
+        let next_request = BootSnapshot::default();
+        assert!(next_request.allows(9, |_| {
+            calls.set(calls.get() + 1);
+            Some(9)
+        }));
+        assert_eq!(
+            calls.get(),
+            4,
+            "a new request must observe its own boot ids"
+        );
+    }
+    #[test]
+    fn a_partial_boot_lookup_failure_is_cached_as_serial_for_the_entire_request() {
+        for missing in ["/", "/System/Volumes/Data"] {
+            let boot = BootSnapshot::default();
+            assert!(!boot.allows(5, |path| if path == missing { None } else { Some(5) }));
+            assert!(!boot.allows(5, |_| panic!("failed snapshots must not be retried")));
+            assert!(!boot.allows(6, |_| panic!("another device must share the same snapshot")));
+            assert!(BootSnapshot::default().allows(5, |_| Some(5)));
+        }
     }
     #[cfg(target_os = "macos")]
     #[test]

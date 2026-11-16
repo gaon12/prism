@@ -1641,3 +1641,12 @@ withdrawn and its evidence preserved. The accepted run used separate build
 targets and required runtime body hashes to match each source. This all-seen
 component replay includes no deletion, catalog lock, service or UI work and
 does not establish an overall startup gain.
+
+A read-only [parent-linked membership audit](status-lock-analysis.md#parent-linked-directory-membership-audit)
+finds that an existing link guarantees the child's exact key is the parent
+key plus `/` and a separator-free suffix. It relies on exact-prefix lookup
+and stored keys, not Unicode lowercase distributivity. This supports an
+iterative memoization candidate with full-key fallback for unlinked records;
+free-slot ordering, sentinel handling and independent-oracle regressions
+remain implementation requirements. No additional product change or gain
+is claimed by that audit.

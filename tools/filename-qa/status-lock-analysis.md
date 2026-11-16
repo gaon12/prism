@@ -697,3 +697,78 @@ proof inputs under `watch-union-component-proof-inputs/`. The 316,776,030-byte
 read-only capture and root file remain private outside Git, CI and artifacts.
 They are retained only while exact-input review needs them; subsequent cleanup
 must check ownership/type/hash and preserve the numeric proof and ledger.
+
+## Parent-linked directory membership audit
+
+Read-only audit of `filename_compact.rs` at `a48c60c` supports reusing a
+linked parent's membership. This is a correctness argument for a candidate,
+not an implementation or a measured additional gain. The current full-key
+fallback and single-root search/RAG implementation remain unchanged.
+
+For a live linked directory d with parent p, let K(d) denote its exact
+identity key. The code establishes **K(d) = K(p) + "/" + suffix**, where
+suffix contains no `/`:
+
+1. `Split::new` separates the whole input identity key at its last `/`.
+   `intern_dir` receives that exact directory-key prefix, independently of
+   display spelling, search normalization or projections.
+2. `parent_link` again takes the last `/` of the directory key and calls
+   `find_dir` with the prefix. `dir_key_is` checks exact stored key bytes or
+   the exact ASCII derivation used by reconstruction. Linking additionally
+   requires the parent's display path to equal the child display prefix.
+   Thus a linked parent has exactly the required key prefix; the remaining
+   key suffix has no `/` by construction.
+3. `intern_dir` stores the complete directory key in `extra`, except when
+   its whole display path is ASCII and `derive_key(display) == dir_key`.
+   In that exceptional case the omitted key is reconstructed exactly.
+   `write_dir_key` therefore returns the original complete key in either
+   representation. The display own name is also separator-free because
+   `parent_link` splits at the final display slash or backslash; membership
+   does not need to derive the key suffix from that display name.
+4. Later projection enrichment preserves the stored key or materializes the
+   same exact split key. Text-arena compaction copies bytes and offsets;
+   it changes neither key nor parent relation. A linked directory increments
+   its parent's reference count, so the parent slot cannot be released or
+   reused while that child survives. Other directory-slot writes are
+   creation/reuse and release; existing live identity keys are not reassigned.
+
+This argument makes no assumption that Unicode lowercase commutes with
+concatenation. Non-ASCII directory keys, including final-sigma-sensitive or
+length-changing mappings, are stored explicitly. If the standalone parent's
+key differs from the child's exact key prefix, `find_dir` cannot select it;
+the child either links to another exact-prefix record or stores a whole
+unlinked path. ASCII derivation is used only after the whole-key equality
+check above. Unix uppercase identity is likewise compared exactly.
+
+For any root r, `under(K(d), r)` is true exactly when r equals K(d), or r
+is the prefix before a slash in K(d). Since the final suffix has no slash,
+all proper boundary-prefix roots of K(d) are K(p) or boundary prefixes of
+K(p). For a set of roots this gives the proposed recurrence:
+
+`inside[d] = root_directory_ids.contains(d) || inside[parent[d]]`
+
+For directories without a linked parent, evaluate the current exact
+`under_any(write_dir_key(d), wanted_roots)` fallback. Important constraints
+for any subsequent prototype are:
+
+- Build `root_directory_ids` with **find_dir(root)**, not the entry-key
+  lookup. A live directory record may exist without an entry at that key.
+  Entry-root inclusion in the final node filter remains separate.
+- Preserve exclusion of sentinel directory 0 and free slots. A real empty-key
+  directory record is distinct from sentinel 0; empty roots, Unix/UNC roots,
+  doubled separators and absent intermediate records keep the exact fallback.
+- Parent key length is strictly smaller, so live links are acyclic. Slot IDs
+  are not topologically ordered: free-slot reuse can put a child below its
+  parent numerically. Use iterative memoization that handles either order,
+  without recursion on the existing 3,000-level supported chains.
+- Keep the empty-root fast path and existing catalog-writer scope. This
+  audit does not authorize changing locking, compaction or generation rules.
+
+Before applying this candidate, an independent full-key oracle should cover
+derived and explicit keys, Unicode sigma variants and length-changing case,
+Unix uppercase, display/key spelling differences, missing directory entries,
+empty/root separator cases, released/reused slots and deep chains. Existing
+round-trip/release tests support the storage argument but do not yet test
+this proposed membership implementation. A source/body-verified frozen-input
+comparison must establish its cost separately; no new benchmark or Rust
+build was run for this read-only audit.

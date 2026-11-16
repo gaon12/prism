@@ -1,7 +1,10 @@
 //! An opt-in component benchmark using exact production extraction, window and
 //! SQL publication. It is not an app admission, embedding or GUI benchmark.
+#[cfg(any(windows, target_os = "linux"))]
 use crate::{content_pipeline, content_store::ContentStore, document_extract, resource_policy};
+#[cfg(any(windows, target_os = "linux"))]
 use sha2::{Digest, Sha256};
+#[cfg(any(windows, target_os = "linux"))]
 use std::{fs, sync::atomic::AtomicBool, time::Instant};
 
 #[test]
@@ -10,6 +13,14 @@ fn actual_extraction_window_qualification() {
     if std::env::var("PRISM_DEV_CONTENT_PIPELINE_QUALIFY").as_deref() != Ok("1") {
         return;
     }
+    #[cfg(any(windows, target_os = "linux"))]
+    qualify_supported_storage();
+    #[cfg(not(any(windows, target_os = "linux")))]
+    panic!("parallel qualification needs a Windows or Linux seek-penalty probe");
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+fn qualify_supported_storage() {
     let parallel = resource_policy::WorkBudget::current().workers_for(512 * 1024 * 1024);
     assert!(
         parallel > 1,
@@ -40,12 +51,6 @@ fn actual_extraction_window_qualification() {
     }
     let input_sha = format!("{:x}", input_hash.finalize());
     let roots = vec![source];
-    // Only a probed device counts. The Mac boot-volume rule is an assumption,
-    // so the parallel cases are not qualified there.
-    assert!(
-        cfg!(any(windows, target_os = "linux")),
-        "parallel qualification needs a Windows or Linux seek-penalty probe"
-    );
     let mut storage = crate::content_storage::ReadPolicy::default();
     assert!(
         storage.all_roots_nonseek(&roots),

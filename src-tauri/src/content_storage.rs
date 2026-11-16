@@ -271,23 +271,7 @@ mod platform {
         })
     }
 }
-/// macOS has no simple per-volume seek-penalty query, and current Macs boot from
-/// internal SSDs. Treat each mounted device as non-seek so Mac users get parallel
-/// reads; the device id still keys the cache per mount. External HDD detection
-/// (IOKit) is a documented follow-up.
-#[cfg(target_os = "macos")]
-mod platform {
-    use super::*;
-    use std::os::unix::fs::MetadataExt;
-    pub(super) type Device = u64;
-    pub(super) fn device(path: &Path) -> Option<Device> {
-        std::fs::metadata(path).ok().map(|meta| meta.dev())
-    }
-    pub(super) fn nonseek(_: &Device) -> bool {
-        true
-    }
-}
-#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "linux")))]
 mod platform {
     use super::*;
     pub(super) type Device = ();
@@ -375,6 +359,16 @@ mod tests {
         cycle.insert(3, (true, vec![0]));
         assert!(!stack_nonseek(0, |key| cycle.get(key).cloned()));
         assert!(!stack_nonseek(0, |key| Some((true, vec![*key + 1]))));
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_existing_mac_volume_without_device_evidence_remains_serial() {
+        // File existence or st_dev identity alone says nothing about rotational
+        // media. This must also hold for an externally mounted HDD/network path.
+        let directory = tempfile::tempdir().unwrap();
+        let mut policy = ReadPolicy::default();
+        assert!(!policy.permits_parallel(directory.path()));
+        assert!(!policy.all_roots_nonseek(&[directory.path().to_path_buf()]));
     }
     #[test]
     fn missing_path_and_empty_root_set_are_conservatively_serial() {

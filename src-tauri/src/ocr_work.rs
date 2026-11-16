@@ -56,7 +56,9 @@ fn owned<T: Send + 'static>(
     std::thread::Builder::new()
         .name("prism-os-ocr".into())
         .spawn(move || {
-            crate::resource_policy::background_thread();
+            // No background priority here: this worker also renders collection reader
+            // pages and OCR that a person is waiting for (macOS). Background indexing
+            // already calls this from its own low-priority monitor thread.
             // This guard intentionally lives beyond a caller's cancellation. It
             // prevents repeated retries from creating unbounded outstanding OS work.
             let _guard = guard;

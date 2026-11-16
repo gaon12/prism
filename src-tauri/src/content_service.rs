@@ -281,8 +281,9 @@ impl ContentService {
                 embedding,
                 vector: Mutex::new(None),
                 runtime: tokio::runtime::Builder::new_multi_thread()
+                    // Normal priority: semantic searches a person is waiting for also run
+                    // their vector queries here. Background scans lower their own thread.
                     .worker_threads(crate::resource_policy::WorkBudget::current().io_threads())
-                    .on_thread_start(crate::resource_policy::background_thread)
                     .enable_all()
                     .build()
                     .map_err(|_| error("worker", "Could not create the local search worker."))?,

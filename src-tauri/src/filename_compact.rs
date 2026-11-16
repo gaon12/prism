@@ -1160,13 +1160,24 @@ impl Catalog {
         } else {
             (self.dirs.len() as u32, self.nodes.len() as u32)
         };
-        // Decide once per directory whether it is a root or below one.
+        // Decide once per directory whether it is a root or below one. With
+        // few roots, comparing each one directly (a short byte comparison) is
+        // cheaper than hashing every `/` prefix of every directory key: on a
+        // 300,000 folder drive the hashing cost about as much as rebuilding
+        // the keys once per root, which is what this pass replaced.
+        let few: Option<Vec<&str>> =
+            (wanted.len() <= FEW_ROOTS).then(|| wanted.iter().copied().collect());
         let mut scratch = String::new();
         let inside: Vec<bool> = (0..dirs)
             .map(|id| {
-                id != 0
-                    && self.dirs[id as usize].children > 0
-                    && under_any(self.write_dir_key(id, &mut scratch), &wanted)
+                if id == 0 || self.dirs[id as usize].children == 0 {
+                    return false;
+                }
+                let key = self.write_dir_key(id, &mut scratch);
+                match &few {
+                    Some(few) => few.iter().any(|root| under(key, root)),
+                    None => under_any(key, &wanted),
+                }
             })
             .collect();
         // A root entry itself lives in its parent directory. Look each one up
@@ -1178,11 +1189,20 @@ impl Catalog {
             .filter_map(|root| self.find(root).map(|(_, id)| id))
             .collect();
         root_ids.sort_unstable();
+        // Most entries are outside every subtree; the id range check turns the
+        // root lookup for them into two comparisons.
+        let (low, high) = match (root_ids.first(), root_ids.last()) {
+            (Some(&low), Some(&high)) => (low, high),
+            _ => (1, 0),
+        };
         (0..slots)
             .filter(|&id| self.nodes[id as usize].dir != NONE)
             .map(|id| EntryRef { catalog: self, id })
             .filter(move |entry| {
-                inside[entry.node().dir as usize] || root_ids.binary_search(&entry.id).is_ok()
+                inside[entry.node().dir as usize]
+                    || (low <= entry.id
+                        && entry.id <= high
+                        && root_ids.binary_search(&entry.id).is_ok())
             })
     }
 
@@ -1286,6 +1306,10 @@ fn under(path: &str, root: &str) -> bool {
             .strip_prefix(root)
             .is_some_and(|tail| tail.starts_with('/'))
 }
+
+/// Up to this many roots, `subtrees` compares each directory key with every
+/// root directly instead of looking up the key's prefixes in a hash set.
+const FEW_ROOTS: usize = 32;
 
 /// `under(path, root)` for at least one root in `roots`.
 ///
@@ -2351,7 +2375,14 @@ mod tests {
         };
         for round in 0..200 {
             // Sets of 0..8 roots, including repeats and nested roots.
-            let roots: Vec<&str> = (0..next(9))
+            // Every fourth round uses more than FEW_ROOTS roots, so both the
+            // direct comparison and the hash set lookup are checked.
+            let count = if round % 4 == 0 {
+                FEW_ROOTS as u64 + 1 + next(40)
+            } else {
+                next(9)
+            };
+            let roots: Vec<&str> = (0..count)
                 .map(|_| candidates[next(candidates.len() as u64) as usize].as_str())
                 .collect();
             let once = sorted(catalog.subtrees(&roots).collect());

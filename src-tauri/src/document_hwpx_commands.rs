@@ -162,6 +162,8 @@ pub async fn doc_export_hwpx(
                 Ok(())
             },
         )?;
+        // Remember the HWPX as Prism's own, so the AI does not cite it as a source.
+        crate::generated_exports::record(&export.bytes);
         Ok(Summary {
             omitted_images: export.omitted_images,
             literal_html: export.literal_html,

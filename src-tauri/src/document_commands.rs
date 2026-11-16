@@ -214,6 +214,8 @@ pub async fn doc_export_pdf(
             service.ensure_external(&page.revision.provenance)?;
             return Err(pdf_error(code));
         }
+        // Remember the PDF as Prism's own, so the AI does not cite it as a source.
+        crate::generated_exports::record(&pdf.bytes);
         Ok(PdfExportSummary {
             pages: pdf.pages,
             omitted_images: pdf.omitted_images,

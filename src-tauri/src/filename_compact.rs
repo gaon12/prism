@@ -1160,26 +1160,66 @@ impl Catalog {
         } else {
             (self.dirs.len() as u32, self.nodes.len() as u32)
         };
-        // Decide once per directory whether it is a root or below one. With
-        // few roots, comparing each one directly (a short byte comparison) is
-        // cheaper than hashing every `/` prefix of every directory key: on a
-        // 300,000 folder drive the hashing cost about as much as rebuilding
-        // the keys once per root, which is what this pass replaced.
+        // Decide once per directory whether it is a root or below one.
+        //
+        // A directory linked to a parent record has exactly the key
+        // `parent key + "/" + own name` (no `/` in the own name): `parent_link`
+        // only links when the parent's stored key equals that prefix. Then
+        // `under(key, root)` holds exactly when the root is this directory's
+        // own key or the parent is inside. So a linked directory is decided
+        // from its parent without rebuilding its key; only unlinked (top)
+        // directories rebuild theirs and compare it with the roots.
+        let mut root_dirs: Vec<u32> = if dirs == 0 {
+            vec![]
+        } else {
+            wanted
+                .iter()
+                .filter_map(|root| self.find_dir(root))
+                .collect()
+        };
+        root_dirs.sort_unstable();
+        // With few roots, comparing each one directly (a short byte
+        // comparison) is cheaper than hashing every `/` prefix of the key.
         let few: Option<Vec<&str>> =
             (wanted.len() <= FEW_ROOTS).then(|| wanted.iter().copied().collect());
         let mut scratch = String::new();
-        let inside: Vec<bool> = (0..dirs)
-            .map(|id| {
-                if id == 0 || self.dirs[id as usize].children == 0 {
-                    return false;
+        // 0 = not decided yet, 1 = inside, 2 = outside.
+        let mut state = vec![0u8; dirs as usize];
+        let mut chain: Vec<u32> = vec![];
+        for start in 0..dirs {
+            // Walk up to the first decided directory or one decided on its
+            // own, then hand that answer back down the walked chain. A loop,
+            // not recursion: chains can be thousands of directories deep, and
+            // a reused slot can give a parent a larger id than its child.
+            let mut id = start;
+            let answer = loop {
+                if state[id as usize] != 0 {
+                    break state[id as usize];
                 }
-                let key = self.write_dir_key(id, &mut scratch);
-                match &few {
-                    Some(few) => few.iter().any(|root| under(key, root)),
-                    None => under_any(key, &wanted),
+                let dir = &self.dirs[id as usize];
+                if id == 0 || dir.children == 0 {
+                    break 2;
                 }
-            })
-            .collect();
+                if root_dirs.binary_search(&id).is_ok() {
+                    break 1;
+                }
+                if dir.parent == NONE || dir.parent == 0 {
+                    let key = self.write_dir_key(id, &mut scratch);
+                    let inside = match &few {
+                        Some(few) => few.iter().any(|root| under(key, root)),
+                        None => under_any(key, &wanted),
+                    };
+                    break if inside { 1 } else { 2 };
+                }
+                chain.push(id);
+                id = dir.parent;
+            };
+            state[id as usize] = answer;
+            for walked in chain.drain(..) {
+                state[walked as usize] = answer;
+            }
+        }
+        let inside: Vec<bool> = state.into_iter().map(|state| state == 1).collect();
         // A root entry itself lives in its parent directory. Look each one up
         // by key once instead of rebuilding the key of every entry outside the
         // subtree: on a 2.2 million entry drive that rebuild cost about 0.3 s
@@ -2310,6 +2350,29 @@ mod tests {
     }
 
     #[test]
+    fn subtrees_follow_a_parent_whose_id_is_larger_than_its_child() {
+        let mut catalog = Catalog::new();
+        catalog.insert(&input(r"C:\p\a.txt", "c:/p/a.txt"));
+        catalog.insert(&input(r"C:\z\z.txt", "c:/z/z.txt"));
+        let parent = catalog.find_dir("c:/z").unwrap();
+        // Free the first directory slot, then let a child of `c:/z` reuse it.
+        assert!(catalog.remove("c:/p/a.txt"));
+        catalog.insert(&input(r"C:\z\sub\f.txt", "c:/z/sub/f.txt"));
+        let child = catalog.find_dir("c:/z/sub").unwrap();
+        assert_eq!(catalog.dirs[child as usize].parent, parent, "linked child");
+        assert!(child < parent, "the child reused a smaller slot");
+        let mut buffer = String::new();
+        let mut keys: Vec<String> = catalog
+            .subtrees(&["c:/z"])
+            .map(|entry| entry.write_key(&mut buffer).to_string())
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["c:/z/sub/f.txt", "c:/z/z.txt"]);
+        assert_eq!(catalog.subtrees(&["c:/z/sub"]).count(), 1);
+        assert_eq!(catalog.subtrees(&["c:/p"]).count(), 0);
+    }
+
+    #[test]
     fn subtrees_without_roots_visit_nothing() {
         let mut catalog = Catalog::new();
         catalog.insert(&input(r"C:\a\x.txt", "c:/a/x.txt"));
@@ -2352,6 +2415,20 @@ mod tests {
         // Remove some entries so freed slots and emptied folders are present.
         for key in keys.iter().step_by(7) {
             catalog.remove(key);
+        }
+        // Then add new folders below the old ones: they reuse freed directory
+        // slots, so a child can have a smaller id than its linked parent.
+        for _ in 0..200 {
+            let key = format!(
+                "c:/{}/n{}/m{}/g{}.txt",
+                ["a0", "a1", "a10", "a2"][next(4) as usize],
+                next(6),
+                next(3),
+                next(3)
+            );
+            let path = key.replacen("c:", "C:", 1).replace('/', "\\");
+            catalog.insert(&input(&path, &key));
+            keys.push(key);
         }
         let mut candidates: Vec<String> = keys.clone();
         candidates.extend(

@@ -1,7 +1,8 @@
 # Actual-app extraction and embedding concurrency qualification
 
-This is an unexecuted qualification plan for the bounded extraction candidate
-`f42add8`, following the [resource policy](resource-policy.md). The user's choice
+This is an unexecuted actual-app concurrency qualification plan for the bounded
+extraction implementation introduced in `f42add8`, following the
+[resource policy](resource-policy.md). The user's choice
 between permitted-CPU embedding threads and a maximum of four is pending.
 Current main keeps its existing permitted-CPU selection while awaiting that
 choice; this is not a confirmed final policy. Embedding throughput improvement
@@ -10,14 +11,31 @@ eight-physical/eight-logical host's results.
 
 ## Admission and comparison
 
-First require the candidate's scheduler/app tests, strict Clippy and full app
-compilation to pass. Obtain immutable baseline/candidate release apps and record
+[CI 43820651521](https://github.com/gaon12/prism/actions/runs/43820651521)
+at `b619cf1` passed all seven build jobs, including Windows, Linux x64/ARM64,
+both Mac architectures and Mac checks. The Mac platform library passed 251 tests
+(13 ignored), including the request-scoped boot-device snapshot and cached
+partial-lookup failure regressions; the app library passed 646 (18 ignored).
+The opt-in extraction throughput benchmark remained ignored. These results
+establish hosted compilation and default regression coverage, rather than
+concurrent extraction/embedding performance or the 1-CPU/512-MiB GUI target.
+
+The Mac runtime integration suite also passed six tests (one ignored), including
+the bad-launcher test that failed its five-second bound in the preceding
+`c29ff8f` run. This success does not establish that failure's cause. The separate
+`ec7c96b` nonblocking-handshake hardening candidate is absent from this passing
+build and still needs its own native validation.
+
+For later revisions, first require the scheduler/app tests, strict Clippy and
+full app compilation to pass. Obtain immutable baseline/candidate release apps and record
 run ID, source commit, executable SHA and build provenance. Use a baseline with
 the same resource policy and the `b876672` foreground-priority restoration.
 Product-source differences must be limited to the extraction change; incidental
 UI, priority, inference-thread or asset changes require a separate comparison.
-The static merge of `f42add8` with `db8d43e` was conflict-free and retained that
-priority restoration. It is not a compiled or executed app.
+The earlier static merge of `f42add8` with `db8d43e` was conflict-free and retained
+that priority restoration; that merge check alone was not execution evidence.
+The passing `b619cf1` CI also includes the later storage-admission and Mac boot
+snapshot changes, which must be recorded in a baseline/candidate comparison.
 
 Record and hold the same embedding thread policy/count across both apps; do
 not attribute a thread-cap change to extraction parallelism. Run each pair

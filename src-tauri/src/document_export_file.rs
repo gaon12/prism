@@ -88,6 +88,8 @@ pub fn save<E: From<Error>>(
     file.sync_all().map_err(|_| Error::Storage)?;
     drop(file);
     commit(&staging_path, &destination)?;
+    // PDF and HWPX exports: remember them so the AI does not cite them as sources.
+    crate::generated_exports::record(bytes);
     // Successful publication consumed our entry. Do not remove a subsequently
     // created file at the old staging name when the guard goes out of scope.
     pending.0 = None;

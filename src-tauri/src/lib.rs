@@ -15,6 +15,7 @@ mod commands;
 mod content_commands;
 mod content_service;
 mod content_store;
+mod data_backup;
 mod diagnostics;
 mod dictionary_commands;
 mod dictionary_provider;
@@ -41,6 +42,7 @@ mod flatpak_startup;
 mod foreground_tracker;
 mod form_fill;
 mod form_fill_commands;
+mod generated_exports;
 mod generation_runtime;
 mod hybrid_search;
 mod index;
@@ -264,6 +266,22 @@ pub fn run() {
                 }
             };
             let data_dir = location.dir.clone();
+            // Keep large local caches out of the roaming settings profile. Tests always use
+            // their explicit isolated directory for every service and model asset.
+            // A Flatpak, like an installation, keeps caches in its local data
+            // folder (inside the sandbox: `~/.var/app/<id>/data`).
+            let asset_dir = if !matches!(location.kind, app_paths::InstallKind::Installed | app_paths::InstallKind::Flatpak) {
+                data_dir.clone()
+            } else {
+                app.path().app_local_data_dir()?
+            };
+            // A restore chosen in Settings replaces the files before anything reads them.
+            data_backup::apply_at_startup(&data_backup::Profile {
+                data_dir: &data_dir,
+                asset_dir: &asset_dir,
+            });
+            // Hashes of files Prism exported, so they are not taken for original sources.
+            generated_exports::init(&data_dir);
             let (mut settings, config_error) =
                 match settings::read_settings(&data_dir.join("settings.json")) {
                     Ok(settings) => (settings, None),
@@ -317,15 +335,6 @@ pub fn run() {
             );
             let memory_clipboard = (isolated_test || test_mode)
                 .then(clipboard_history::MemoryClipboard::default);
-            // Keep large local caches out of the roaming settings profile. Tests always use
-            // their explicit isolated directory for every service and model asset.
-            // A Flatpak, like an installation, keeps caches in its local data
-            // folder (inside the sandbox: `~/.var/app/<id>/data`).
-            let asset_dir = if !matches!(location.kind, app_paths::InstallKind::Installed | app_paths::InstallKind::Flatpak) {
-                data_dir.clone()
-            } else {
-                app.path().app_local_data_dir()?
-            };
             // No content database/vector handle may be open when a requested
             // reset retires its owned cache. Other app data stays in place.
             let reset = index_reset::apply_pending(&asset_dir);
@@ -710,6 +719,10 @@ pub fn run() {
             content_commands::content_chunks,
             content_commands::content_file_action,
             content_commands::content_open_location,
+            content_commands::content_generated,
+            commands::data_backup_status,
+            commands::data_backup_create,
+            commands::data_backup_restore,
             content_commands::content_prepare_unlock,
             content_commands::content_unlock_pdf,
             content_commands::content_unlock_office,

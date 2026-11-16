@@ -581,6 +581,11 @@ export function ContentResults({
                           )}
                     </p>
                     <div className="content-result-meta">
+                      {hit.generated ? (
+                        <span className="content-generated" title={t('generatedExportHint')}>
+                          {t('generatedExport')}
+                        </span>
+                      ) : null}
                       {hit.chunk.page !== null ? (
                         <span>
                           {t('page')} {numeric.format(hit.chunk.page)}

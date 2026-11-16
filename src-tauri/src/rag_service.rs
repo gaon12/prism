@@ -153,6 +153,9 @@ pub struct GenerationPreferences {
     pub local_without_api_key: bool,
     /// Only document operations on a local server that supports JSON Schema.
     pub local_structured_documents: bool,
+    /// Let files Prism exported (summaries, reports, conversations) count as evidence.
+    /// Off by default: they repeat Prism's own words, not the original sources.
+    pub use_generated_exports: bool,
     pub max_context_chars: Option<usize>,
     pub top_k: Option<usize>,
     pub local: Option<GenerationConfig>,
@@ -168,6 +171,7 @@ impl Default for GenerationPreferences {
             allow_external_questions: false,
             local_without_api_key: false,
             local_structured_documents: false,
+            use_generated_exports: false,
             max_context_chars: None,
             top_k: None,
             local: None,

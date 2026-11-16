@@ -524,6 +524,14 @@ const messages = {
     '融合排名分數',
     '統合順位スコア',
   ],
+  generatedExport: ['Prism 생성', 'Made by Prism', 'Prism 生成', 'Prism 產生', 'Prism で作成'],
+  generatedExportHint: [
+    'Prism이 내보낸 문서입니다. 원본 자료가 아니므로 AI 답변의 근거로는 기본적으로 쓰지 않습니다.',
+    'A document Prism exported. It is not an original source, so AI answers do not cite it by default.',
+    '这是 Prism 导出的文档。它不是原始资料，因此 AI 回答默认不会引用它。',
+    '這是 Prism 匯出的文件。它不是原始資料，因此 AI 回答預設不會引用它。',
+    'Prism が書き出した文書です。元の資料ではないため、AI の回答では既定で根拠にしません。',
+  ],
   hybridBothMatch: [
     '키워드·의미 일치',
     'Keyword + semantic',

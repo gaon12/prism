@@ -136,6 +136,16 @@ pub async fn search_semantic(
     .await
     .map_err(|_| worker_error())?
 }
+/// Of the given file hashes (from search results), the ones that are files Prism exported.
+/// The results list marks those rows so an exported summary is not taken for an original.
+#[tauri::command]
+pub fn content_generated(hashes: Vec<String>) -> Vec<String> {
+    hashes
+        .into_iter()
+        .take(1024)
+        .filter(|hash| crate::generated_exports::contains(hash))
+        .collect()
+}
 #[tauri::command]
 pub async fn content_chunks(
     state: State<'_, AppState>,

@@ -8,6 +8,7 @@ import { OfficeEnginePanel } from '../features/collections/OfficeEnginePanel';
 import { OcrSettings } from '../features/content/OcrSettings';
 import { IndexServicePanel } from '../features/index-service/IndexServicePanel';
 import { IndexResetPanel } from '../features/index-reset/IndexResetPanel';
+import { BackupPanel } from '../features/backup/BackupPanel';
 import { generationCredentials } from '../lib/rag';
 import { bridge } from '../lib/bridge';
 import { useClient, saveSettings, scopesFromPaths, showToast, errorMessage } from '../lib/store';
@@ -314,6 +315,7 @@ export function SettingsDialog({
                     !allowUpdateInstall || JSON.stringify(draft) !== JSON.stringify(settings)
                   }
                 />
+                <BackupPanel language={settings.language} native={runtime.native} />
                 <DiagnosticPanel language={settings.language} />
               </>
             ) : null}

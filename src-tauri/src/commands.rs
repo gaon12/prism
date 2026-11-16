@@ -3,7 +3,10 @@ use crate::{
     windows, AppState,
 };
 use serde::Serialize;
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_autostart::ManagerExt as AutostartExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
@@ -451,6 +454,89 @@ pub async fn reset_index(
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupStatus {
+    /// A restore is staged and will be applied at the next start.
+    pub pending: bool,
+    /// This run started from a restored backup.
+    pub restored: bool,
+    /// Restoring at this start failed; Prism kept the data it had.
+    pub error: Option<String>,
+}
+#[tauri::command]
+pub fn data_backup_status(state: State<'_, AppState>) -> BackupStatus {
+    let profile = crate::data_backup::Profile {
+        data_dir: &state.data_dir,
+        asset_dir: &state.asset_dir,
+    };
+    let outcome = crate::data_backup::startup_outcome();
+    BackupStatus {
+        pending: crate::data_backup::pending(&profile),
+        restored: matches!(outcome, Ok(true)),
+        error: outcome.err(),
+    }
+}
+/// Writes a backup folder inside the folder the person chose. Returns the new folder.
+#[tauri::command]
+pub async fn data_backup_create(
+    app: AppHandle,
+    window: WebviewWindow,
+    folder: String,
+) -> Result<String, String> {
+    if window.label() != "main" {
+        return Err("Backups are made from the main window.".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        // Save the latest search state first, so the backup matches what is on screen.
+        if let Ok(session) = state.session.lock() {
+            let _ = write_json(&state.data_dir.join("session.json"), &*session);
+        }
+        let profile = crate::data_backup::Profile {
+            data_dir: &state.data_dir,
+            asset_dir: &state.asset_dir,
+        };
+        crate::data_backup::create(&profile, Path::new(&folder))
+            .map(|path| path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|_| "The backup stopped unexpectedly.".to_string())?
+}
+/// Checks the chosen backup, stages it and restarts Prism, which applies it before any
+/// data is opened. `cancel` withdraws a staged restore instead.
+#[tauri::command]
+pub async fn data_backup_restore(
+    app: AppHandle,
+    window: WebviewWindow,
+    folder: Option<String>,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Backups are restored from the main window.".into());
+    }
+    let worker = app.clone();
+    let restart = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
+        let state = worker.state::<AppState>();
+        let profile = crate::data_backup::Profile {
+            data_dir: &state.data_dir,
+            asset_dir: &state.asset_dir,
+        };
+        match folder {
+            Some(folder) => {
+                crate::data_backup::stage_restore(&profile, Path::new(&folder))?;
+                Ok(true)
+            }
+            None => crate::data_backup::cancel_pending(&profile).map(|_| false),
+        }
+    })
+    .await
+    .map_err(|_| "The restore stopped unexpectedly.".to_string())??;
+    if restart {
+        app.restart();
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn file_action(
     app: AppHandle,
@@ -684,8 +770,11 @@ pub async fn write_markdown(path: String, contents: String) -> Result<(), String
     {
         return Err("Choose an absolute Markdown (.md) file path.".into());
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        fs::write(path, contents).map_err(|error| error.to_string())
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        fs::write(path, &contents).map_err(|error| error.to_string())?;
+        // Markdown exports of documents and conversations: remember them as Prism's own.
+        crate::generated_exports::record(contents.as_bytes());
+        Ok(())
     })
     .await
     .map_err(|error| error.to_string())?

@@ -151,6 +151,23 @@ Native installed-debug Linux X11 checks exercised outline review, body generatio
 
 본 제품은 한컴의 HWP 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다.
 
+## System requirements and stored data
+
+What each part needs on a PC without a GPU (all features run on the CPU; an NPU path will be added only once supported devices are chosen):
+
+| Features                                                                                                  | CPU     | Memory | Free disk                                                    |
+| --------------------------------------------------------------------------------------------------------- | ------- | ------ | ------------------------------------------------------------ |
+| Filename search, calculator, unit conversion, clipboard history, dictionary                               | 1 core  | 512 MB | 200 MB plus the filename index                               |
+| Content search and OCR                                                                                    | 2 cores | 4 GB   | 1 GB plus the content index (roughly 10–30% of indexed text) |
+| Local AI model (around 1.7B parameters, run by the person's own local server) and natural-language search | 4 cores | 8 GB   | 5 GB                                                         |
+
+Where data lives and how it is protected:
+
+- **API keys** are kept only in the system keychain (Windows DPAPI, macOS Keychain, Linux Secret Service), never in Prism's files.
+- **Settings, recent searches, AI chats, documents, indexes and clipboard history** are ordinary files in Prism's data folders, protected by the operating system account's file permissions. They are not encrypted by Prism.
+- **Backup and restore** (Settings → General) copies settings, search folders, recent searches, chats and documents into a folder the person chooses. Databases are copied as consistent snapshots while Prism runs. A restore is checked first, then applied at the next start before any data is opened, and the replaced data is kept once in `restore-previous`. API keys, indexes (rebuilt from the originals) and clipboard history are not included.
+- **Files Prism exported** (Markdown, PDF and HWPX documents and conversations) are remembered by the SHA-256 of their bytes. When such a file is indexed again it is marked **Made by Prism** in content results and is not used as AI evidence unless **Also cite documents Prism exported** is turned on in AI settings. A file edited after export has new bytes and counts as the person's own document.
+
 ## Search and quick tools
 
 New search sessions start in **Automatic** mode. It searches filenames first and, only when none match, searches separately permitted content/AI scopes. An already-running local model enables natural-language retrieval; otherwise it uses content keywords and explains why. It never installs or starts a model automatically. Under **AI/model settings**, disable **Use natural-language search in automatic mode** to keep automatic fallback on keywords. Semantic failures also show a notice before keyword fallback; cancellation and invalid input remain errors. Explicit file-filter syntax and paths stay in filename search. Existing saved modes, including legacy filename sessions, are preserved; manual Filename, Content and Natural language modes remain available.

@@ -607,6 +607,19 @@ export function GenerationPanel({
       <p id={`${id}-fallback-help`} className="generation-note">
         {t('fallbackHelp')}
       </p>
+      <label className="generation-check" htmlFor={`${id}-generated`}>
+        <input
+          id={`${id}-generated`}
+          type="checkbox"
+          checked={preferences.useGeneratedExports}
+          aria-describedby={`${id}-generated-help`}
+          onChange={(event) => update({ useGeneratedExports: event.target.checked })}
+        />
+        <span>{t('useGeneratedExports')}</span>
+      </label>
+      <p id={`${id}-generated-help`} className="generation-note">
+        {t('useGeneratedExportsHelp')}
+      </p>
       <label className="generation-check" htmlFor={`${id}-questions`}>
         <input
           id={`${id}-questions`}

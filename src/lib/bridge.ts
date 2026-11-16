@@ -89,6 +89,21 @@ export const bridge = {
     if (!native) throw new Error('NATIVE_ONLY');
     await invoke('refresh_index');
   },
+  /** Whether a restore is staged, or this run started from (or failed to apply) one. */
+  async backupStatus() {
+    if (!native) return { pending: false, restored: false, error: null };
+    return invoke<{ pending: boolean; restored: boolean; error: string | null }>(
+      'data_backup_status',
+    );
+  },
+  /** Writes a new backup folder inside `folder` and returns its path. */
+  async createBackup(folder: string) {
+    return invoke<string>('data_backup_create', { folder });
+  },
+  /** Stages `folder` and restarts Prism to apply it; `null` cancels a staged restore. */
+  async restoreBackup(folder: string | null) {
+    await invoke('data_backup_restore', { folder });
+  },
   async indexResetStatus() {
     if (!native) return { lastApplied: false, pending: false, error: null };
     return invoke<{ lastApplied: boolean; pending: boolean; error: string | null }>(

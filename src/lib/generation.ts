@@ -33,6 +33,8 @@ export interface GenerationPreferences {
   allowExternalQuestions: boolean;
   localWithoutApiKey: boolean;
   localStructuredDocuments: boolean;
+  /** Let files Prism exported count as AI evidence (off: they repeat Prism's own words). */
+  useGeneratedExports: boolean;
   maxContextChars: number | null;
   topK: number | null;
   local: GenerationConfig | null;
@@ -46,6 +48,7 @@ export const defaultGeneration: GenerationPreferences = {
   allowExternalQuestions: false,
   localWithoutApiKey: false,
   localStructuredDocuments: false,
+  useGeneratedExports: false,
   maxContextChars: null,
   topK: null,
   local: null,
@@ -80,6 +83,7 @@ export function normalizeGeneration(input: unknown): GenerationPreferences {
     allowExternalQuestions: value.allowExternalQuestions === true,
     localWithoutApiKey: value.localWithoutApiKey === true,
     localStructuredDocuments: value.localStructuredDocuments === true,
+    useGeneratedExports: value.useGeneratedExports === true,
     maxContextChars:
       value.maxContextChars == null ? null : number(value.maxContextChars, 8000, 512, 200000),
     topK: value.topK == null ? null : number(value.topK, 6, 1, 32),

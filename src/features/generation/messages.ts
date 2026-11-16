@@ -101,6 +101,20 @@ const messages = {
     '預設關閉。備用伺服器也僅能在事先授權的提問與內文傳輸範圍內使用。',
     '初期設定はオフです。切替先でも、事前に許可した質問と本文の送信範囲を守ります。',
   ],
+  useGeneratedExports: [
+    'Prism이 내보낸 문서도 근거로 사용',
+    'Also cite documents Prism exported',
+    '也引用 Prism 导出的文档',
+    '也引用 Prism 匯出的文件',
+    'Prism が書き出した文書も根拠にする',
+  ],
+  useGeneratedExportsHelp: [
+    '기본값은 꺼짐입니다. 내보낸 요약·보고서·대화는 Prism이 쓴 글이라 원본 자료와 섞이지 않게 근거에서 뺍니다. 내보낸 뒤 직접 고친 파일은 원본으로 취급합니다.',
+    'Off by default. Exported summaries, reports and conversations are Prism’s own writing, so they are kept apart from the original sources. A file you edited after exporting counts as an original.',
+    '默认关闭。导出的摘要、报告和对话是 Prism 自己写的内容，因此不与原始资料混用。导出后自行修改过的文件视为原始资料。',
+    '預設關閉。匯出的摘要、報告與對話是 Prism 自己寫的內容，因此不與原始資料混用。匯出後自行修改過的檔案視為原始資料。',
+    '初期設定はオフです。書き出した要約・報告書・会話は Prism が書いたものなので、元の資料と混ぜません。書き出した後に自分で編集したファイルは元の資料として扱います。',
+  ],
   allowQuestions: [
     '외부 서버에 질문 전송 허용',
     'Allow questions to external servers',

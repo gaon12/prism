@@ -29,6 +29,26 @@ export interface ContentHit {
   snippet: string;
   keywordRank?: number | null;
   semanticRank?: number | null;
+  /** The file is one Prism exported (a saved summary or conversation), not an original. */
+  generated?: boolean;
+}
+/**
+ * Marks results that come from files Prism exported. The check is a display hint only: if
+ * it fails, the results are shown unmarked rather than not at all.
+ */
+async function markGenerated<T extends { hits: ContentHit[] }>(data: T): Promise<T> {
+  const hashes = [...new Set(data.hits.map((hit) => hit.chunk.fingerprint.sha256))];
+  if (!hashes.length) return data;
+  const generated = new Set(
+    await invoke<string[]>('content_generated', { hashes }).catch(() => [] as string[]),
+  );
+  if (!generated.size) return data;
+  return {
+    ...data,
+    hits: data.hits.map((hit) =>
+      generated.has(hit.chunk.fingerprint.sha256) ? { ...hit, generated: true } : hit,
+    ),
+  };
 }
 export interface ContentStatus {
   phase: string;
@@ -252,6 +272,7 @@ export function useContentSearch(active: boolean) {
                       },
                 );
         void request
+          .then((data) => markGenerated(data))
           .then((data) => {
             if (!disposed) {
               setResponse({ key, contentRevision: status.revision, ...data });

@@ -176,14 +176,24 @@ mod tests {
     use crate::rag_service::{GenerationPreferences, RagScope};
 
     fn policy_fixture(files: &[&str]) -> (tempfile::TempDir, ContentSources, RagPolicy) {
+        let files: Vec<_> = files
+            .iter()
+            .map(|name| (*name, "guardedpolicycanary shared evidence"))
+            .collect();
+        policy_fixture_with(&files)
+    }
+    /// Like `policy_fixture`, with each file's own contents.
+    fn policy_fixture_with(
+        files: &[(&str, &str)],
+    ) -> (tempfile::TempDir, ContentSources, RagPolicy) {
         use crate::{rag_service::RetrievalMode, settings::SearchScope};
         let directory = tempfile::tempdir().unwrap();
         let folder = directory.path().join("sources");
         fs::create_dir_all(folder.join(".git")).unwrap();
-        for name in files {
+        for (name, contents) in files {
             let path = folder.join(name);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, "guardedpolicycanary shared evidence").unwrap();
+            fs::write(&path, contents).unwrap();
         }
         let service = ContentService::open(
             &directory.path().join("index"),
@@ -227,6 +237,41 @@ mod tests {
             mcp: vec![],
         };
         (directory, ContentSources(service), policy)
+    }
+
+    #[test]
+    fn prism_exports_are_not_evidence_unless_the_person_allows_them() {
+        // Unique words so no other test's files share these bytes in the global list.
+        let exported = "exportcanary9 summary Prism wrote earlier";
+        let (_directory, resolver, mut policy) = policy_fixture_with(&[
+            ("original.md", "exportcanary9 the original report"),
+            ("summary.md", exported),
+        ]);
+        crate::generated_exports::record(exported.as_bytes());
+        let cancel = AtomicBool::new(false);
+        let names = |policy: &RagPolicy| {
+            let mut names: Vec<_> = resolver
+                .retrieve("exportcanary9", &[], policy, 8, &cancel)
+                .unwrap()
+                .into_iter()
+                .map(|source| {
+                    Path::new(&source.source.file_path)
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            names.sort();
+            names.dedup();
+            names
+        };
+        // By default only the original is evidence; the export is Prism's own words.
+        assert_eq!(names(&policy), ["original.md"]);
+        // The person can choose to let exports count as sources again.
+        policy.prefs.use_generated_exports = true;
+        assert_eq!(names(&policy), ["original.md", "summary.md"]);
+        resolver.0.shutdown();
     }
 
     #[test]
@@ -958,6 +1003,13 @@ fn authorize(
     for (chunk, _) in candidates {
         cancel_check(cancel)?;
         if !seen.insert(chunk.id.clone()) {
+            continue;
+        }
+        // A file Prism exported (same bytes) repeats Prism's own earlier answer: it is
+        // not evidence unless the person turned that on.
+        if !policy.prefs.use_generated_exports
+            && crate::generated_exports::contains(&chunk.fingerprint.sha256)
+        {
             continue;
         }
         let path = Path::new(&chunk.file_path);

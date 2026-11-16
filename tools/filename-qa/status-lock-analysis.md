@@ -1056,3 +1056,110 @@ Private immutable evidence under
 `directory-cache-prototype-abba/`; frozen source/control/check inputs are in
 `directory-cache-{prototype,product}-proof-inputs/`. The raw capture remains
 read-only outside Git/CI/artifacts under its existing retention ledger.
+
+### Actual recent-directory-cache release app
+
+The integrated cache reached release CI as `d556e82`, then the independent
+export-command fix `0e433d0`. Run `43795143365@0e433d0` passed all seven build
+and check jobs, including the mandatory actual 1.7B generation and file-policy
+gates; draft publication was skipped. The downloaded `qa-windows-app` artifact
+`14194880109` had 145,389,141 bytes and ZIP SHA-256 `4c9fa55e...`. Its single
+380,129,792-byte executable had SHA-256 `4800b067...`. The integrated compact
+module has the same `85ee26de...` source hash as the locally qualified product.
+
+Four predeclared off/on/on/off GUI cases used fresh fixture profiles,
+software-rendered WebViews and kernel-read-back one-CPU/512-MiB app/child limits.
+The existing harness/support files were unchanged from the earlier comparison.
+
+| Case | DEV profile | First search (ms) | Whole-list complete (ms) | Idle ready (ms) | Ready Job CPU (ms) | Live Prism CPU (ms) | Live WebView CPU (ms) | Final peak Job commit (MiB) |
+| ---- | ----------- | ----------------: | -----------------------: | --------------: | -----------------: | ------------------: | --------------------: | --------------------------: |
+| 1    | Off         |             2,920 |                    8,707 |           8,749 |              7,437 |               4,234 |                 3,196 |                      400.81 |
+| 2    | On          |             2,619 |                    9,095 |           9,145 |              7,765 |               4,561 |                 3,197 |                      402.39 |
+| 3    | On          |             2,550 |                    8,015 |           8,188 |              7,390 |               4,014 |                 3,368 |                      404.52 |
+| 4    | Off         |             2,266 |                    8,960 |           9,114 |              7,702 |               4,390 |                 3,306 |                      405.96 |
+
+The launch fixture found its pages after 1,940/1,852/1,741/1,834 ms. This is a
+CDP page-readiness boundary, not a native paint measurement. Final peak memory
+also includes later fixture queries and inspections. Live-process CPU sums
+are not atomic Job CPU totals and may omit already exited processes.
+
+Each case recorded one service snapshot and zero overflow reconciles. Validated
+fetch took 8,509/7,316/7,900/8,863 ms, including receive callback windows of
+3,269/3,191/2,572/6,069 ms. Those windows include app backpressure; they do not
+isolate server or wire cost. Completed profile phases covered about 90.0-90.3%
+of process cycles in the on cases. Insertion remained 40.8/43.7% of completed
+phase cycles; query scans were 17.4/11.3%. These are later profile-snapshot
+boundaries (9,205/8,246 ms), not exact ready-only attribution, and cycles are
+not converted to elapsed time.
+
+On cases each recorded one prune: 33/18 roots, 309,204/309,267 directory slots,
+2,172,300/2,172,565 node slots, two stale candidates removed and no compaction.
+Membership took 8.625/14.154 ms, selection 15.704/17.531 ms and writer hold
+24.354/31.702 ms. Current-root, scheduling and catalog differences prevent
+assigning a causal percentage against the earlier 5c app's 18.409/26.070-ms
+holds. The short-prune behavior remains present in the integrated product.
+
+Status probe maxima were 20/450/33/40 ms. Backend command maxima in the on
+cases were 29.174/208.610 ms, almost entirely blocking-pool acquisition, with
+worker maxima 5.3/6.7 microseconds and zero catalog/prepared lock acquisition.
+Snapshot mutex wait maxima were 300 ns; hold maxima were 3.7/4.9 microseconds.
+The GUI and backend maxima lack shared call IDs; the 450-ms probe cannot be
+assigned to a particular backend call. The old blocking-pool hop remains a
+possible response-latency improvement now that the getter reads published
+status. No dispatcher change was included in this qualification.
+
+The four cases passed in 52.500 seconds, minimum available host RAM was
+3,603,705,856 bytes and no owned processes remained. Host utilization was
+70.5-74.7%; live catalog counts rose from 2,172,034 to 2,172,829. The historical
+service remained PID 5924 / SHA `d0b1fe5e...`, outside the app Job. No service
+upgrade, elevation, cache reset, HDD emulation or user profile access occurred.
+
+This candidate also contains backup/export/UI changes after the prior
+`52817cf` baseline. Consequently the GUI runs qualify the integrated app,
+without establishing an isolated recent-directory-cache startup gain. The
+fixed-input 8.20% insertion-cycle result retains its separate scope. The
+actual-app cached 5-7 second whole-list target remains unaccepted.
+
+Local evidence is `native-recent-directory-cache-qualification.json`,
+`cache-product-ci-jobs-final.json`, `candidate-cache-0e433d0/`,
+`harsh-cache-product-0e-oooo/` and `cache-product-native-proof-inputs/` under
+`C:/Users/solso/prism-agent-work-20261115/`. Screenshots, fixture profiles and
+numeric results stay outside Git and hosted artifacts.
+
+### Read-only service startup audit
+
+The [host](../../indexer/windows/src/host.rs) holds its serialization permit
+from before volume open through the asynchronous cache save. It waits in
+25-ms checks for another request/save to release that permit. A first-record
+delay can therefore include preceding work, volume identity, cache validation,
+USN replay and initial traversal; the client-side read interval cannot identify
+which phase dominated a particular request.
+
+The [cache store](../../indexer/windows/src/administration/cache.rs) opens a
+private file that denies writes and deletion, then wraps it in a 1-MiB buffer.
+The [codec](../../indexer/core/src/snapshot/codec.rs) hashes the complete bounded
+body before trusting its geometry/checkpoint or decoding records. The
+[streaming reader](../../indexer/core/src/snapshot/codec/streaming.rs) then
+validates all reference ordering, record fields and ownership into bounded
+indexes before a visitor can emit paths. Refresh validates the journal and
+applies changed families before publication. These passes explain code work
+before the first record, not measured phase durations; retaining validation
+and immutable-handle guarantees is a correctness requirement.
+
+Traversal re-reads the verified record region, decodes names and reconstructs
+paths using the directory cache. The host batches them for protocol encoding,
+with cancellation/deadline/progress checks per emitted record. After transfer,
+the [streaming writer](../../indexer/core/src/snapshot/codec/streaming/writer.rs)
+decodes the merged metadata and re-encodes it into a new stage, then the store
+flushes, fsyncs and atomically replaces the cache. That save does not delay
+the current terminal response but keeps the serialization permit, so it can
+affect the next request. Whole-service process CPU sampled around a request
+can include this preceding or overlapping save and other clients.
+
+The next useful service measurement boundary is permit wait, validated open,
+journal refresh, row traversal/encoding/pipe writes and background save,
+recorded separately. Installed-service internal timing is not available from
+the current client, and replacing that service requires a separate user-led
+upgrade. No checksum/cancellation/identity checks, cache format, permit scope
+or installed service were changed by this audit. Synthetic local component
+experiments can test candidates without asserting actual-service attribution.

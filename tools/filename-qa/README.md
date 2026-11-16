@@ -1783,3 +1783,21 @@ worktrees under `C:/Users/solso/prism-agent-work-20261115/` in
 `service-headless-qualification.json`. No raw live filenames or paths were
 persisted by these diagnostics. The service's normal internal cache behavior
 was not altered or asserted unchanged.
+
+The later [integrated cache-product GUI qualification](status-lock-analysis.md#actual-recent-directory-cache-release-app)
+passed four off/on/on/off cases with CI `43795143365@0e433d0`; all seven CI
+build/check jobs also passed. At one CPU/512 MiB with software WebViews, first
+search was 2.266-2.920 seconds, whole-list completion 8.015-9.095 seconds and
+idle ready 8.188-9.145 seconds. Final Job peaks were 400.81-405.96 MiB. These
+are integrated-product observations: backup/export/UI changes also separate
+the app from the old baseline, so no cache-only GUI gain is claimed. Prune
+writer holds remained short (24.354/31.702 ms), while backend status maxima
+were dominated by blocking-pool wait. The cached 5-7 second target stays open.
+
+A [read-only service audit](status-lock-analysis.md#read-only-service-startup-audit)
+separates permit waiting, verified cache open, replay, row traversal/protocol
+delivery and asynchronous cache save in the code. The save keeps the request
+permit after the current terminal response and can delay a subsequent request.
+Client pipe-read wall and whole-service CPU do not isolate those phases. No
+service format, integrity/cancellation checks, deployment or product runtime
+was changed by the audit.

@@ -40,6 +40,12 @@ fn actual_extraction_window_qualification() {
     }
     let input_sha = format!("{:x}", input_hash.finalize());
     let roots = vec![source];
+    // Only a probed device counts. The Mac boot-volume rule is an assumption,
+    // so the parallel cases are not qualified there.
+    assert!(
+        cfg!(any(windows, target_os = "linux")),
+        "parallel qualification needs a Windows or Linux seek-penalty probe"
+    );
     let mut storage = crate::content_storage::ReadPolicy::default();
     assert!(
         storage.all_roots_nonseek(&roots),

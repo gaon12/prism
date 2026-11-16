@@ -271,7 +271,31 @@ mod platform {
         })
     }
 }
-#[cfg(not(any(windows, target_os = "linux")))]
+/// True when `device` is one of the boot volume's device ids. `None` entries
+/// (a failed lookup) never match, so a failed lookup keeps reads serial.
+#[cfg(any(target_os = "macos", test))]
+fn on_boot_volume(device: u64, boot: &[Option<u64>]) -> bool {
+    boot.iter().flatten().any(|known| *known == device)
+}
+/// macOS has no simple seek-penalty query. Every current Mac boots from an internal
+/// SSD, so only the boot volume (`/` and its `/System/Volumes/Data` partner, which
+/// holds user files) may read in parallel. External, network and any other volumes
+/// under `/Volumes` stay serial, as an unknown device does on the other systems.
+#[cfg(target_os = "macos")]
+mod platform {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+    pub(super) type Device = u64;
+    pub(super) fn device(path: &Path) -> Option<Device> {
+        std::fs::metadata(path).ok().map(|meta| meta.dev())
+    }
+    pub(super) fn nonseek(device: &Device) -> bool {
+        let boot = ["/", "/System/Volumes/Data"]
+            .map(|path| std::fs::metadata(path).ok().map(|meta| meta.dev()));
+        on_boot_volume(*device, &boot)
+    }
+}
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 mod platform {
     use super::*;
     pub(super) type Device = ();
@@ -360,15 +384,22 @@ mod tests {
         assert!(!stack_nonseek(0, |key| cycle.get(key).cloned()));
         assert!(!stack_nonseek(0, |key| Some((true, vec![*key + 1]))));
     }
+    #[test]
+    fn only_the_known_boot_volume_counts_as_a_mac_ssd() {
+        // The boot volume (either of its two device ids) may read in parallel.
+        assert!(on_boot_volume(5, &[Some(1), Some(5)]));
+        // Another device, such as an external disk under /Volumes, stays serial.
+        assert!(!on_boot_volume(6, &[Some(1), Some(5)]));
+        // Failed boot-volume lookups never admit anything.
+        assert!(!on_boot_volume(5, &[None, None]));
+    }
     #[cfg(target_os = "macos")]
     #[test]
-    fn an_existing_mac_volume_without_device_evidence_remains_serial() {
-        // File existence or st_dev identity alone says nothing about rotational
-        // media. This must also hold for an externally mounted HDD/network path.
+    fn a_mac_temporary_folder_on_the_boot_volume_reads_in_parallel() {
+        // Temporary folders live on the boot volume's data partner.
         let directory = tempfile::tempdir().unwrap();
         let mut policy = ReadPolicy::default();
-        assert!(!policy.permits_parallel(directory.path()));
-        assert!(!policy.all_roots_nonseek(&[directory.path().to_path_buf()]));
+        assert!(policy.permits_parallel(directory.path()));
     }
     #[test]
     fn missing_path_and_empty_root_set_are_conservatively_serial() {

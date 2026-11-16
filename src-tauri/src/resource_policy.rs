@@ -297,7 +297,12 @@ fn mem_available(text: &str) -> Option<u64> {
 
 #[cfg(target_os = "macos")]
 fn available_memory() -> Option<u64> {
+    // Declared here instead of using `libc::mach_host_self`/`mach_task_self`, which
+    // the libc crate marks deprecated (it points to the mach2 crate). These are the
+    // same system symbols: `mach_task_self()` in C reads the `mach_task_self_` port.
     extern "C" {
+        static mach_task_self_: libc::mach_port_t;
+        fn mach_host_self() -> libc::mach_port_t;
         fn mach_port_deallocate(
             task: libc::mach_port_t,
             name: libc::mach_port_t,
@@ -309,7 +314,7 @@ fn available_memory() -> Option<u64> {
         if page <= 0 {
             return None;
         }
-        let host = libc::mach_host_self();
+        let host = mach_host_self();
         let mut stats: libc::vm_statistics64 = std::mem::zeroed();
         let mut count = libc::HOST_VM_INFO64_COUNT;
         let result = libc::host_statistics64(
@@ -318,7 +323,7 @@ fn available_memory() -> Option<u64> {
             &mut stats as *mut _ as libc::host_info64_t,
             &mut count,
         );
-        mach_port_deallocate(libc::mach_task_self(), host);
+        mach_port_deallocate(mach_task_self_, host);
         if result != 0 || count < 4 {
             return None;
         }

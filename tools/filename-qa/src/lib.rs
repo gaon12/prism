@@ -3,6 +3,8 @@
 
 #[path = "../../../indexer/core/examples/support/captured_rows.rs"]
 mod captured_rows;
+#[path = "../../../src-tauri/src/content_pipeline.rs"]
+mod content_pipeline;
 mod cpu_clock;
 #[path = "../../../src-tauri/src/file_policy.rs"]
 mod file_policy;

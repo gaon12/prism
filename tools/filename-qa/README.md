@@ -1829,3 +1829,6 @@ and background priority below the UI. Real owned-Job probes selected 1/1/1
 CPU/inference/I/O threads at one CPU versus 8/8/4 at eight allowed CPUs.
 Content/OCR concurrency and actual new-app performance qualification remain
 follow-ups; parameter selection is not a measured startup or inference gain.
+
+The pending [bounded content extraction candidate](content-extraction-pipeline.md)
+records its scheduling, authority boundaries and unexecuted verification plan.

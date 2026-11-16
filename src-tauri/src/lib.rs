@@ -13,6 +13,7 @@ mod collection_service;
 mod collection_store;
 mod commands;
 mod content_commands;
+mod content_pipeline;
 mod content_service;
 mod content_store;
 mod data_backup;

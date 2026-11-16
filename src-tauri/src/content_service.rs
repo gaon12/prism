@@ -179,6 +179,24 @@ struct Request {
     ocr: crate::ocr::Preferences,
     file_policy: crate::file_policy::Categories,
 }
+// Owned results stay inside a request-wide, memory-budgeted window. Only the
+// scanning thread may publish or embed them, in discovery order.
+enum PreparedContent {
+    Reused(ContentDocumentSummary),
+    Extracted {
+        document: document_extract::ExtractedDocument,
+        version: String,
+    },
+    Ignored,
+    Failed {
+        code: String,
+        message: String,
+    },
+}
+struct ContentPreparation {
+    path: PathBuf,
+    value: PreparedContent,
+}
 struct ContentPolicy {
     revision: u64,
     categories: crate::file_policy::Categories,
@@ -932,198 +950,129 @@ impl ContentService {
             .lock()
             .map(|paths| paths.clone())
             .unwrap_or_default();
-        for root in &roots {
-            for entry in WalkDir::new(root)
-                .follow_links(false)
-                .into_iter()
-                .filter_entry(|entry| {
-                    self.current(request)
-                        && !is_link(entry.path())
-                        && !excluded
-                            .iter()
-                            .any(|root| under(&path_key(entry.path()), root))
-                        && (!entry.file_type().is_dir()
-                            || match admits_content(request.file_policy, &roots, entry.path(), true)
-                            {
-                                Ok(allowed) => allowed,
-                                Err(_) => {
-                                    self.issue(
+        // Native/Paddle OCR have their own single-request lifecycle. Keep OCR
+        // scans serial until that lifecycle is qualified for concurrent callers.
+        // A slot covers queued + running + completed + reorder-buffered results.
+        // The 512 MiB estimate includes parser expansion and retained text; it
+        // is a concurrency budget, not a hard per-document RSS reservation.
+        let workers = if request.ocr.enabled {
+            1
+        } else {
+            crate::resource_policy::WorkBudget::current().workers_for(512 * 1024 * 1024)
+        };
+        let outcome = crate::content_pipeline::run(
+            workers,
+            || self.current(request),
+            |path| self.prepare_content(request, &roots, path),
+            |prepared| self.publish_content(request, &roots, vector.as_deref(), prepared),
+            |window| {
+                for root in &roots {
+                    for entry in WalkDir::new(root)
+                        .follow_links(false)
+                        .into_iter()
+                        .filter_entry(|entry| {
+                            self.current(request)
+                                && !is_link(entry.path())
+                                && !excluded
+                                    .iter()
+                                    .any(|root| under(&path_key(entry.path()), root))
+                                && (!entry.file_type().is_dir()
+                                    || match admits_content(
+                                        request.file_policy,
+                                        &roots,
                                         entry.path(),
-                                        "policy",
-                                        "Content policy evidence is unavailable.",
-                                    );
-                                    false
-                                }
-                            })
-                })
-            {
-                if !self.current(request) {
-                    return;
-                }
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(_) => {
-                        self.issue(root, "io", "Some content paths could not be read.");
-                        continue;
-                    }
-                };
-                if !entry.file_type().is_file()
-                    || entry
-                        .path()
-                        .symlink_metadata()
-                        .is_ok_and(|metadata| metadata.file_type().is_symlink())
-                {
-                    continue;
-                }
-                let path = entry.path();
-                if !document_extract::is_supported_extension(
-                    path.extension()
-                        .and_then(|extension| extension.to_str())
-                        .unwrap_or(""),
-                ) {
-                    continue;
-                }
-                if !seen.insert(path.to_path_buf()) {
-                    continue;
-                }
-                // Authorize before reading the document, not just before storing its text.
-                let canonical = match fs::canonicalize(path) {
-                    Ok(canonical)
-                        if canonical.is_file()
-                            && roots.iter().any(|root| canonical.starts_with(root)) =>
+                                        true,
+                                    ) {
+                                        Ok(allowed) => allowed,
+                                        Err(_) => {
+                                            self.issue(
+                                                entry.path(),
+                                                "policy",
+                                                "Content policy evidence is unavailable.",
+                                            );
+                                            false
+                                        }
+                                    })
+                        })
                     {
-                        canonical
-                    }
-                    _ => {
-                        self.issue(
-                            path,
-                            "unsafePath",
-                            "Document is outside the active content folders.",
-                        );
-                        continue;
-                    }
-                };
-                let path = canonical.as_path();
-                match admits_content(request.file_policy, &roots, path, false) {
-                    Ok(true) => {}
-                    Ok(false) => continue,
-                    Err(_) => {
-                        self.issue(path, "policy", "Content policy evidence is unavailable.");
-                        continue;
+                        if !self.current(request) {
+                            return;
+                        }
+                        let entry = match entry {
+                            Ok(entry) => entry,
+                            Err(_) => {
+                                self.issue(root, "io", "Some content paths could not be read.");
+                                continue;
+                            }
+                        };
+                        if !entry.file_type().is_file()
+                            || entry
+                                .path()
+                                .symlink_metadata()
+                                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                        {
+                            continue;
+                        }
+                        let path = entry.path();
+                        if !document_extract::is_supported_extension(
+                            path.extension()
+                                .and_then(|extension| extension.to_str())
+                                .unwrap_or(""),
+                        ) {
+                            continue;
+                        }
+                        if !seen.insert(path.to_path_buf()) {
+                            continue;
+                        }
+                        // Authorize before reading the document, not just before storing its text.
+                        let canonical = match fs::canonicalize(path) {
+                            Ok(canonical)
+                                if canonical.is_file()
+                                    && roots.iter().any(|root| canonical.starts_with(root)) =>
+                            {
+                                canonical
+                            }
+                            _ => {
+                                self.issue(
+                                    path,
+                                    "unsafePath",
+                                    "Document is outside the active content folders.",
+                                );
+                                continue;
+                            }
+                        };
+                        let path = canonical.as_path();
+                        match admits_content(request.file_policy, &roots, path, false) {
+                            Ok(true) => {}
+                            Ok(false) => continue,
+                            Err(_) => {
+                                self.issue(
+                                    path,
+                                    "policy",
+                                    "Content policy evidence is unavailable.",
+                                );
+                                continue;
+                            }
+                        }
+                        self.update(|status| {
+                            status.discovered += 1;
+                            status.current_path = Some(path.to_string_lossy().into());
+                        });
+                        if !window.push(canonical) {
+                            return;
+                        }
                     }
                 }
+            },
+        );
+        if outcome != crate::content_pipeline::Outcome::Completed {
+            if self.current(request) {
                 self.update(|status| {
-                    status.discovered += 1;
-                    status.current_path = Some(path.to_string_lossy().into());
+                    status.current_path = None;
+                    status.phase = "error".into();
                 });
-                let previous = self
-                    .inner
-                    .store
-                    .document_summary(path, &roots, &request.cancel)
-                    .ok()
-                    .flatten()
-                    .filter(|document| {
-                        reusable_extraction(
-                            document.extractor_version.as_deref(),
-                            &extraction_version(path, &request.ocr),
-                            &request.ocr,
-                        )
-                    });
-                // Existing OCR text remains available when OCR is switched off.
-                // New image payloads are neither read nor added to the issue log.
-                if previous.is_none()
-                    && !request.ocr.enabled
-                    && document_extract::is_image_extension(
-                        path.extension().and_then(|e| e.to_str()).unwrap_or(""),
-                    )
-                {
-                    continue;
-                }
-                let version = extraction_version(path, &request.ocr);
-                let document = if let Some(previous) = previous {
-                    previous
-                } else {
-                    #[cfg(test)]
-                    if let Some(observer) = self.inner.before_extract.lock().unwrap().clone() {
-                        observer(path);
-                    }
-                    if !self.current(request) {
-                        return;
-                    }
-                    let extracted = match document_extract::extract_document(
-                        path,
-                        &ExtractOptions {
-                            ocr: request.ocr.clone(),
-                            ..Default::default()
-                        },
-                        &request.cancel,
-                    ) {
-                        Ok(extracted) => extracted,
-                        Err(error) => {
-                            if !self.current(request) {
-                                return;
-                            }
-                            let code = serde_json::to_value(error.code)
-                                .ok()
-                                .and_then(|value| value.as_str().map(String::from))
-                                .unwrap_or_else(|| "extract".into());
-                            self.issue(path, &code, &error.message);
-                            continue;
-                        }
-                    };
-                    if !self.current(request) {
-                        return;
-                    }
-                    // Configuration cannot change between this final authority
-                    // check and committing the extracted text.
-                    let configuration = match self.inner.scopes.lock() {
-                        Ok(configuration) => configuration,
-                        Err(_) => return,
-                    };
-                    if !self.current(request) {
-                        return;
-                    }
-                    if !matches!(
-                        admits_content(request.file_policy, &roots, path, false),
-                        Ok(true)
-                    ) {
-                        continue;
-                    }
-                    let publication = self.inner.store.replace_document_versioned(
-                        &extracted,
-                        &roots,
-                        Some(&version),
-                        &request.cancel,
-                    );
-                    drop(configuration);
-                    match publication {
-                        Ok(document) => document,
-                        Err(error) => {
-                            if !self.current(request) {
-                                return;
-                            }
-                            let code = serde_json::to_value(error.code)
-                                .ok()
-                                .and_then(|value| value.as_str().map(String::from))
-                                .unwrap_or_else(|| "storage".into());
-                            self.issue(path, &code, &error.message);
-                            continue;
-                        }
-                    }
-                };
-                if let Some(vector) = &vector {
-                    if let Err(error) =
-                        self.embed_document(&document, vector, &roots, &request.cancel)
-                    {
-                        if self.current(request) {
-                            self.update(|status| status.embedding_error = Some(error.message));
-                        }
-                    } else {
-                        self.update(|status| status.embedded += 1);
-                    }
-                }
-                self.update(|status| status.indexed += 1);
             }
+            return;
         }
         if !self.current(request) {
             return;
@@ -1132,6 +1081,177 @@ impl ContentService {
             status.current_path = None;
             status.phase = "ready".into();
         });
+    }
+    fn prepare_content(
+        &self,
+        request: &Request,
+        roots: &[PathBuf],
+        canonical: PathBuf,
+    ) -> ContentPreparation {
+        let path = canonical.as_path();
+        // A queued path may have changed while another document was parsed.
+        // Recheck current authority before any source fingerprint/text read.
+        if !self.current(request) {
+            return ContentPreparation {
+                path: canonical,
+                value: PreparedContent::Ignored,
+            };
+        }
+        match admits_content(request.file_policy, roots, path, false) {
+            Ok(true) => {}
+            Ok(false) => {
+                return ContentPreparation {
+                    path: canonical,
+                    value: PreparedContent::Ignored,
+                }
+            }
+            Err(_) => {
+                return ContentPreparation {
+                    path: canonical,
+                    value: PreparedContent::Failed {
+                        code: "policy".into(),
+                        message: "Content policy evidence is unavailable.".into(),
+                    },
+                }
+            }
+        }
+        let previous = self
+            .inner
+            .store
+            .document_summary(path, roots, &request.cancel)
+            .ok()
+            .flatten()
+            .filter(|document| {
+                reusable_extraction(
+                    document.extractor_version.as_deref(),
+                    &extraction_version(path, &request.ocr),
+                    &request.ocr,
+                )
+            });
+        // Existing OCR text remains available when OCR is switched off.
+        // New image payloads are neither read nor added to the issue log.
+        if previous.is_none()
+            && !request.ocr.enabled
+            && document_extract::is_image_extension(
+                path.extension().and_then(|e| e.to_str()).unwrap_or(""),
+            )
+        {
+            return ContentPreparation {
+                path: canonical,
+                value: PreparedContent::Ignored,
+            };
+        }
+        let version = extraction_version(path, &request.ocr);
+        let value = if let Some(previous) = previous {
+            PreparedContent::Reused(previous)
+        } else {
+            #[cfg(test)]
+            {
+                let observer = self.inner.before_extract.lock().unwrap().clone();
+                if let Some(observer) = observer {
+                    observer(path);
+                }
+            }
+            if !self.current(request) {
+                return ContentPreparation {
+                    path: canonical,
+                    value: PreparedContent::Ignored,
+                };
+            }
+            match document_extract::extract_document(
+                path,
+                &ExtractOptions {
+                    ocr: request.ocr.clone(),
+                    ..Default::default()
+                },
+                &request.cancel,
+            ) {
+                Ok(document) => PreparedContent::Extracted { document, version },
+                Err(error) => PreparedContent::Failed {
+                    code: serde_json::to_value(error.code)
+                        .ok()
+                        .and_then(|value| value.as_str().map(String::from))
+                        .unwrap_or_else(|| "extract".into()),
+                    message: error.message,
+                },
+            }
+        };
+        ContentPreparation {
+            path: canonical,
+            value,
+        }
+    }
+    fn publish_content(
+        &self,
+        request: &Request,
+        roots: &[PathBuf],
+        vector: Option<&VectorStore>,
+        prepared: ContentPreparation,
+    ) -> bool {
+        if !self.current(request) {
+            return false;
+        }
+        let path = prepared.path.as_path();
+        let document = match prepared.value {
+            PreparedContent::Ignored => return true,
+            PreparedContent::Failed { code, message } => {
+                self.issue(path, &code, &message);
+                return true;
+            }
+            PreparedContent::Reused(document) => document,
+            PreparedContent::Extracted { document, version } => {
+                // Configuration cannot change between the final authority
+                // check and committing text. Workers never acquire this lock.
+                let configuration = match self.inner.scopes.lock() {
+                    Ok(configuration) => configuration,
+                    Err(_) => return false,
+                };
+                if !self.current(request) {
+                    return false;
+                }
+                if !matches!(
+                    admits_content(request.file_policy, roots, path, false),
+                    Ok(true)
+                ) {
+                    return true;
+                }
+                let publication = self.inner.store.replace_document_versioned(
+                    &document,
+                    roots,
+                    Some(&version),
+                    &request.cancel,
+                );
+                drop(configuration);
+                match publication {
+                    Ok(document) => document,
+                    Err(error) => {
+                        if !self.current(request) {
+                            return false;
+                        }
+                        let code = serde_json::to_value(error.code)
+                            .ok()
+                            .and_then(|value| value.as_str().map(String::from))
+                            .unwrap_or_else(|| "storage".into());
+                        self.issue(path, &code, &error.message);
+                        return true;
+                    }
+                }
+            }
+        };
+        if let Some(vector) = vector {
+            if let Err(error) = self.embed_document(&document, vector, roots, &request.cancel) {
+                if self.current(request) {
+                    self.update(|status| status.embedding_error = Some(error.message));
+                }
+            } else {
+                self.update(|status| status.embedded += 1);
+            }
+        }
+        if !self.current(request) {
+            return false;
+        }
+        self.update(|status| status.indexed += 1);
+        true
     }
     fn vector(&self) -> Result<Arc<VectorStore>> {
         let embedding = self
@@ -2068,6 +2188,166 @@ mod tests {
             content_enabled: true,
             external_allowed: false,
         }
+    }
+
+    fn manual_preparation_request(service: &ContentService, root: &Path) -> Request {
+        let scopes = vec![policy_scope(root, "content-pipeline")];
+        *service.inner.scopes.lock().unwrap() = scopes.clone();
+        Request {
+            generation: service.inner.generation.load(Ordering::Acquire),
+            scopes,
+            cancel: Arc::new(AtomicBool::new(false)),
+            ocr: Default::default(),
+            file_policy: Default::default(),
+        }
+    }
+
+    #[test]
+    fn parallel_preparation_publishes_the_same_documents_in_discovery_order() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("sources");
+        fs::create_dir(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let paths: Vec<_> = (0..16)
+            .map(|id| {
+                let path = root.join(format!("source-{id:02}.md"));
+                fs::write(
+                    &path,
+                    format!("# Document {id}\nparallelcontentcanary source {id}\n"),
+                )
+                .unwrap();
+                path
+            })
+            .collect();
+        let mut expected = None;
+        for workers in [1, 4] {
+            let service = ContentService::open(
+                &directory.path().join(format!("index-{workers}")),
+                Err("not installed".into()),
+                |_| {},
+            )
+            .unwrap();
+            let _owner = service.clone();
+            let request = manual_preparation_request(&service, &root);
+            let roots = vec![root.clone()];
+            let mut published = Vec::new();
+            let outcome = crate::content_pipeline::run(
+                workers,
+                || service.current(&request),
+                |path| service.prepare_content(&request, &roots, path),
+                |prepared| {
+                    published.push(prepared.path.clone());
+                    assert!(matches!(prepared.value, PreparedContent::Extracted { .. }));
+                    service.publish_content(&request, &roots, None, prepared)
+                },
+                |window| {
+                    for path in &paths {
+                        assert!(window.push(path.clone()));
+                    }
+                },
+            );
+            assert_eq!(outcome, crate::content_pipeline::Outcome::Completed);
+            assert_eq!(published, paths);
+            let documents = service
+                .inner
+                .store
+                .documents(&roots, &request.cancel)
+                .unwrap();
+            assert_eq!(documents.len(), paths.len());
+            let actual = serde_json::to_value(documents).unwrap();
+            if let Some(expected) = &expected {
+                assert_eq!(&actual, expected);
+            } else {
+                expected = Some(actual);
+            }
+            assert_eq!(service.status().unwrap().indexed, paths.len());
+            // Subsequent work reuses the versioned extraction without republishing.
+            assert!(matches!(
+                service
+                    .prepare_content(&request, &roots, paths[0].clone())
+                    .value,
+                PreparedContent::Reused(_)
+            ));
+            service.shutdown();
+        }
+    }
+
+    #[test]
+    fn prepared_text_is_discarded_after_cancellation_or_generation_change() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("sources");
+        fs::create_dir(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let path = root.join("source.txt");
+        fs::write(&path, "cancelledpreparationcanary").unwrap();
+        let service = ContentService::open(
+            &directory.path().join("index"),
+            Err("not installed".into()),
+            |_| {},
+        )
+        .unwrap();
+        let _owner = service.clone();
+        let roots = vec![root.clone()];
+        for new_generation in [false, true] {
+            let request = manual_preparation_request(&service, &root);
+            let prepared = service.prepare_content(&request, &roots, path.clone());
+            assert!(matches!(prepared.value, PreparedContent::Extracted { .. }));
+            if new_generation {
+                service.inner.generation.fetch_add(1, Ordering::AcqRel);
+            } else {
+                request.cancel.store(true, Ordering::Release);
+            }
+            assert!(!service.publish_content(&request, &roots, None, prepared));
+            assert!(service
+                .inner
+                .store
+                .documents(&roots, &AtomicBool::new(false))
+                .unwrap()
+                .is_empty());
+            assert!(matches!(
+                service
+                    .prepare_content(&request, &roots, path.clone())
+                    .value,
+                PreparedContent::Ignored
+            ));
+        }
+        service.shutdown();
+    }
+
+    #[test]
+    fn publication_rechecks_repository_rules_after_preparation() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("sources");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let path = root.join("source.txt");
+        fs::write(&path, "revokedpreparationcanary").unwrap();
+        let service = ContentService::open(
+            &directory.path().join("index"),
+            Err("not installed".into()),
+            |_| {},
+        )
+        .unwrap();
+        let _owner = service.clone();
+        let mut request = manual_preparation_request(&service, &root);
+        request.file_policy.repository_ignored = false;
+        let roots = vec![root.clone()];
+        let prepared = service.prepare_content(&request, &roots, path.clone());
+        assert!(matches!(prepared.value, PreparedContent::Extracted { .. }));
+        fs::write(root.join(".gitignore"), "/source.txt\n").unwrap();
+        assert!(service.publish_content(&request, &roots, None, prepared));
+        assert_eq!(service.status().unwrap().indexed, 0);
+        assert!(service
+            .inner
+            .store
+            .documents(&roots, &request.cancel)
+            .unwrap()
+            .is_empty());
+        assert!(matches!(
+            service.prepare_content(&request, &roots, path).value,
+            PreparedContent::Ignored
+        ));
+        service.shutdown();
     }
 
     #[test]

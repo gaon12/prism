@@ -13,6 +13,11 @@ pub mod collection_render;
 pub mod collection_service;
 #[path = "../../../src-tauri/src/collection_store.rs"]
 pub mod collection_store;
+#[allow(dead_code)] // Production callers live in the full app; tests exercise the window.
+#[path = "../../../src-tauri/src/content_pipeline.rs"]
+pub mod content_pipeline;
+#[cfg(test)]
+mod content_pipeline_qualification;
 #[allow(dead_code)] // Content/filename consumers are compiled by their own QA.
 #[path = "../../../src-tauri/src/resource_policy.rs"]
 pub mod resource_policy;

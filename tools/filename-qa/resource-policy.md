@@ -191,7 +191,8 @@ readback, peak memory and UI responsiveness. Include both quiet and contended
 cases and paired order; do not attribute thread-count or model-load changes to
 priority. Then verify the actual app path.
 
-The previous runtime component test peaked around 1.35 GiB, so it does not prove
+The previous runtime component test peaked at 1,356,926,976 bytes (about
+1.26 GiB), so it does not prove
 that optional inference fits the whole-app 512-MiB Job. Keep the one-CPU/512-MiB
 filename/UI baseline separate from a one-CPU inference component run with its
 actual declared memory limit. Current local RAM is below the 4-GiB model-test
@@ -201,3 +202,14 @@ review a foreground-safe shared-server design before accepting the policy.
 require sufficient privilege or an appropriate `RLIMIT_NICE` to undo a nice
 increase. Simply boosting the same server around each query is therefore not a
 portable assumed fix.
+
+The existing real-model 4/8/8/4 comparison processed the same five inputs per
+case: four-thread mean 13.832 seconds versus eight-thread mean 14.086 seconds,
+with CPU time 49.500 versus 60.664 seconds. The wall difference is inside the
+four-thread run-to-run spread; no eight-thread throughput benefit is established.
+This host reports eight physical and eight logical cores, so four threads is
+an `n/2` comparison rather than its physical-core count. That result does not
+justify a universal half-core rule. Retaining the old four-thread inference
+baseline is the conservative candidate until a faster policy is qualified;
+it is not proof of a global optimum. The thread-count selection probe in a
+512-MiB Job executed no model and cannot establish model/context memory fit.

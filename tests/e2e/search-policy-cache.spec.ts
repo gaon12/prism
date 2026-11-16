@@ -205,7 +205,17 @@ for (const mode of ['filename', 'content'] as const) {
       await expect(page.getByRole('textbox', { name: '검색어', exact: true })).toHaveValue(
         'policycache',
       );
-      await expect.poll(() => page.evaluate(() => window.__policyCache.requests)).toBe(1);
+      // The first search can be repeated once when the index revision arrives after it (a
+      // normal refresh). Wait until no more requests come, then count from there.
+      const requests = () => page.evaluate(() => window.__policyCache.requests);
+      await expect.poll(requests).toBeGreaterThanOrEqual(1);
+      let settled = await requests();
+      for (;;) {
+        await page.waitForTimeout(400);
+        const now = await requests();
+        if (now === settled) break;
+        settled = now;
+      }
       const hiddenName = page.getByText('policycache-hidden.md', { exact: true });
       const hiddenExcerpt = page.getByText('policycache private excerpt', { exact: true });
       if (!previousPending) await expect(hiddenName.first()).toBeVisible();
@@ -222,7 +232,7 @@ for (const mode of ['filename', 'content'] as const) {
       await expect(modal).toHaveCount(0);
       await expect(hiddenName).toHaveCount(0);
       await expect(hiddenExcerpt).toHaveCount(0);
-      await expect.poll(() => page.evaluate(() => window.__policyCache.requests)).toBe(2);
+      await expect.poll(requests).toBe(settled + 1);
       await page.evaluate(() => window.__policyCache.releasePrevious());
       if (previousPending && mode === 'content')
         await expect.poll(() => page.evaluate(() => window.__policyCache.cancelled.length)).toBe(1);

@@ -965,3 +965,94 @@ with raw native cases in `harsh-watch-parent-5c-abba/`, candidate provenance in
 `candidate-5c6d007/`, frozen sources/harness in `watch-parent-native-inputs/`
 and final CI job summary in `parent-ci-jobs-final.json`. The numeric evidence
 is separate from private capture/roots, which remain outside Git/CI/artifacts.
+
+## Startup receive/insert audit and recent-directory cache
+
+A post-hoc audit of the preceding `5c6d007` native run separates CPU at ready
+from the later diagnostics boundary. In the two on cases, Job CPU at ready
+was 6,765/6,765 ms, including Prism 3,968/3,749 ms and live WebView
+2,808/3,008 ms, for ready wall 7,334/7,849 ms. Job/process reads are not atomic,
+so their sums differ slightly. The CPU profile was sampled **60/52 ms after
+ready**, before the later readme probe; its Job CPU was 6,812/6,780 ms.
+Those are distinct populations, not interchangeable ready measurements.
+
+Insertion accounted for about 44.6% of completed filename-phase cycles at
+that diagnostic boundary. Completed phases covered about 90.6% of Prism's
+process cycles; WebView is a separate process population. The receive queue
+had 1.503/2.031 seconds of wall time but only about 0.22/0.27% of completed
+phase cycles. Its `try_send` full branch sleeps while waiting for the worker.
+Validated fetch includes callbacks/backpressure, and its exclusive windows
+still overlap worker/UI activity on the constrained CPU. Fetch wall alone
+therefore does not identify a service CPU or pipe bottleneck. This audit
+supports examining app compute without claiming that all startup waits are
+explained.
+
+An independent bounded metadata pass over the unchanged private capture found
+at least 800,637 consecutive equal ASCII directory keys among 2,185,112 rows
+(36.64%). Excluding cross-frame pairs still leaves 800,217 (36.62%). Non-ASCII
+rows reset the comparison, so these are lower bounds, not a Unicode-key
+approximation. Maximum observed ASCII directory-key length was 298 bytes.
+The parser emits counts/hashes only, bounds each frame allocation at 2 MiB,
+retains a few recent keys and never writes captured names. Frame-internal locality remains
+available when workers reorder whole batches, but this is not a general
+workload hit-rate guarantee or evidence of a speedup by itself.
+
+The product candidate remembers one directory ID and its **exact complete
+identity key**. A hit skips the repeated directory hash/table lookup and
+parent-chain key comparison. The existing child reference count, projection
+enrichment and entry-specific display spelling still run. The cache owns its
+key rather than borrowing from the movable text arena. Releasing its directory
+invalidates the ID, including when ancestor release is reached indirectly
+through a linked child; `clear` resets the whole catalog. No normalization,
+permission, protocol, generation or lookup-table hasher rule changes.
+
+Before product application, a private two-module prototype used the unchanged
+production `Raw`/`Entry` preparation and cloned **the same RandomState** for
+each fresh catalog in A/B/B/A order. The baseline compact module differs from
+product source only by a QA seed constructor; both sides share a visibility-only
+Entry input helper and the opt-in driver. Runtime fingerprints verified the compiled
+baseline/prototype source bytes. Counters surround whole 2,048-row batches,
+not individual entries; semantic verification runs after the measured build.
+
+| Case        | Insert wall ms | Insert raw cycles | Reported catalog heap bytes |
+| ----------- | -------------- | ----------------- | --------------------------- |
+| A1 original | 1,618.512      | 4,553,508,677     | 207,620,352                 |
+| B1 cached   | 1,444.340      | 4,061,372,325     | 207,620,712                 |
+| B2 cached   | 1,417.805      | 4,048,551,661     | 207,620,712                 |
+| A2 original | 1,494.653      | 4,280,720,003     | 207,620,352                 |
+
+Mean insertion cycles fell **8.20%**, and mean insert wall was
+1,556.582 → 1,431.073 ms (-8.06%). Complete stored-field SHA-256 remained
+`2050731a...` in all four cases and existing allocation-breakdown fields were
+identical. The extra reported heap was 360 bytes of cached-key capacity in
+this workload, not a fixed overhead for every possible path or a measured
+app-process RAM delta. Entry and directory records remain 44/28 bytes.
+A1/A2 cycles differ by about 6%; both cached cases are below both originals,
+but four cases do not establish a general performance bound. No cycles are
+converted into time, and common batch-clock overhead is not a zero-overhead
+measurement.
+
+The prototype passed 168 tests (7 ignored), strict Clippy and a release build.
+Its guarded one-CPU/512-MiB run took 14.750 seconds, minimum host RAM was
+5,122,899,968 bytes, peak Job commit 214,462,464 bytes and all owned processes
+exited. No service, WebView, UAC or user Prism process was involved.
+
+The local product patch removes the QA seed helper and adds only explanatory
+comments to the qualified candidate. Fresh-target product filename QA passed
+**141 tests with 7 opt-in tests ignored**, plus strict all-target Clippy.
+New regressions cover indirect parent release/slot reuse, exact case/Unicode
+identity across arena compaction/reserve/clear, and display/projection
+preservation on a cache hit. Existing randomized and generation/policy/search
+regressions remain. The product's heap accounting includes cached-key capacity.
+Cross-platform CI and actual release-app startup comparison are pending;
+the 8.20% result is for insertion, not whole-app startup. The cached 5-7 second
+target remains unaccepted.
+
+Private immutable evidence under
+`C:/Users/solso/prism-agent-work-20261115/` consists of
+`startup-receive-insert-audit.json`, `directory-locality{-frame,}-analysis.json`,
+`directory-cache-prototype-qualification.json` and
+`directory-cache-product-qualification.json`. Numeric cases are in
+`directory-cache-prototype-abba/`; frozen source/control/check inputs are in
+`directory-cache-{prototype,product}-proof-inputs/`. The raw capture remains
+read-only outside Git/CI/artifacts under its existing retention ledger.

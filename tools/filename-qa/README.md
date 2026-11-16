@@ -1676,3 +1676,15 @@ Ready remained 7.142-12.227 seconds, with validated fetch at 6.800-10.859
 seconds. That fetch window overlaps app callbacks and does not isolate server,
 transport or app CPU. Startup acceptance and physical HDD validation remain
 open; the user's Prism profile was untouched and the service was not upgraded.
+
+The next [receive/insert audit and recent-directory cache](status-lock-analysis.md#startup-receiveinsert-audit-and-recent-directory-cache)
+separates ready CPU from the later profile snapshot and identifies insertion
+as about 44.6% of completed filename-phase cycles. Fetch wall includes queue
+backpressure and does not identify a service-only bottleneck. A bounded,
+numeric-only capture diagnostic found at least 36.62% equal directory keys
+within frames. A same-RandomState prototype then reduced mean insertion cycles
+8.20% with identical stored-field hashes and 360 extra reported heap bytes.
+The one-key/id product cache preserves reference/projection/display processing
+and invalidates on release; fresh product QA passed 141 tests (7 ignored) and
+strict Clippy. Actual release-app/startup gain and cross-platform CI remain
+pending, and the 5-7 second whole-list target stays open.

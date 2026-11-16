@@ -515,6 +515,10 @@ pub struct Catalog {
     dirs: Vec<Dir>,
     free_dirs: Vec<u32>,
     dir_table: Table,
+    /// The last inserted directory's exact identity key. One per catalog;
+    /// neither entry nor directory records grow. Cleared when its id is freed.
+    last_dir: u32,
+    last_dir_key: String,
     nodes: Nodes,
     free_nodes: u32,
     /// Names, directory paths and stored blocks.
@@ -555,6 +559,8 @@ impl Catalog {
             }],
             free_dirs: Vec::new(),
             dir_table: Table::default(),
+            last_dir: NONE,
+            last_dir_key: String::new(),
             nodes: Nodes::default(),
             free_nodes: NONE,
             text: Text::default(),
@@ -752,7 +758,19 @@ impl Catalog {
         if split.top {
             return 0;
         }
-        if let Some(id) = self.find_dir(split.dir_key) {
+        // Consecutive rows often share a directory. An exact byte comparison
+        // avoids hashing and walking that directory's parent chain again.
+        let cached = self.last_dir != NONE && self.last_dir_key == split.dir_key;
+        let existing = if cached {
+            Some(self.last_dir)
+        } else {
+            self.find_dir(split.dir_key)
+        };
+        if let Some(id) = existing {
+            debug_assert!(self.dir_key_is(id, split.dir_key));
+            if !cached {
+                self.remember_dir(id, split.dir_key);
+            }
             self.dirs[id as usize].children += 1;
             // Projections are deterministic per directory, so a later child can
             // only add what the first child did not need. Store them now.
@@ -840,7 +858,14 @@ impl Catalog {
             whole(self.dirs[stored as usize].key_hash)
         });
         self.dir_table = table;
+        self.remember_dir(id, split.dir_key);
         id
+    }
+    fn remember_dir(&mut self, id: u32, key: &str) {
+        // Own the key: text-arena compaction may move its original bytes.
+        self.last_dir = id;
+        self.last_dir_key.clear();
+        self.last_dir_key.push_str(key);
     }
     /// The parent directory record a new directory can link to: `(parent id,
     /// own name, backslash separator)`. Only when the parent already has a
@@ -879,6 +904,10 @@ impl Catalog {
                 self.garbage += block_len(self.text.from(dir.extra));
             }
             self.dirs[id as usize] = Dir::default();
+            if self.last_dir == id {
+                self.last_dir = NONE;
+                self.last_dir_key.clear();
+            }
             self.free_dirs.push(id);
             if dir.parent == NONE {
                 return;
@@ -1324,6 +1353,7 @@ impl Catalog {
                     .map(Dir::stored_len)
                     .sum(),
             ),
+            ("lastDirectoryKeyBytes", self.last_dir_key.capacity()),
             ("keyTableBytes", self.key_table.bytes()),
         ]
     }
@@ -1337,6 +1367,7 @@ impl Catalog {
             + self.text.capacity()
             + self.dir_table.bytes()
             + self.key_table.bytes()
+            + self.last_dir_key.capacity()
     }
 }
 
@@ -1909,6 +1940,67 @@ mod tests {
     fn dir_of(catalog: &Catalog, key: &str) -> Dir {
         let (_, id) = catalog.find(key).expect("entry exists");
         catalog.dirs[catalog.nodes[id as usize].dir as usize]
+    }
+
+    #[test]
+    fn recent_directory_is_invalidated_when_a_parent_is_released_indirectly() {
+        let mut catalog = Catalog::new();
+        catalog.insert(&input(r"C:\a\one.txt", "c:/a/one.txt"));
+        catalog.insert(&input(r"C:\a\b\two.txt", "c:/a/b/two.txt"));
+        catalog.insert(&input(r"C:\a\three.txt", "c:/a/three.txt"));
+        let parent = catalog.find_dir("c:/a").unwrap();
+        assert_eq!(catalog.last_dir, parent);
+        assert!(catalog.remove("c:/a/one.txt"));
+        assert!(catalog.remove("c:/a/three.txt"));
+        assert_eq!(catalog.last_dir, parent, "linked child keeps parent alive");
+        assert!(catalog.remove("c:/a/b/two.txt"));
+        assert_eq!(catalog.last_dir, NONE);
+        let row = input(r"C:\different\four.txt", "c:/different/four.txt");
+        catalog.insert(&row);
+        assert_round_trip(&catalog, &row);
+        assert!(catalog.get("c:/a/four.txt").is_none());
+    }
+
+    #[test]
+    fn recent_directory_keeps_exact_identity_across_compaction_and_clear() {
+        let mut catalog = Catalog::new();
+        let rows = [
+            input("/Case/first.txt", "/Case/first.txt"),
+            input("/case/second.txt", "/case/second.txt"),
+            input("/Case/third.txt", "/Case/third.txt"),
+            input("/ΟΣ/one.txt", "/ος/one.txt"),
+            input("/ΟΣ/two.txt", "/οσ/two.txt"),
+        ];
+        for row in &rows {
+            catalog.insert(row);
+        }
+        catalog.compact();
+        catalog.reserve(4096, 1024 * 1024);
+        for row in &rows {
+            assert_round_trip(&catalog, row);
+        }
+        let cached = catalog.last_dir;
+        assert!(catalog.dir_key_is(cached, &catalog.last_dir_key));
+        catalog.clear();
+        assert_eq!(catalog.last_dir, NONE);
+        assert!(catalog.last_dir_key.is_empty());
+        catalog.insert(&rows[0]);
+        assert_round_trip(&catalog, &rows[0]);
+    }
+
+    #[test]
+    fn recent_directory_reuse_preserves_display_and_projection_upgrades() {
+        let mut catalog = Catalog::new();
+        let first = input(r"C:\Docs\one.txt", "c:/docs/one.txt");
+        catalog.insert(&first);
+        let directory = catalog.last_dir;
+        let mut second = input(r"C:\DOCS\둘.md", "c:/docs/둘.md");
+        second.initials = Some("c:/docs/ㄷ.md");
+        second.keyboard = Some("c:/docs/enf.md");
+        catalog.insert(&second);
+        assert_eq!(catalog.last_dir, directory);
+        assert_round_trip(&catalog, &first);
+        assert_round_trip(&catalog, &second);
     }
 
     #[test]

@@ -80,7 +80,7 @@ pub(crate) fn background_thread() {
         // Do not try to raise a worker already at a lower scheduling priority.
         // SAFETY: no pointers; only the calling thread's scheduling priority.
         unsafe {
-            if libc::getpriority(libc::PRIO_PROCESS, 0) < 5 {
+            if current_niceness().is_some_and(|nice| nice < 5) {
                 libc::setpriority(libc::PRIO_PROCESS, 0, 5);
             }
         }
@@ -110,16 +110,39 @@ pub(crate) fn background_child(child: &std::process::Child) {
 }
 
 #[cfg(unix)]
+fn current_niceness() -> Option<i32> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    // SAFETY: errno is a valid pointer to this calling thread's error value;
+    // all calls happen before fork. -1 can also be a successful nice value.
+    unsafe {
+        #[cfg(target_os = "linux")]
+        let errno = libc::__errno_location();
+        #[cfg(target_os = "macos")]
+        let errno = libc::__error();
+        *errno = 0;
+        let priority = libc::getpriority(libc::PRIO_PROCESS, 0);
+        (priority != -1 || *errno == 0).then_some(priority)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    None
+}
+
+#[cfg(unix)]
 pub(crate) fn background_command(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
-    // SAFETY: pre_exec uses only getpriority/setpriority scalar system calls.
-    // After fork, this is the new private child process; on Darwin PRIO_PROCESS
-    // is intentional here, unlike the per-thread QoS helper used by app workers.
+    // Query on the calling thread before fork. Preserve a priority that is
+    // already lower than our background target without querying in the hook.
+    let Some(priority) = current_niceness().map(|nice| nice.max(5)) else {
+        // Preserve inherited scheduling if its value cannot be established.
+        return;
+    };
+    // SAFETY: the child hook only invokes scalar setpriority; no allocation,
+    // locks or priority queries after fork. Darwin PRIO_PROCESS is intentional
+    // for this private child, unlike the app worker's per-thread QoS helper.
     unsafe {
-        command.pre_exec(|| {
-            if libc::getpriority(libc::PRIO_PROCESS, 0) < 5 {
-                libc::setpriority(libc::PRIO_PROCESS, 0, 5);
-            }
+        command.pre_exec(move || {
+            // Best effort: priority policy must never turn into a spawn error.
+            libc::setpriority(libc::PRIO_PROCESS, 0, priority);
             Ok(())
         });
     }
@@ -449,6 +472,67 @@ mod tests {
             controller_headroom(root, "/../../unreachable", "maximum", "current", 5000),
             Some(1536)
         );
+    }
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "Owned Unix subprocess fixture; invoked by the pre-exec priority test"]
+    fn unix_priority_child_fixture() {
+        let Ok(expected) = std::env::var("PRISM_TEST_RESOURCE_NICE_EXPECTED") else {
+            return;
+        };
+        let expected: i32 = expected.parse().unwrap();
+        // SAFETY: current process/thread query after exec, not in a fork hook.
+        assert_eq!(current_niceness(), Some(expected));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn background_command_preserves_parent_and_lowers_only_its_owned_child() {
+        use std::{
+            process::{Command, Stdio},
+            time::{Duration, Instant},
+        };
+        struct Owned(std::process::Child);
+        impl Drop for Owned {
+            fn drop(&mut self) {
+                if self.0.try_wait().ok().flatten().is_none() {
+                    let _ = self.0.kill();
+                }
+                let _ = self.0.wait();
+            }
+        }
+        // SAFETY: read-only priority query on the calling process/thread.
+        let original = current_niceness().expect("Current nice value must be readable");
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "resource_policy::tests::unix_priority_child_fixture",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env(
+                "PRISM_TEST_RESOURCE_NICE_EXPECTED",
+                original.max(5).to_string(),
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        background_command(&mut command);
+        let mut child = Owned(command.spawn().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Owned priority fixture timed out"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // SAFETY: same read-only query; the parent was never reprioritized.
+        assert_eq!(current_niceness(), Some(original));
     }
     #[cfg(windows)]
     #[test]

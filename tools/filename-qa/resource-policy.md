@@ -165,3 +165,39 @@ No live service, user profile, model download or private capture was used in
 these checks. New-app one-CPU/512-MiB GUI regression, actual embedding throughput
 and full cross-platform CI are still required; the cached 5-7 second full-list
 target remains open.
+
+## Follow-up: shared interactive embedding and Unix fork safety
+
+The same owned embedding server serves both background document inputs and
+interactive `embed_query` calls. Both use one inference mutex. A document batch
+releases that mutex after each individual input; there is no priority queue or
+foreground exception. The previous all-eight-CPU document-only 4/8 comparison
+therefore cannot establish interactive latency on one CPU.
+
+A follow-up moves the Unix priority query before `fork`. The child hook captures
+`max(inherited_nice, 5)` and only calls `setpriority`, then returns `Ok(())` even
+if the policy call fails. The parent-side query distinguishes a valid nice value
+of -1 from an error using thread-local errno; an unreadable priority leaves
+inherited scheduling untouched. It never tries to raise an already lower-priority
+child. A bounded owned-child Unix regression checks the post-exec priority and
+unchanged parent; it is prepared for hosted macOS/Linux execution, not locally
+verified on Windows. No query-priority exception is implemented by this change.
+
+Qualification must compare normal/below-normal priority with fixed one-thread
+inference, pinned assets, fixed synthetic query/document inputs and controlled
+background contention. Separate admission/queue wait from HTTP inference time,
+compare vectors/token counts and record host load, priority/boost/affinity
+readback, peak memory and UI responsiveness. Include both quiet and contended
+cases and paired order; do not attribute thread-count or model-load changes to
+priority. Then verify the actual app path.
+
+The previous runtime component test peaked around 1.35 GiB, so it does not prove
+that optional inference fits the whole-app 512-MiB Job. Keep the one-CPU/512-MiB
+filename/UI baseline separate from a one-CPU inference component run with its
+actual declared memory limit. Current local RAM is below the 4-GiB model-test
+preflight; no interactive-priority timing has been measured. If it regresses,
+review a foreground-safe shared-server design before accepting the policy.
+[Linux priority semantics](https://man7.org/linux/man-pages/man2/getpriority.2.html)
+require sufficient privilege or an appropriate `RLIMIT_NICE` to undo a nice
+increase. Simply boosting the same server around each query is therefore not a
+portable assumed fix.

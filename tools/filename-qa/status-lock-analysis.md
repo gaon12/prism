@@ -772,3 +772,79 @@ round-trip/release tests support the storage argument but do not yet test
 this proposed membership implementation. A source/body-verified frozen-input
 comparison must establish its cost separately; no new benchmark or Rust
 build was run for this read-only audit.
+
+## Few-root and parent-memo component qualification
+
+The subsequent product commits `6d56a3e` and `5c6d007` add few-root direct
+comparisons for unlinked directories, an entry-ID range rejection and
+iterative parent-membership memoization. The memo walks either direction in
+slot IDs without recursion and falls back to exact full-key matching for
+unlinked records. The original single-root implementation is unchanged.
+
+Two comparisons were fixed before execution: legacy A=`d79bf03` versus
+C=`5c6d007` in A/C/C/A order, and initial union B=`a48c60c` versus C in
+B/C/C/B order. C includes **both** product commits; these comparisons do
+not isolate either commit's individual effect. B-to-C production changes are
+limited to `filename_compact.rs`.
+
+C started from a fresh, separate Cargo target and passed **137 release tests
+with 7 opt-in tests ignored**, strict all-target Clippy and the executable
+build. Regressions include the independent randomized full-key oracle with
+small/large root sets and freed/reused directory slots, plus an explicit
+parent-ID-greater-than-child case. This is not a claim that the benchmark's
+ASCII-heavy all-seen input validates every Unicode/deletion edge case.
+C's 2,663,424-byte executable SHA-256 is
+`6c348e16cd15b244d26dd99e6ef7c17bb6fb88f40d359e9fab009f78e9afbf3c`;
+its exact compact source SHA-256 is
+`71da5ff7e77cb445d0085760e6d77a3bf79079db8d8e0c5e3f32a6c5c3c3be58`.
+
+Both protocols used the same read-only 2,185,112 rows, eight roots, 309,094
+directory slots, kernel-read-back one-CPU/512-MiB limits and two enabled DEV
+flags. Before accepting each case, the controller checked its runtime
+generated watch-body hash against the relevant source. B and C deliberately
+share that watch caller; C's compact implementation was compiled from its
+separate fresh target. Manifests cover 331 source/manifest/lock files per
+variant, and source, executable and private-input hashes were unchanged.
+
+| Comparison / case | Watch wall ms | Raw thread CPU ms | Raw thread cycles | Membership / selection ms | Peak Job MiB |
+| ----------------- | ------------- | ----------------- | ----------------- | ------------------------- | ------------ |
+| Legacy 1-A        | 366.410       | 359.375           | 1,091,588,852     | 308.148 / 58.216          | 203.492      |
+| Legacy 2-C        | 12.385        | 15.625            | 38,076,041        | 3.663 / 8.679             | 203.719      |
+| Legacy 3-C        | 12.042        | 15.625            | 37,306,627        | 3.455 / 8.557             | 203.316      |
+| Legacy 4-A        | 413.737       | 375.000           | 1,203,038,812     | 348.797 / 64.891          | 203.445      |
+| Union 1-B         | 123.388       | 109.375           | 369,318,409       | 114.645 / 8.713           | 203.320      |
+| Union 2-C         | 13.744        | 15.625            | 38,556,536        | 3.650 / 10.058            | 203.578      |
+| Union 3-C         | 18.056        | 31.250            | 40,848,917        | 3.687 / 14.338            | 203.324      |
+| Union 4-B         | 136.673       | 125.000           | 400,448,265       | 126.220 / 10.415          | 203.824      |
+
+Legacy-pair mean watch wall was **390.073 → 12.214 ms (-96.87%)**, with
+raw cycles down **96.71%**. The incremental union pair averaged
+**130.030 → 15.900 ms (-87.77%)**, with raw cycles down **89.68%**.
+All eight cases retained complete stored-field SHA-256 `2050731a...`
+before/after and removed zero entries. C's membership windows were
+3.45-3.69 ms; selection now occupied most of its measured prune wall.
+
+The pair controllers finished in 29.625/29.234 seconds, with minimum available
+host RAM 5,244,305,408/5,218,398,208 bytes. No resource guard fired; all owned
+processes exited. Host busy samples during cases ranged from 44.8% to 52.6%.
+Raw GetThreadTimes accounting is especially coarse for these 12-18-ms spans;
+cycles remain unconverted and wall includes scheduling. There are only two
+samples per variant in each comparison, and randomized hash seeds differ.
+
+The earlier fixed-replay limitations still apply: all rows are already seen,
+there is no removal/compaction, catalog lock, disk walk, service or WebView
+work, and enabled checkpoint counts differ between legacy and union variants.
+These results establish a component reduction for this fixed workload, not
+a maximum latency guarantee, a percentage reduction in actual writer hold,
+an individual-commit gain or acceptance of the 5-7 second startup target.
+The new C release-app GUI comparison and cross-platform CI are separate
+pending qualification at this point.
+
+Private proof is
+`C:/Users/solso/prism-agent-work-20261115/watch-parent-component-qualification.json`,
+with raw cases/controllers/protocols in
+`watch-union-component/parent-{legacy,union}/`, frozen source/numeric proof
+inputs in `watch-parent-component-proof-inputs/`, and C's guarded build/test
+results in `watch-union-component/C-{off,clippy,build}-v2/`. The private
+capture/root retention and no-upload rules from the preceding comparison
+remain unchanged.

@@ -1650,3 +1650,13 @@ iterative memoization candidate with full-key fallback for unlinked records;
 free-slot ordering, sentinel handling and independent-oracle regressions
 remain implementation requirements. No additional product change or gain
 is claimed by that audit.
+
+The subsequent [few-root and parent-memo qualification](status-lock-analysis.md#few-root-and-parent-memo-component-qualification)
+compares the combined `6d56a3e` + `5c6d007` implementation with both earlier
+variants. Two predeclared four-case protocols passed on the same 2,185,112
+rows and eight roots: legacy mean 390.073 → 12.214 ms (-96.87%), initial
+union mean 130.030 → 15.900 ms (-87.77%), with identical stored-field hashes.
+The new isolated release build passed 137 tests (7 ignored) and strict Clippy.
+These are combined component effects; individual commits and new actual-app
+writer/startup effects remain unmeasured. No catalog lock, deletion, service
+or WebView work is included, and the 5-7 second whole-list target stays open.

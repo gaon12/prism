@@ -167,14 +167,29 @@ fn dropping_the_owner_stops_the_server_and_natural_exit_is_reported() {
 
 #[test]
 fn bad_launcher_missing_program_and_relative_program_fail_without_leaking_a_server() {
-    for (launcher, program) in [
+    for (case, (launcher, program)) in [
         (EXE, "/prism-nonexistent-fixture-program"),
         (EXE, "relative"),
         ("/bin/true", "/bin/true"),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let before = Instant::now();
-        assert!(OwnedRuntimeProcess::spawn(Command::new(program), Path::new(launcher)).is_err());
-        assert!(before.elapsed() < Duration::from_secs(5));
+        let error = OwnedRuntimeProcess::spawn(Command::new(program), Path::new(launcher))
+            .err()
+            .unwrap_or_else(|| {
+                panic!(
+                    "fixture case {case}: launcher={launcher:?}, program={program:?}, elapsed={:?}: expected startup failure, got success",
+                    before.elapsed()
+                )
+            });
+        let elapsed = before.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "fixture case {case}: launcher={launcher:?}, program={program:?}, elapsed={elapsed:?}, kind={:?}, error={error}",
+            error.kind()
+        );
     }
 }
 

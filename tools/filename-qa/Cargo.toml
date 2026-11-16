@@ -5,6 +5,10 @@ edition = "2021"
 rust-version = "1.94"
 publish = false
 
+[[example]]
+name = "service_timing"
+path = "../../indexer/windows/examples/service_timing.rs"
+
 [dependencies]
 notify = "8.2.1"
 walkdir = "2.5.0"

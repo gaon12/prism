@@ -3,7 +3,8 @@
 This crate imports the production filename index, compact storage, search patterns
 and private metadata-capture reader without linking Tauri, a WebView or vector
 runtime. The settings type is only a DTO fixture. No service is started, upgraded
-or contacted by the benchmark. Captures must stay private.
+or contacted by the capture benchmark. The separately invoked live diagnostics
+described below contact an already running service. Captures must stay private.
 
 Real captures contain user filenames and paths. Keep them outside every Git
 checkout/worktree, including ignored `.dev` folders. Never commit them, send
@@ -1688,3 +1689,97 @@ The one-key/id product cache preserves reference/projection/display processing
 and invalidates on release; fresh product QA passed 141 tests (7 ignored) and
 strict Clippy. Actual release-app/startup gain and cross-platform CI remain
 pending, and the 5-7 second whole-list target stays open.
+
+## Service sink and headless index boundaries
+
+The existing [service timing client](../../indexer/windows/examples/service_timing.rs)
+is also an example target of this package. Build it beside the headless index
+with the same package and release-profile settings:
+
+```powershell
+cargo build --manifest-path tools/filename-qa/Cargo.toml --locked --release -j1 --bin prism-filename-qa --example service_timing
+```
+
+`service_timing.exe --drive C --wait-for-start` waits for a controller's `G`
+before contacting the running service, validates the real snapshot and counts
+rows without building an index. The headless `prism-filename-qa.exe live-cpu
+--drive C` additionally prepares the real FileIndex and performs searches. It
+requires `PRISM_DEV_FILENAME_LIVE_CPU=1` and
+`PRISM_DEV_FILENAME_CPU_TEST_MODE=1`; the following comparison set
+`PRISM_DEV_FILENAME_CPU_PROFILE=0`. Both tools require an ordinary unelevated
+shell. Neither installs, starts, stops or upgrades the service, and neither
+opens the user's Prism profile or reads document contents. Invoke live modes
+explicitly; ordinary tests and hosted capture benchmarks do not run them.
+
+`filename-qa.yml` builds both tools without making live service requests. It
+preserves the existing `filename-preparation-qa` artifact (headless executable
+and `executable.json`) and adds `filename-service-timing-qa` (the example and
+`service-timing-executable.json`). Each provenance record contains source
+commit, executable SHA-256 and byte length. No local capture or live results
+are uploaded by that workflow.
+
+### Local S/H/H/S qualification
+
+On 2026-11-16, S (service sink) and H (headless FileIndex) were built together
+from the cache product `e6e2075` plus this manifest alias. H used the product
+recent-directory cache, without the prototype seed helper. One owned
+KILL_ON_JOB_CLOSE Job was reused serially with one CPU and 512 MiB process/Job
+commit limits, read back before each start. The host needed 3 GiB free before
+starting, with a 1-GiB stop threshold. Sources, both executable hashes and the
+running service PID/image hash were checked before and after the sequence.
+
+| Case | Tool           |      Rows | First records/search (ms) | Snapshot/full ready (ms) | Client CPU (ms) | Whole service-process CPU (ms) |
+| ---- | -------------- | --------: | ------------------------: | -----------------------: | --------------: | -----------------------------: |
+| S1   | Sink           | 2,171,206 |                     6,359 |                    8,658 |       1,015.625 |                      6,593.750 |
+| H1   | Headless index | 2,171,208 |                     1,506 |                    5,561 |       3,359.375 |                      3,734.375 |
+| H2   | Headless index | 2,171,210 |                     1,430 |                    5,538 |       3,250.000 |                      3,625.000 |
+| S2   | Sink           | 2,171,211 |                     1,488 |                    4,077 |         890.625 |                      3,562.500 |
+
+H performed two searches in each case, with one service snapshot and no
+overflow reconcile. Its validated-fetch windows were 5,503/5,502 ms, including
+1,638/1,876 ms in receive callbacks and backpressure. Final publish rounded to
+0 ms. S2 observed 3,151.688 ms of pipe-read wall, 823.121 ms decode/validation,
+101.097 ms profiled receive/drop callback, and less than 1 ms each for root
+identity, connection/authentication, stream validation, ACK and root recheck.
+The top-level callback-body counter excludes batch destruction; the profiled
+callback window includes it. Pipe-read wall includes server preparation,
+serialization, scheduling and I/O wait, rather than isolating byte transport.
+
+The slower first sink request is retained. No service/cache reset or fixed-input
+replay occurred; five live rows changed, and the initial server state was not
+controlled. Do not average the two sink cases into a causal speedup or subtract
+them from H to attribute exact preparation cost. Service CPU is the entire
+unconstrained process outside the Job, potentially including other requests.
+Client CPU was sampled after the result: S may already have exited, whereas H
+waited for `Q`. Thus CPU endpoints also differ slightly. Shared-host utilization
+was 56.5-62.6%. These observations identify meaningful CPU work on both sides,
+without providing per-request server-internal attribution.
+
+The sequence completed in 25.266 seconds, with minimum available RAM
+3,428,560,896 bytes, cumulative Job peak 204.070 MiB and no remaining owned
+processes. Since the Job was reused, that peak cannot be assigned separately
+to S2. The historical service remained PID 5924 / image SHA `d0b1fe5e...`;
+no elevation or service replacement occurred. No GUI/WebView, GUI IPC,
+physical HDD test or complete one-CPU service-plus-app limit was included.
+Headless ready at 5.54-5.56 seconds does not accept the actual-app cached
+5-7 second whole-list target, which remains open.
+
+The first local build was stopped by its memory guard at 1,063,079,936 available
+bytes; its failed result remains preserved. After RAM recovered, the retry
+build passed in 23.094 seconds, and strict all-target Clippy passed in 4.015
+seconds. The measurement controller wrote four successful cases, verified
+inputs and closed its Job before a console-only summary raised
+`KeyError: firstSearchMs` (S uses `firstRecordsMs`), causing exit 1. The saved
+results were separately qualified; the original controller and failure are
+retained. A corrected summary controller was saved but not rerun. This is a
+qualified measurement with a reporting failure, rather than a clean controller
+exit or a substituted successful rerun.
+
+Numeric results, controls, provenance and qualification remain outside all
+worktrees under `C:/Users/solso/prism-agent-work-20261115/` in
+`service-headless-shhs/`, `service-headless-candidate/`,
+`service-headless-proof-inputs/`, `service-headless-build-v1/`,
+`service-headless-build-v2/`, `service-headless-clippy-v2/` and
+`service-headless-qualification.json`. No raw live filenames or paths were
+persisted by these diagnostics. The service's normal internal cache behavior
+was not altered or asserted unchanged.

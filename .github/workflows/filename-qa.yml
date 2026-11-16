@@ -45,10 +45,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           rustfmt --edition 2021 --check tools/filename-qa/src/stages.rs
           exit $LASTEXITCODE
-      - name: Build the private-capture measurement executable
+      - name: Build the private-capture and read-only client diagnostics
         shell: pwsh
         run: |
-          cargo build --manifest-path tools/filename-qa/Cargo.toml --locked --release -j1 --bin prism-filename-qa
+          cargo build --manifest-path tools/filename-qa/Cargo.toml --locked --release -j1 --bin prism-filename-qa --example service_timing
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $taskExe = 'tools/filename-qa/target/release/prism-filename-qa.exe'
           $taskRecord = @{
@@ -57,6 +57,13 @@ jobs:
             bytes = (Get-Item -LiteralPath $taskExe).Length
           }
           $taskRecord | ConvertTo-Json | Set-Content -LiteralPath tools/filename-qa/executable.json -Encoding utf8
+          $taskSinkExe = 'tools/filename-qa/target/release/examples/service_timing.exe'
+          $taskSinkRecord = @{
+            sourceCommit = $env:GITHUB_SHA
+            sha256 = (Get-FileHash -LiteralPath $taskSinkExe -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+            bytes = (Get-Item -LiteralPath $taskSinkExe -ErrorAction Stop).Length
+          }
+          $taskSinkRecord | ConvertTo-Json | Set-Content -LiteralPath tools/filename-qa/service-timing-executable.json -Encoding utf8
       - name: Keep the executable and its source provenance
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -64,6 +71,14 @@ jobs:
           path: |
             tools/filename-qa/target/release/prism-filename-qa.exe
             tools/filename-qa/executable.json
+          if-no-files-found: error
+      - name: Keep the read-only service client and its source provenance
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: filename-service-timing-qa
+          path: |
+            tools/filename-qa/target/release/examples/service_timing.exe
+            tools/filename-qa/service-timing-executable.json
           if-no-files-found: error
       - name: Install Python for the optional CPU profile
         if: inputs.profile_cpu

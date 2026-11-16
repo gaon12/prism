@@ -781,6 +781,11 @@ iterative parent-membership memoization. The memo walks either direction in
 slot IDs without recursion and falls back to exact full-key matching for
 unlinked records. The original single-root implementation is unchanged.
 
+Correction: the `6d56a3e` commit message says a fixed-input A/B showed the
+single pass was no faster and blames prefix hashing. That A/B was the invalid
+shared-target attempt above (its B ran A's watch body), so neither claim is
+supported. The valid replay shows the single pass was already 62% faster.
+
 Two comparisons were fixed before execution: legacy A=`d79bf03` versus
 C=`5c6d007` in A/C/C/A order, and initial union B=`a48c60c` versus C in
 B/C/C/B order. C includes **both** product commits; these comparisons do

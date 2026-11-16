@@ -1,10 +1,12 @@
 # Actual-app extraction and embedding concurrency qualification
 
 This is an unexecuted qualification plan for the bounded extraction candidate
-`f42add8`, following the [resource policy](resource-policy.md). The decision is
-to retain permitted-CPU inference selection for the first phase and record
-that embedding throughput improvement is unproven. No physical-core or generic
-half-core rule follows from the eight-physical/eight-logical host's results.
+`f42add8`, following the [resource policy](resource-policy.md). The user's choice
+between permitted-CPU embedding threads and a maximum of four is pending.
+Current main keeps its existing permitted-CPU selection while awaiting that
+choice; this is not a confirmed final policy. Embedding throughput improvement
+is unproven. No physical-core or generic half-core rule follows from the
+eight-physical/eight-logical host's results.
 
 ## Admission and comparison
 
@@ -17,7 +19,9 @@ UI, priority, inference-thread or asset changes require a separate comparison.
 The static merge of `f42add8` with `db8d43e` was conflict-free and retained that
 priority restoration. It is not a compiled or executed app.
 
-Run each pair A/B/B/A with profiling off. Use fresh owned portable profiles,
+Record and hold the same embedding thread policy/count across both apps; do
+not attribute a thread-cap change to extraction parallelism. Run each pair
+A/B/B/A with profiling off. Use fresh owned portable profiles,
 identical pinned EmbeddingGemma Q8 and b11960 CPU assets, one frozen synthetic
 corpus, fixed settings and the same CPU/memory configuration. Assets are
 imported only into the test profiles. No generation model or response stub is

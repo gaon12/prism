@@ -23,9 +23,13 @@ size concurrency; they neither reserve RAM globally nor cap whole-process RSS.
 Concurrent components and later memory-pressure changes still need admission
 and workload-specific validation.
 
-Embedding uses the same CPU choice, limited to 512 by the pinned runtime's
+The current embedding implementation uses the same CPU choice, limited to 512
+by the pinned runtime's
 [GGML thread bound](https://github.com/ggml-org/llama.cpp/blob/b11960/ggml/include/ggml.h#L219).
-Its context, batch, model, authentication and loopback policies are unchanged.
+The final embedding thread cap is awaiting the user's choice between the
+permitted-CPU count and a maximum of four. Until that decision arrives, the
+implementation remains unchanged. Its context, batch, model, authentication
+and loopback policies are unchanged.
 This does not enable a model, download assets, make external requests or assert
 that model weights fit the 512-MiB filename qualification profile.
 
@@ -215,11 +219,13 @@ with CPU time 49.500 versus 60.664 seconds. The wall difference is inside the
 four-thread run-to-run spread; no eight-thread throughput benefit is established.
 This host reports eight physical and eight logical cores, so four threads is
 an `n/2` comparison rather than its physical-core count. That result does not
-justify a universal half-core rule. Retaining the old four-thread baseline
-was considered as a conservative option, but was not implemented. The clarified
-first-phase decision retains permitted-CPU selection and records that a
-throughput improvement is unproven. Actual concurrent extraction/embedding
-and foreground response measurements will determine subsequent adjustment.
+justify a universal half-core rule. The user decision between permitted-CPU
+selection and a maximum of four embedding threads is still pending. Current
+main uses permitted-CPU selection; that describes the implementation, not an
+accepted final policy. No policy change is made while awaiting the answer.
+Embedding throughput improvement remains unproven. Actual concurrent
+extraction/embedding and foreground response measurements will inform later
+adjustments.
 The thread-count selection probe in a 512-MiB Job executed no model and cannot
 establish model/context memory fit.
 

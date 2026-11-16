@@ -268,7 +268,11 @@ try {
     assert.equal(result.filenameStatusProfile.overlappingDurationsDoNotSum, true);
     assert.equal(result.filenameStatusProfile.holdEndsBeforeUnlock, true);
     assert(result.filenameStatusProfile.readCalls > 0);
-    assert(result.filenameStatusProfile.queuedCalls > 0);
+    // Older apps dispatch status through the blocking pool; current apps read
+    // the published snapshot directly. Both must record actual command spans.
+    assert(
+      (result.filenameStatusProfile.commandCalls ?? result.filenameStatusProfile.queuedCalls) > 0,
+    );
     result.cpuProfileSnapshotMs = since();
     result.jobAtCpuProfileSnapshot = await job.report();
     result.filenameCpuSummary = summarizeFilenameCpu(

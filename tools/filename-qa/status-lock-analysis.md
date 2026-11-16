@@ -1163,3 +1163,48 @@ the current client, and replacing that service requires a separate user-led
 upgrade. No checksum/cancellation/identity checks, cache format, permit scope
 or installed service were changed by this audit. Synthetic local component
 experiments can test candidates without asserting actual-service attribution.
+
+### Direct async status dispatch
+
+The status command now stays async but reads the published snapshot directly,
+without submitting a blocking-pool job. Search and refresh retain their blocking
+workers. The getter checks poison atomically, clones the status Arc and samples
+the active progress token under the short status mutex, then clones the DTO
+after releasing that mutex. It does not take catalog/prepared data locks,
+perform filesystem I/O or wait for search/insertion. The async signature keeps
+Tauri's plain synchronous-command path off the window's main thread.
+
+This removes a measured backend dependency: the integrated app's on cases
+spent up to 29/209 ms waiting for a blocking worker while snapshot work took
+microseconds. It does not prove that those calls caused the unpaired GUI poll
+maxima, or that removing the hop will meet the whole-list startup target.
+Actual dispatcher latency/startup behavior still needs the new release app.
+
+DEV status diagnostics add `commandCalls` for direct and queued command spans;
+`queuedCalls` and `poolWait` still describe only real blocking-pool dispatch.
+A direct command has `poolWaitNs: null`, and its measured command span equals
+its getter span. Existing schema-1 fields and ordinary status DTOs remain.
+`harsh-profile.mjs` accepts older apps through `queuedCalls` when `commandCalls`
+is absent. Disabled profiling still performs no diagnostic clock calls.
+
+The regression paths exercise both ordinary and command getters while catalog
+and prepared locks remain held, preserve poisoning errors and private-warning
+DTOs, and distinguish a direct command from a measured queue wait. Local
+filename QA covers these exact backend modules but does not compile the Tauri
+command adapter; full-app cross-platform CI and actual GUI latency verification
+remain separate requirements.
+
+Final-source release QA passed **141 tests with 7 ignored** both with DEV
+profiling off and on, plus strict all-target release Clippy. The held-lock test
+calls both getter routes before releasing either data guard; the direct-span
+regression requires a command record with no queued call or pool-wait sample.
+Disabled paths also verify zero diagnostic clock reads. The existing native
+CPU/environment helper suites passed 16 tests, and the native script passed
+syntax/format checks. These checks do not measure a new GUI latency bound.
+
+The off/on/Clippy runs took 74.985/17.562/23.328 seconds, minimum available RAM
+was 3,542,491,136/4,057,403,392/3,670,970,368 bytes and no guard fired or owned
+process remained. A preceding off test also passed; after rustfmt adjusted a
+test tuple layout, both modes were repeated on the final Rust inputs. Source
+hashes and commands are retained in `direct-status-{test-mode0,test-mode1,clippy-mode0}-v2/`
+and `direct-status-proof-inputs/` under the existing private evidence parent.

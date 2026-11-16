@@ -317,18 +317,12 @@ pub fn resize_quick(app: AppHandle, expanded: bool) -> Result<(), String> {
     windows::resize_quick(&app, expanded)
 }
 
-/// Not a plain `fn` command: Tauri runs those on the main thread, which also
-/// drives every window. Reading the status waits for the catalog lock, and
-/// while a first collection publishes or a long search holds it the window
-/// froze; the UI asks every 400 ms while scanning. The wait now happens on a
-/// blocking-pool thread instead (as `search_files` does).
+/// Keep this async so Tauri does not execute it on the window's main thread.
+/// Published status uses only a short snapshot mutex, without catalog/prepared
+/// locks or I/O. It no longer needs to queue behind blocking searches/refreshes.
 #[tauri::command]
 pub async fn index_status(state: State<'_, AppState>) -> Result<crate::index::IndexStatus, String> {
-    let index = state.index.clone();
-    let queue = crate::index::status_profile::queued();
-    tauri::async_runtime::spawn_blocking(move || index.status_queued(queue))
-        .await
-        .map_err(|error| error.to_string())?
+    state.index.status_for_command()
 }
 
 #[tauri::command]
@@ -351,8 +345,8 @@ pub async fn search_files(
     .map_err(|error| error.to_string())?
 }
 
-/// Off the main thread for the same reason as `index_status`: a refresh takes
-/// the catalog write lock.
+/// A refresh still needs the blocking pool: unlike the published status getter,
+/// it takes the catalog write lock.
 #[tauri::command]
 pub async fn refresh_index(app: AppHandle) -> Result<(), String> {
     // Read the current settings when this worker actually runs, so a queued

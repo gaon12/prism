@@ -714,13 +714,22 @@ impl FileIndex {
         let _ = self.tx.send((generation, scopes));
     }
     pub fn status(&self) -> Result<IndexStatus, String> {
-        self.status_queued(None)
+        self.status_profiled(status_profile::begin(None))
     }
+    pub(crate) fn status_for_command(&self) -> Result<IndexStatus, String> {
+        self.status_profiled(status_profile::begin_command())
+    }
+    #[cfg(test)]
     pub(crate) fn status_queued(
         &self,
         queue: Option<status_profile::Queued>,
     ) -> Result<IndexStatus, String> {
-        let mut timing = status_profile::begin(queue);
+        self.status_profiled(status_profile::begin(queue))
+    }
+    fn status_profiled(
+        &self,
+        mut timing: Option<status_profile::Read<'_>>,
+    ) -> Result<IndexStatus, String> {
         let result = self.published.read(self, &mut timing);
         if let Some(timing) = timing {
             timing.finish(result.is_err());

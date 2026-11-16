@@ -6,6 +6,7 @@ fn disabled_helpers_sample_no_clocks() {
     let prepared = Mutex::new(0);
     let before = CLOCK_READS.with(|reads| reads.get());
     assert!(Read::start(None, None).is_none());
+    assert!(Read::start_command(None).is_none());
     assert!(Prune::start(false, 3, 7, 11).is_none());
     record_prune(None);
     *write_for(&catalog, None, WriterKind::Refresh).unwrap() = 1;
@@ -74,6 +75,7 @@ fn read_snapshot_keeps_one_slowest_command_and_overlapping_regions_separate() {
     let snapshot = serde_json::to_value(collector.snapshot().unwrap()).unwrap();
     assert_eq!(snapshot["schemaVersion"], 1);
     assert_eq!(snapshot["readCalls"], 2);
+    assert_eq!(snapshot["commandCalls"], 1);
     assert_eq!(snapshot["queuedCalls"], 1);
     assert_eq!(snapshot["readFailures"], 1);
     assert_eq!(snapshot["reads"][0]["calls"], 1);
@@ -86,6 +88,22 @@ fn read_snapshot_keeps_one_slowest_command_and_overlapping_regions_separate() {
     assert_eq!(snapshot["holdEndsBeforeUnlock"], true);
     assert_eq!(snapshot["reads"].as_array().unwrap().len(), 10);
     assert_eq!(snapshot["writers"].as_array().unwrap().len(), 13);
+}
+
+#[test]
+fn direct_command_records_its_span_without_inventing_a_pool_wait() {
+    let collector = Collector::default();
+    Read::start_command(Some(&collector)).unwrap().finish(false);
+    let snapshot = serde_json::to_value(collector.snapshot().unwrap()).unwrap();
+    assert_eq!(snapshot["readCalls"], 1);
+    assert_eq!(snapshot["commandCalls"], 1);
+    assert_eq!(snapshot["queuedCalls"], 0);
+    assert_eq!(snapshot["reads"][0]["calls"], 0);
+    assert!(snapshot["slowestCommand"]["poolWaitNs"].is_null());
+    assert_eq!(
+        snapshot["slowestCommand"]["commandTotalNs"],
+        snapshot["slowestCommand"]["workerTotalNs"]
+    );
 }
 
 #[test]
@@ -201,6 +219,9 @@ fn actual_status_hooks_follow_the_cached_gate_without_dto_or_private_text_change
     let prior_calls = snapshot().map_or(0, |s| s.read_calls);
     let before = CLOCK_READS.with(|reads| reads.get());
     let status = index.status_queued(queued()).unwrap();
+    let command_status = index.status_for_command().unwrap();
+    assert_eq!(command_status.count, status.count);
+    assert_eq!(command_status.warnings, status.warnings);
     assert_eq!(status.count, 0);
     assert_eq!(status.warnings, ["private-path-and-query-canary"]);
     assert!(serde_json::to_value(status)
@@ -212,6 +233,7 @@ fn actual_status_hooks_follow_the_cached_gate_without_dto_or_private_text_change
         let profile = snapshot().unwrap();
         assert!(profile.read_calls > prior_calls);
         assert!(profile.queued_calls > 0);
+        assert!(profile.command_calls > profile.queued_calls);
         assert!(!serde_json::to_string(&profile)
             .unwrap()
             .contains("private-path-and-query-canary"));
@@ -234,6 +256,7 @@ fn poisoned_actual_catalog_remains_an_error() {
             .is_err());
     });
     assert!(index.status().is_err());
+    assert!(index.status_for_command().is_err());
 }
 
 #[test]

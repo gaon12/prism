@@ -42,14 +42,17 @@ fn status_returns_while_catalog_and_prepared_writers_remain_held() {
         let (tx, rx) = mpsc::channel();
         let index = &index;
         let worker = scope.spawn(move || {
-            tx.send(index.status().unwrap()).unwrap();
+            tx.send((index.status().unwrap(), index.status_for_command().unwrap()))
+                .unwrap();
         });
         // Completion before releasing either lock is the correctness property;
         // the timeout only bounds a regression instead of asserting small latency.
         let result = rx.recv_timeout(Duration::from_secs(3));
         drop(prepared);
         drop(catalog);
-        assert_eq!(result.unwrap().count, 42);
+        let (ordinary, command) = result.unwrap();
+        assert_eq!(ordinary.count, 42);
+        assert_eq!(command.count, 42);
         worker.join().unwrap();
     });
 }

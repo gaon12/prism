@@ -1801,3 +1801,14 @@ permit after the current terminal response and can delay a subsequent request.
 Client pipe-read wall and whole-service CPU do not isolate those phases. No
 service format, integrity/cancellation checks, deployment or product runtime
 was changed by the audit.
+
+The next [direct async status dispatch](status-lock-analysis.md#direct-async-status-dispatch)
+removes the blocking-pool hop from the published status getter while keeping
+the Tauri command async. Search/refresh retain their blocking workers. DEV
+diagnostics distinguish all command spans (`commandCalls`) from real queued
+spans (`queuedCalls`); direct calls do not invent a zero-duration pool wait.
+Held catalog/prepared locks and poisoning remain covered by regressions.
+Final-source release filename QA passed 141 tests (7 ignored) with profiling
+off and on, plus strict all-target release Clippy and 16 native-helper tests.
+Actual release-app latency/startup and the Tauri adapter's CI compilation remain
+pending; this is a response-latency change, not whole-list target acceptance.

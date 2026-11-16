@@ -100,6 +100,7 @@ struct ReadRecord {
 #[derive(Clone, Copy, Default)]
 struct State {
     read_calls: u64,
+    command_calls: u64,
     queued_calls: u64,
     read_failures: u64,
     reads: [Stat; 10],
@@ -120,6 +121,9 @@ impl Collector {
             return;
         };
         state.read_calls = state.read_calls.saturating_add(1);
+        state.command_calls = state
+            .command_calls
+            .saturating_add(u64::from(record.command_total_ns.is_some()));
         state.queued_calls = state
             .queued_calls
             .saturating_add(u64::from(record.pool_wait_ns.is_some()));
@@ -195,6 +199,7 @@ impl Collector {
             watch_prune: state.prune,
             lost_measurements: self.lost.load(Ordering::Relaxed),
             read_calls: state.read_calls,
+            command_calls: state.command_calls,
             queued_calls: state.queued_calls,
             read_failures: state.read_failures,
             reads: READS
@@ -257,6 +262,7 @@ pub(crate) struct Snapshot {
     watch_prune: PruneSummary,
     lost_measurements: u64,
     read_calls: u64,
+    command_calls: u64,
     queued_calls: u64,
     read_failures: u64,
     reads: Vec<ReadSummary>,
@@ -400,6 +406,7 @@ pub(crate) fn record_prune(record: Option<PruneRecord>) {
 pub(crate) struct Queued {
     since: Instant,
 }
+#[cfg(test)]
 pub(crate) fn queued() -> Option<Queued> {
     collector()?;
     Some(Queued { since: now() })
@@ -407,6 +414,7 @@ pub(crate) fn queued() -> Option<Queued> {
 pub(crate) struct Read<'a> {
     collector: &'a Collector,
     start: Instant,
+    command: bool,
     record: ReadRecord,
     dto_started: Option<Instant>,
     snapshot_started: Option<Instant>,
@@ -415,13 +423,22 @@ pub(crate) struct Read<'a> {
 pub(crate) fn begin(queue: Option<Queued>) -> Option<Read<'static>> {
     Read::start(collector(), queue)
 }
+pub(crate) fn begin_command() -> Option<Read<'static>> {
+    Read::start_command(collector())
+}
 impl<'a> Read<'a> {
+    fn start_command(collector: Option<&'a Collector>) -> Option<Self> {
+        let mut timing = Self::start(collector, None)?;
+        timing.command = true;
+        Some(timing)
+    }
     fn start(collector: Option<&'a Collector>, queue: Option<Queued>) -> Option<Self> {
         let collector = collector?;
         let start = now();
         Some(Self {
             collector,
             start,
+            command: queue.is_some(),
             record: ReadRecord {
                 pool_wait_ns: queue
                     .map(|queue| nanos(start.saturating_duration_since(queue.since))),
@@ -461,10 +478,12 @@ impl<'a> Read<'a> {
     /// Caller has released both data guards. Recorder contention cannot extend them.
     pub(crate) fn finish(mut self, failed: bool) {
         self.record.worker_total_ns = nanos(now().saturating_duration_since(self.start));
-        self.record.command_total_ns = self
-            .record
-            .pool_wait_ns
-            .map(|wait| wait.saturating_add(self.record.worker_total_ns));
+        self.record.command_total_ns = self.command.then(|| {
+            self.record
+                .pool_wait_ns
+                .unwrap_or(0)
+                .saturating_add(self.record.worker_total_ns)
+        });
         self.record.failed = failed;
         self.collector.read(self.record);
     }

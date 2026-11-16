@@ -20,24 +20,51 @@ impl Drop for Cleanup {
         let _ = self.0.wait();
     }
 }
-fn until(mut check: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(8);
+fn until(check: impl FnMut() -> bool) {
+    until_with_diagnostics("expected-state", check, String::new);
+}
+fn until_with_diagnostics(
+    stage: &str,
+    mut check: impl FnMut() -> bool,
+    diagnostics: impl Fn() -> String,
+) {
+    let before = Instant::now();
+    let deadline = before + Duration::from_secs(8);
     while !check() {
         assert!(
             Instant::now() < deadline,
-            "Owned fixture did not reach the expected state"
+            "Owned fixture stage={stage} timed out after {:?}; {}",
+            before.elapsed(),
+            diagnostics()
         );
         thread::sleep(Duration::from_millis(20));
     }
 }
+fn readiness_state(path: &Path) -> String {
+    match fs::read(path) {
+        Ok(bytes) => format!(
+            "ready_bytes={}, ready_json_valid={}",
+            bytes.len(),
+            serde_json::from_slice::<Value>(&bytes).is_ok()
+        ),
+        Err(error) => format!("ready_read_error={:?}", error.kind()),
+    }
+}
 fn ready(path: &Path) -> Value {
+    ready_at_stage(path, "readiness-json")
+}
+fn ready_at_stage(path: &Path, stage: &str) -> Value {
     let mut value = None;
-    until(|| {
-        value = fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-        value.is_some()
-    });
+    until_with_diagnostics(
+        stage,
+        || {
+            value = fs::read(path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+            value.is_some()
+        },
+        || readiness_state(path),
+    );
     value.unwrap()
 }
 fn address(data: &Value) -> SocketAddr {
@@ -211,12 +238,24 @@ fn an_already_closed_parent_pipe_cannot_leave_a_started_server_behind() {
             .spawn()
             .unwrap(),
     );
-    until(|| owner.0.try_wait().unwrap().is_some());
+    until_with_diagnostics(
+        "early-parent-pipe/owner-exit",
+        || owner.0.try_wait().unwrap().is_some(),
+        || readiness_state(&ready_path),
+    );
     if ready_path.exists() {
-        let data = ready(&ready_path);
-        until(|| !connects(&data));
+        let data = ready_at_stage(&ready_path, "early-parent-pipe/readiness-json");
+        until_with_diagnostics(
+            "early-parent-pipe/socket-close",
+            || !connects(&data),
+            || readiness_state(&ready_path),
+        );
         #[cfg(target_os = "linux")]
-        until(|| !Path::new(&format!("/proc/{}", data["pid"].as_u64().unwrap())).exists());
+        until_with_diagnostics(
+            "early-parent-pipe/server-reap",
+            || !Path::new(&format!("/proc/{}", data["pid"].as_u64().unwrap())).exists(),
+            || readiness_state(&ready_path),
+        );
     }
 }
 

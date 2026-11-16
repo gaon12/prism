@@ -16,6 +16,31 @@ fn main() {
 }
 
 #[cfg(unix)]
+fn publish_fixture_ready(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::{fs, io::Write};
+    let mut name = path
+        .file_name()
+        .ok_or(std::io::ErrorKind::InvalidInput)?
+        .to_os_string();
+    name.push(format!(".{}.tmp", std::process::id()));
+    let temporary = path.with_file_name(name);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    // The early-EOF test may kill this process at any instruction. Readers
+    // must see either no readiness file or the complete payload, never a
+    // truncated final file. Both paths are on the same filesystem.
+    let written = file.write_all(bytes);
+    drop(file);
+    let result = written.and_then(|()| fs::rename(&temporary, path));
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+
+#[cfg(unix)]
 fn fixture() -> Option<i32> {
     use std::{
         fs,
@@ -306,7 +331,11 @@ fn fixture() -> Option<i32> {
             "secretEnv": std::env::var("PRISM_SYNTHETIC_SERVER_KEY").as_deref() == Ok("synthetic-only"),
             "removedEnv": std::env::var_os("PRISM_SHOULD_BE_ABSENT").is_none(),
         });
-        fs::write(&args[1], serde_json::to_vec(&data).unwrap()).unwrap();
+        publish_fixture_ready(
+            std::path::Path::new(&args[1]),
+            &serde_json::to_vec(&data).unwrap(),
+        )
+        .unwrap();
         for connection in listener.incoming() {
             drop(connection.unwrap());
         }
@@ -326,7 +355,11 @@ fn fixture() -> Option<i32> {
             .stderr(Stdio::null());
         let owned =
             prism_platform_qa::runtime_process::OwnedRuntimeProcess::spawn(command, &exe).unwrap();
-        fs::write(&args[2], owned.id().to_string()).unwrap();
+        publish_fixture_ready(
+            std::path::Path::new(&args[2]),
+            owned.id().to_string().as_bytes(),
+        )
+        .unwrap();
         // The external test kills this Child with SIGKILL. No Drop runs here.
         loop {
             std::thread::sleep(Duration::from_secs(1));

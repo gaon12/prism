@@ -109,11 +109,15 @@ and newly downloaded pinned runtime were used. Evidence is
 - Filename preparation/walking/search use the shared budget in place of the
   eight-worker ceiling. Single-CPU searches skip the unnecessary memory probe.
 - The embedding server receives adaptive `--threads` and `--threads-batch`.
-- The dedicated content Tokio scheduler selects 1-4 I/O threads. Its worker
-  start callback and content monitor enter background priority.
-- Filename workers and owned native OCR workers use the same per-thread helper.
-  Windows uses below-normal priority with I/O completion boosts disabled;
-  Linux lowers only the calling task's nice priority; macOS uses utility QoS.
+- The dedicated content Tokio scheduler selects 1-4 I/O threads. Its shared
+  vector-query workers retain normal priority after `b876672`; background
+  scans lower their own monitor thread.
+- Filename workers use the per-thread helper. Windows uses below-normal priority
+  with I/O completion boosts disabled; Linux lowers only the calling task's
+  nice priority; macOS uses utility QoS.
+- The owned macOS OCR worker also renders collection reader PDF/Office pages.
+  Its explicit priority downgrade was removed in `b876672`. It is not an
+  index-only worker, and foreground response timing still needs qualification.
 - Only newly owned runtime processes are deprioritized. Windows changes the
   owned Child handle, with boosts disabled. Unix sets nice priority in the
   private supervisor before exec, which its actual runtime child inherits.
@@ -127,8 +131,10 @@ separate follow-ups with memory, cancellation and source-policy regressions.
 
 ## Local verification scope
 
-Final-source release filename QA passed 148 tests (8 ignored) with profiling
-off and on, plus strict all-target release Clippy and the release probe build.
+The phase-one source `a0bca95` passed release filename QA with 148 tests
+(8 ignored) and profiling off and on, plus strict all-target release Clippy and
+the release probe build. Later fork-safety and shared-worker priority changes
+need their own hosted checks; these historical passes do not execute them.
 Regression coverage includes affinity, unknown/exhausted memory, monotonic
 budgets, the 8-GiB cap, 32-core selection, the inference bound, nested quota
 headroom, namespace boundaries and an owned child's priority/boost flags.
@@ -209,7 +215,14 @@ with CPU time 49.500 versus 60.664 seconds. The wall difference is inside the
 four-thread run-to-run spread; no eight-thread throughput benefit is established.
 This host reports eight physical and eight logical cores, so four threads is
 an `n/2` comparison rather than its physical-core count. That result does not
-justify a universal half-core rule. Retaining the old four-thread inference
-baseline is the conservative candidate until a faster policy is qualified;
-it is not proof of a global optimum. The thread-count selection probe in a
-512-MiB Job executed no model and cannot establish model/context memory fit.
+justify a universal half-core rule. Retaining the old four-thread baseline
+was considered as a conservative option, but was not implemented. The clarified
+first-phase decision retains permitted-CPU selection and records that a
+throughput improvement is unproven. Actual concurrent extraction/embedding
+and foreground response measurements will determine subsequent adjustment.
+The thread-count selection probe in a 512-MiB Job executed no model and cannot
+establish model/context memory fit.
+
+The next acceptance step is the [actual-app concurrent extraction and embedding
+comparison](content-concurrency-qualification.md), including foreground queries
+and filename contention. This plan is unexecuted.

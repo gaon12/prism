@@ -1620,3 +1620,24 @@ existing algorithm, clock-disabled gate and locks. Off/on QA each passed 134
 tests (7 ignored), standalone catalog QA 23, and both strict Clippy checks.
 Actual natural-workload phase costs remain pending a new CI app; the union
 optimization is deliberately after that measurement.
+
+The subsequent [actual union-prune app](status-lock-analysis.md#actual-union-prune-release-app)
+passed four native cases from CI `43775907613@a48c60c`, whose platform jobs
+also passed. The two measured prune writer holds were 196.8/205.3 ms for
+22/21 roots; directory membership occupied about 89-92% of their wall
+windows. The earlier app's 1,951/2,176-ms holds used different live inputs
+and unknown root counts, so the apparent reduction is not a controlled
+speedup. The intermediate status-snapshot app had no completed prune at
+its diagnostic snapshots, not a measured zero-cost prune. Ready times
+still ranged from 7.04 to 11.06 seconds; the 5-7 second target remains open.
+
+The [fixed-input union comparison](status-lock-analysis.md#fixed-input-union-prune-comparison)
+then used 2,185,112 identical rows and eight roots under one-CPU/512-MiB
+limits. Source/body-verified release A/B/B/A cases averaged 385.907 ms
+per-root versus 146.855 ms union (-61.95%); raw cycles fell 66.24% and full
+stored-field hashes stayed identical. An initial shared-target attempt was
+invalidated because B reused A's generated watch body; its conclusions were
+withdrawn and its evidence preserved. The accepted run used separate build
+targets and required runtime body hashes to match each source. This all-seen
+component replay includes no deletion, catalog lock, service or UI work and
+does not establish an overall startup gain.

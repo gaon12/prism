@@ -522,7 +522,8 @@ actual CI-app qualifications above.
 The next instrumentation extends the existing gated status profile with
 `watchPrune.calls`, `totals` and one coherent `slowest` record. It changes no
 pruning decisions, root order, lock placement, entry layout or compaction
-threshold. The union algorithm and read-lock/arena moves are not applied.
+threshold. At this instrumentation-only stage the union algorithm was not
+applied. Read-lock/arena moves remain unapplied.
 
 Each record includes input recursive-root count `roots`, starting
 `directorySlots`/`nodeSlots` (including free slots), `staleCandidates`, actual
@@ -573,3 +574,126 @@ Private input hashes/logs and initial fixture compile/lint failures are retained
 in `C:/Users/solso/prism-agent-work-20261115/watch-prune-profile-qualification.json`
 and `filename-watch-prune-{off,on,clippy}-v3/` under the same parent. No union
 optimization or startup-target acceptance follows from these verification runs.
+
+## Actual union-prune release app
+
+The watch-only union implementation in `7e060d3`, instrumentation integration
+in `f779da3` and empty-root/single-root fixes in `a48c60c` are now separate
+from the instrumentation-only qualification above. Single-root scoped search
+keeps its earlier implementation; the watch branch computes membership for
+all recursive roots together and scans entry slots once. Empty root sets skip
+the scan. Independent full-key reference tests cover randomized root sets and
+path-boundary cases.
+
+CI `43775907613@a48c60c` subsequently passed all seven build/check jobs;
+the draft job was skipped. Windows artifact `14187150203` has ZIP SHA-256
+`71a8ba013b24479a4ec09d317d7e92844d1a3c7a76baa5343e9e4a15b4c5936a`.
+Its 380,015,104-byte executable has SHA-256
+`ffe58ed06850b40e9c6e4ed92022241959e89a43096f7a7a45a4465b2c2d49c2`.
+Four actual-app off/on/on/off cases passed with the same software-renderer,
+one-CPU/512-MiB kernel limits and fresh owned portable profiles.
+
+| Case | Profiling | First searchable ms | Ready ms | Status probe maximum / mean ms | Service validated fetch ms |
+| ---- | --------- | ------------------- | -------- | ------------------------------ | -------------------------- |
+| 1    | Off       | 6,112               | 11,064   | 56 / 8.867                     | 10,721                     |
+| 2    | On        | 2,821               | 8,591    | 28 / 8.667                     | 6,541                      |
+| 3    | On        | 2,366               | 7,886    | 199 / 13.854                   | 7,493                      |
+| 4    | Off       | 2,101               | 7,035    | 16 / 7.600                     | 6,681                      |
+
+Each on case contained exactly one completed watch-prune writer span:
+
+| On case | Writer hold ms | Roots | Directory / node slots | Membership ms | Selection ms | Removed / compactions |
+| ------- | -------------- | ----- | ---------------------- | ------------- | ------------ | --------------------- |
+| First   | 196.818        | 22    | 306,692 / 2,154,452    | 180.804       | 15.990       | 3 / 0                 |
+| Second  | 205.260        | 21    | 306,755 / 2,154,722    | 182.401       | 22.622       | 3 / 0                 |
+
+Membership accounted for about 89-92% of these measured prune wall windows,
+including scheduling. Deletion took 0.0103/0.0087 ms; no arena compaction was
+observed. The older timing-only app recorded 1,951/2,176-ms writer holds,
+but did not record root counts and processed different live data. This is an
+observed reduction, not a controlled percentage speedup. The `599762a` on
+snapshots contained **zero completed prune spans**, so their zero aggregate
+is missing measurement rather than a measured zero-cost prune.
+
+The four cases took 51.860 seconds, with minimum available host RAM
+4,420,296,704 bytes and peak app/WebView Job commit 399.8-402.2 MiB. Host CPU
+busy means ranged from 59.4% to 68.8%. Executable, harness and service hashes
+were unchanged; all owned processes exited and no resource stop fired. The
+same historical service remained outside the app Job. No service upgrade,
+UAC, user Prism profile/process, model or physical HDD was involved.
+First-searchable and full-ready times remain separate metrics. These cases
+do not accept the cached 5-7 second whole-list target.
+
+Private proof is
+`C:/Users/solso/prism-agent-work-20261115/native-watch-union-qualification.json`,
+with raw runs in `harsh-watch-union-a48-abba/`, candidate provenance in
+`candidate-a48c60c/` and frozen sources/harness in `watch-union-native-inputs/`.
+The later full-CI result is distinct from candidate admission, when CI was
+still running. No private inputs or local screenshots were uploaded.
+
+## Fixed-input union-prune comparison
+
+A separate release CLI comparison used the same private 2,185,112 captured
+rows and fixed eight-root input in A/B/B/A order. A used the per-root product
+files from `d79bf03`; B used `a48c60c`. Their production differences were
+limited to `index.rs`, `filename_entries.rs` and `filename_compact.rs`.
+All other archived sources and the QA patch were common. That patch outputs
+the numeric prune summary only after the existing timed interval. The CLI
+extracts the literal production watch body rather than reimplementing it.
+
+The first attempt was rejected during final provenance verification: a
+shared Cargo target reused A's generated build-script output for B. Both
+executables reported generated-body SHA `739176c0...`, although B's source
+required `f2b1fbc0...`. The raw attempt is preserved as invalid and its earlier
+small timing difference and phase conclusions are withdrawn. For the valid
+run, B was rebuilt in a separate target directory, and the controller required
+each executable's reported body hash to match its source before accepting
+any case. Source-file manifests alone are insufficient for generated code.
+
+A's release tests passed 133 cases and B's isolated release tests passed 136,
+each with seven opt-in tests ignored; both strict all-target Clippy checks
+passed. The binaries used the same local Rust 1.99 toolchain and release
+flags. A executable SHA-256 is
+`2054a23386cf159cbd72ce77846bc2236206f7b59ba65f95e908516c89c9b119`;
+B is `c6411fbcbdf868faabdc56e25f21e9a4c9e30d02b13bf203e7d6bc1b73ef5499`.
+
+| Case | Algorithm | Watch wall ms | Raw thread CPU ms | Raw thread cycles | Membership / selection ms | Peak Job MiB |
+| ---- | --------- | ------------- | ----------------- | ----------------- | ------------------------- | ------------ |
+| 1-A  | Per root  | 371.556       | 375.000           | 1,106,186,881     | 314.075 / 57.442          | 203.086      |
+| 2-B  | Union     | 124.506       | 125.000           | 359,441,982       | 116.251 / 8.221           | 204.086      |
+| 3-B  | Union     | 169.205       | 140.625           | 410,750,140       | 147.224 / 21.952          | 203.516      |
+| 4-A  | Per root  | 400.258       | 406.250           | 1,175,436,629     | 342.025 / 58.185          | 203.105      |
+
+Mean watch wall was **385.907 → 146.855 ms (-61.95%)**; mean raw thread
+cycles fell **66.24%**. All cases used 309,094 directory slots, 2,185,112 node
+slots and eight roots. The complete stored-field SHA-256 remained
+`2050731a23fb94bb1ba25399970e97a12beed3cf1533618712447fc9794f2b2c`
+before and after every case. These observations support a component speedup
+for this fixed workload. Directory membership remains the largest measured
+union window, but these wall phases do not identify individual CPU routines.
+
+The helper read back the one-CPU/512-MiB process and Job limits before each
+start signal. Both DEV profiling flags were enabled; the algorithms use
+different checkpoint counts. GetThreadTimes is coarse accounting, and raw
+cycles are never converted into time. Process-local hash seeds varied. The
+shared host was 44.7-50.8% busy during cases. The four-case controller took
+29.703 seconds, minimum available RAM was 5,359,005,696 bytes, inputs/sources/
+executables remained unchanged, no resource stop fired and no owned process
+remained after Job close/waits.
+
+This replay starts with every row already seen. It performs no removal,
+compaction, disk walk, service transfer, catalog locking or WebView work.
+Deletion/uncertain-path behavior is covered by separate reference regressions,
+not by this performance sample. Two observations per variant are not a
+general latency guarantee, and this component result neither explains the
+entire natural GUI hold reduction nor accepts a startup target.
+
+Private proof is
+`C:/Users/solso/prism-agent-work-20261115/watch-union-component-qualification.json`,
+with accepted raw cases/controller/protocol under
+`watch-union-component/measured-v2/`, invalid-attempt proof under
+`watch-union-component/invalid-v1-qualification.json` and frozen numeric/source
+proof inputs under `watch-union-component-proof-inputs/`. The 316,776,030-byte
+read-only capture and root file remain private outside Git, CI and artifacts.
+They are retained only while exact-input review needs them; subsequent cleanup
+must check ownership/type/hash and preserve the numeric proof and ledger.

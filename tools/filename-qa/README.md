@@ -1660,3 +1660,19 @@ The new isolated release build passed 137 tests (7 ignored) and strict Clippy.
 These are combined component effects; individual commits and new actual-app
 writer/startup effects remain unmeasured. No catalog lock, deletion, service
 or WebView work is included, and the 5-7 second whole-list target stays open.
+
+The later [isolated stage comparisons](status-lock-analysis.md#isolated-few-root-and-parent-memo-comparisons)
+add `6d56a3e` alone: three predeclared four-case protocols passed with identical
+rows/roots/stored-field hashes. Initial union → direct comparisons averaged
+128.784 → 59.809 ms (-53.56%); direct comparisons → parent memo averaged
+55.831 → 12.747 ms (-77.17%). This separates the two commits for eight roots,
+without proving that threshold 32 is optimal or measuring large-root speed.
+
+The [actual parent-memo app](status-lock-analysis.md#actual-parent-memo-release-app)
+then passed four native cases from CI `43783117956@5c6d007`, whose platform
+jobs also passed. On watch-prune holds were 18.409/26.070 ms for 17/20 roots;
+initial union had observed 196.818/205.260 ms for different live root sets.
+Ready remained 7.142-12.227 seconds, with validated fetch at 6.800-10.859
+seconds. That fetch window overlaps app callbacks and does not isolate server,
+transport or app CPU. Startup acceptance and physical HDD validation remain
+open; the user's Prism profile was untouched and the service was not upgraded.

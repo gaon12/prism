@@ -853,3 +853,115 @@ inputs in `watch-parent-component-proof-inputs/`, and C's guarded build/test
 results in `watch-union-component/C-{off,clippy,build}-v2/`. The private
 capture/root retention and no-upload rules from the preceding comparison
 remain unchanged.
+
+## Isolated few-root and parent-memo comparisons
+
+The next qualification adds D=`6d56a3e` alone, separating it from the later
+parent memo in C=`5c6d007`. A still denotes legacy `d79bf03`; B denotes
+initial union `a48c60c`. Three protocols were fixed before execution:
+A/D/D/A, B/D/D/B and D/C/C/D. D used a fresh independent target, the same
+release flags/toolchain and post-timer numeric-output patch as the other
+variants. Its release tests passed **136 cases with 7 opt-in tests ignored**,
+plus strict all-target Clippy. Its 2,660,352-byte executable SHA-256 is
+`0db7d29899c9a438de557faedbee80451911a13eb3f227b89370cb497bda2ae9`.
+
+All twelve cases passed with runtime body hashes checked against sources,
+331-file source manifests, unchanged inputs/executables and identical complete
+stored-field hashes. Each used the same 2,185,112 rows and eight roots under
+kernel-read-back one-CPU/512-MiB limits. All rows were already seen; removal
+and compaction counts were zero throughout.
+
+| Comparison                   | Baseline wall ms, two cases | Candidate wall ms, two cases | Mean wall ms     | Mean wall change | Raw cycle change |
+| ---------------------------- | --------------------------- | ---------------------------- | ---------------- | ---------------- | ---------------- |
+| Legacy A → few-root D        | 379.791 / 405.597           | 60.225 / 59.460              | 392.694 → 59.842 | -84.76%          | -84.91%          |
+| Initial union B → few-root D | 121.694 / 135.873           | 59.495 / 60.124              | 128.784 → 59.809 | -53.56%          | -53.95%          |
+| Few-root D → parent memo C   | 53.567 / 58.094             | 12.086 / 13.407              | 55.831 → 12.747  | -77.17%          | -76.73%          |
+
+In the B→D pair, mean membership wall fell from 118.546 to 49.512 ms while
+selection stayed near 10.2 ms. This qualifies the `6d56a3e` change for this
+eight-root input, but does not separately isolate its direct matching and
+entry-ID range guard. In the D→C pair, mean membership fell from 46.534 to
+3.528 ms, while selection remained near 9.2 ms. That comparison isolates the
+subsequent `5c6d007` product change from its preceding product state.
+Selection windows include scheduling and bookkeeping; they are not pure
+routine CPU costs.
+
+The three controllers took 29.125/28.515/28.110 seconds, with minimum available
+host RAM 5,171,453,952/5,245,329,408/5,228,388,352 bytes. No resource stop fired,
+all owned processes exited and original sources/inputs/executables were
+unchanged. There are only two samples per variant per comparison on a shared
+host. Both DEV flags were enabled, legacy checkpoint counts differ and
+process-local hash seeds vary. One 13.407-ms case reported zero raw CPU ms
+because GetThreadTimes is coarse; its 39,480,206 raw cycles remain preserved
+without conversion to time.
+
+These comparisons qualify the separate changes for this fixed component
+workload. They do **not** show that threshold 32 is optimal, measure the
+large-root branch's performance, guarantee latency or establish a startup
+gain. All-seen/no-lock/no-service/no-WebView limitations still apply.
+Private proof is
+`C:/Users/solso/prism-agent-work-20261115/watch-stage-component-qualification.json`,
+with raw cases/controllers/protocols in
+`watch-union-component/{few-legacy,few-union,memo-isolated}/`, D build/test
+results in `watch-union-component/D-{off,clippy,build}-v2/` and frozen numeric/
+source inputs in `watch-stage-component-proof-inputs/`.
+
+## Actual parent-memo release app
+
+Build-only CI `43783117956@5c6d007` subsequently passed all seven build/check
+jobs; draft was skipped. Artifact `14190025577` has ZIP SHA-256
+`44c07ce3ca5cbf31061fd0446322b5a68a1ea527248e308fa844d0a84a33c75f`.
+The 379,915,776-byte executable has SHA-256
+`ee834c8375ab79ff5a3bdc6f2eeaf89747dbb624fb96647d4356f460a19f4462`.
+Admission checked the same repository/head repository, release workflow path,
+main branch and dispatch event. CI was still running at admission; its later
+job result is recorded separately.
+
+The same software-renderer, one-CPU/512-MiB limits, historical service outside
+the app Job and fresh owned portable profiles were used for four native
+off/on/on/off cases. All four passed:
+
+| Case | Profiling | First searchable ms | Ready ms | Status probe maximum / mean ms | Service validated fetch ms | Peak Job MiB |
+| ---- | --------- | ------------------- | -------- | ------------------------------ | -------------------------- | ------------ |
+| 1    | Off       | 7,439               | 12,227   | 19 / 8.032                     | 10,859                     | 408.477      |
+| 2    | On        | 2,185               | 7,334    | 30 / 8.574                     | 7,001                      | 399.543      |
+| 3    | On        | 2,552               | 7,849    | 25 / 8.617                     | 7,619                      | 405.559      |
+| 4    | Off       | 2,269               | 7,142    | 21 / 7.933                     | 6,800                      | 399.406      |
+
+Each on case contained exactly one completed watch-prune span:
+
+| On case | Writer hold ms | Roots | Directory / node slots | Membership ms | Selection ms | Removed / compactions |
+| ------- | -------------- | ----- | ---------------------- | ------------- | ------------ | --------------------- |
+| First   | 18.409         | 17    | 307,935 / 2,162,762    | 4.503         | 13.879       | 2 / 0                 |
+| Second  | 26.070         | 20    | 307,997 / 2,163,029    | 4.490         | 21.547       | 7 / 0                 |
+
+The initial union app had 196.818/205.260-ms holds for 22/21 roots. Live
+inputs, root sets and host load differ, so the new 18.409/26.070-ms holds are
+observations rather than a controlled percentage reduction. The fixed-input
+comparisons above provide separate component evidence. Selection is now about
+75-83% of the observed prune wall, membership 17-25%; neither is pure CPU
+attribution. The catalog writer remains held for the same correctness scope.
+
+The native controller took 52.078 seconds, minimum available host RAM was
+4,268,478,464 bytes and host CPU busy means were 58.5-67.3%. No resource stop
+fired; all owned processes exited, and executable/harness/service hashes and
+service PID 5924 were unchanged. The installed service's raw image was not
+found in the app, so that historical service remains a separate component.
+No UAC, upgrade, user Prism profile/process, model, cold-cache reset or
+physical HDD test was involved. These app/WebView Job limits do not constrain
+the separate service or emulate a whole 512-MiB machine.
+
+Full ready ranged from 7.142 to 12.227 seconds. Validated service fetch covered
+6.800-10.859 seconds, with first batch at 1.855-6.025 seconds; receive callback
+wall was 1.979-2.583 seconds and final publication 0-2 ms. Those windows can
+overlap and are not an additive CPU decomposition. Server work, transport and
+app handling within fetch remain unresolved. First-searchable and full-ready
+metrics stay separate, and the cached 5-7 second whole-list target remains
+unaccepted.
+
+Private proof is
+`C:/Users/solso/prism-agent-work-20261115/native-watch-parent-qualification.json`,
+with raw native cases in `harsh-watch-parent-5c-abba/`, candidate provenance in
+`candidate-5c6d007/`, frozen sources/harness in `watch-parent-native-inputs/`
+and final CI job summary in `parent-ci-jobs-final.json`. The numeric evidence
+is separate from private capture/roots, which remain outside Git/CI/artifacts.

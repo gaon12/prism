@@ -1208,3 +1208,47 @@ process remained. A preceding off test also passed; after rustfmt adjusted a
 test tuple layout, both modes were repeated on the final Rust inputs. Source
 hashes and commands are retained in `direct-status-{test-mode0,test-mode1,clippy-mode0}-v2/`
 and `direct-status-proof-inputs/` under the existing private evidence parent.
+
+### Actual direct-dispatch comparison
+
+Run `43800210291@f53f0cf` supplied artifact `14196387481`: ZIP SHA-256
+`ab5b7d53...`, executable SHA-256 `1a85dbc7...` (380,248,576 bytes). The
+Windows app-build/upload steps passed before admission; the overall release
+workflow was still running at the final check. The comparison used A = the
+previous `0e433d0` app and B = this app. Product source differences were
+restricted to the five status adapter/index/profile/test files; frontend code
+was identical. One current harness ran DEV-on A/B/B/A, then two B-off cases,
+with software WebViews and read-back one-CPU/512-MiB app/child limits.
+
+| Case | App/profile | First search (ms) | Whole-list complete (ms) | Idle ready (ms) | Status probe max/mean (ms) | Backend command max (ms) |
+| ---- | ----------- | ----------------: | -----------------------: | --------------: | -------------------------: | -----------------------: |
+| 1    | A/on        |             2,952 |                    8,461 |           8,511 |                  25 / 9.10 |                  11.6722 |
+| 2    | B/on        |             2,364 |                    7,877 |           8,042 |                  30 / 9.24 |                   0.0049 |
+| 3    | B/on        |             2,634 |                    7,290 |           7,457 |                  19 / 8.05 |                   0.1953 |
+| 4    | A/on        |             2,452 |                    9,414 |           9,585 |                  28 / 9.62 |                   9.6413 |
+| 5    | B/off       |             2,661 |                    7,633 |           7,791 |                  24 / 8.63 |              Not sampled |
+| 6    | B/off       |             2,459 |                    7,938 |           7,986 |                  20 / 8.76 |              Not sampled |
+
+A recorded 84/100 queued commands and pool-wait maxima 11.6678/9.6395 ms.
+B recorded 81/70 direct commands, zero queued commands and no pool-wait
+samples; its coherent command records had `poolWaitNs: null`. Neither acquired
+catalog/prepared storage. B's snapshot mutex hold maxima were 500 ns in both
+cases. This verifies the new dispatch path in the actual app. GUI probe maxima
+and means overlap the originals; no user-visible latency improvement or bound
+is established by these cases. Backend and GUI calls are not matched by ID.
+
+All six cases passed in 78.125 seconds, minimum available host RAM was
+3,408,371,712 bytes and no owned processes remained. Final Job peaks ranged
+398.77-404.14 MiB. Every case recorded one service snapshot and no overflow.
+Validated fetch varied from 6.356 to 9.150 seconds; live counts and scheduling
+also varied. Therefore no whole-startup percentage is assigned to dispatch
+removal. The B-off complete/ready measurements remain above the cached
+5-7 second target. The historical service stayed PID 5924 / SHA `d0b1fe5e...`,
+outside the Job; no service upgrade, UAC, user profile access or HDD/cache-reset
+qualification occurred.
+
+Evidence remains local under the existing private parent in
+`native-direct-status-qualification.json`, `direct-status-native-proof-inputs/`,
+`harsh-direct-status-paired/` and `candidate-direct-status-f53f0cf/`. These GUI
+results precede the newly requested adaptive CPU/RAM work; that work had no
+product changes at measurement time.

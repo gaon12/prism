@@ -1812,3 +1812,12 @@ Final-source release filename QA passed 141 tests (7 ignored) with profiling
 off and on, plus strict all-target release Clippy and 16 native-helper tests.
 Actual release-app latency/startup and the Tauri adapter's CI compilation remain
 pending; this is a response-latency change, not whole-list target acceptance.
+
+The [actual direct-dispatch comparison](status-lock-analysis.md#actual-direct-dispatch-comparison)
+then passed DEV-on old/new/new/old and two new-app off cases using CI
+`43800210291@f53f0cf`. Actual new-app diagnostics recorded zero queued status
+calls and no pool-wait samples; backend command maxima were 0.0049/0.1953 ms
+versus 11.6722/9.6413 ms in the old app. GUI probe values overlapped, so no
+user-visible latency gain is claimed. New-app off whole-list completion was
+7.633/7.938 seconds, idle ready 7.791/7.986 seconds: the cached 5-7 second
+target remains open. Overall release CI was still running at the final check.

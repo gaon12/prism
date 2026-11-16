@@ -955,11 +955,17 @@ impl ContentService {
         // A slot covers queued + running + completed + reorder-buffered results.
         // The 512 MiB estimate includes parser expansion and retained text; it
         // is a concurrency budget, not a hard per-document RSS reservation.
-        let workers = if request.ocr.enabled {
+        let mut workers = if request.ocr.enabled {
             1
         } else {
             crate::resource_policy::WorkBudget::current().workers_for(512 * 1024 * 1024)
         };
+        let mut read_policy = crate::content_storage::ReadPolicy::default();
+        // A CPU/memory-constrained scan keeps its existing inline path without
+        // probing storage. Unknown/seek-sensitive roots stay single-worker.
+        if workers > 1 && !read_policy.all_roots_nonseek(&roots) {
+            workers = 1;
+        }
         let outcome = crate::content_pipeline::run(
             workers,
             || self.current(request),
@@ -1058,7 +1064,13 @@ impl ContentService {
                             status.discovered += 1;
                             status.current_path = Some(path.to_string_lossy().into());
                         });
-                        if !window.push(canonical) {
+                        let accepted = if workers > 1 && !read_policy.permits_parallel(path) {
+                            // A nested mount can differ from its selected root.
+                            window.push_serial(canonical)
+                        } else {
+                            window.push(canonical)
+                        };
+                        if !accepted {
                             return;
                         }
                     }

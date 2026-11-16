@@ -18,6 +18,9 @@ pub mod collection_store;
 pub mod content_pipeline;
 #[cfg(test)]
 mod content_pipeline_qualification;
+#[allow(dead_code)]
+#[path = "../../../src-tauri/src/content_storage.rs"]
+pub mod content_storage;
 #[allow(dead_code)] // Content/filename consumers are compiled by their own QA.
 #[path = "../../../src-tauri/src/resource_policy.rs"]
 pub mod resource_policy;

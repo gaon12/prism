@@ -21,7 +21,8 @@ pub(crate) enum Outcome {
 pub(crate) struct Window<'a, T, R> {
     tasks: Option<SyncSender<(usize, T)>>,
     results: Option<Receiver<(usize, R)>>,
-    inline: Option<&'a (dyn Fn(T) -> R + Sync)>,
+    work: &'a (dyn Fn(T) -> R + Sync),
+    parallel: bool,
     keep_running: &'a (dyn Fn() -> bool + Sync),
     consume: &'a mut dyn FnMut(R) -> bool,
     failed: &'a AtomicBool,
@@ -44,23 +45,8 @@ impl<T, R> Window<'_, T, R> {
         if !self.running() {
             return false;
         }
-        if let Some(work) = self.inline {
-            let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(task)))
-            {
-                Ok(result) => result,
-                Err(_) => {
-                    self.outcome = Outcome::WorkerFailed;
-                    return false;
-                }
-            };
-            if !self.running() {
-                return false;
-            }
-            if !(self.consume)(result) {
-                self.outcome = Outcome::Stopped;
-                return false;
-            }
-            return true;
+        if !self.parallel {
+            return self.apply_inline(task);
         }
         while self.submitted - self.consumed >= self.limit {
             if !self.drain_one() {
@@ -85,6 +71,40 @@ impl<T, R> Window<'_, T, R> {
             return false;
         }
         self.submitted = next;
+        true
+    }
+    /// A seek-sensitive/unknown mounted device must not overlap any issued
+    /// extraction. Publish all earlier results before reading this task inline.
+    pub(crate) fn push_serial(&mut self, task: T) -> bool {
+        if !self.running() {
+            return false;
+        }
+        while self.consumed < self.submitted {
+            if !self.drain_one() {
+                return false;
+            }
+        }
+        if !self.running() {
+            return false;
+        }
+        self.apply_inline(task)
+    }
+    fn apply_inline(&mut self, task: T) -> bool {
+        let result =
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.work)(task))) {
+                Ok(result) => result,
+                Err(_) => {
+                    self.outcome = Outcome::WorkerFailed;
+                    return false;
+                }
+            };
+        if !self.running() {
+            return false;
+        }
+        if !(self.consume)(result) {
+            self.outcome = Outcome::Stopped;
+            return false;
+        }
         true
     }
     fn drain_one(&mut self) -> bool {
@@ -137,7 +157,8 @@ fn inline<T, R>(
     let mut window = Window {
         tasks: None,
         results: None,
-        inline: Some(work),
+        work,
+        parallel: false,
         keep_running: keep,
         consume,
         failed: &failed,
@@ -219,7 +240,8 @@ pub(crate) fn run<T: Send, R: Send>(
         let mut window = Window {
             tasks: Some(tasks),
             results: Some(results),
-            inline: None,
+            work: &work,
+            parallel: true,
             keep_running: &keep,
             consume: &mut consume,
             failed: &failed,
@@ -325,6 +347,55 @@ mod tests {
         assert_eq!(values, (0..40).collect::<Vec<_>>());
     }
     #[test]
+    fn serial_tasks_drain_pending_work_and_keep_global_publication_order() {
+        use std::sync::{atomic::AtomicUsize, Condvar};
+        let caller = std::thread::current().id();
+        let active = AtomicUsize::new(0);
+        let started = (Mutex::new(0usize), Condvar::new());
+        let mut values = Vec::new();
+        let result = run(
+            2,
+            || true,
+            |id| {
+                let current = active.fetch_add(1, Ordering::AcqRel) + 1;
+                if id < 2 {
+                    let (lock, changed) = &started;
+                    let mut count = lock.lock().unwrap();
+                    *count += 1;
+                    changed.notify_all();
+                    while *count < 2 {
+                        let (next, wait) =
+                            changed.wait_timeout(count, Duration::from_secs(5)).unwrap();
+                        count = next;
+                        assert!(
+                            !wait.timed_out(),
+                            "parallel fixture did not start both tasks"
+                        );
+                    }
+                } else if id == 2 || id == 4 {
+                    assert_eq!(std::thread::current().id(), caller);
+                    assert_eq!(current, 1, "serial read overlapped another extraction");
+                }
+                active.fetch_sub(1, Ordering::AcqRel);
+                id
+            },
+            |value| {
+                values.push(value);
+                true
+            },
+            |window| {
+                assert!(window.push(0));
+                assert!(window.push(1));
+                assert!(window.push_serial(2));
+                assert!(window.push(3));
+                assert!(window.push_serial(4));
+            },
+        );
+        assert_eq!(result, Outcome::Completed);
+        assert_eq!(values, [0, 1, 2, 3, 4]);
+        assert_eq!(active.load(Ordering::Acquire), 0);
+    }
+    #[test]
     fn consumer_stop_does_not_publish_later_completions() {
         let mut values = Vec::new();
         let result = run(
@@ -380,7 +451,8 @@ mod tests {
                     true
                 },
                 |window| {
-                    window.push(0);
+                    assert!(window.push(0));
+                    assert!(!window.push_serial(1));
                 },
             );
             assert_eq!(result, Outcome::Cancelled);

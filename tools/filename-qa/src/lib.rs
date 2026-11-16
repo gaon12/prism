@@ -5,6 +5,8 @@
 mod captured_rows;
 #[path = "../../../src-tauri/src/content_pipeline.rs"]
 mod content_pipeline;
+#[path = "../../../src-tauri/src/content_storage.rs"]
+mod content_storage;
 mod cpu_clock;
 #[path = "../../../src-tauri/src/file_policy.rs"]
 mod file_policy;

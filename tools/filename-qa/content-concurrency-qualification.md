@@ -35,7 +35,9 @@ The 6-GiB cap is a proposed experimental bound, not a product minimum, memory
 reservation or a promise of fit. Require 4 GiB available before a model run,
 stop below 1 GiB, and apply the owned-Job 600-second bound. Read back actual
 limits and membership for the model and every WebView child; do not exclude
-them from peak memory. Record actual extraction workers, for example from owned
+them from peak memory. Require the storage admission to report an eligible non-seek source volume;
+HDD/unknown sources intentionally stay serial and are a regression case, not a
+parallel speedup case. Record actual extraction workers, for example from owned
 thread descriptions (`prism-content-extract`) rather than a predicted budget.
 One-worker inline execution creates no extraction worker threads; it does not
 exercise parallel extraction. Keep the same external sampler on all cases and

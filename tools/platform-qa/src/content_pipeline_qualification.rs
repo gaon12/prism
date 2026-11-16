@@ -40,6 +40,11 @@ fn actual_extraction_window_qualification() {
     }
     let input_sha = format!("{:x}", input_hash.finalize());
     let roots = vec![source];
+    let mut storage = crate::content_storage::ReadPolicy::default();
+    assert!(
+        storage.all_roots_nonseek(&roots),
+        "parallel qualification requires a verified non-seek source volume"
+    );
     let cancel = AtomicBool::new(false);
     let mut cases = Vec::new();
     let mut expected = None;

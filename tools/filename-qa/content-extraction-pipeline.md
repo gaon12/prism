@@ -53,8 +53,10 @@ their block queue and reads the kernel's
 [rotational indicator](https://github.com/torvalds/linux/blob/master/Documentation/ABI/stable/sysfs-block).
 All stacked-device slaves must also be known nonrotational. Missing/invalid
 values, cycles, excessive graph sizes and virtual leaves with unknown backing
-storage are serial. macOS currently has no device probe here and therefore
-uses one extraction worker; this change does not claim native Mac parallelism.
+storage are serial. macOS has no seek-penalty probe here; current Macs boot
+from internal SSDs, so each existing mounted device (keyed by its device id) is
+treated as non-seek and may use parallel workers. External Mac HDD detection is
+a follow-up, and native Mac parallel throughput is not yet measured.
 
 An SSD root can contain a mounted HDD or network filesystem. The producer
 therefore resolves each candidate file's actual device. A newly encountered
@@ -94,8 +96,8 @@ store on 96 fixed synthetic HTML files. All four 1/N/N/1 cases must publish the
 same semantic SHA, with unchanged input SHA. It includes serialization/hash and
 SQL costs and requires a verified non-seek source volume before running the
 parallel cases. It does not exercise the full app admission path, embedding or
-GUI latency. An unknown device or macOS without a probe cannot qualify this
-parallel component case.
+GUI latency. An unknown device, or a Mac volume admitted only by the SSD
+assumption, cannot qualify this parallel component case.
 
 ```powershell
 $env:PRISM_DEV_CONTENT_PIPELINE_QUALIFY = '1'

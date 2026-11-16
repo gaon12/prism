@@ -271,7 +271,23 @@ mod platform {
         })
     }
 }
-#[cfg(not(any(windows, target_os = "linux")))]
+/// macOS has no simple per-volume seek-penalty query, and current Macs boot from
+/// internal SSDs. Treat each mounted device as non-seek so Mac users get parallel
+/// reads; the device id still keys the cache per mount. External HDD detection
+/// (IOKit) is a documented follow-up.
+#[cfg(target_os = "macos")]
+mod platform {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+    pub(super) type Device = u64;
+    pub(super) fn device(path: &Path) -> Option<Device> {
+        std::fs::metadata(path).ok().map(|meta| meta.dev())
+    }
+    pub(super) fn nonseek(_: &Device) -> bool {
+        true
+    }
+}
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 mod platform {
     use super::*;
     pub(super) type Device = ();

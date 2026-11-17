@@ -94,10 +94,25 @@ impl SetupArgs {
                     parsed.uninstall = true;
                 }
                 _ if upper.starts_with("/D=") => {
-                    let path = arg[3..].trim_matches('"');
+                    // NSIS rule: `/D=` comes last and is never quoted, so a folder with spaces
+                    // (`/D=C:\Program Files\Prism`) reaches us split into several arguments.
+                    // Join the following pieces back with single spaces, stopping at the next
+                    // setup flag (e.g. `--restore-version x.y.z`, `/ARGS`). Without this, setup
+                    // would install into `C:\Program`.
+                    let rest = args[index + 1..]
+                        .iter()
+                        .take_while(|piece| !is_setup_flag(piece));
+                    let pieces = rest.clone().count();
+                    let joined = std::iter::once(&arg[3..])
+                        .chain(rest.map(String::as_str))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let path = joined.trim().trim_matches('"');
                     if !path.is_empty() {
                         parsed.install_dir = Some(PathBuf::from(path));
                     }
+                    // Skip the pieces that were part of the folder.
+                    index += pieces;
                 }
                 // Unknown flags are ignored so future updater versions cannot break setup.
                 _ => {}
@@ -106,6 +121,15 @@ impl SetupArgs {
         }
         parsed
     }
+}
+
+/// True for a piece that starts a new setup flag rather than continuing an unquoted `/D=`
+/// folder: one of the known `/` flags, another `/D=`, or any `--` option (also future ones).
+fn is_setup_flag(piece: &str) -> bool {
+    let upper = piece.to_ascii_uppercase();
+    matches!(upper.as_str(), "/S" | "/P" | "/UPDATE" | "/R" | "/ARGS")
+        || upper.starts_with("/D=")
+        || piece.starts_with("--")
 }
 
 #[cfg(test)]
@@ -145,6 +169,44 @@ mod tests {
         let args = parse(&[r#"/D=C:\Tools\Prism App"#], "setup.exe");
         assert_eq!(args.install_dir, Some(PathBuf::from(r"C:\Tools\Prism App")));
         assert_eq!(parse(&["/D="], "setup.exe").install_dir, None);
+        // Unquoted NSIS spelling: Windows splits the folder at spaces.
+        let split = parse(&["/S", r"/D=C:\Program", r"Files\Prism"], "setup.exe");
+        assert_eq!(split.ui, UiMode::Silent);
+        assert_eq!(
+            split.install_dir,
+            Some(PathBuf::from(r"C:\Program Files\Prism"))
+        );
+        // /ARGS after the folder still belongs to Prism.
+        let with_args = parse(
+            &["/P", r"/D=C:\My", r"Apps\Prism", "/ARGS", "--minimized"],
+            "setup.exe",
+        );
+        assert_eq!(
+            with_args.install_dir,
+            Some(PathBuf::from(r"C:\My Apps\Prism"))
+        );
+        assert_eq!(with_args.relaunch_args, ["--minimized"]);
+        // The documented silent restore keeps its version (README: `/S /D=C:\path
+        // --restore-version x.y.z`), also when the folder itself was split.
+        let restore = parse(
+            &[
+                "/S",
+                r"/D=C:\My",
+                r"Apps\Prism",
+                "--restore-version",
+                "0.1.0",
+            ],
+            "setup.exe",
+        );
+        assert_eq!(
+            restore.install_dir,
+            Some(PathBuf::from(r"C:\My Apps\Prism"))
+        );
+        assert_eq!(restore.restore_version.as_deref(), Some("0.1.0"));
+        // Flags written after the folder are still flags.
+        let after = parse(&[r"/D=C:\Tools\Prism", "/R", "/UPDATE"], "setup.exe");
+        assert_eq!(after.install_dir, Some(PathBuf::from(r"C:\Tools\Prism")));
+        assert!(after.relaunch && after.update);
         assert!(parse(&[], "Uninstall.exe").uninstall);
         assert!(parse(&["--uninstall"], "setup.exe").uninstall);
         let temp = parse(&["--from-temp", r"C:\Users\a\AppData\Local\Prism"], "x.exe");

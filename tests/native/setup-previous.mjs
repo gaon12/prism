@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium } from '@playwright/test';
 import { setupDebugPort, until, untilWebView } from './harness.mjs';
+import { removeTestSandbox } from './test-sandbox.mjs';
 import { recoveryFixture } from './setup-fixture.mjs';
 import { verifyInstalledPayload } from './setup-payload.mjs';
 
@@ -195,10 +196,12 @@ try {
   assert.equal(await readFile(userData, 'utf8'), 'newer user data');
   assert.deepEqual(errors, []);
   assert.deepEqual(warnings, []);
+  const sandboxRemoved = await removeTestSandbox(root);
   console.log(
     JSON.stringify({
       passed: true,
       root,
+      sandboxRemoved,
       guiRestore: true,
       silentTempRestore: true,
       userFilesPreserved: true,

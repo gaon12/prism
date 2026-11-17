@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium } from '@playwright/test';
 import { setupDebugPort, until, WEBVIEW_START_TIMEOUT } from './harness.mjs';
+import { removeTestSandbox } from './test-sandbox.mjs';
 
 assert.equal(process.platform, 'win32');
 for (const name of ['PRISM_SETUP_EXE', 'PRISM_SETUP_EXPECTED_EXE', 'PRISM_SETUP_TRUSTED_CERT'])
@@ -218,7 +219,10 @@ try {
   }
 
   assert.equal(realLists(), listsBefore, 'the real certificate lists are unchanged');
-  console.log(JSON.stringify({ passed: true, root, results, realListsUnchanged: true }));
+  const sandboxRemoved = await removeTestSandbox(root);
+  console.log(
+    JSON.stringify({ passed: true, root, sandboxRemoved, results, realListsUnchanged: true }),
+  );
 } finally {
   // Close only this test's own windows and processes.
   if (browser?.isConnected()) {

@@ -11,6 +11,7 @@ import { join, relative, resolve, isAbsolute } from 'node:path';
 import { chromium } from '@playwright/test';
 import { setupDebugPort, until } from './harness.mjs';
 import { verifyInstalledPayload } from './setup-payload.mjs';
+import { removeTestSandbox } from './test-sandbox.mjs';
 
 assert.equal(process.platform, 'win32');
 assert(process.env.PRISM_SETUP_EXE, 'Supply the candidate setup explicitly.');
@@ -219,10 +220,13 @@ try {
   assert.equal(await digest(expectedApp), appSha256);
   assert.deepEqual(errors, []);
   assert.deepEqual(warnings, []);
+  // The option/done screenshots inside the folder are kept.
+  const sandboxRemoved = await removeTestSandbox(root);
   console.log(
     JSON.stringify({
       passed: true,
       root,
+      sandboxRemoved,
       setupSha256,
       appSha256,
       results,

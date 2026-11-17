@@ -21,7 +21,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   PRISM_UPDATE_URL: ${{ vars.PRISM_UPDATE_URL || 'https://api.rasca99.dev/prism/update.php' }}
-  PRISM_DOWNLOAD_PAGE: ${{ vars.PRISM_DOWNLOAD_PAGE }}
+  PRISM_DOWNLOAD_PAGE: ${{ vars.PRISM_DOWNLOAD_PAGE || 'https://github.com/gaon12/prism/releases/latest' }}
   # Test builds (debug profile: the tools/ checks and the update verifier) skip
   # debug info. It is most of their size on disk, and the Rust build cache of
   # every job together has to stay under GitHub's 10 GB limit, or GitHub drops

@@ -5,8 +5,8 @@
 //! version exists and offer to open the download page. This module does that check.
 //!
 //! How it works, step by step:
-//! 1. Download the small `latest.json` file that every release publishes (the same file the Tauri
-//!    updater reads), over HTTPS only and with a size limit.
+//! 1. Download the small update information from the update server (server/update/index.php,
+//!    the same data the Tauri updater reads), over HTTPS only and with a size limit.
 //! 2. Read its `version` field and compare it with the running version.
 //! 3. If the published version is newer, return an [`UpdateNotice`] for the UI.
 //!

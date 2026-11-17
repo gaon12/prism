@@ -2,8 +2,8 @@
 //!
 //! This file holds the *rules*; the actual network/installer work is behind the
 //! [`UpdateBackend`] trait so the rules can be tested without the internet:
-//! - Installed builds: the backend wraps `tauri-plugin-updater` (signed installers from
-//!   `https://github.com/gaon12/prism/releases/latest/download/latest.json`).
+//! - Installed builds: the backend wraps `tauri-plugin-updater` (signed installers listed by
+//!   the update server `PRISM_UPDATE_URL`, server/update/index.php; see `update_backend.rs`).
 //! - Portable / isolated builds: the backend only reports a new version (see
 //!   `update_notice.rs`); `can_install()` is false, so the UI offers "open download page".
 //!

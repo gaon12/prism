@@ -107,7 +107,13 @@ async function hash(path) {
 function powershell(script, extra = {}) {
   return execFileSync(
     'powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference='Stop'; " + script],
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $ErrorActionPreference='Stop'; " +
+        script,
+    ],
     {
       windowsHide: true,
       encoding: 'utf8',
@@ -540,7 +546,7 @@ function selfTest() {
       $script:item.Value=$null
       $missingValue=Value 'inert-memory-fixture'
       $script:present=$false
-      @{ emptyBinary=$binary; emptyString=$text; missingValue=$missingValue; absent=(Value 'inert-memory-fixture') } | ConvertTo-Json -Compress
+      @{ emptyBinary=$binary; emptyString=$text; missingValue=$missingValue; absent=(Value 'inert-memory-fixture'); unicode='한글 試験' } | ConvertTo-Json -Compress
     `),
     );
     assert.deepEqual(values, {
@@ -548,6 +554,7 @@ function selfTest() {
       emptyString: '',
       missingValue: null,
       absent: null,
+      unicode: '한글 試験',
     });
   }
   const env = {

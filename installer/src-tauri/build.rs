@@ -81,6 +81,18 @@ fn main() {
     if let Ok(dir) = env::var("PRISM_PAYLOAD_DIR") {
         let root = safe_path::root(Path::new(&dir)).expect("validate payload source folder");
         collect(&root, &root, &mut files).expect("read payload source files");
+        // A release setup ships exactly what the app bundle declares, whichever way the
+        // payload was gathered: a hand-made folder without the component notices must fail
+        // here instead of producing a setup that installs an app without its notices.
+        if env::var("PROFILE").as_deref() == Ok("release") {
+            for name in bundle_resources(&config_json) {
+                assert!(
+                    files.iter().any(|(file, _)| *file == name),
+                    "A release setup must include the built resource {name}; \
+                     copy it into PRISM_PAYLOAD_DIR."
+                );
+            }
+        }
     } else {
         let exe = app_dir.join("target/release/prism.exe");
         println!("cargo:rerun-if-changed={}", exe.display());

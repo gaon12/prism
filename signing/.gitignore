@@ -1,0 +1,7 @@
+# Certificates and keys never go into git: only the instructions and scripts in this folder are
+# shared. Everything else here (prism-publisher.pfx, prism-publisher.cer, backups) stays local.
+*
+!.gitignore
+!README.md
+!new-certificate.ps1
+!sign.ps1

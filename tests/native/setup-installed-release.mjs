@@ -1,18 +1,96 @@
 // Real HKCU/known-folder integration, exclusively on disposable GitHub-hosted Windows x64.
-// Never run the qualification on a local/self-hosted computer. --self-test is pure and safe.
+// Never run qualification on local/self-hosted computers. --self-test uses only a fresh temp fixture.
 // Browser plugin unavailable: use the repository's Playwright/WebView2 CDP workflow.
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
-import { lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { until, untilWebView } from './harness.mjs';
 import { verifyInstalledPayload } from './setup-payload.mjs';
 
 const marker = '.prism-installed-release-owner';
+// WScript.Shell.TargetPath can expose an ANSI spelling ("??") on English Windows.
+// Explicit wide COM reads preserve the stored Unicode path without resolving/launching it.
+// https://learn.microsoft.com/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishelllinkw-getpath
+const wideShortcutReader = `
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+using System.Text;
+[ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IPrismWideShellLink {
+  [PreserveSig] int GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, IntPtr data, uint flags);
+  [PreserveSig] int GetIDList(out IntPtr list);
+  [PreserveSig] int SetIDList(IntPtr list);
+  [PreserveSig] int GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int count);
+  [PreserveSig] int SetDescription([MarshalAs(UnmanagedType.LPWStr)] string text);
+  [PreserveSig] int GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count);
+  [PreserveSig] int SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string path);
+  [PreserveSig] int GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int count);
+  [PreserveSig] int SetArguments([MarshalAs(UnmanagedType.LPWStr)] string text);
+  [PreserveSig] int GetHotkey(out short value);
+  [PreserveSig] int SetHotkey(short value);
+  [PreserveSig] int GetShowCmd(out int value);
+  [PreserveSig] int SetShowCmd(int value);
+  [PreserveSig] int GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, out int index);
+  [PreserveSig] int SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
+  [PreserveSig] int SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+  [PreserveSig] int Resolve(IntPtr window, uint flags);
+  [PreserveSig] int SetPath([MarshalAs(UnmanagedType.LPWStr)] string path);
+}
+public sealed class PrismShortcutInfo {
+  public string Target { get; set; }
+  public string WorkingDirectory { get; set; }
+  public string Arguments { get; set; }
+}
+public static class PrismWideShortcutReader {
+  public const int BufferCharacters = 32768;
+  private static string Bounded(StringBuilder value) {
+    if (value.Length >= BufferCharacters - 1) throw new InvalidOperationException("Shortcut field may be truncated.");
+    return value.ToString();
+  }
+  private static void Input(string value) {
+    if (value == null || value.Length >= BufferCharacters - 1 || value.IndexOf((char)0) >= 0)
+      throw new ArgumentException("Invalid or oversized fixture field.");
+  }
+  public static PrismShortcutInfo Read(string filename) {
+    object link = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046")));
+    try {
+      ((IPersistFile)link).Load(filename, 0);
+      var path = new StringBuilder(BufferCharacters);
+      int status = ((IPrismWideShellLink)link).GetPath(path, path.Capacity, IntPtr.Zero, 4);
+      Marshal.ThrowExceptionForHR(status);
+      if (status != 0 || path.Length == 0) throw new InvalidOperationException("Shortcut has no stored Unicode target.");
+      var working = new StringBuilder(BufferCharacters);
+      Marshal.ThrowExceptionForHR(((IPrismWideShellLink)link).GetWorkingDirectory(working, working.Capacity));
+      var arguments = new StringBuilder(BufferCharacters);
+      Marshal.ThrowExceptionForHR(((IPrismWideShellLink)link).GetArguments(arguments, arguments.Capacity));
+      return new PrismShortcutInfo { Target = Bounded(path), WorkingDirectory = Bounded(working), Arguments = Bounded(arguments) };
+    } finally {
+      if (link != null) Marshal.FinalReleaseComObject(link);
+    }
+  }
+  // Used only by --self-test with its newly created, marked OS-temp directory.
+  public static void CreateFixture(string filename, string target, string working, string arguments) {
+    Input(filename); Input(target); Input(working); Input(arguments);
+    object link = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046")));
+    try {
+      var wide = (IPrismWideShellLink)link;
+      Marshal.ThrowExceptionForHR(wide.SetPath(target));
+      Marshal.ThrowExceptionForHR(wide.SetWorkingDirectory(working));
+      Marshal.ThrowExceptionForHR(wide.SetArguments(arguments));
+      ((IPersistFile)link).Save(filename, true);
+    } finally {
+      if (link != null) Marshal.FinalReleaseComObject(link);
+    }
+  }
+}
+`;
 const pathKey = (path) => win32.normalize(path.replace(/^\\\\\?\\/, '')).toLowerCase();
 export function requireHostedWindows(platform, arch, env) {
   assert.equal(platform, 'win32', 'Requires a disposable GitHub-hosted Windows runner');
@@ -308,19 +386,30 @@ async function qualify() {
     assert(registration.EstimatedSize > 0);
     await verifyInstalledPayload(installed, expectedApp);
     assert.equal(await hash(join(installed, 'uninstall.exe')), setupHash);
+    for (const shortcut of shortcuts) {
+      await noLinks(shortcut);
+      const info = await lstat(shortcut);
+      assert(info.isFile() && info.size > 0 && info.size <= 1024 * 1024, 'Invalid owned shortcut');
+    }
     const targets = JSON.parse(
       powershell(
         `
-      $shell=New-Object -ComObject WScript.Shell
-      $targets=@(foreach($link in (ConvertFrom-Json -InputObject $env:PRISM_QUAL_LINKS)) { if(!(Test-Path -LiteralPath $link -PathType Leaf)){ throw 'Missing shortcut' }; $shell.CreateShortcut($link).TargetPath })
+      Add-Type -TypeDefinition @'
+${wideShortcutReader}
+'@
+      $targets=@(foreach($link in (ConvertFrom-Json -InputObject $env:PRISM_QUAL_LINKS)) { [PrismWideShortcutReader]::Read($link) })
       ConvertTo-Json -InputObject $targets -Compress
     `,
         { PRISM_QUAL_LINKS: JSON.stringify(shortcuts) },
       ),
     );
+    report.shortcutTargets = targets;
     assert.equal(targets.length, 2);
-    for (const target of targets)
-      assert.equal(pathKey(target), pathKey(join(installed, 'prism.exe')));
+    for (const target of targets) {
+      assert.equal(pathKey(target.Target), pathKey(join(installed, 'prism.exe')));
+      assert.equal(pathKey(target.WorkingDirectory), pathKey(installed));
+      assert.equal(target.Arguments, '');
+    }
     assert.equal(systemState().startup, null, 'Disabled auto-start must stay disabled');
   }
   async function attach(child) {
@@ -523,8 +612,64 @@ async function qualify() {
   if (failure) throw failure;
 }
 
-function selfTest() {
+async function selfTest() {
   if (process.platform === 'win32') {
+    const nonce = randomBytes(16).toString('hex');
+    const parent = await realpath(tmpdir());
+    const fixture = join(parent, `prism-wide-shortcut-${nonce}`);
+    await noLinks(parent);
+    await mkdir(fixture);
+    const fixtureOwner = join(fixture, marker);
+    await writeFile(fixtureOwner, nonce, { flag: 'wx' });
+    try {
+      const working = join(fixture, '한글 folder with spaces 試験');
+      await mkdir(working);
+      const target = join(working, 'inert source.txt');
+      await writeFile(target, `inert fixture ${nonce}`, { flag: 'wx' });
+      const fixtureArgs = `--fixture="${nonce} 한글 試験"`;
+      const link = join(fixture, 'fixture.lnk');
+      const result = JSON.parse(
+        powershell(
+          `
+      Add-Type -TypeDefinition @'
+${wideShortcutReader}
+'@
+      $c=ConvertFrom-Json -InputObject $env:PRISM_QUAL_FIXTURE
+      [PrismWideShortcutReader]::CreateFixture($c.link,$c.target,$c.working,$c.arguments)
+      $before=[Convert]::ToBase64String([IO.File]::ReadAllBytes($c.link))
+      $oversized=$false
+      try { [PrismWideShortcutReader]::CreateFixture($c.link,$c.target,$c.working,('x' * 32768)) }
+      catch { if(!$_.Exception.ToString().Contains('Invalid or oversized fixture field.')){throw}; $oversized=$true }
+      $nul=$false
+      try { [PrismWideShortcutReader]::CreateFixture($c.link,$c.target,$c.working,('x' + [char]0)) }
+      catch { if(!$_.Exception.ToString().Contains('Invalid or oversized fixture field.')){throw}; $nul=$true }
+      @{
+        actual=[PrismWideShortcutReader]::Read($c.link)
+        bufferCharacters=[PrismWideShortcutReader]::BufferCharacters
+        oversizedRejected=$oversized
+        nulRejected=$nul
+        invalidWritesPreservedFile=($before -eq [Convert]::ToBase64String([IO.File]::ReadAllBytes($c.link)))
+      } | ConvertTo-Json -Depth 4 -Compress
+    `,
+          { PRISM_QUAL_FIXTURE: JSON.stringify({ link, target, working, arguments: fixtureArgs }) },
+        ),
+      );
+      assert.equal(pathKey(result.actual.Target), pathKey(target));
+      assert.equal(pathKey(result.actual.WorkingDirectory), pathKey(working));
+      assert.equal(result.actual.Arguments, fixtureArgs);
+      assert.equal(result.bufferCharacters, 32768);
+      assert.equal(result.oversizedRejected, true);
+      assert.equal(result.nulRejected, true);
+      assert.equal(result.invalidWritesPreservedFile, true);
+      console.log(
+        'Actual temp-only IShellLinkW Unicode target/working-directory/arguments roundtrip and buffer bounds passed.',
+      );
+    } finally {
+      assert.equal(pathKey(await realpath(fixture)), pathKey(fixture));
+      assert.equal(pathKey(dirname(fixture)), pathKey(parent));
+      assert.equal(await readFile(fixtureOwner, 'utf8'), nonce);
+      await rm(fixture, { recursive: true });
+    }
     // Exercise the actual probe helper with in-memory substitutes. No registry or files.
     const definition = systemState.toString().match(/function Value\(\$path\) \{[^\n]+\}/)?.[0];
     assert(definition, 'Expected the actual PowerShell registry value helper');
@@ -651,12 +796,12 @@ function selfTest() {
   assert.throws(() => verifyIdentity(runtime, settings, 'b'.repeat(32), root));
   assert.throws(() => verifyIdentity(runtime, settings, nonce, root + '-foreign'));
   console.log(
-    'Installed-release guard, exact ownership, and nonce identity negative checks passed (no OS writes).',
+    'Installed-release guard, exact ownership, and nonce identity checks passed (no installed app or registry mutation).',
   );
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  if (process.argv.length === 3 && process.argv[2] === '--self-test') selfTest();
+  if (process.argv.length === 3 && process.argv[2] === '--self-test') await selfTest();
   else {
     assert.equal(
       process.argv.length,

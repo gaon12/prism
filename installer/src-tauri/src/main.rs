@@ -54,11 +54,12 @@ static CLEANUP_WORKER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/prism-c
 static TRUSTED_CERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/trusted-publisher.cer"));
 
 /// After a successful install, lets this user's Windows trust Prism's publisher (see
-/// [`trust`]). `ask`: Windows may show its "install this certificate?" question, which only a
-/// full window run allows. Never fails the install; the outcome goes to the log.
-fn trust_publisher(ask: bool) {
+/// [`trust`]) - only with `consented`: the user opted in inside the visible setup window after
+/// seeing the certificate's identity. Without it, nothing is added; the state is only logged.
+/// Never fails the install.
+fn apply_publisher_trust(consented: bool) {
     let result = match system::current().cert_stores() {
-        Some(stores) => trust::trust(&*stores, TRUSTED_CERT, ask),
+        Some(stores) => trust::trust(&*stores, TRUSTED_CERT, consented),
         None => Ok(trust::TrustResult::NotConfigured),
     };
     match result {
@@ -67,7 +68,7 @@ fn trust_publisher(ask: bool) {
     }
 }
 
-/// After a successful uninstall, removes what [`trust_publisher`] added. Never fails it.
+/// After a successful uninstall, removes what [`apply_publisher_trust`] added. Never fails it.
 fn untrust_publisher(ask: bool) {
     let result = match system::current().cert_stores() {
         Some(stores) => trust::untrust(&*stores, ask),
@@ -115,9 +116,10 @@ struct SetupInfo {
     log_path: Option<PathBuf>,
     /// The same version is already installed here, so "Repair" can rewrite its files.
     repair_available: bool,
-    /// This setup will ask Windows to trust Prism's publisher certificate after installing,
-    /// so Windows may show its own "install this certificate?" question.
-    trust_certificate: bool,
+    /// The publisher certificate this setup can offer to trust (name, fingerprints, expiry),
+    /// to show before the user decides; `null` when there is none. Passing
+    /// `trustPublisher: true` to `run_install` is the user's opt-in.
+    trust_certificate: Option<trust::CertIdentity>,
 }
 
 #[derive(Clone, Serialize)]
@@ -264,7 +266,9 @@ fn setup_info(setup: tauri::State<'_, Setup>) -> Result<SetupInfo, String> {
         relaunch: setup.args.relaunch,
         log_path: setup_log::path(),
         repair_available,
-        trust_certificate: !TRUSTED_CERT.is_empty(),
+        trust_certificate: (!TRUSTED_CERT.is_empty())
+            .then(|| trust::identity(TRUSTED_CERT).ok())
+            .flatten(),
     })
 }
 
@@ -360,7 +364,13 @@ async fn choose_folder(app: tauri::AppHandle, current: String) -> Option<PathBuf
 
 /// Installs in a background thread and reports progress as `setup://progress` events.
 #[tauri::command]
-async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(), String> {
+/// `trust_publisher`: the user ticked "trust this publisher" after seeing its identity.
+/// Missing or false: no certificate is added.
+async fn run_install(
+    app: tauri::AppHandle,
+    options: InstallOptions,
+    trust_publisher: Option<bool>,
+) -> Result<(), String> {
     system::check_sandbox_destination(&options.install_dir).map_err(|error| error.to_string())?;
     if payload_size() == 0 {
         return Err("This setup does not contain Prism. Download it again.".into());
@@ -368,7 +378,8 @@ async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(
     let operation = app.state::<Setup>().gate.begin()?;
     let exe = app.state::<Setup>().exe.clone();
     let relaunch = app.state::<Setup>().args.relaunch;
-    let ask = app.state::<Setup>().args.ui == UiMode::Full;
+    // Only a full window can carry the opt-in; passive runs (updates) never add trust.
+    let consented = app.state::<Setup>().args.ui == UiMode::Full && trust_publisher == Some(true);
     setup_log::line(format!(
         "install {VERSION} into {} (desktop shortcut {}, Start menu {})",
         options.install_dir.display(),
@@ -395,7 +406,7 @@ async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(
             operation.fail(restart_fallback(relaunch, &options.install_dir));
             return Err(error);
         }
-        trust_publisher(ask);
+        apply_publisher_trust(consented);
         let installed = safe_path::root(&options.install_dir).map_err(|error| error.to_string())?;
         operation.complete(Some(installed))
     })
@@ -743,8 +754,8 @@ fn run_silent(args: &SetupArgs) -> ExitCode {
                 }
                 return Err(error);
             }
-            // Silent: an already trusted certificate passes, a new one is never asked about.
-            trust_publisher(false);
+            // Silent: never adds trust; the state is only logged.
+            apply_publisher_trust(false);
             if args.relaunch {
                 start_prism(&options.install_dir, &args.relaunch_args)?;
             }

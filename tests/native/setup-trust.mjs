@@ -8,11 +8,14 @@
 //   PRISM_SETUP_EXE=...prism-setup.exe  PRISM_SETUP_EXPECTED_EXE=...prism.exe
 //   PRISM_SETUP_TRUSTED_CERT=...the .cer it was built with   node tests/native/setup-trust.mjs
 //
+// Trust is only added after the user's opt-in in the window (`run_install` with
+// `trustPublisher: true`, after `setup_info.trustCertificate` showed who and which certificate).
 // Cases:
-//   window  full-window install adds Root + TrustedPublisher; window uninstall removes both.
-//   decline the user answers "No" to Windows' question: installed, nothing trusted.
-//   silent  /S never asks: nothing added; with a Root that IT already added, only the
-//           publisher entry is added, and a silent uninstall removes just that.
+//   no-opt-in  the normal Install button without opting in adds nothing.
+//   opt-in     adds Root + TrustedPublisher; the window uninstall removes both.
+//   decline    opted in, but "No" to Windows' own question: installed, nothing trusted.
+//   silent     /S and /S /UPDATE never add anything, even for a root IT already added;
+//              a silent uninstall leaves that IT root alone.
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -112,7 +115,10 @@ async function closeWindow(child) {
 }
 
 // Full-window install into `installed`; returns setup_info.
-async function windowInstall(sandbox, installed, extraEnv = {}) {
+// Full-window install into `installed`; returns setup_info. `optIn`: install through the
+// backend with the user's opt-in, as the window does once it offers the choice; otherwise the
+// visible Install button (no opt-in).
+async function windowInstall(sandbox, installed, { optIn = false, extraEnv = {} } = {}) {
   const port = await setupDebugPort();
   const child = start(executable, [`/D=${installed}`], {
     ...process.env,
@@ -123,13 +129,30 @@ async function windowInstall(sandbox, installed, extraEnv = {}) {
   const page = await windowOf(child, port);
   await page.locator('.setup[data-screen="options"]').waitFor();
   const info = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('setup_info'));
+  if (optIn) {
+    // Declining Windows' question must not fail the install either.
+    await page.evaluate(
+      (installDir) =>
+        window.__TAURI_INTERNALS__.invoke('run_install', {
+          options: { installDir, desktopShortcut: false, startMenuShortcut: false },
+          trustPublisher: true,
+        }),
+      installed,
+    );
+    await page
+      .evaluate(() => window.__TAURI_INTERNALS__.invoke('finish', { launch: false }))
+      .catch(() => {}); // the window may close before the answer arrives
+    await browser.close().catch(() => {});
+    browser = undefined;
+    await exited(child);
+    return info;
+  }
   await page.locator('#agree').check();
   await page.locator('#install').click();
   await page.locator('.setup[data-screen="done"]').waitFor({ timeout: 180_000 });
   assert.equal(
     await page.locator('#done-detail').evaluate((node) => node.classList.contains('error')),
     false,
-    'declining or skipping the certificate never fails the install',
   );
   await page.locator('#launch').uncheck();
   await page.locator('#finish').click();
@@ -157,13 +180,29 @@ async function windowUninstall(sandbox, installed) {
 
 const results = {};
 try {
-  // 1. Full window: added to both lists, remembered, and removed again on uninstall.
+  // 1. The normal Install button without opting in: nothing is added.
   {
-    const sandbox = join(root, 'window');
+    const sandbox = join(root, 'no-opt-in');
     const installed = join(sandbox, 'Prism');
     await mkdir(sandbox);
     const info = await windowInstall(sandbox, installed);
-    assert.equal(info.trustCertificate, true, 'the window is told Windows may ask');
+    // The window gets the identity to show before anyone decides.
+    assert.equal(info.trustCertificate.sha256.replaceAll(':', '').toLowerCase(), id);
+    assert.match(info.trustCertificate.thumbprint, /^[0-9A-F]{40}$/);
+    assert.match(info.trustCertificate.validUntil, /^\d{4}-\d{2}-\d{2}$/);
+    assert(info.trustCertificate.subject.length > 0);
+    assert(await exists(join(installed, 'prism.exe')));
+    const state = await trustState(sandbox);
+    assert(!holds(state, 'Root') && !holds(state, 'TrustedPublisher'), JSON.stringify(state));
+    results.noOptIn = 'installed, nothing trusted';
+  }
+
+  // 2. Opt-in: added to both lists, remembered, and removed again by the window uninstall.
+  {
+    const sandbox = join(root, 'opt-in');
+    const installed = join(sandbox, 'Prism');
+    await mkdir(sandbox);
+    await windowInstall(sandbox, installed, { optIn: true });
     let state = await trustState(sandbox);
     assert(holds(state, 'Root') && holds(state, 'TrustedPublisher'), JSON.stringify(state));
     assert.deepEqual(state.added[id], ['Root', 'TrustedPublisher']);
@@ -171,15 +210,18 @@ try {
     state = await trustState(sandbox);
     assert(!holds(state, 'Root') && !holds(state, 'TrustedPublisher'), JSON.stringify(state));
     assert.equal(state.added[id], undefined);
-    results.window = 'added then removed';
+    results.optIn = 'added then removed';
   }
 
-  // 2. "No" to Windows' question: installed normally, nothing trusted or remembered.
+  // 3. Opted in, then "No" to Windows' question: installed normally, nothing trusted.
   {
     const sandbox = join(root, 'decline');
     const installed = join(sandbox, 'Prism');
     await mkdir(sandbox);
-    await windowInstall(sandbox, installed, { PRISM_SETUP_SANDBOX_TRUST: 'decline' });
+    await windowInstall(sandbox, installed, {
+      optIn: true,
+      extraEnv: { PRISM_SETUP_SANDBOX_TRUST: 'decline' },
+    });
     assert(await exists(join(installed, 'prism.exe')));
     const state = await trustState(sandbox);
     assert(!holds(state, 'Root') && !holds(state, 'TrustedPublisher'), JSON.stringify(state));
@@ -187,8 +229,8 @@ try {
     results.decline = 'installed, nothing trusted';
   }
 
-  // 3. Silent: never asks. With a Root IT already added, only the publisher entry is added,
-  //    and a silent uninstall removes exactly that.
+  // 4. Silent runs never expand trust, even when IT already added the root; a silent
+  //    uninstall leaves that root alone.
   {
     const sandbox = join(root, 'silent');
     const installed = join(sandbox, 'Prism');
@@ -198,24 +240,18 @@ try {
     let state = await trustState(sandbox);
     assert(!holds(state, 'Root') && !holds(state, 'TrustedPublisher'), JSON.stringify(state));
 
-    await writeFile(
-      join(sandbox, 'trust.json'),
-      JSON.stringify({ stores: { Root: [id] }, added: {} }),
-    );
+    const itRoot = JSON.stringify({ stores: { Root: [id] }, added: {} });
+    await writeFile(join(sandbox, 'trust.json'), itRoot);
     await exited(start(executable, ['/S', '/UPDATE', `/D=${installed}`], env));
     state = await trustState(sandbox);
-    assert(holds(state, 'Root') && holds(state, 'TrustedPublisher'), JSON.stringify(state));
-    assert.deepEqual(state.added[id], ['TrustedPublisher'], 'the IT root is not claimed');
+    assert(holds(state, 'Root') && !holds(state, 'TrustedPublisher'), JSON.stringify(state));
+    assert.equal(state.added[id], undefined, 'a silent update adds nothing');
 
     await exited(start(join(installed, 'uninstall.exe'), ['/S'], env));
     await until(async () => !(await exists(join(installed, 'prism.exe'))), 'silent uninstall');
-    await until(async () => {
-      state = await trustState(sandbox);
-      return !holds(state, 'TrustedPublisher');
-    }, 'publisher entry removed');
+    state = await trustState(sandbox);
     assert(holds(state, 'Root'), 'the root IT added stays');
-    assert.equal(state.added[id], undefined);
-    results.silent = 'no question; IT root kept';
+    results.silent = 'nothing added; IT root kept';
   }
 
   assert.equal(realLists(), listsBefore, 'the real certificate lists are unchanged');

@@ -61,10 +61,18 @@ fn open(system: &dyn System) -> std::io::Result<Log> {
         std::process::id()
     );
     let path = safe_path::file(&dir, &name)?;
-    let file = fs::OpenOptions::new()
-        .create_new(true)
-        .append(true)
-        .open(&path)?;
+    let mut options = fs::OpenOptions::new();
+    options.create_new(true).append(true).read(true);
+    // Windows: let others read and append but not delete, so another setup's cleanup of old
+    // logs cannot remove the log of a setup that is still running.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x1;
+        const FILE_SHARE_WRITE: u32 = 0x2;
+        options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+    }
+    let file = options.open(&path)?;
     Ok(Log {
         path,
         file: Mutex::new(file),
@@ -113,15 +121,37 @@ pub fn path() -> Option<PathBuf> {
     LOG.get()?.as_ref().map(|log| log.path.clone())
 }
 
-/// The last `TAIL_BYTES` of this run's log, starting at a whole line when possible.
-/// Errors when there is no log or it cannot be read.
-pub fn tail() -> std::io::Result<String> {
-    let path = path().ok_or_else(|| std::io::Error::other("no setup log"))?;
-    read_tail(&path, TAIL_BYTES)
+/// The end of a log for the window.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Tail {
+    pub text: String,
+    /// True when older lines (or the start of one long line) were left out.
+    pub truncated: bool,
 }
 
+/// The last `TAIL_BYTES` of this run's log, starting at a whole line when possible.
+/// Reads through the same file handle as the writer, under its lock, so a line being written
+/// is never cut in half and the file cannot be swapped by path. Errors when there is no log
+/// or it cannot be read.
+pub fn tail() -> std::io::Result<Tail> {
+    let log = LOG
+        .get()
+        .and_then(Option::as_ref)
+        .ok_or_else(|| std::io::Error::other("no setup log"))?;
+    let mut file = log
+        .file
+        .lock()
+        .map_err(|_| std::io::Error::other("setup log unavailable"))?;
+    read_tail_from(&mut file, TAIL_BYTES)
+}
+
+#[cfg(test)]
 fn read_tail(path: &Path, max: u64) -> std::io::Result<String> {
-    let mut file = fs::File::open(path)?;
+    read_tail_from(&mut fs::File::open(path)?, max).map(|tail| tail.text)
+}
+
+/// Appends always go to the end of the file, so moving the read position here is harmless.
+fn read_tail_from(file: &mut fs::File, max: u64) -> std::io::Result<Tail> {
     let length = file.metadata()?.len();
     let start = length.saturating_sub(max);
     file.seek(SeekFrom::Start(start))?;
@@ -130,9 +160,13 @@ fn read_tail(path: &Path, max: u64) -> std::io::Result<String> {
     let text = String::from_utf8_lossy(&bytes).into_owned();
     // When cut in the middle, drop the partial first line, unless the whole tail is one very
     // long line: then show its end rather than nothing.
-    Ok(match text.split_once('\n') {
+    let text = match text.split_once('\n') {
         Some((_, rest)) if start > 0 && !rest.is_empty() => rest.to_owned(),
         _ => text,
+    };
+    Ok(Tail {
+        text,
+        truncated: start > 0,
     })
 }
 

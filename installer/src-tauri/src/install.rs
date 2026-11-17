@@ -198,7 +198,17 @@ pub fn folder_health(dir: &Path) -> FolderHealth {
     if crate::recovery::has_workspaces(dir) {
         return FolderHealth::Recovery;
     }
-    let empty = fs::read_dir(dir).map_or(true, |mut entries| entries.next().is_none());
+    // Only a folder that does not exist yet counts as empty; one that cannot be read (no
+    // permission, a device error) is unusable, never "empty".
+    let empty = match fs::read_dir(dir) {
+        Ok(mut entries) => match entries.next() {
+            None => true,
+            Some(Ok(_)) => false,
+            Some(Err(_)) => return FolderHealth::Conflict,
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+        Err(_) => return FolderHealth::Conflict,
+    };
     if empty {
         return FolderHealth::Empty;
     }
@@ -288,10 +298,22 @@ pub struct DamageScan {
     pub truncated: bool,
 }
 
-pub fn damaged_files(dir: &Path, expected: &[payload::PayloadFile]) -> Result<DamageScan, String> {
+pub fn damaged_files(
+    dir: &Path,
+    version: &str,
+    expected: &[payload::PayloadFile],
+) -> Result<DamageScan, String> {
     let record = checked_record(dir)?;
     if record.version.is_empty() {
         return Err("Prism is not installed in this folder.".into());
+    }
+    // Another version legitimately has other files and sizes; comparing it with this setup's
+    // copy would report false damage.
+    if record.version != version {
+        return Err(format!(
+            "This folder has Prism {}; only Prism {version} can be checked by this setup.",
+            record.version
+        ));
     }
     let mut damaged = Vec::new();
     let mut checked = 0;
@@ -1255,7 +1277,7 @@ pub mod tests {
             payload::pack(&[("prism.exe", b"app v1"), ("notices/a.txt", b"notice")]).unwrap();
         let expected = payload::list(&payload).unwrap();
         // Not installed yet: nothing to repair.
-        assert!(damaged_files(&dir, &expected).is_err());
+        assert!(damaged_files(&dir, "0.1.0", &expected).is_err());
         install(
             &system,
             &payload,
@@ -1265,12 +1287,19 @@ pub mod tests {
             |_, _| {},
         )
         .unwrap();
-        assert!(damaged_files(&dir, &expected).unwrap().damaged.is_empty());
+        assert!(damaged_files(&dir, "0.1.0", &expected)
+            .unwrap()
+            .damaged
+            .is_empty());
+        // Another version is not compared with this setup's files (no false damage).
+        assert!(damaged_files(&dir, "0.2.0", &expected)
+            .unwrap_err()
+            .contains("only Prism 0.2.0"));
         fs::write(dir.join("prism.exe"), b"truncated").unwrap();
         fs::remove_file(dir.join("notices/a.txt")).unwrap();
         fs::remove_file(dir.join(UNINSTALLER_EXE)).unwrap();
         assert_eq!(
-            damaged_files(&dir, &expected).unwrap(),
+            damaged_files(&dir, "0.1.0", &expected).unwrap(),
             DamageScan {
                 damaged: vec![
                     "prism.exe".into(),
@@ -1291,7 +1320,10 @@ pub mod tests {
             |_, _| {},
         )
         .unwrap();
-        assert!(damaged_files(&dir, &expected).unwrap().damaged.is_empty());
+        assert!(damaged_files(&dir, "0.1.0", &expected)
+            .unwrap()
+            .damaged
+            .is_empty());
     }
 
     #[test]

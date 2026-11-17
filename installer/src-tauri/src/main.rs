@@ -493,7 +493,7 @@ async fn scan_installation(install_dir: PathBuf) -> Result<ScanResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let expected =
             payload::list(PAYLOAD).map_err(|_| "The setup payload is damaged.".to_string())?;
-        let scan = install::damaged_files(&install_dir, &expected)?;
+        let scan = install::damaged_files(&install_dir, VERSION, &expected)?;
         let total = expected.len() + 1;
         setup_log::line(format!(
             "scan {}: {} missing or changed among {} of {} files checked",
@@ -518,19 +518,22 @@ async fn scan_installation(install_dir: PathBuf) -> Result<ScanResult, String> {
 #[serde(rename_all = "camelCase")]
 struct LogView {
     path: Option<PathBuf>,
-    /// The last 64 KiB, starting at a whole line.
+    /// The last 64 KiB, starting at a whole line when possible.
     text: String,
+    /// True when the start of the log was left out.
+    truncated: bool,
 }
 
 /// Errors (no log file, unreadable file) are returned as messages for the log view.
 #[tauri::command]
 fn read_log() -> Result<LogView, String> {
     let path = setup_log::path().ok_or("No setup log was created for this run.")?;
-    let text =
+    let tail =
         setup_log::tail().map_err(|error| format!("Could not read the setup log: {error}"))?;
     Ok(LogView {
         path: Some(path),
-        text,
+        text: tail.text,
+        truncated: tail.truncated,
     })
 }
 

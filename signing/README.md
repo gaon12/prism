@@ -87,11 +87,13 @@ signed files.
 - **First install:** Windows SmartScreen may still warn once ("Windows protected your PC" →
   *More info* → *Run anyway*). It judges downloads by reputation, which a self-made certificate
   does not have. Copying setup from a company network share usually avoids the warning.
-- **During that install:** Windows asks *"Do you want to install this certificate?"* with the
-  name chosen above. Answer **Yes**. "No" is fine too; Prism still installs, just without
-  the trusted publisher.
-- **Updates** never ask again. Prism downloads them itself, and the certificate is already
-  trusted.
+- **During that install:** the window shows the certificate's name, SHA-256 fingerprint and
+  expiry, and offers an unchecked option to trust this publisher on this PC. Only if the user
+  opts in does Windows ask *"Do you want to install this certificate?"*. Not opting in, or
+  answering "No" there, is fine: Prism installs either way, just without the trusted
+  publisher. Publish the fingerprint (e.g. on the intranet) so people can compare it.
+- **Updates** never add trust, also not for a certificate IT already added. Trust only grows
+  through that visible choice. See `TRUST-DESIGN.md`.
 - **Uninstall** removes the certificate again, but only if setup added it. Windows asks once
   more before removing it from the trusted roots.
 

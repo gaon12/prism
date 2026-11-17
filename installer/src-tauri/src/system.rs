@@ -85,6 +85,9 @@ impl System for MaintenanceSystem {
     fn remove_login_startup(&self) -> io::Result<()> {
         self.inner.remove_login_startup()
     }
+    fn cert_stores(&self) -> Option<Box<dyn crate::trust::CertStores>> {
+        self.inner.cert_stores()
+    }
 }
 
 /// Test mode for trying the real setup program without touching the computer's real state:

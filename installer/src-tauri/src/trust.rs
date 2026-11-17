@@ -8,9 +8,13 @@
 //!   is ever added, and only if it is limited to code signing. A certificate that could also
 //!   vouch for websites (HTTPS) or for anything else is refused, so even a leaked key could not
 //!   be used to fake secure websites.
-//! - Only the current user's lists are changed (no administrator rights). Windows itself asks
-//!   the user once ("Do you want to install this certificate?"); silent runs never cause that
-//!   question and skip the step instead.
+//! - Nothing happens unless the user opts in inside the setup window, which shows the
+//!   certificate's name, SHA-256 fingerprint and expiry ([`identity`]) first. Windows then asks
+//!   once more on its own ("Do you want to install this certificate?"); "No" leaves everything
+//!   as it was. Declining either question still installs Prism.
+//! - Silent and passive runs (updates) never add anything, not even the publisher entry for a
+//!   root that is already there: trust only ever grows through that visible opt-in.
+//! - Only the current user's lists are changed (no administrator rights).
 //! - Setup remembers which lists *it* added the certificate to, and the uninstaller removes it
 //!   from exactly those. A certificate the user or IT had already added is left alone.
 //!
@@ -38,7 +42,8 @@ pub enum TrustResult {
     AlreadyTrusted,
     /// Setup added it to at least one list.
     Added,
-    /// Adding would show Windows' question, which silent and passive runs must not do.
+    /// Not (fully) trusted, and this run may not add it: a silent or passive run, or the user
+    /// did not opt in.
     NeedsConsent,
     /// The user answered "No" to Windows' question.
     Declined,
@@ -59,8 +64,13 @@ pub trait CertStores {
     fn set_added(&self, id: &str, stores: &[String]) -> io::Result<()>;
 }
 
-/// Adds `certificate` to this user's trusted lists. `ask`: Windows' question may be shown.
-pub fn trust(stores: &dyn CertStores, certificate: &[u8], ask: bool) -> io::Result<TrustResult> {
+/// Adds `certificate` to this user's trusted lists. `consented`: the user opted in inside the
+/// visible setup window. Without it nothing is ever added; the result only reports the state.
+pub fn trust(
+    stores: &dyn CertStores,
+    certificate: &[u8],
+    consented: bool,
+) -> io::Result<TrustResult> {
     if certificate.is_empty() {
         return Ok(TrustResult::NotConfigured);
     }
@@ -72,8 +82,8 @@ pub fn trust(stores: &dyn CertStores, certificate: &[u8], ask: bool) -> io::Resu
         if stores.contains(store, certificate)? {
             continue;
         }
-        // Only the root list makes Windows ask; never ask in a silent run.
-        if store == "Root" && !ask {
+        // Trust never grows without the user's visible opt-in (silent updates included).
+        if !consented {
             return Ok(TrustResult::NeedsConsent);
         }
         if !stores.add(store, certificate)? {
@@ -87,6 +97,51 @@ pub fn trust(stores: &dyn CertStores, certificate: &[u8], ask: bool) -> io::Resu
         result = TrustResult::Added;
     }
     Ok(result)
+}
+
+/// What the setup window shows before the user decides, so the certificate can be compared
+/// with the one the company announced (for example on the intranet).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CertIdentity {
+    /// The publisher name in the certificate (also shown by Windows' own question).
+    pub subject: String,
+    /// SHA-256 of the whole certificate, upper-case hex in pairs separated by ":".
+    pub sha256: String,
+    /// SHA-1 thumbprint, as Windows shows it in its certificate dialog.
+    pub thumbprint: String,
+    /// Last valid day, YYYY-MM-DD (UTC).
+    pub valid_until: String,
+}
+
+/// Identity of the built-in certificate; refuses one that setup would not trust anyway.
+#[cfg(windows)]
+pub fn identity(certificate: &[u8]) -> io::Result<CertIdentity> {
+    use sha2::{Digest, Sha256};
+    check_code_signing_only(certificate)?;
+    let (subject, thumbprint, valid_until) = windows_store::describe(certificate)?;
+    Ok(CertIdentity {
+        subject,
+        sha256: colon_hex(&Sha256::digest(certificate)),
+        thumbprint,
+        valid_until,
+    })
+}
+
+#[cfg(not(windows))]
+pub fn identity(_certificate: &[u8]) -> io::Result<CertIdentity> {
+    Err(io::Error::other(
+        "Certificates are only trusted on Windows.",
+    ))
+}
+
+/// `AB:CD:...` for display: the usual way fingerprints are printed for comparison.
+pub fn colon_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// Removes what [`trust`] added, and nothing else. Lists that would make Windows ask are kept
@@ -293,6 +348,33 @@ pub mod windows_store {
         }
     }
 
+    /// Publisher name, SHA-1 thumbprint (upper-case, as Windows shows it) and last valid day.
+    pub fn describe(certificate: &[u8]) -> io::Result<(String, String, String)> {
+        let cert = parse(certificate)?;
+        let mut name = [0u16; 512];
+        // SAFETY: the buffer and its length are passed together; the result counts the
+        // terminating zero.
+        let length = unsafe {
+            CertGetNameStringW(
+                cert.0,
+                CERT_NAME_SIMPLE_DISPLAY_TYPE,
+                0,
+                None,
+                Some(&mut name),
+            )
+        };
+        let subject = String::from_utf16_lossy(&name[..(length as usize).saturating_sub(1)]);
+        let thumbprint = hex(&sha1(&cert)?).to_ascii_uppercase();
+        // SAFETY: a valid context always points at its parsed certificate information.
+        let not_after = unsafe { (*(*cert.0).pCertInfo).NotAfter };
+        // FILETIME counts 100 ns steps since 1601-01-01; Unix time starts 11644473600 s later.
+        let ticks =
+            (u64::from(not_after.dwHighDateTime) << 32) | u64::from(not_after.dwLowDateTime);
+        let unix = (ticks / 10_000_000).saturating_sub(11_644_473_600);
+        let valid_until = crate::setup_log::timestamp(unix)[..10].to_owned();
+        Ok((subject, thumbprint, valid_until))
+    }
+
     /// An open per-user certificate list, closed when dropped.
     struct Store(HCERTSTORE);
     impl Drop for Store {
@@ -489,6 +571,30 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn the_window_can_show_who_and_which_certificate() {
+        use sha2::{Digest, Sha256};
+        let cert = bytes(CODE_ONLY);
+        let shown = identity(&cert).unwrap();
+        assert_eq!(shown.subject, "Prism test code");
+        assert_eq!(shown.sha256, colon_hex(&Sha256::digest(&cert)));
+        assert_eq!(shown.sha256.len(), 32 * 3 - 1);
+        assert_eq!(shown.thumbprint.len(), 40);
+        assert!(shown
+            .thumbprint
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()));
+        // Made with -days 3650 on 2026-11-17.
+        assert!(
+            shown.valid_until.starts_with("2036-11-1"),
+            "{}",
+            shown.valid_until
+        );
+        // Nothing is shown for a certificate setup would refuse.
+        assert!(identity(&bytes(HTTPS_ONLY)).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn a_wrong_certificate_never_reaches_the_lists() {
         let dir = tempfile::tempdir().unwrap();
         let lists = stores(&dir);
@@ -536,7 +642,19 @@ mod tests {
         let lists = stores(&dir);
         let cert = bytes(CODE_ONLY);
         lists.add("Root", &cert).unwrap(); // added by IT, not by setup
-        assert_eq!(trust(&lists, &cert, false).unwrap(), TrustResult::Added);
+                                           // A silent run (update) never expands trust, not even the publisher entry.
+        assert_eq!(
+            trust(&lists, &cert, false).unwrap(),
+            TrustResult::NeedsConsent
+        );
+        assert!(!lists.contains("TrustedPublisher", &cert).unwrap());
+        assert!(lists.added().unwrap().is_empty());
+        assert_eq!(trust(&lists, &cert, true).unwrap(), TrustResult::Added);
+        assert_eq!(
+            lists.added().unwrap().into_values().collect::<Vec<_>>(),
+            [vec!["TrustedPublisher".to_owned()]],
+            "the IT root is not claimed"
+        );
         untrust(&lists, true).unwrap();
         assert!(lists.contains("Root", &cert).unwrap());
         assert!(!lists.contains("TrustedPublisher", &cert).unwrap());

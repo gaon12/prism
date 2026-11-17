@@ -6,3 +6,4 @@
 !new-certificate.ps1
 !sign.ps1
 !from-ci-secret.ps1
+!TRUST-DESIGN.md

@@ -47,6 +47,36 @@ that on its own. Keep the signing private key off the server.
 missing signature, over 64 KiB) with `503` and logs the reason with `error_log`. Prism
 then simply reports that update information is unavailable.
 
+## Web server settings
+
+Only the update check and the package files need to be reachable:
+
+```
+<site>/prism/update.php        the update check (index.php here; any name works)
+<site>/prism/latest.json       read by update.php from disk; refused over the web
+<site>/prism/files/Prism_<version>_x64-setup.exe
+```
+
+- **Apache:** copy `.htaccess` next to `update.php` and `files/.htaccess` into `files/`. The
+  folder needs `AllowOverride AuthConfig FileInfo Indexes Limit` (or `All`), otherwise Apache
+  ignores the files or answers 500.
+- **nginx:** paste the locations from `nginx.conf` into the site's HTTPS `server { }` block,
+  set the PHP-FPM socket, then run `nginx -t` and reload.
+
+Both refuse everything else under `/prism/`: `latest.json`, other PHP files, notes and any key or
+certificate copied there by mistake. Folder listings are off, scripts in `files/` never run,
+and packages are served as plain downloads with a one-hour cache.
+
+Check after setting up (expected status in brackets):
+
+```sh
+curl -I https://api.rasca99.dev/prism/update.php                 # 200, or 503 before latest.json
+curl -I https://api.rasca99.dev/prism/latest.json                # 403 (Apache) / 404 (nginx)
+curl -I https://api.rasca99.dev/prism/files/                     # 403 / 404, no listing
+curl -I https://api.rasca99.dev/prism/files/Prism_0.2.0_x64-setup.exe   # 200 once uploaded
+curl -I -X POST https://api.rasca99.dev/prism/update.php         # 405 / 403
+```
+
 ## Test
 
 `node --test tests/scripts/update-server.test.mjs` starts the real `index.php` with

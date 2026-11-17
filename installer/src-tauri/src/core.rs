@@ -3,6 +3,7 @@ pub mod args;
 pub mod folder_lock;
 pub mod install;
 pub mod journal;
+pub mod native_text;
 pub mod operation;
 pub mod payload;
 pub mod previous;

@@ -17,6 +17,7 @@ mod install;
 #[cfg(test)]
 mod install_regression;
 mod journal;
+mod native_text;
 mod operation;
 mod payload;
 mod previous;
@@ -712,19 +713,23 @@ fn run_silent(args: &SetupArgs) -> ExitCode {
     }
 }
 
-/// Without WebView2 the window cannot open; explain it with a plain Windows message box.
+/// Without WebView2 the window cannot open; explain it with a plain Windows message box in the
+/// user's display language, naming this run's log file.
 #[cfg(windows)]
 fn explain_missing_webview() {
     use windows::{
-        core::w,
+        core::HSTRING,
         Win32::UI::WindowsAndMessaging::{MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO},
     };
-    // SAFETY: static strings and no owner window.
+    let language = native_text::pick_language(&native_text::user_locale());
+    let log = setup_log::path().map(|path| path.display().to_string());
+    let (title, text) = native_text::missing_webview(language, log.as_deref());
+    // SAFETY: the strings live until the call returns, and there is no owner window.
     let answer = unsafe {
         MessageBoxW(
             None,
-            w!("Prism needs Microsoft Edge WebView2, which is missing on this PC.\n\nOpen the download page now?"),
-            w!("Prism setup"),
+            &HSTRING::from(text),
+            &HSTRING::from(title),
             MB_YESNO | MB_ICONWARNING,
         )
     };
@@ -777,6 +782,7 @@ fn main() -> ExitCode {
         return run_silent(&args);
     }
     if !system::webview2_installed() {
+        setup_log::line("Microsoft Edge WebView2 is missing; the setup window cannot open.");
         #[cfg(windows)]
         explain_missing_webview();
         return ExitCode::FAILURE;

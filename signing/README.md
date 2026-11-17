@@ -69,6 +69,14 @@ steps (`release.yml`):
         env:
           PRISM_SIGNING_PASSWORD: ${{ secrets.PRISM_SIGNING_PASSWORD }}
         run: signing/sign.ps1 installer/src-tauri/target/release/prism-setup.exe
+      # with the other setup tests (needs the WebView debug-port policy step before it)
+      - name: Verify publisher-certificate trust in the setup sandbox
+        if: steps.signing.outputs.configured == 'true'
+        env:
+          PRISM_SETUP_EXE: ${{ github.workspace }}/installer/src-tauri/target/release/prism-setup.exe
+          PRISM_SETUP_EXPECTED_EXE: ${{ github.workspace }}/src-tauri/target/release/prism.exe
+          PRISM_SETUP_TRUSTED_CERT: ${{ github.workspace }}/signing/prism-publisher.cer
+        run: node tests/native/setup-trust.mjs
 ```
 
 The updater signature and the hashes in `latest.json` come after these steps, so they cover the

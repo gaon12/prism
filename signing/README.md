@@ -34,6 +34,46 @@ Nothing is added to the Windows certificate lists of the PC that creates it.
 
 `uninstall.exe` is a copy of the signed setup, so it is signed too.
 
+## In CI (GitHub Actions)
+
+Add two repository secrets once:
+
+- `WINDOWS_SIGNING_PFX`: the .pfx as Base64. Make it with
+  `[Convert]::ToBase64String([IO.File]::ReadAllBytes('signing/prism-publisher.pfx')) | Set-Clipboard`
+- `PRISM_SIGNING_PASSWORD`: its password.
+
+Without the secrets the build runs unsigned exactly as before. The Windows job then needs these
+steps (`release.yml`):
+
+```yaml
+      # right after "Build Windows app"
+      - name: Prepare the code-signing certificate (optional)
+        id: signing
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+          PRISM_SIGNING_PASSWORD: ${{ secrets.PRISM_SIGNING_PASSWORD }}
+        run: signing/from-ci-secret.ps1 >> $env:GITHUB_OUTPUT
+      - name: Sign the Windows app
+        if: steps.signing.outputs.configured == 'true'
+        shell: pwsh
+        env:
+          PRISM_SIGNING_PASSWORD: ${{ secrets.PRISM_SIGNING_PASSWORD }}
+        run: signing/sign.ps1 src-tauri/target/release/prism.exe
+      # "Build the Windows setup" then embeds signing/prism-publisher.cer automatically.
+      # right after "Build the Windows setup", before any setup test or copy
+      - name: Sign the Windows setup
+        if: steps.signing.outputs.configured == 'true'
+        shell: pwsh
+        env:
+          PRISM_SIGNING_PASSWORD: ${{ secrets.PRISM_SIGNING_PASSWORD }}
+        run: signing/sign.ps1 installer/src-tauri/target/release/prism-setup.exe
+```
+
+The updater signature and the hashes in `latest.json` come after these steps, so they cover the
+signed files.
+
 ## What users see
 
 - **First install:** Windows SmartScreen may still warn once ("Windows protected your PC" →

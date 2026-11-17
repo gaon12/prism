@@ -16,6 +16,17 @@ const executable = resolve(
 const expectedApp = resolve(
   process.env.PRISM_SETUP_EXPECTED_EXE ?? 'src-tauri/target/debug/prism.exe',
 );
+// This test launches the installed app (`/R`) and isolates it only with PRISM_DEV_DATA_DIR,
+// which release builds ignore. A release app would open the real user profile before the
+// later `installKind` assertion could fail, so refuse up front unless the expected app is a
+// debug build, or the host is a disposable machine (CI runner, Windows Sandbox) whose profile
+// does not matter. Release setups use setup-recovery/setup-previous, which never launch it.
+const debugApp = /[\\/]debug[\\/]/i.test(expectedApp);
+if (!debugApp && process.env.PRISM_SETUP_DISPOSABLE_HOST !== '1') {
+  throw new Error(
+    'test:setup launches the installed app; use a debug app, or set PRISM_SETUP_DISPOSABLE_HOST=1 only on a disposable machine.',
+  );
+}
 const directory = await mkdtemp(join(tmpdir(), 'prism-setup-e2e-'));
 const evidence = join(tmpdir(), 'prism-ui-evidence');
 await mkdir(evidence, { recursive: true });
@@ -81,43 +92,60 @@ async function environment() {
     },
   };
 }
-function start(path, args, env) {
-  const child = spawn(path, args, { env, windowsHide: true, stdio: 'ignore' });
+function start(path, args, env, options = {}) {
+  const child = spawn(path, args, { env, windowsHide: true, stdio: 'ignore', ...options });
   child.on('error', (error) => {
     child.spawnError = error;
   });
   active.add(child);
   return child;
 }
-async function exited(child, expected = 0) {
-  await until(() => {
-    if (child.spawnError) throw child.spawnError;
-    return child.exitCode !== null;
-  }, 'owned setup process exit');
+// A silent install/update writes and backs up the whole ~400 MB app, which can take minutes on a
+// slow or busy PC; the limit only caps waiting, a fast run continues right away.
+async function exited(child, expected = 0, timeout = 180_000) {
+  await until(
+    () => {
+      if (child.spawnError) throw child.spawnError;
+      return child.exitCode !== null;
+    },
+    'owned setup process exit',
+    timeout,
+  );
   active.delete(child);
   if (expected !== null) assert.equal(child.exitCode, expected);
   return child.exitCode;
 }
+// The launched debug app (and a setup on a busy PC) can need well over the default 25 s before
+// its WebView answers; the limit only caps waiting.
+const startupTimeout = 120_000;
 async function connect(port, child, bootstrap = false) {
-  await until(async () => {
-    if (child?.spawnError) throw child.spawnError;
-    if (child?.exitCode !== null && child?.exitCode !== undefined && !bootstrap)
-      throw new Error(`Setup exited early: ${child.exitCode}`);
-    try {
-      return (await fetch(`http://127.0.0.1:${port}/json/version`)).ok;
-    } catch {
-      return false;
-    }
-  }, 'sandbox WebView endpoint');
+  await until(
+    async () => {
+      if (child?.spawnError) throw child.spawnError;
+      if (child?.exitCode !== null && child?.exitCode !== undefined && !bootstrap)
+        throw new Error(`Setup exited early: ${child.exitCode}`);
+      try {
+        return (await fetch(`http://127.0.0.1:${port}/json/version`)).ok;
+      } catch {
+        return false;
+      }
+    },
+    'sandbox WebView endpoint',
+    startupTimeout,
+  );
   const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
   let page;
-  await until(() => {
-    page = browser
-      .contexts()
-      .flatMap((context) => context.pages())
-      .find((page) => page.url().includes('tauri.localhost') && !page.url().includes('#quick'));
-    return page;
-  }, 'bundled setup page');
+  await until(
+    () => {
+      page = browser
+        .contexts()
+        .flatMap((context) => context.pages())
+        .find((page) => page.url().includes('tauri.localhost') && !page.url().includes('#quick'));
+      return page;
+    },
+    'bundled setup page',
+    startupTimeout,
+  );
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text());
@@ -205,7 +233,8 @@ try {
   // Exercise the visible flow as well as raw IPC rejection. The terms must be accepted first.
   await page.locator('#agree').check();
   await page.locator('#install').click();
-  await page.locator('.setup[data-screen="done"]').waitFor();
+  // Whole-app backup + staging of a ~400 MB payload can take minutes on a slow or busy PC.
+  await page.locator('.setup[data-screen="done"]').waitFor({ timeout: 180_000 });
   assert.equal(
     await page.locator('#done-detail').evaluate((element) => element.classList.contains('error')),
     false,
@@ -290,7 +319,8 @@ try {
   const loginStartup = join(directory, 'login-startup.txt');
   await writeFile(loginStartup, `${join(installed, 'prism.exe')} --background`);
   await page.locator('#uninstall-form button[type="submit"]').click();
-  await page.locator('.setup[data-screen="done"]').waitFor();
+  // Whole-app backup + staging of a ~400 MB payload can take minutes on a slow or busy PC.
+  await page.locator('.setup[data-screen="done"]').waitFor({ timeout: 180_000 });
   assert.equal(
     await page.locator('#done-detail').evaluate((element) => element.classList.contains('error')),
     false,
@@ -341,6 +371,23 @@ try {
     'preserved settings fixture',
   );
   assert.equal(await readFile(loginStartup, 'utf8'), otherCopy, 'other copy keeps its entry');
+  // NSIS spelling used by deployment scripts: /D= comes last and is NOT quoted, so Windows
+  // splits a folder with spaces into several arguments. Verbatim arguments reproduce exactly
+  // that command line; setup must still install into the whole folder.
+  const spaced = join(directory, 'Spaced Folder', 'Prism');
+  child = start(executable, ['/S', `/D=${spaced}`], baseEnvironment, {
+    windowsVerbatimArguments: true,
+  });
+  await exited(child);
+  assert.equal(await digest(join(spaced, 'prism.exe')), expectedHash);
+  assert.equal(await exists(join(directory, 'Spaced')), false, 'no install into a cut folder');
+  const spacedUninstall = start(join(spaced, 'uninstall.exe'), ['/S'], baseEnvironment);
+  await exited(spacedUninstall);
+  await until(
+    async () => !(await exists(join(spaced, 'prism.exe'))),
+    'silent uninstall of the unquoted-folder installation completes',
+    startupTimeout,
+  );
   assert.equal(registration(), realRegistration, 'real HKCU registration must remain identical');
   assert.deepEqual(errors, []);
   console.log(

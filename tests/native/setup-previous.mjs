@@ -135,7 +135,8 @@ try {
   await page.locator('#previous-options').click();
   await page.locator('#restore-ack').check();
   await page.locator('#restore').click();
-  await page.locator('.setup[data-screen="done"]').waitFor();
+  // Whole-app backup + staging of a ~400 MB payload can take minutes on a slow or busy PC.
+  await page.locator('.setup[data-screen="done"]').waitFor({ timeout: 180_000 });
   assert.equal(
     await page.locator('#done-detail').evaluate((node) => node.classList.contains('error')),
     false,

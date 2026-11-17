@@ -87,8 +87,11 @@ impl<'scope> Preparation<'scope> {
                             insert(&mut map, entry);
                         }
                         let inserted = map.len();
-                        drop(map);
+                        // Commit the lock-free count before readers can see
+                        // these rows. Unlocking first lets a woken search
+                        // observe them while status still reports zero.
                         progress.inserted(inserted);
+                        drop(map);
                         #[cfg(test)]
                         processed.fetch_add(count, Ordering::Release);
                     }

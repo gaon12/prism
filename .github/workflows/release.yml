@@ -9,6 +9,10 @@ on:
         description: Create a draft release (select an existing matching version tag)
         type: boolean
         default: false
+      windows_only:
+        description: Validate and sign Windows x64 only; do not create a release draft
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -16,6 +20,8 @@ concurrency:
   cancel-in-progress: false
 env:
   CARGO_TERM_COLOR: always
+  PRISM_UPDATE_URL: ${{ vars.PRISM_UPDATE_URL || 'https://api.rasca99.dev/prism/update.php' }}
+  PRISM_DOWNLOAD_PAGE: ${{ vars.PRISM_DOWNLOAD_PAGE }}
   # Test builds (debug profile: the tools/ checks and the update verifier) skip
   # debug info. It is most of their size on disk, and the Rust build cache of
   # every job together has to stay under GitHub's 10 GB limit, or GitHub drops
@@ -33,29 +39,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: windows
-            runner: windows-latest
-            verifier: tools/update-verifier/target/debug/prism-update-verifier.exe
-            suffix: ''
-          # macOS here only runs the checks and the library tests. The app
-          # itself is built by the macos-binary jobs (one per processor, at the
-          # same time) and put together by the macos job below.
-          - platform: macos
-            runner: macos-latest
-            verifier: tools/update-verifier/target/debug/prism-update-verifier
-            suffix: '-checks'
-            checks_only: true
-          - platform: linux
-            runner: ubuntu-22.04
-            verifier: tools/update-verifier/target/debug/prism-update-verifier
-            suffix: ''
-            appimage: amd64
-          - platform: linux
-            runner: ubuntu-22.04-arm
-            verifier: tools/update-verifier/target/debug/prism-update-verifier
-            suffix: '-arm64'
-            appimage: aarch64
+        # The manual Windows path keeps the same build, native and signing gates.
+        # The default matrix retains all existing platform jobs; macOS app binaries
+        # are still built separately and joined by the macos job below.
+        include: ${{ fromJSON(inputs.windows_only && '[{"platform":"windows","runner":"windows-latest","verifier":"tools/update-verifier/target/debug/prism-update-verifier.exe","suffix":""}]' || '[{"platform":"windows","runner":"windows-latest","verifier":"tools/update-verifier/target/debug/prism-update-verifier.exe","suffix":""},{"platform":"macos","runner":"macos-latest","verifier":"tools/update-verifier/target/debug/prism-update-verifier","suffix":"-checks","checks_only":true},{"platform":"linux","runner":"ubuntu-22.04","verifier":"tools/update-verifier/target/debug/prism-update-verifier","suffix":"","appimage":"amd64"},{"platform":"linux","runner":"ubuntu-22.04-arm","verifier":"tools/update-verifier/target/debug/prism-update-verifier","suffix":"-arm64","appimage":"aarch64"}]') }}
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -90,6 +77,15 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: node scripts/release-config.mjs --platform '${{ matrix.platform }}' --output "$RUNNER_TEMP/prism-build.json"
+      - name: Require updater signing for Windows qualification
+        if: inputs.windows_only
+        env:
+          SIGNED: ${{ steps.plan.outputs.signed }}
+        run: |
+          if [ "$SIGNED" != true ]; then
+            echo 'Windows qualification requires the configured updater public key and CI signing key.' >&2
+            exit 1
+          fi
       - name: Set up Python for the independent native PDF inspector
         if: matrix.platform == 'windows'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -256,7 +252,7 @@ jobs:
           New-Item -Path $key -Force | Out-Null
           New-ItemProperty -Path $key -Name 'prism-setup.exe' -PropertyType String -Force `
             -Value '--remote-debugging-port=9339 --remote-debugging-address=127.0.0.1' | Out-Null
-      - name: Verify release setup recovery and previous-version restoration
+      - name: Verify release setup repair, recovery and previous-version restoration
         # Native recovery uses inert crash fixtures and never starts the embedded app.
         if: matrix.platform == 'windows'
         shell: bash
@@ -265,6 +261,7 @@ jobs:
           PRISM_SETUP_EXPECTED_EXE: ${{ github.workspace }}/src-tauri/target/release/prism.exe
           PRISM_SETUP_CDP_PORT: '9339'
         run: |
+          node tests/native/setup-features.mjs
           npm run test:setup-recovery
           npm run test:setup-previous
       - name: Let native model tests reach their owned app WebView
@@ -277,6 +274,22 @@ jobs:
           New-Item -Path $taskKey -Force | Out-Null
           New-ItemProperty -Path $taskKey -Name 'prism.exe' -PropertyType String -Force `
             -Value '--remote-debugging-port=9324 --remote-debugging-address=127.0.0.1' | Out-Null
+      - name: Verify real per-user installed release lifecycle
+        # This intentionally uses real HKCU/known folders on the disposable hosted
+        # runner. The script refuses local/self-hosted machines and existing data.
+        # setup.mjs remains a separate debug-only sandbox check.
+        if: matrix.platform == 'windows'
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          PRISM_INSTALLED_RELEASE_QUALIFICATION: '1'
+          PRISM_SETUP_EXE: ${{ github.workspace }}/installer/src-tauri/target/release/prism-setup.exe
+          PRISM_SETUP_EXPECTED_EXE: ${{ github.workspace }}/src-tauri/target/release/prism.exe
+          PRISM_APP_CDP_PORT: '9324'
+        run: |
+          $env:PRISM_TEST_APP_SHA256 = (Get-FileHash -LiteralPath $env:PRISM_SETUP_EXPECTED_EXE -Algorithm SHA256).Hash.ToLowerInvariant()
+          node tests/native/setup-installed-release.mjs
+          exit $LASTEXITCODE
       - name: Verify document sources, revisions and PDF/HWPX export in the actual app
         # About 30 s. Generation is a synthetic local server (no model), so this
         # checks the app's own document, citation and export paths, including
@@ -358,6 +371,9 @@ jobs:
             ${{ runner.temp }}/prism-real-generation-*/evidence/**
             ${{ runner.temp }}/prism-generation-assets-*/status.json
             ${{ runner.temp }}/prism-documents-*/evidence/**
+            ${{ runner.temp }}/prism-installed-release-*/result.json
+            ${{ runner.temp }}/prism-installed-release-*/*.png
+            ${{ runner.temp }}/prism-setup-features-*/evidence/**
             ${{ runner.temp }}/prism-document-source-pdf-*/*.pdf
             ${{ runner.temp }}/prism-document-source-pdf-*/*.hwpx
             ${{ runner.temp }}/prism-native-file-policy-*/result.json
@@ -464,6 +480,7 @@ jobs:
   # in the build job above, and the macos job joins the two programs and makes
   # the app, the DMG and the updater signature.
   macos-binary:
+    if: ${{ !inputs.windows_only }}
     name: Build macos program (${{ matrix.arch }})
     timeout-minutes: 120
     strategy:
@@ -537,6 +554,7 @@ jobs:
           retention-days: 1
 
   macos:
+    if: ${{ !inputs.windows_only }}
     name: Build macos
     needs: macos-binary
     timeout-minutes: 60
@@ -625,7 +643,7 @@ jobs:
 
   draft:
     needs: [build, macos]
-    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.create_draft)
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.create_draft) && !inputs.windows_only
     runs-on: ubuntu-latest
     permissions:
       contents: write

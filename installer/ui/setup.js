@@ -2,8 +2,8 @@
 //
 // Flow:  loading → options (or uninstall) → progress → done
 // - In "passive" mode (started by Prism's updater) the options screen is skipped.
-// - Opened in a normal browser (no Tauri), a fake backend is used so the design can be
-//   previewed: open index.html?preview=options|progress|done|uninstall.
+// - Explicit local/file ?preview=... URLs use fixtures. A missing native bridge
+//   in an installed app fails closed instead of simulating installation.
 
 (function () {
   'use strict';
@@ -14,6 +14,39 @@
 
   // ---------- Language ----------
   const languages = ['ko', 'en', 'zh-CN', 'zh-TW', 'ja'];
+  const previewModes = new Set([
+    'options',
+    'progress',
+    'done',
+    'uninstall',
+    'restore',
+    'error',
+    'installed',
+    'damaged',
+    'recovery',
+    'conflict',
+  ]);
+  const query = new URLSearchParams(location.search);
+  const localPreviewOrigin =
+    location.protocol === 'file:' ||
+    (['http:', 'https:'].includes(location.protocol) &&
+      ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname));
+  const preview =
+    !tauri && localPreviewOrigin && previewModes.has(query.get('preview')) ? query : null;
+  function readPreference(key) {
+    try {
+      return localStorage.getItem('prism.setup.' + key);
+    } catch {
+      return null;
+    }
+  }
+  function savePreference(key, value) {
+    try {
+      localStorage.setItem('prism.setup.' + key, value);
+    } catch {
+      /* The choice still works for this run. */
+    }
+  }
   function pickLanguage() {
     const wanted = (navigator.language || 'en').toLowerCase();
     if (wanted.startsWith('zh')) {
@@ -23,9 +56,20 @@
     const base = wanted.slice(0, 2);
     return languages.includes(base) ? base : 'en';
   }
-  const language = pickLanguage();
+  const preferredLanguage = preview?.get('lang') || readPreference('language');
+  let language = languages.includes(preferredLanguage) ? preferredLanguage : pickLanguage();
   document.documentElement.lang = language;
-  const index = languages.indexOf(language);
+  let index = languages.indexOf(language);
+  const systemTheme = matchMedia('(prefers-color-scheme: dark)');
+  let theme = preview?.get('theme') || readPreference('theme') || 'system';
+  if (!['system', 'light', 'dark'].includes(theme)) theme = 'system';
+  function applyTheme() {
+    document.documentElement.dataset.theme =
+      theme === 'system' ? (systemTheme.matches ? 'dark' : 'light') : theme;
+    $('theme').value = theme;
+  }
+  applyTheme();
+  systemTheme.addEventListener('change', applyTheme);
 
   /** Text for `key` in the chosen language, with `{name}` placeholders filled from `values`. */
   function t(key, values) {
@@ -37,17 +81,59 @@
     return text;
   }
 
-  // Fill every element marked with data-text, and the tooltips of the window buttons.
-  for (const element of document.querySelectorAll('[data-text]')) {
-    element.textContent = t(element.dataset.text);
+  function renderLabels() {
+    document.documentElement.lang = language;
+    $('language').value = language;
+    for (const element of document.querySelectorAll('[data-text]'))
+      element.textContent = t(element.dataset.text);
+    for (const element of document.querySelectorAll('[data-label]')) {
+      element.title = t(element.dataset.label);
+      element.setAttribute('aria-label', element.title);
+    }
   }
-  for (const element of document.querySelectorAll('[data-label]')) {
-    element.title = t(element.dataset.label);
-    element.setAttribute('aria-label', element.title);
-  }
+  renderLabels();
 
   // ---------- Backend ----------
-  const backend = tauri ? realBackend() : previewBackend();
+  let backendUnavailable = false;
+  let backend;
+  try {
+    if (
+      typeof tauri?.core?.invoke === 'function' &&
+      typeof tauri?.event?.listen === 'function' &&
+      typeof tauri?.window?.getCurrentWindow === 'function'
+    )
+      backend = realBackend();
+    else if (preview) backend = previewBackend();
+    else {
+      backendUnavailable = true;
+      backend = unavailableBackend();
+    }
+  } catch {
+    backendUnavailable = true;
+    backend = unavailableBackend();
+  }
+
+  function unavailableBackend() {
+    const unavailable = async () => {
+      throw new Error(t('bridgeUnavailable'));
+    };
+    return {
+      info: unavailable,
+      checkFolder: unavailable,
+      chooseFolder: unavailable,
+      install: unavailable,
+      uninstall: unavailable,
+      restore: unavailable,
+      repair: unavailable,
+      scan: unavailable,
+      readLog: unavailable,
+      openLogFolder: unavailable,
+      finish: unavailable,
+      onProgress: unavailable,
+      minimize: unavailable,
+      close: unavailable,
+    };
+  }
 
   function realBackend() {
     const invoke = tauri.core.invoke;
@@ -60,6 +146,10 @@
       uninstall: (removeData) => invoke('run_uninstall', { removeData }),
       restore: (installDir, expectedVersion) =>
         invoke('run_restore', { installDir, expectedVersion }),
+      repair: (installDir) => invoke('run_repair', { installDir }),
+      scan: (installDir) => invoke('scan_installation', { installDir }),
+      readLog: () => invoke('read_log'),
+      openLogFolder: () => invoke('open_log_folder'),
       finish: (launch) => invoke('finish', { launch }),
       onProgress: (handler) =>
         tauri.event.listen('setup://progress', (event) => handler(event.payload)),
@@ -70,7 +160,7 @@
 
   // Fake backend for designing in a browser. Never used inside the real setup.
   function previewBackend() {
-    const screen = new URLSearchParams(location.search).get('preview') || 'options';
+    const screen = preview.get('preview') || 'options';
     let listener = () => {};
     const fakeRun = () =>
       new Promise((resolve) => {
@@ -86,10 +176,18 @@
       });
     return {
       info: async () => ({
-        mode: screen === 'uninstall' ? 'uninstall' : 'install',
+        mode: screen === 'uninstall' ? 'uninstall' : screen === 'restore' ? 'restore' : 'install',
         ui: screen === 'progress' ? 'passive' : 'full',
         version: '0.2.0',
-        installedVersion: null,
+        installedVersion: ['installed', 'damaged', 'recovery', 'restore'].includes(screen)
+          ? '0.2.0'
+          : null,
+        repairAvailable: ['installed', 'damaged'].includes(screen),
+        recoveryPending: screen === 'recovery',
+        previousVersion:
+          screen === 'restore'
+            ? { currentVersion: '0.2.0', version: '0.1.0', requiredBytes: 14200000 }
+            : null,
         installDir: 'C:\\Users\\you\\AppData\\Local\\Programs\\Prism',
         defaultDir: 'C:\\Users\\you\\AppData\\Local\\Programs\\Prism',
         desktopShortcut: true,
@@ -99,11 +197,39 @@
         payloadReady: true,
         relaunch: false,
       }),
-      checkFolder: async () => ({ error: null, freeBytes: 212_000_000_000 }),
+      checkFolder: async () => ({
+        error:
+          screen === 'conflict' ? 'Preview: the selected folder contains unrelated files.' : null,
+        freeBytes: 212_000_000_000,
+        recoveryPending: screen === 'recovery',
+        health:
+          screen === 'installed'
+            ? 'installed'
+            : screen === 'damaged'
+              ? 'damaged'
+              : screen === 'recovery'
+                ? 'recovery'
+                : screen === 'conflict'
+                  ? 'conflict'
+                  : 'empty',
+      }),
       chooseFolder: async () => null,
       install: fakeRun,
       uninstall: fakeRun,
       restore: fakeRun,
+      repair: fakeRun,
+      scan: async () => ({
+        damaged: screen === 'damaged' ? ['prism.exe'] : [],
+        checked: screen === 'damaged' ? 2 : 4,
+        total: 4,
+        truncated: screen === 'damaged',
+      }),
+      readLog: async () => ({
+        path: 'Preview only — no files are written',
+        text: 'Preview fixture — this is not an actual installer run.\n[10:42:03] Setup opened\n[10:42:03] Target folder checked\n',
+        truncated: false,
+      }),
+      openLogFolder: async () => {},
       finish: async () => {},
       onProgress: async (handler) => {
         listener = handler;
@@ -127,6 +253,11 @@
 
   /** Shows how far along we are, both in the bar and in the hero art. */
   function setProgress(fraction) {
+    if (!Number.isFinite(fraction)) {
+      $('percent').textContent = '';
+      $('track').removeAttribute('aria-valuenow');
+      return;
+    }
     const done = Math.max(0, Math.min(1, fraction));
     root.style.setProperty('--done', String(done));
     $('percent').textContent = Math.round(done * 100) + '%';
@@ -136,7 +267,8 @@
   // ---------- Terms of use ----------
   /** The install button works only with a usable folder and an accepted agreement. */
   function updateInstallButton() {
-    $('install').disabled = !folderOk || !$('agree').checked;
+    $('install').disabled =
+      backendUnavailable || !folderOk || folderPending || operationBusy || !$('agree').checked;
   }
 
   /** Fills the terms card once, in the setup language (English when there is no translation). */
@@ -155,9 +287,9 @@
   }
 
   function openTerms() {
-    setCustomizing(false);
     $('terms').hidden = false;
     root.classList.add('reading');
+    updateModalInert();
     $('terms-body').scrollTop = 0;
     $('terms-body').focus();
   }
@@ -165,6 +297,7 @@
   function closeTerms() {
     $('terms').hidden = true;
     root.classList.remove('reading');
+    updateModalInert();
     $('open-terms').focus();
   }
 
@@ -172,7 +305,7 @@
   function setCustomizing(open) {
     root.classList.toggle('customizing', open);
     $('customize').setAttribute('aria-expanded', String(open));
-    if (open) $('folder').focus();
+    if (open && document.activeElement === $('customize')) $('folder').focus();
   }
 
   function show(screen) {
@@ -181,7 +314,8 @@
     root.dataset.screen = screen;
     // While files are being written, closing the window would leave a half-done install.
     const busy = screen === 'progress';
-    $('close').disabled = busy;
+    $('close').disabled = busy || backendUnavailable;
+    $('progress-folder').textContent = $('folder').value || info?.installDir || '';
     const focusTarget = {
       // Until the terms are accepted the install button is disabled, so start on the checkbox.
       options: $('agree').checked ? 'install' : 'agree',
@@ -194,7 +328,19 @@
 
   // ---------- Screens ----------
   let info = null;
-  let folderOk = true;
+  let folderOk = false;
+  let folderPending = true;
+  let folderEpoch = 0;
+  let folderCheck = null;
+  let folderScan = null;
+  let scanEpoch = 0;
+  let operationBusy = false;
+  let currentStage = 'preparing';
+  let resultCopy = null;
+  let logEpoch = 0;
+  let logTimer = 0;
+  let logText = '';
+  let detailTrigger = null;
   let previous = null;
   let previousPath = '';
   let previousFree = null;
@@ -225,7 +371,15 @@
     show('restore');
   }
   async function runRestore() {
-    if (!previous || !$('restore-ack').checked) return;
+    if (
+      backendUnavailable ||
+      operationBusy ||
+      !previous ||
+      !$('restore-ack').checked ||
+      $('restore-ack').disabled
+    )
+      return;
+    operationBusy = true;
     const target = previous.version;
     show('progress');
     setProgress(0);
@@ -241,48 +395,141 @@
       $('launch-option').hidden = false;
       $('finish').textContent = t('finish');
       $('finish').onclick = null;
+      resultCopy = {
+        title: 'restored',
+        detail: 'version',
+        values: { v: target },
+        finish: 'finish',
+      };
+      root.classList.remove('failed');
+      $('done-symbol').textContent = '✓';
       show('done');
     } catch (error) {
       showFailure(t('restoreFailed'), error, 'restore');
+    } finally {
+      operationBusy = false;
     }
   }
 
   async function checkFolder() {
     const path = $('folder').value;
-    const hint = $('folder-hint');
-    const check = await backend.checkFolder(path);
-    if ($('folder').value !== path) return;
-    updatePrevious(
-      check.recoveryPending ? null : check.previousVersion,
-      path.trim(),
-      check.freeBytes,
-    );
-    const free = check.freeBytes;
-    const need = check.requiredBytes ?? info.requiredBytes;
-    let message = '';
-    folderOk = !check.error;
-    if (check.error) {
-      message = check.error;
-    } else if (free != null && free < need) {
-      folderOk = false;
-      message = t('spaceShort', { need: formatBytes(need), free: formatBytes(free) });
-    } else if (free != null) {
-      message = t('space', { need: formatBytes(need), free: formatBytes(free) });
-    }
-    if (folderOk && check.recoveryPending) message = t('recoveryPending') + ' ' + message;
-    if (!info.payloadReady) {
-      folderOk = false;
-      message = t('noPayload');
-    }
-    if (check.previousError) message += ' ' + t('previousUnavailable');
-    hint.textContent = message;
-    hint.classList.toggle('error', !folderOk);
-    // A folder problem can only be fixed in the custom-settings card, so open it.
-    if (check.error && root.dataset.screen === 'options') setCustomizing(true);
+    const epoch = ++folderEpoch;
+    folderPending = true;
+    folderOk = false;
+    folderScan = null;
+    renderFolderStatus();
     updateInstallButton();
+    try {
+      const check = await backend.checkFolder(path);
+      if (epoch !== folderEpoch || $('folder').value !== path) return;
+      folderPending = false;
+      folderCheck = check;
+      updatePrevious(
+        check.recoveryPending ? null : check.previousVersion,
+        path.trim(),
+        check.freeBytes,
+      );
+      const free = check.freeBytes;
+      const need = check.requiredBytes ?? info.requiredBytes;
+      let message = '';
+      folderOk = !check.error && check.health !== 'conflict';
+      if (check.error || check.health === 'conflict') {
+        message = check.error || t('folderConflict');
+      } else if (free != null && free < need) {
+        folderOk = false;
+        message = t('spaceShort', { need: formatBytes(need), free: formatBytes(free) });
+      } else if (free != null) {
+        message = t('space', { need: formatBytes(need), free: formatBytes(free) });
+      }
+      if (folderOk && check.recoveryPending) message = t('recoveryPending') + ' ' + message;
+      if (!info.payloadReady) {
+        folderOk = false;
+        message = t('noPayload');
+      }
+      if (check.previousError) message += ' ' + t('previousUnavailable');
+      $('folder-hint').textContent = message;
+      $('folder-hint').classList.toggle('error', !folderOk);
+      // A folder problem can only be fixed in the custom-settings card, so open it.
+      if (check.error && root.dataset.screen === 'options') setCustomizing(true);
+      updateInstallButton();
+      renderFolderStatus();
+    } catch (error) {
+      if (epoch !== folderEpoch || $('folder').value !== path) return;
+      folderPending = false;
+      folderOk = false;
+      folderCheck = { error: String(error) };
+      $('folder-hint').textContent = String(error);
+      $('folder-hint').classList.add('error');
+      renderFolderStatus();
+      updateInstallButton();
+    }
+  }
+
+  function sameInstallFolder() {
+    return (
+      info &&
+      $('folder')
+        .value.trim()
+        .replace(/[\\/]+$/, '')
+        .toLowerCase() ===
+        String(info.installDir)
+          .replace(/[\\/]+$/, '')
+          .toLowerCase()
+    );
+  }
+  function repairAvailable() {
+    const available =
+      typeof folderCheck?.repairAvailable === 'boolean'
+        ? folderCheck.repairAvailable
+        : sameInstallFolder() && info?.repairAvailable;
+    return (
+      available && !folderPending && !folderCheck?.recoveryPending && folderOk && !operationBusy
+    );
+  }
+  function renderFolderStatus() {
+    let state = 'ready';
+    let label = 'folderReady';
+    if (folderPending) {
+      state = 'checking';
+      label = 'checkingFolder';
+    } else if (!folderOk || folderCheck?.error || folderCheck?.health === 'conflict') {
+      state = 'conflict';
+      label = 'folderConflict';
+    } else if (folderCheck?.recoveryPending || folderCheck?.health === 'recovery') {
+      state = 'recovery';
+      label = 'folderRecovery';
+    } else if (folderScan?.damaged.length || folderCheck?.health === 'damaged') {
+      state = 'damaged';
+      label = 'scanDamaged';
+    } else if (
+      folderCheck?.health === 'installed' ||
+      (!folderCheck?.health && sameInstallFolder() && info?.installedVersion)
+    ) {
+      state = 'installed';
+      label = 'folderInstalled';
+    }
+    $('location-state').dataset.state = state;
+    $('location-state-text').textContent = folderScan
+      ? t(folderScan.damaged.length ? 'scanDamaged' : 'scanClean', {
+          count: folderScan.damaged.length || folderScan.checked,
+        })
+      : label === 'scanDamaged'
+        ? t('folderDamaged')
+        : t(label);
+    $('repair').hidden = !repairAvailable();
+    $('scan').hidden = !repairAvailable();
+    const coverage =
+      folderScan && Number.isFinite(folderScan.checked) && Number.isFinite(folderScan.total)
+        ? t('scanCoverage', { checked: folderScan.checked, total: folderScan.total })
+        : '';
+    const partial = folderScan?.truncated ? t('scanPartial') : '';
+    $('scan-detail').textContent = [coverage, partial].filter(Boolean).join(' · ');
+    $('scan-detail').hidden = !coverage && !partial;
   }
 
   async function runInstall() {
+    if (backendUnavailable || operationBusy) return;
+    operationBusy = true;
     const options = {
       installDir: $('folder').value.trim(),
       desktopShortcut: $('desktop').checked,
@@ -304,6 +551,13 @@
       $('launch-option').hidden = false;
       $('finish').textContent = t('finish');
       $('finish').onclick = null;
+      resultCopy = {
+        title: info.mode === 'update' ? 'updated' : 'installed',
+        detail: 'installedDetail',
+        finish: 'finish',
+      };
+      root.classList.remove('failed');
+      $('done-symbol').textContent = '✓';
       show('done');
     } catch (error) {
       showFailure(t('failed'), error, info.ui === 'passive' ? null : 'options');
@@ -316,10 +570,14 @@
           backend.finish(true).catch(() => backend.finish(false));
         };
       }
+    } finally {
+      operationBusy = false;
     }
   }
 
   async function runUninstall() {
+    if (backendUnavailable || operationBusy) return;
+    operationBusy = true;
     const removeData = $('remove-data').checked;
     show('progress');
     setProgress(0);
@@ -332,14 +590,35 @@
       $('launch-option').hidden = true;
       $('finish').textContent = t('close');
       $('finish').onclick = null;
+      resultCopy = {
+        title: 'uninstalled',
+        detail: removeData ? 'removedData' : 'keptData',
+        finish: 'close',
+      };
+      root.classList.remove('failed');
+      $('done-symbol').textContent = '✓';
       show('done');
     } catch (error) {
       showFailure(t('uninstallFailed'), error, 'uninstall');
+    } finally {
+      operationBusy = false;
     }
   }
 
   /** Error screen. The message from Rust already says what to do (e.g. "Close Prism…"). */
   function showFailure(title, error, retryScreen) {
+    resultCopy = {
+      title:
+        title === t('restoreFailed')
+          ? 'restoreFailed'
+          : title === t('uninstallFailed')
+            ? 'uninstallFailed'
+            : 'failed',
+      raw: String(error),
+      finish: retryScreen ? 'tryAgain' : 'close',
+    };
+    root.classList.add('failed');
+    $('done-symbol').textContent = '!';
     $('done-title').textContent = title;
     $('done-detail').textContent = String(error);
     $('done-detail').classList.add('error');
@@ -349,9 +628,126 @@
       ? (event) => {
           event.preventDefault();
           show(retryScreen);
+          if (retryScreen === 'options') void checkFolder();
         }
       : null;
     show('done');
+  }
+
+  function updateModalInert() {
+    const open = [...document.querySelectorAll('.modal')].some((modal) => !modal.hidden);
+    for (const element of document.querySelectorAll('.titlebar,.workspace,.hero'))
+      element.inert = open;
+  }
+  async function refreshLog() {
+    const epoch = ++logEpoch;
+    clearTimeout(logTimer);
+    $('refresh-log').disabled = true;
+    try {
+      const log = await backend.readLog();
+      if (epoch !== logEpoch || $('details').hidden) return;
+      logText = log.text || '';
+      $('log-path').textContent = log.path || t('noLogFile');
+      $('log-text').textContent = logText || t('logEmpty');
+      $('log-scope').textContent = log.truncated ? t('logTail') : '';
+      $('log-scope').hidden = !log.truncated;
+      $('open-log-folder').disabled = !log.path;
+      $('copy-log').disabled = !logText;
+      $('log-notice').textContent = '';
+      $('log-notice').classList.remove('error');
+    } catch (error) {
+      if (epoch !== logEpoch || $('details').hidden) return;
+      $('log-notice').textContent = t('logUnavailable') + ' ' + String(error);
+      $('log-notice').classList.add('error');
+    } finally {
+      if (epoch === logEpoch) {
+        $('refresh-log').disabled = false;
+        if (!$('details').hidden && operationBusy)
+          logTimer = setTimeout(() => void refreshLog(), 1000);
+      }
+    }
+  }
+  function openDetails(trigger) {
+    detailTrigger = trigger;
+    $('detail-folder').textContent = $('folder').value || info?.installDir || '';
+    $('detail-version').textContent = info?.version || '';
+    $('details').hidden = false;
+    updateModalInert();
+    $('details-close').focus();
+    void refreshLog();
+  }
+  function closeDetails() {
+    $('details').hidden = true;
+    ++logEpoch;
+    clearTimeout(logTimer);
+    updateModalInert();
+    if (detailTrigger?.getClientRects().length) detailTrigger.focus();
+  }
+  async function scanInstallation() {
+    if (!repairAvailable()) return;
+    const path = $('folder').value.trim();
+    const epoch = ++scanEpoch;
+    const checkEpoch = folderEpoch;
+    $('scan').disabled = true;
+    $('location-state-text').textContent = t('scanning');
+    try {
+      const scan = await backend.scan(path);
+      if (epoch !== scanEpoch || checkEpoch !== folderEpoch || $('folder').value.trim() !== path)
+        return;
+      folderScan = scan;
+      renderFolderStatus();
+    } catch (error) {
+      if (epoch === scanEpoch && checkEpoch === folderEpoch)
+        $('folder-hint').textContent = String(error);
+    } finally {
+      if (epoch === scanEpoch) $('scan').disabled = false;
+    }
+  }
+  function showRepair() {
+    if (!repairAvailable()) return;
+    if (!$('agree').checked) {
+      openTerms();
+      return;
+    }
+    $('repair-ack').checked = false;
+    $('repair-confirm').disabled = true;
+    $('repair-folder').textContent = $('folder').value.trim();
+    $('repair-dialog').hidden = false;
+    updateModalInert();
+    $('repair-ack').focus();
+  }
+  function closeRepair() {
+    $('repair-dialog').hidden = true;
+    updateModalInert();
+    $('repair').focus();
+  }
+  async function runRepair() {
+    if (!repairAvailable() || !$('repair-ack').checked || !$('agree').checked) return;
+    const path = $('repair-folder').textContent;
+    if (path !== $('folder').value.trim()) return;
+    closeRepair();
+    operationBusy = true;
+    show('progress');
+    setProgress(0);
+    try {
+      await backend.repair(path);
+      setProgress(1);
+      resultCopy = { title: 'repaired', detail: 'installedDetail', finish: 'finish' };
+      $('done-title').textContent = t('repaired');
+      $('done-detail').textContent = t('installedDetail');
+      $('done-detail').classList.remove('error');
+      root.classList.remove('failed');
+      $('done-symbol').textContent = '✓';
+      $('launch-option').hidden = false;
+      $('launch').checked = false;
+      $('finish').textContent = t('finish');
+      $('finish').onclick = null;
+      show('done');
+    } catch (error) {
+      showFailure(t('failed'), error, 'options');
+    } finally {
+      operationBusy = false;
+    }
   }
 
   const stageText = {
@@ -361,18 +757,11 @@
     shortcuts: 'shortcuts',
     registering: 'registering',
     removing: 'removing',
-    done: 'registering',
+    done: 'finish',
   };
 
-  async function start() {
-    renderTerms();
-    info = await backend.info();
-    await backend.onProgress(({ stage, fraction }) => {
-      $('stage').textContent = t(stageText[stage] || 'preparing');
-      setProgress(fraction);
-    });
-    $('stage').textContent = t('preparing');
-
+  function renderVersion() {
+    if (!info) return;
     $('version').textContent =
       !info.recoveryPending &&
       info.mode === 'update' &&
@@ -380,6 +769,23 @@
       info.installedVersion !== info.version
         ? t('updateFrom', { old: info.installedVersion, v: info.version })
         : t('version', { v: info.version });
+    $('install').textContent = t(info.mode === 'update' ? 'update' : 'install');
+    $('setup-heading').textContent = t(
+      info.mode === 'uninstall' ? 'uninstall' : info.mode === 'restore' ? 'previous' : 'setupTitle',
+    );
+  }
+
+  async function start() {
+    renderTerms();
+    info = await backend.info();
+    await backend.onProgress(({ stage, fraction }) => {
+      currentStage = stage;
+      $('stage').textContent = t(stageText[stage] || 'preparing');
+      setProgress(fraction);
+    });
+    $('stage').textContent = t('preparing');
+
+    renderVersion();
 
     if (info.mode === 'uninstall') {
       updatePrevious(
@@ -406,6 +812,7 @@
     $('desktop').checked = info.desktopShortcut;
     $('start-menu').checked = info.startMenuShortcut;
     $('install').textContent = t(info.mode === 'update' ? 'update' : 'install');
+    root.classList.add('customizing');
     if (info.ui === 'passive') {
       // Started by Prism's updater: the user already agreed when installing.
       runInstall();
@@ -413,28 +820,54 @@
     }
     updateInstallButton();
     show('options');
-    checkFolder();
+    await checkFolder();
+    if (preview?.get('preview') === 'done') {
+      resultCopy = { title: 'installed', detail: 'installedDetail', finish: 'finish' };
+      $('done-title').textContent = t('installed');
+      $('done-detail').textContent = t('installedDetail');
+      show('done');
+    } else if (preview?.get('preview') === 'error')
+      showFailure(t('failed'), 'Preview fixture: close Prism and retry setup.', 'options');
   }
 
   // ---------- Events ----------
   let typingTimer = 0;
   $('folder').addEventListener('input', () => {
     clearTimeout(typingTimer);
-    typingTimer = setTimeout(checkFolder, 250);
+    ++folderEpoch;
+    ++scanEpoch;
+    folderPending = true;
+    folderOk = false;
+    folderScan = null;
+    updatePrevious(null, '', null);
+    $('scan').disabled = false;
+    renderFolderStatus();
+    updateInstallButton();
+    typingTimer = setTimeout(() => void checkFolder(), 250);
   });
   $('customize').addEventListener('click', () =>
     setCustomizing(!root.classList.contains('customizing')),
   );
   $('browse').addEventListener('click', async () => {
-    const picked = await backend.chooseFolder($('folder').value);
-    if (picked) {
-      $('folder').value = picked;
-      checkFolder();
+    const before = $('folder').value;
+    const epoch = folderEpoch;
+    $('browse').disabled = true;
+    try {
+      const picked = await backend.chooseFolder(before);
+      if (epoch !== folderEpoch || $('folder').value !== before || operationBusy) return;
+      if (picked) {
+        $('folder').value = picked;
+        await checkFolder();
+      }
+    } catch (error) {
+      $('folder-hint').textContent = String(error);
+    } finally {
+      $('browse').disabled = false;
     }
   });
   $('options-form').addEventListener('submit', (event) => {
     event.preventDefault();
-    if (folderOk && $('agree').checked) runInstall();
+    if (!folderPending && folderOk && $('agree').checked) void runInstall();
   });
   $('agree').addEventListener('change', updateInstallButton);
   $('open-terms').addEventListener('click', openTerms);
@@ -455,7 +888,7 @@
     else show(info.mode === 'uninstall' ? 'uninstall' : 'options');
   });
   $('restore-ack').addEventListener('change', () => {
-    $('restore').disabled = !$('restore-ack').checked;
+    $('restore').disabled = !$('restore-ack').checked || $('restore-ack').disabled;
   });
   $('restore-form').addEventListener('submit', (event) => {
     event.preventDefault();
@@ -463,11 +896,70 @@
   });
   $('done-form').addEventListener('submit', (event) => {
     event.preventDefault();
+    if (backendUnavailable) return;
     const launch = !$('launch-option').hidden && $('launch').checked;
     backend.finish(launch).catch((error) => showFailure(t('failed'), error, null));
   });
   $('minimize').addEventListener('click', () => backend.minimize());
   $('close').addEventListener('click', () => backend.close());
+  $('language').addEventListener('change', () => {
+    language = $('language').value;
+    index = languages.indexOf(language);
+    savePreference('language', language);
+    renderLabels();
+    renderTerms();
+    renderVersion();
+    $('stage').textContent = t(stageText[currentStage] || 'preparing');
+    if (resultCopy) {
+      $('done-title').textContent = t(resultCopy.title, resultCopy.values);
+      $('done-detail').textContent = resultCopy.raw ?? t(resultCopy.detail, resultCopy.values);
+      $('finish').textContent = t(resultCopy.finish);
+    }
+    if (previous)
+      $('restore-title').textContent = t('restoreTitle', {
+        from: previous.currentVersion,
+        to: previous.version,
+      });
+    renderFolderStatus();
+    if (info && root.dataset.screen === 'options') void checkFolder();
+  });
+  $('theme').addEventListener('change', () => {
+    theme = $('theme').value;
+    savePreference('theme', theme);
+    applyTheme();
+  });
+  for (const trigger of document.querySelectorAll('.detail-trigger'))
+    trigger.addEventListener('click', () => openDetails(trigger));
+  $('details-close').addEventListener('click', closeDetails);
+  $('refresh-log').addEventListener('click', () => void refreshLog());
+  $('open-log-folder').addEventListener(
+    'click',
+    () =>
+      void backend.openLogFolder().catch((error) => {
+        $('log-notice').textContent = String(error);
+      }),
+  );
+  $('copy-log').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(logText);
+      $('log-notice').textContent = t('logCopied');
+    } catch {
+      $('log-notice').textContent = t('copyFailed');
+      const selection = getSelection();
+      const range = document.createRange();
+      range.selectNodeContents($('log-text'));
+      selection.removeAllRanges();
+      selection.addRange(range);
+      $('log-text').focus();
+    }
+  });
+  $('scan').addEventListener('click', () => void scanInstallation());
+  $('repair').addEventListener('click', showRepair);
+  $('repair-cancel').addEventListener('click', closeRepair);
+  $('repair-ack').addEventListener('change', () => {
+    $('repair-confirm').disabled = !$('repair-ack').checked;
+  });
+  $('repair-confirm').addEventListener('click', () => void runRepair());
   // Show focus rings once the keyboard is used (see .keyboard in setup.css); hide them again
   // when the mouse is used.
   document.addEventListener('keydown', () => root.classList.add('keyboard'), true);
@@ -475,8 +967,32 @@
   // Esc first folds the custom-settings card; otherwise it closes the window (never while
   // installing).
   document.addEventListener('keydown', (event) => {
+    if (backendUnavailable) return;
+    const modal = [...document.querySelectorAll('.modal')].find((element) => !element.hidden);
+    if (event.key === 'Tab' && modal) {
+      const focusable = [
+        ...modal.querySelectorAll('button:not(:disabled),input:not(:disabled),[tabindex="0"]'),
+      ].filter((element) => element.getClientRects().length);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (
+        event.shiftKey &&
+        (document.activeElement === first || !modal.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        last?.focus();
+      } else if (
+        !event.shiftKey &&
+        (document.activeElement === last || !modal.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        first?.focus();
+      }
+    }
     if (event.key !== 'Escape') return;
-    if (!$('terms').hidden) {
+    if (!$('details').hidden) closeDetails();
+    else if (!$('repair-dialog').hidden) closeRepair();
+    else if (!$('terms').hidden) {
       closeTerms();
     } else if (root.classList.contains('customizing')) {
       setCustomizing(false);
@@ -486,5 +1002,12 @@
     }
   });
 
-  start().catch((error) => showFailure(t('failed'), error, null));
+  start().catch((error) => {
+    showFailure(t('failed'), error, null);
+    if (backendUnavailable) {
+      resultCopy = { title: 'failed', detail: 'bridgeUnavailable', finish: 'close' };
+      $('done-detail').textContent = t('bridgeUnavailable');
+      for (const element of root.querySelectorAll('button,input')) element.disabled = true;
+    }
+  });
 })();

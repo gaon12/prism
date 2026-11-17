@@ -1,39 +1,19 @@
-/* Prism setup window (760 x 480, no title bar).
- *
- * Layout, like a game-launcher installer: the art fills the window, there is exactly one big
- * button, and everything else is small and sits in a corner.
- *
- *   ┌──────────────────────────────────────────── _ × ┐
- *   │ Prism 0.2.0                                       │
- *   │                 beam ─▷ prism ▷ spectrum          │
- *   │                    (message)                      │
- *   │                ┌──────────────┐                   │
- *   │                │ Install now  │                   │
- *   │                └──────────────┘                   │
- *   │                 14 MB · 212 GB free               │
- *   │ ○ I agree to the Terms of use    Custom settings ⌄│
- *   └───────────────────────────────────────────────────┘
- *
- * Look: the same quiet palette as the app (warm off-white ground, ink text, hairlines). The
- * art is a precise line drawing; its one narrow spectrum is the only colour on screen. No
- * glows, gradients behind things, glossy buttons or blurred glass. */
-
+/* Optical identity with native, readable installer controls. */
 :root {
-  --ground: #f6f5f3; /* window background (app: --sidebar) */
-  --surface: #ffffff; /* cards */
-  --ink: #232326; /* text, lines, the main button */
-  --ink-hover: #3a3a3e;
-  --muted: #6f6f74;
-  --faint: #9a9a9d;
-  --line: rgba(0, 0, 0, 0.09);
-  --line-strong: rgba(0, 0, 0, 0.16);
-  --hover: rgba(0, 0, 0, 0.05);
-  --danger: #b4403d;
-  --danger-hover: #9d3532;
-  --error: #b4403d;
-  --focus: #4d8fcf;
-  --card-shadow: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 16px 40px -16px rgba(0, 0, 0, 0.22);
-  --settle: cubic-bezier(0.05, 0.85, 0.3, 1); /* arrive fast, settle softly */
+  --surface: #fff;
+  --ink: #182329;
+  --muted: #65717a;
+  --line: #dfe5e8;
+  --line-strong: #c1cbd1;
+  --hover: #f2f5f6;
+  --accent: #cf603c;
+  --accent-hover: #b94e2d;
+  --button-ink: #fff;
+  --error: #b83e39;
+  --positive: #267359;
+  --state: #edf6f0;
+  --focus: #237cbd;
+  color-scheme: light;
   font-family:
     'Segoe UI Variable Text', 'Segoe UI', 'Malgun Gothic', 'Microsoft YaHei', 'Yu Gothic UI',
     sans-serif;
@@ -41,11 +21,25 @@
   color: var(--ink);
   -webkit-font-smoothing: antialiased;
 }
-
+:root[data-theme='dark'] {
+  --surface: #1b2329;
+  --ink: #eef2f4;
+  --muted: #a2afb8;
+  --line: #37434b;
+  --line-strong: #566771;
+  --hover: #26323a;
+  --accent: #ee976f;
+  --accent-hover: #ffad86;
+  --button-ink: #182329;
+  --error: #ffaaa1;
+  --positive: #8bdbad;
+  --state: #21342d;
+  --focus: #79bfe9;
+  color-scheme: dark;
+}
 * {
   box-sizing: border-box;
 }
-/* `hidden` must win over the display rules below (setup.js hides things with it). */
 [hidden] {
   display: none !important;
 }
@@ -54,118 +48,117 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: var(--ground);
+  background: var(--surface);
   user-select: none;
 }
 button,
-input {
+input,
+select {
   font: inherit;
   color: inherit;
 }
+button {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
 p,
-h2 {
+h1,
+h2,
+h3 {
   margin: 0;
 }
-
+button,
+input,
+select {
+  outline-offset: 3px;
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--focus);
+}
+.setup:not(.keyboard) :focus-visible {
+  outline: none;
+}
 .setup {
   position: relative;
   height: 100vh;
+  min-width: 620px;
   overflow: hidden;
+  background: var(--surface);
 }
-
-/* ---------- Art (whole window) ---------- */
-.hero {
-  position: absolute;
-  inset: 0;
-  background: var(--ground);
-}
-.art {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  transition: opacity 0.3s ease;
-}
-.beam {
-  fill: none;
-  stroke: var(--ink);
-  stroke-width: 1.4;
-  stroke-linecap: round;
-}
-.beam.inner {
-  stroke-opacity: 0.45;
-  stroke-width: 1.2;
-}
-.prism-shape .face {
-  fill: var(--surface);
-  stroke: var(--ink);
-  stroke-width: 1.6;
-  stroke-linejoin: round;
-}
-.prism-shape .edge {
-  fill: none;
-  stroke: var(--ink);
-  stroke-opacity: 0.35;
-  stroke-width: 1.2;
-  stroke-linejoin: round;
-}
-/* --done goes from 0 to 1 while installing; the spectrum grows stronger with it. */
-.rays {
-  opacity: calc(0.55 + 0.4 * var(--done, 0));
-  transition: opacity 0.4s ease;
-}
-.setup[data-screen='done'] .rays {
-  opacity: 0.95;
-}
-/* When words or a card need attention, the art steps back. */
-.setup[data-screen='uninstall'] .art,
-.setup[data-screen='restore'] .art,
-.setup.customizing .art,
-.setup.reading .art {
-  opacity: 0.28;
-}
-
-.title {
-  position: absolute;
-  top: 18px;
-  left: 24px;
+.titlebar {
+  height: 52px;
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  position: relative;
+  z-index: 5;
+  padding-left: 24px;
 }
-.title h1 {
-  margin: 0;
-  font-family: 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+.wordmark {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 19px;
+  font-weight: 650;
+}
+.wordmark > svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linejoin: round;
+}
+.logo-ray {
+  stroke: var(--accent);
+  stroke-width: 1.8;
 }
 .version {
-  color: var(--faint);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  margin-left: 5px;
+}
+.appearance-controls {
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
+}
+.appearance-controls select {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  padding: 5px 23px 5px 9px;
+  max-width: 125px;
+  height: 30px;
   font-size: 12px;
 }
-
 .window-buttons {
-  position: absolute;
-  top: 0;
-  right: 0;
   display: flex;
-  z-index: 5;
+  margin-left: 16px;
+  align-self: stretch;
 }
 .window-button {
-  width: 46px;
-  height: 34px;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
   display: grid;
   place-items: center;
+  width: 40px;
+  background: none;
+  border: 0;
+  color: var(--muted);
 }
 .window-button svg {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   stroke: currentColor;
-  stroke-width: 1.2;
+  fill: none;
+  stroke-width: 1.3;
 }
 .window-button:hover {
   background: var(--hover);
@@ -173,426 +166,683 @@ h2 {
 }
 #close:hover {
   background: #c42b1c;
-  color: #fff;
+  color: white;
 }
-.window-button:disabled {
-  opacity: 0.35;
-  background: transparent;
+.hero {
+  position: absolute;
+  left: 0;
+  top: 52px;
+  bottom: 0;
+  width: 31.25%;
+  background: #101b20;
+  color: #f1f6f7;
+  overflow: hidden;
 }
-
-/* ---------- Screens ----------
- * Each screen is a transparent layer over the art. Its empty space lets clicks through, so the
- * window can still be dragged by the art; only its controls catch the mouse. */
+.title {
+  position: absolute;
+  left: 32px;
+  right: 20px;
+  top: 45px;
+}
+.title h1 {
+  font-size: 43px;
+  line-height: 1.12;
+  letter-spacing: -1.8px;
+  font-weight: 650;
+}
+.title p {
+  font-size: 14px;
+  line-height: 1.7;
+  margin-top: 9px;
+  word-break: keep-all;
+  color: #d7e1e6;
+}
+.art {
+  width: 100%;
+  height: 360px;
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.optics {
+  stroke: #8babb9;
+  stroke-width: 0.6;
+  fill: none;
+  opacity: 0.38;
+}
+.face {
+  fill: url(#glass);
+  stroke: #d5eaf4;
+  stroke-width: 1.7;
+  stroke-linejoin: round;
+}
+.edge {
+  stroke: #a0bfce;
+  stroke-width: 0.8;
+  fill: none;
+  opacity: 0.7;
+}
+.beam {
+  fill: none;
+  stroke: #f1fbff;
+  stroke-width: 2.2;
+}
+.glow {
+  opacity: 0.6;
+}
+.spectrum {
+  fill: none;
+  stroke-width: 2.1;
+  opacity: calc(0.7 + 0.3 * var(--done, 0));
+}
+.spectrum.glow {
+  stroke-width: 5;
+  opacity: 0.45;
+}
+.brand-bottom {
+  position: absolute;
+  left: 32px;
+  right: 25px;
+  bottom: 42px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.brand-bottom strong {
+  font-weight: 600;
+  word-break: keep-all;
+}
+.brand-bottom p {
+  color: #9fadb5;
+  margin-top: 7px;
+  font-size: 12px;
+}
+.workspace {
+  position: absolute;
+  top: 52px;
+  right: 0;
+  bottom: 0;
+  left: 31.25%;
+  padding: 38px 34px 28px;
+  display: flex;
+  flex-direction: column;
+}
+.workspace-heading {
+  flex: none;
+  margin-bottom: 25px;
+}
+.workspace-heading h2 {
+  font-size: 34px;
+  line-height: 1.25;
+  letter-spacing: -0.9px;
+  font-weight: 650;
+}
+.workspace-heading p {
+  margin-top: 9px;
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.6;
+}
 .screen {
   display: none;
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 2;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
 }
-.screen > * {
-  pointer-events: auto;
-}
+.setup[data-screen='loading'] .screen-loading,
 .setup[data-screen='options'] .screen-options,
 .setup[data-screen='uninstall'] .screen-uninstall,
 .setup[data-screen='restore'] .screen-restore,
 .setup[data-screen='progress'] .screen-progress,
 .setup[data-screen='done'] .screen-done {
-  display: block;
-  animation: screen-in 0.28s var(--settle);
+  display: flex;
 }
-@keyframes screen-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
+.location-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 12px 13px;
+  border-radius: 4px;
+  background: var(--state);
+  color: var(--positive);
+  font-size: 13px;
+  line-height: 1.45;
+  margin-bottom: 23px;
 }
-
-/* The message above the big button. It grows upwards, so long errors never move the button. */
-.message {
+.state-dot {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+  position: relative;
+  margin-top: 1px;
+}
+.state-dot:after {
+  content: '';
   position: absolute;
-  left: 80px;
-  right: 80px;
-  bottom: 168px;
-  text-align: center;
+  width: 7px;
+  height: 4px;
+  left: 4px;
+  top: 4px;
+  border-left: 1.8px solid var(--surface);
+  border-bottom: 1.8px solid var(--surface);
+  transform: rotate(-45deg);
 }
-.lead {
-  font-size: 18px;
+.location-state[data-state='checking'] {
+  color: var(--muted);
+  background: var(--hover);
+}
+.location-state[data-state='error'],
+.location-state[data-state='conflict'],
+.location-state[data-state='damaged'] {
+  color: var(--error);
+  background: var(--hover);
+}
+.location-state[data-state='recovery'] {
+  color: var(--accent);
+  background: var(--hover);
+}
+.field-label {
+  display: block;
   font-weight: 600;
-  line-height: 1.4;
-  letter-spacing: -0.01em;
+  font-size: 14px;
+  margin-bottom: 10px;
+}
+.folder-row {
+  display: flex;
+  gap: 9px;
+}
+.folder-row input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  padding: 10px 11px;
+  background: var(--surface);
+  font-size: 13px;
+  user-select: text;
+}
+.secondary {
+  padding: 8px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.secondary:hover {
+  background: var(--hover);
 }
 .hint {
-  min-height: 18px;
-  margin-top: 6px;
   color: var(--muted);
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.6;
   overflow-wrap: anywhere;
+  margin-top: 8px;
 }
 .hint.error {
   color: var(--error);
 }
-/* Space / folder status, small and centred under the big button. */
-.hint.below-cta {
-  position: absolute;
-  left: 120px;
-  right: 120px;
-  bottom: 70px;
-  margin: 0;
-  text-align: center;
-  color: var(--faint);
-  font-size: 12px;
-}
-.hint.below-cta.error {
-  color: var(--error);
-}
-
-/* ---------- The one big button ---------- */
-button.primary,
-button.danger {
-  position: absolute;
-  left: 50%;
-  bottom: 100px;
-  transform: translateX(-50%);
-  min-width: 240px;
-  height: 50px;
-  padding: 0 28px;
-  border: 0;
-  border-radius: 10px;
-  font-size: 16px;
-  font-weight: 600;
-  color: #fff;
-  background: var(--ink);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
-  cursor: default;
-  transition:
-    background 0.15s ease,
-    transform 0.15s ease;
-}
-button.primary:hover:not(:disabled) {
-  background: var(--ink-hover);
-}
-button.danger {
-  background: var(--danger);
-}
-button.danger:hover:not(:disabled) {
-  background: var(--danger-hover);
-}
-button.primary:active:not(:disabled),
-button.danger:active:not(:disabled) {
-  transform: translateX(-50%) translateY(1px);
-}
-/* A waiting button is clearly inactive, not just faded. */
-button.primary:disabled,
-button.danger:disabled {
-  background: #e3e2df;
-  color: var(--faint);
-  box-shadow: none;
-}
-button:disabled {
-  cursor: default;
-}
-
-/* ---------- Corners ---------- */
-.foot-left {
-  position: absolute;
-  left: 24px;
-  bottom: 20px;
-  max-width: 440px;
-  margin: 0;
-}
-.foot-right {
-  position: absolute;
-  right: 20px;
-  bottom: 14px;
+.sheet-checks {
   display: flex;
-  align-items: center;
-  gap: 2px;
+  gap: 24px;
+  margin-top: 24px;
+  flex-wrap: wrap;
 }
-/* Quiet text buttons ("Custom settings", "Previous version", "Back", "Close"). */
-button.link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  cursor: default;
+.setup:not(.customizing) .sheet-checks {
+  display: none;
 }
-button.link:hover {
-  color: var(--ink);
-  background: var(--hover);
-}
-button.link svg {
-  width: 10px;
-  height: 10px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  transition: transform 0.2s var(--settle);
-}
-#customize[aria-expanded='true'] {
-  color: var(--ink);
-}
-#customize[aria-expanded='true'] svg {
-  transform: rotate(180deg);
-}
-
-/* Round checkboxes, like the launcher's agreement circle. Still real checkboxes. */
 .check {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  color: var(--muted);
-  line-height: 1.45;
-}
-.check:hover {
-  color: var(--ink);
+  line-height: 1.55;
+  font-size: 13px;
 }
 .check input {
-  appearance: none;
-  -webkit-appearance: none;
-  flex: none;
   width: 17px;
   height: 17px;
-  margin: 0;
-  border-radius: 50%;
-  border: 1.5px solid var(--faint);
-  background: var(--surface) center / 11px no-repeat;
-  transition:
-    background-color 0.15s ease,
-    border-color 0.15s ease;
+  flex: none;
+  margin: 1px 0 0;
+  accent-color: var(--accent);
 }
-.check:hover input:not(:disabled) {
-  border-color: var(--ink);
-}
-.check input:checked {
-  border-color: var(--ink);
-  background-color: var(--ink);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m2.5 6.2 2.3 2.3 4.7-5' fill='none' stroke='%23fff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-}
-.check input:disabled {
-  opacity: 0.4;
-}
-
-/* Agreement row: "○ I agree to the Terms of use", the link is underlined like a document link. */
-.agree {
+.maintenance-actions {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 13px;
 }
-.agree .check {
-  align-items: center;
-}
+.link,
 .terms-link {
   border: 0;
-  padding: 2px 2px;
-  background: transparent;
+  background: none;
+  color: var(--muted);
+  padding: 5px 0;
+  line-height: 1.5;
+  font-size: 12px;
+  text-align: left;
+}
+.link:hover,
+.terms-link:hover {
   color: var(--ink);
   text-decoration: underline;
-  text-decoration-color: var(--line-strong);
   text-underline-offset: 3px;
-  cursor: default;
 }
-.terms-link:hover {
-  text-decoration-color: var(--ink);
+.maintenance-actions .link + .link {
+  margin-left: 14px;
 }
-
-/* ---------- Cards (custom settings, terms) ----------
- * Plain white cards with a hairline ring and a soft shadow. Folded away with `visibility`
- * (not display) so they can fade in and their fields stay out of the Tab order. */
-.sheet {
-  position: absolute;
-  left: 50%;
-  top: 72px;
-  width: 560px;
-  padding: 18px 20px 16px;
-  border-radius: 12px;
-  background: var(--surface);
-  box-shadow: var(--card-shadow);
-  opacity: 0;
-  visibility: hidden;
-  transform: translate(-50%, 8px);
-  transition:
-    opacity 0.2s ease,
-    transform 0.28s var(--settle),
-    visibility 0s linear 0.28s;
-}
-.setup.customizing .sheet {
-  opacity: 1;
-  visibility: visible;
-  transform: translate(-50%, 0);
-  transition:
-    opacity 0.2s ease,
-    transform 0.28s var(--settle);
-}
-.field-label {
-  display: block;
-  margin-bottom: 8px;
-  font-weight: 600;
-}
-.folder-row {
+.action-footer {
   display: flex;
-  gap: 8px;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 21px;
+  margin-top: auto;
 }
-.folder-row input {
-  flex: 1;
+.action-footer > div {
   min-width: 0;
-  height: 36px;
-  padding: 0 11px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-  user-select: text;
 }
-.folder-row input:focus {
-  outline: none;
-  box-shadow:
-    inset 0 0 0 1px var(--focus),
-    0 0 0 3px rgba(77, 143, 207, 0.18);
-}
-button.secondary {
-  height: 36px;
-  padding: 0 16px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-  cursor: default;
-}
-button.secondary:hover {
-  background: var(--ground);
-}
-.sheet-checks {
+.agree {
   display: flex;
-  gap: 22px;
-  margin-top: 14px;
+  align-items: flex-start;
+  gap: 4px;
+  flex-wrap: wrap;
 }
-
-.terms {
+.agree .check {
+  font-size: 12px;
+}
+.terms-link {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  padding: 0;
+  color: var(--ink);
+  font-size: 12px;
+}
+.footer-links {
+  display: flex;
+  gap: 17px;
+  margin-top: 10px;
+}
+.primary,
+.danger,
+.solid {
+  border: 0;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--button-ink);
+  font-weight: 650;
+  padding: 11px 22px;
+  min-height: 44px;
+  white-space: nowrap;
+}
+.primary {
+  min-width: 150px;
+  font-size: 15px;
+}
+.primary:after {
+  content: ' →';
+  margin-left: 8px;
+}
+.primary:hover,
+.solid:hover {
+  background: var(--accent-hover);
+}
+.danger {
+  background: #b44740;
+  color: white;
+}
+.primary:disabled,
+.solid:disabled {
+  background: var(--line);
+  color: var(--muted);
+  opacity: 1;
+}
+.lead {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.45;
+  letter-spacing: -0.35px;
+}
+.message {
+  overflow: auto;
+  min-height: 0;
+  margin-top: 8px;
+  padding-bottom: 25px;
+}
+.message .hint {
+  font-size: 13px;
+  line-height: 1.8;
+  margin-top: 15px;
+}
+.screen-done .message {
+  flex: 1;
+}
+.done-symbol {
+  font-size: 27px;
+  color: var(--positive);
+  width: 47px;
+  height: 47px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  margin-bottom: 12px;
+}
+.setup.failed .done-symbol {
+  color: var(--error);
+}
+.progress-symbol {
+  width: 50px;
+  height: 50px;
+  color: var(--accent);
+  margin-bottom: 25px;
+  margin-top: 6px;
+}
+.progress-symbol svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.progress-text {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 14px;
+  gap: 10px;
+}
+.progress-text #percent {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.track {
+  height: 5px;
+  background: var(--line);
+  overflow: hidden;
+  border-radius: 1px;
+}
+.fill {
+  height: 100%;
+  width: calc(100% * var(--done, 0));
+  background: var(--accent);
+  transition: width 0.2s ease-out;
+}
+.operation-summary {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 25px;
+  line-height: 1.6;
+}
+.operation-summary p {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  user-select: text;
+  margin-top: 5px;
+}
+.loading-line {
+  color: var(--muted);
+  margin-top: 35px;
+}
+.modal {
   position: absolute;
-  z-index: 4;
-  left: 50%;
-  top: 44px;
-  bottom: 24px;
-  width: 620px;
-  transform: translateX(-50%);
+  z-index: 20;
+  inset: 30px 8%;
   display: flex;
   flex-direction: column;
-  border-radius: 12px;
+  min-height: 0;
   background: var(--surface);
-  box-shadow: var(--card-shadow);
-  animation: card-in 0.28s var(--settle);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  box-shadow: 0 12px 90px #0006;
 }
-@keyframes card-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, 8px);
-  }
-}
-.terms h2 {
-  padding: 18px 24px 12px;
-  font-size: 15px;
-  font-weight: 600;
+.modal-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  padding: 19px 24px;
   border-bottom: 1px solid var(--line);
+  flex: none;
 }
-.terms-body {
+.modal-heading h2 {
+  font-size: 19px;
+  font-weight: 600;
+}
+.terms-body,
+.details-body {
+  padding: 22px 24px;
+  overflow: auto;
   flex: 1;
-  overflow-y: auto;
-  padding: 14px 24px 8px;
-  color: var(--muted);
-  line-height: 1.65;
   user-select: text;
+  min-height: 0;
 }
 .terms-body h3 {
-  margin: 12px 0 4px;
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 14px;
+  margin: 19px 0 7px;
 }
 .terms-body h3:first-child {
   margin-top: 0;
 }
 .terms-body p {
-  margin: 0;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--muted);
 }
 .terms-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 16px;
+  gap: 12px;
   border-top: 1px solid var(--line);
+  padding: 15px 24px;
+  flex: none;
 }
-button.solid {
-  height: 34px;
-  min-width: 88px;
-  padding: 0 18px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--ink);
-  color: #fff;
-  font-weight: 600;
-  cursor: default;
+.terms-actions .link {
+  padding: 8px 12px;
 }
-button.solid:hover {
-  background: var(--ink-hover);
+.terms-actions .solid {
+  min-height: 36px;
+  padding: 8px 18px;
 }
-
-button:focus-visible,
-.check input:focus-visible,
-.terms-body:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
+.detail-facts {
+  display: grid;
+  grid-template-columns: 95px minmax(0, 1fr);
+  gap: 8px 15px;
+  margin: 0 0 17px;
+  font-size: 12px;
+  line-height: 1.6;
 }
-/* setup.js focuses the main button on every screen so Enter works at once. Show that focus
-   ring only after the user starts using the keyboard (the .keyboard class), so a mouse user
-   sees the clean screen. */
-.setup:not(.keyboard) :focus-visible {
-  outline: none;
+.detail-facts dt {
+  color: var(--muted);
 }
-
-/* ---------- Progress ---------- */
-.progress {
-  position: absolute;
-  left: 24px;
-  right: 24px;
-  bottom: 24px;
+.detail-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
-.progress-text {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 9px;
+.details-body pre {
+  margin: 10px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font:
+    11px/1.65 Consolas,
+    'Cascadia Mono',
+    monospace;
+  border: 1px solid var(--line);
+  padding: 14px;
+  min-height: 115px;
+  background: var(--hover);
+}
+.repair-confirm {
+  inset: 100px 13%;
+  max-height: 390px;
+}
+.repair-body {
+  padding: 25px;
+  overflow: auto;
+  line-height: 1.8;
   font-size: 13px;
 }
-#percent {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
+.repair-body .check {
+  margin-top: 25px;
 }
-.track {
-  height: 3px;
-  border-radius: 2px;
-  background: var(--line);
-  overflow: hidden;
+.setup:has(.modal:not([hidden])):before {
+  content: '';
+  position: absolute;
+  inset: 52px 0 0;
+  background: #0005;
+  z-index: 15;
 }
-/* The bar is plain ink; the art's spectrum already shows the progress in colour. */
-.fill {
-  height: 100%;
-  width: calc(100% * var(--done, 0));
-  background: var(--ink);
-  transition: width 0.25s ease-out;
+.setup.reading .workspace,
+.setup.reading .hero {
+  pointer-events: none;
 }
-
+@media (max-width: 820px) {
+  .titlebar {
+    height: 45px;
+    padding-left: 18px;
+  }
+  .hero {
+    top: 45px;
+    width: 28%;
+  }
+  .workspace {
+    top: 45px;
+    left: 28%;
+    padding: 27px 25px 22px;
+  }
+  .title {
+    left: 23px;
+    top: 35px;
+  }
+  .title h1 {
+    font-size: 36px;
+  }
+  .title p {
+    font-size: 12px;
+  }
+  .brand-bottom {
+    left: 23px;
+    bottom: 25px;
+    font-size: 11px;
+  }
+  .brand-bottom p {
+    font-size: 11px;
+  }
+  .workspace-heading {
+    margin-bottom: 19px;
+  }
+  .workspace-heading h2 {
+    font-size: 25px;
+  }
+  .workspace-heading p {
+    font-size: 12px;
+  }
+  .location-state {
+    padding: 10px;
+    margin-bottom: 18px;
+    font-size: 12px;
+  }
+  .sheet-checks {
+    margin-top: 17px;
+  }
+  .action-footer {
+    padding-top: 16px;
+    gap: 12px;
+  }
+  .primary {
+    min-width: 128px;
+    font-size: 14px;
+    padding: 10px 15px;
+  }
+  .version {
+    display: none;
+  }
+  .appearance-controls {
+    gap: 7px;
+  }
+  .appearance-controls select {
+    max-width: 110px;
+    font-size: 11px;
+    height: 28px;
+  }
+  .art {
+    height: 310px;
+  }
+  .modal {
+    inset: 20px 6%;
+  }
+  .repair-confirm {
+    inset: 75px 10%;
+  }
+  .action-footer .agree {
+    max-width: 270px;
+  }
+  .footer-links {
+    gap: 12px;
+    margin-top: 6px;
+  }
+}
+@media (max-height: 560px) {
+  .workspace {
+    padding-top: 22px;
+    padding-bottom: 17px;
+  }
+  .workspace-heading {
+    margin-bottom: 16px;
+  }
+  .workspace-heading h2 {
+    font-size: 24px;
+  }
+  .workspace-heading p {
+    margin-top: 5px;
+  }
+  .location-state {
+    margin-bottom: 15px;
+    padding: 9px 11px;
+  }
+  .sheet-checks {
+    margin-top: 15px;
+    gap: 20px;
+  }
+  .maintenance-actions {
+    margin-top: 7px;
+  }
+  .action-footer {
+    padding-top: 13px;
+  }
+  .title {
+    top: 30px;
+  }
+  .brand-bottom {
+    bottom: 22px;
+  }
+  .art {
+    height: 275px;
+  }
+  .progress-symbol {
+    margin: 0 0 14px;
+    width: 40px;
+    height: 40px;
+  }
+  .operation-summary {
+    margin-top: 17px;
+  }
+  .modal {
+    inset: 15px 7%;
+  }
+  .repair-confirm {
+    inset: 60px 12%;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   *,
-  *::before,
-  *::after {
-    animation: none !important;
+  *:before,
+  *:after {
     transition: none !important;
+    animation: none !important;
   }
 }

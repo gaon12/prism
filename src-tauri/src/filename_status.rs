@@ -16,8 +16,9 @@ pub(super) struct Progress {
 impl Progress {
     #[cfg(any(windows, test))]
     pub(super) fn inserted(&self, count: usize) {
-        // Workers release the prepared mutex before publishing. A later batch
-        // may publish first; counts only increase within this exact attempt.
+        // This atomic never acquires the status mutex. Workers commit their
+        // completed count before releasing the prepared rows to search readers.
+        // Counts only increase within this exact attempt, including late updates.
         self.count.fetch_max(count, Ordering::Release);
     }
 }

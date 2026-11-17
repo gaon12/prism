@@ -1,0 +1,114 @@
+# Check production modules without building the Tauri/Lance desktop binary.
+# Release retains the full native build, model and installer integration gates.
+name: Core
+on:
+  pull_request:
+    paths:
+      - 'src-tauri/**'
+      - 'indexer/**'
+      - 'installer/**'
+      - 'tools/**'
+      - 'vendor/**'
+      - 'server/**'
+      - 'scripts/**'
+      - 'tests/scripts/**'
+      - 'tests/native/**'
+      - 'tests/fixtures/**'
+      - 'package*.json'
+      - '.github/workflows/core.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src-tauri/**'
+      - 'indexer/**'
+      - 'installer/**'
+      - 'tools/**'
+      - 'vendor/**'
+      - 'server/**'
+      - 'scripts/**'
+      - 'tests/scripts/**'
+      - 'tests/native/**'
+      - 'tests/fixtures/**'
+      - 'package*.json'
+      - '.github/workflows/core.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: core-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_BUILD_JOBS: '1'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Core checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Use a Windows temporary folder without aliases
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: |
+            tools/update-verifier
+            tools/rag-qa
+            tools/platform-qa
+            tools/catalog-qa
+            installer/core
+            indexer
+      - run: npm ci
+      - name: Check source formatting
+        run: |
+          npm run format:check
+          cargo +stable fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo +stable fmt --manifest-path tools/rag-qa/Cargo.toml --check
+          cargo +stable fmt --manifest-path installer/core/Cargo.toml --check
+          cargo +stable fmt --manifest-path installer/src-tauri/Cargo.toml --check
+      - name: Check versions and release scripts
+        run: |
+          npm run version:check
+          cargo +stable test --manifest-path tools/update-verifier/Cargo.toml --locked
+          cargo +stable build --manifest-path tools/update-verifier/Cargo.toml --locked
+          node --test tests/scripts/*.test.mjs
+          node tests/native/setup-installed-release.mjs --self-test
+      - name: Check production AI and document modules
+        run: |
+          cargo +stable test --manifest-path tools/rag-qa/Cargo.toml --locked -- --test-threads=2
+          cargo +stable clippy --manifest-path tools/rag-qa/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Check extraction, rendering and content storage modules
+        run: |
+          cargo +stable test --manifest-path tools/platform-qa/Cargo.toml --locked -- --test-threads=2
+          cargo +stable clippy --manifest-path tools/platform-qa/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Check the filename catalog and NTFS protocol
+        run: |
+          cargo +stable test --manifest-path tools/catalog-qa/Cargo.toml --locked -- --test-threads=2
+          cargo +stable clippy --manifest-path tools/catalog-qa/Cargo.toml --all-targets --locked -- -D warnings
+          cargo +stable test --manifest-path indexer/Cargo.toml --workspace --locked -- --test-threads=2
+      - name: Check installer transactions and recovery
+        run: |
+          cargo +stable test --manifest-path installer/core/Cargo.toml --locked -- --test-threads=2
+          cargo +stable clippy --manifest-path installer/core/Cargo.toml --all-targets --locked -- -D warnings

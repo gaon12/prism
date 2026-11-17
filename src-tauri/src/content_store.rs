@@ -181,8 +181,8 @@ pub struct ContentSearchHit {
 }
 /// Search results plus numbers that explain how complete they are.
 ///
-/// A search first collects every chunk whose text contains all terms ("candidates"), then keeps
-/// only the ones the caller may see. To bound memory and time, at most `candidate_limit`
+/// A search applies folder/file/extension filters, collects chunks containing all terms
+/// ("candidates"), then checks current source visibility. At most `candidate_limit`
 /// candidates are collected. If more existed, `hard_limit_reached` is true: the hits are then
 /// only a partial answer, and an empty list does NOT mean "nothing matches". The UI should say
 /// so and suggest a more specific query.
@@ -190,7 +190,7 @@ pub struct ContentSearchHit {
 #[serde(rename_all = "camelCase")]
 pub struct ContentSearchResponse {
     pub hits: Vec<ContentSearchHit>,
-    /// How many candidates were collected (before the scope and permission checks).
+    /// How many candidates were collected after folder/file filters, before live source checks.
     pub candidate_count: usize,
     pub candidate_limit: usize,
     pub hard_limit_reached: bool,
@@ -777,6 +777,43 @@ impl ContentStore {
                     slots.push(format!("?{}",arguments.len()));
                 }
                 conditions.push(format!("d.path_key IN ({})",slots.join(",")));
+            }
+            // Folder restrictions must also run before the candidate budget: a
+            // common word in other indexed folders cannot crowd out this scope.
+            // Prefixes include the native separator, so siblings and literal
+            // SQL wildcard characters in folder names cannot expand the match.
+            // A JSON table keeps the parameter/expression count independent of
+            // the number of configured roots. This only narrows candidates;
+            // current canonical paths and fingerprints are still checked below.
+            for folders in [&allowed, &scopes] {
+                if folders.is_empty() {
+                    continue;
+                }
+                let ranges: Vec<_> = folders
+                    .iter()
+                    .map(|folder| {
+                        let mut prefix = path_key(folder);
+                        if !prefix.ends_with(std::path::MAIN_SEPARATOR) {
+                            prefix.push(std::path::MAIN_SEPARATOR);
+                        }
+                        // The separator is ASCII on every supported platform.
+                        // Incrementing it gives the exclusive end of this exact
+                        // prefix's BINARY range, including non-ASCII descendants.
+                        let mut end = prefix.clone();
+                        end.pop();
+                        end.push(if std::path::MAIN_SEPARATOR == '\\' {
+                            ']'
+                        } else {
+                            '0'
+                        });
+                        (prefix, end)
+                    })
+                    .collect();
+                arguments.push(serde_json::to_string(&ranges).map_err(storage)?);
+                conditions.push(format!(
+                    "d.id IN (SELECT scoped.id FROM json_each(?{}) root CROSS JOIN content_documents scoped WHERE scoped.path_key>=json_extract(root.value,'$[0]') AND scoped.path_key<json_extract(root.value,'$[1]'))",
+                    arguments.len()
+                ));
             }
             // Extension filter: keep files whose path ends with ".<ext>" (any of them).
             // `lower()` is enough because extensions are ASCII-only (checked above).
@@ -2142,6 +2179,75 @@ mod tests {
     }
 
     #[test]
+    fn folder_filters_run_before_unrelated_rows_exhaust_the_candidate_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let inside = dir.path().join("선택_%");
+        let wide = vec![dir.path().to_owned()];
+        let mut store = ContentStore::open(&dir.path().join("index.sqlite")).unwrap();
+        for folder in ["other", "선택_%sibling", "선택_X"] {
+            let doc = document(
+                &dir.path().join(folder),
+                "outside.txt",
+                "scopebudget 공통단어",
+            );
+            store.replace_document(&doc, &wide, &cancel()).unwrap();
+        }
+        let doc = document(&inside.join("nested"), "inside.txt", "scopebudget 공통단어");
+        store.replace_document(&doc, &wide, &cancel()).unwrap();
+        store.candidate_limit = 1;
+        for (filter, authorized) in [
+            (ContentSearchFilter::default(), vec![inside.clone()]),
+            (
+                ContentSearchFilter {
+                    scope_paths: vec![inside.to_string_lossy().into_owned()],
+                    ..Default::default()
+                },
+                wide.clone(),
+            ),
+            (
+                ContentSearchFilter {
+                    scope_paths: vec![
+                        inside.to_string_lossy().into_owned(),
+                        dir.path().join("other").to_string_lossy().into_owned(),
+                    ],
+                    ..Default::default()
+                },
+                vec![inside.clone()],
+            ),
+        ] {
+            let result = store
+                .search_detailed("scopebudget", &filter, &authorized, 20, &cancel())
+                .unwrap();
+            assert_eq!(
+                result.hits.len(),
+                1,
+                "Unrelated folders consumed the budget"
+            );
+            assert_eq!(
+                path_key(Path::new(&result.hits[0].chunk.file_path)),
+                path_key(Path::new(&doc.file_path))
+            );
+            assert_eq!(result.candidate_count, 1);
+            assert!(!result.hard_limit_reached);
+        }
+        let outside = store
+            .search_detailed(
+                "scopebudget",
+                &ContentSearchFilter {
+                    scope_paths: vec![dir.path().join("other").to_string_lossy().into_owned()],
+                    ..Default::default()
+                },
+                &[inside],
+                20,
+                &cancel(),
+            )
+            .unwrap();
+        assert!(outside.hits.is_empty());
+        assert_eq!(outside.candidate_count, 0);
+        assert!(!outside.hard_limit_reached);
+    }
+
+    #[test]
     fn detailed_search_reports_partial_results_at_the_candidate_limit() {
         let dir = tempfile::tempdir().unwrap();
         let inside = dir.path().join("inside");
@@ -2173,20 +2279,21 @@ mod tests {
                 full.candidate_count,
                 full.hard_limit_reached
             ),
-            (1, 4, false)
+            (1, 1, false)
         );
         assert_eq!(full.candidate_limit, MAX_CANDIDATES);
         store.candidate_limit = 3;
-        // Only out-of-scope candidates fit the budget: zero hits must be reported as partial.
-        let partial = detailed(&store, &roots);
-        assert!(partial.hits.is_empty());
+        // A genuinely broad query still reports when matching chunks exceed its budget.
+        let partial = detailed(&store, &wide);
+        assert_eq!(partial.hits.len(), 3);
         assert_eq!((partial.candidate_count, partial.candidate_limit), (3, 3));
         assert!(partial.hard_limit_reached);
         let json = serde_json::to_value(&partial).unwrap();
         assert_eq!(json["hardLimitReached"], true);
         assert_eq!(json["candidateCount"], 3);
         // The compatibility wrapper returns the same hits.
-        assert!(search(&store, "공통단어", &roots).is_empty());
+        assert_eq!(search(&store, "공통단어", &wide).len(), 3);
+        assert_eq!(search(&store, "공통단어", &roots).len(), 1);
         let selected = store
             .search_detailed(
                 "공통단어",
@@ -2208,7 +2315,7 @@ mod tests {
         assert!(!selected.hard_limit_reached);
         store.candidate_limit = MAX_CANDIDATES;
         assert_eq!(search(&store, "공통단어", &roots).len(), 1);
-        assert_eq!(detailed(&store, &roots).candidate_count, 4);
+        assert_eq!(detailed(&store, &roots).candidate_count, 1);
         assert!(!detailed(&store, &[]).hard_limit_reached);
     }
 

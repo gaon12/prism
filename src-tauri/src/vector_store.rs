@@ -12,7 +12,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use futures::{future::Either, Future, TryStreamExt};
 use lancedb::{
-    expr::{col, is_in, lit},
+    expr::{col, is_in, lit, DfExpr},
     query::{ExecutableQuery, QueryBase, QueryExecutionOptions, Select},
     DistanceType, Table,
 };
@@ -333,6 +333,54 @@ impl CurrentFilter {
                     .any(|scope| within(Path::new(&chunk.file_path), scope))
             })
     }
+}
+
+// Keep expression depth logarithmic even with many configured folders. An empty
+// set is false: an unavailable selected folder must never widen the search.
+fn any_filter(mut expressions: Vec<DfExpr>) -> DfExpr {
+    while expressions.len() > 1 {
+        let mut combined = Vec::with_capacity(expressions.len().div_ceil(2));
+        let mut iter = expressions.into_iter();
+        while let Some(left) = iter.next() {
+            combined.push(match iter.next() {
+                Some(right) => left.or(right),
+                None => left,
+            });
+        }
+        expressions = combined;
+    }
+    expressions.pop().unwrap_or_else(|| lit(false))
+}
+
+fn folder_prefilter(folders: &[PathBuf]) -> DfExpr {
+    #[cfg(windows)]
+    let column = lancedb::expr::lower(col("filePath"));
+    #[cfg(not(windows))]
+    let column = col("filePath");
+    any_filter(
+        folders
+            .iter()
+            .map(|folder| {
+                let mut prefix = key(&folder.to_string_lossy());
+                if !prefix.ends_with(std::path::MAIN_SEPARATOR) {
+                    prefix.push(std::path::MAIN_SEPARATOR);
+                }
+                // Use a literal prefix range rather than a wildcard pattern.
+                // The incremented native separator is its exclusive upper bound.
+                let mut end = prefix.clone();
+                end.pop();
+                end.push(if std::path::MAIN_SEPARATOR == '\\' {
+                    ']'
+                } else {
+                    '0'
+                });
+                column
+                    .clone()
+                    .gt_eq(lit(prefix))
+                    .and(column.clone().lt(lit(end)))
+            })
+            .collect(),
+    )
 }
 
 fn vector_schema(model: &VectorModelSpec) -> Result<Arc<Schema>> {
@@ -799,6 +847,10 @@ impl VectorStore {
         }
         let query_vector = normalized_vector(query_vector, self.model.dimensions)?;
         let filter = CurrentFilter::new(filter)?;
+        let roots: Vec<_> = allowed_roots
+            .iter()
+            .filter_map(|root| current_path(&root.to_string_lossy(), true))
+            .collect();
         let _operation = cancellable(self.operation.lock(), cancel).await?;
         cancellable(self.table.checkout_latest(), cancel)
             .await?
@@ -816,10 +868,13 @@ impl VectorStore {
             exhausted: total == 0,
             hard_limit_reached: false,
         };
-        if total == 0 || allowed_roots.is_empty() {
+        if total == 0 || roots.is_empty() {
+            response.exhausted = true;
             return Ok(response);
         }
-        if filter.documents.as_ref().is_some_and(HashSet::is_empty) {
+        if filter.documents.as_ref().is_some_and(HashSet::is_empty)
+            || filter.scopes.as_ref().is_some_and(Vec::is_empty)
+        {
             response.exhausted = true;
             return Ok(response);
         }
@@ -851,6 +906,25 @@ impl VectorStore {
                 let column = col("filePath");
                 query =
                     query.only_if_expr(is_in(column, documents.iter().cloned().map(lit).collect()));
+            }
+            // Scope and extension restrictions also precede nearest-neighbor
+            // ranking. Closer vectors in unrelated folders/formats must not
+            // consume the selected project's entire candidate budget. These
+            // predicates only narrow candidates; live SQLite authorization and
+            // source fingerprints remain mandatory below.
+            query = query.only_if_expr(folder_prefilter(&roots));
+            if let Some(scopes) = &filter.scopes {
+                query = query.only_if_expr(folder_prefilter(scopes));
+            }
+            if !filter.extensions.is_empty() {
+                let column = lancedb::expr::lower(col("filePath"));
+                query = query.only_if_expr(any_filter(
+                    filter
+                        .extensions
+                        .iter()
+                        .map(|extension| column.clone().like(lit(format!("%.{extension}"))))
+                        .collect(),
+                ));
             }
             let mut options = QueryExecutionOptions::default();
             options.timeout = Some(Duration::from_secs(30));
@@ -1866,6 +1940,166 @@ mod tests {
     }
 
     #[test]
+    fn folder_and_extension_prefilters_preserve_selected_results_and_authority() {
+        runtime(async {
+            let dir = tempfile::tempdir().unwrap();
+            let inside = dir.path().join("선택_'_%");
+            let sibling = dir.path().join("선택_'_%sibling");
+            let all = vec![dir.path().to_owned()];
+            let content = ContentStore::open(&dir.path().join("content.sqlite")).unwrap();
+            let spec = model(2);
+            let store = VectorStore::open(&dir.path().join("vectors"), spec.clone())
+                .await
+                .unwrap();
+            let mut denied_path = String::new();
+            for folder in [sibling.clone(), dir.path().join("선택_'_X")] {
+                let (doc, chunks) = source(&folder, "closer.md", "closer evidence", &content, &all);
+                denied_path = doc.file_path.clone();
+                store
+                    .replace_document(
+                        batch(&doc, &chunks, &spec.model_fingerprint, vec![1.0, 0.0]),
+                        &content,
+                        &all,
+                        &cancel(),
+                    )
+                    .await
+                    .unwrap();
+            }
+            let (permitted, chunks) = source(
+                &inside.join("nested"),
+                "selected.MD",
+                "selected evidence",
+                &content,
+                &all,
+            );
+            store
+                .replace_document(
+                    batch(&permitted, &chunks, &spec.model_fingerprint, vec![0.8, 0.6]),
+                    &content,
+                    &all,
+                    &cancel(),
+                )
+                .await
+                .unwrap();
+            for (filter, authorized, expected) in [
+                (ContentSearchFilter::default(), vec![inside.clone()], 1),
+                (
+                    ContentSearchFilter {
+                        scope_paths: vec![inside.to_string_lossy().into_owned()],
+                        ..Default::default()
+                    },
+                    all.clone(),
+                    1,
+                ),
+                (
+                    ContentSearchFilter {
+                        scope_paths: vec![
+                            inside.to_string_lossy().into_owned(),
+                            sibling.to_string_lossy().into_owned(),
+                        ],
+                        ..Default::default()
+                    },
+                    vec![inside.clone()],
+                    1,
+                ),
+                (
+                    ContentSearchFilter {
+                        scope_paths: vec![sibling.to_string_lossy().into_owned()],
+                        ..Default::default()
+                    },
+                    vec![inside.clone()],
+                    0,
+                ),
+                (
+                    ContentSearchFilter {
+                        document_paths: vec![denied_path],
+                        ..Default::default()
+                    },
+                    vec![inside.clone()],
+                    0,
+                ),
+                // Filename-only access supplies no content roots, even when
+                // a selected target has previously indexed text/vectors.
+                (
+                    ContentSearchFilter {
+                        document_paths: vec![permitted.file_path.clone()],
+                        ..Default::default()
+                    },
+                    vec![],
+                    0,
+                ),
+            ] {
+                let result = store
+                    .search(
+                        &[1.0, 0.0],
+                        &spec.model_fingerprint,
+                        &content,
+                        VectorSearchOptions {
+                            filter: &filter,
+                            allowed_roots: &authorized,
+                            top_k: 1,
+                            max_candidates: 1,
+                        },
+                        &cancel(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(result.hits.len(), expected);
+                if expected == 1 {
+                    assert_eq!(
+                        key(&result.hits[0].chunk.file_path),
+                        key(&permitted.file_path)
+                    );
+                }
+            }
+            let (wrong_format, chunks) = source(
+                &inside,
+                "closer.txt",
+                "closer text evidence",
+                &content,
+                &all,
+            );
+            store
+                .replace_document(
+                    batch(
+                        &wrong_format,
+                        &chunks,
+                        &spec.model_fingerprint,
+                        vec![1.0, 0.0],
+                    ),
+                    &content,
+                    &all,
+                    &cancel(),
+                )
+                .await
+                .unwrap();
+            let result = store
+                .search(
+                    &[1.0, 0.0],
+                    &spec.model_fingerprint,
+                    &content,
+                    VectorSearchOptions {
+                        filter: &ContentSearchFilter {
+                            extensions: vec![".md".into()],
+                            ..Default::default()
+                        },
+                        allowed_roots: &[inside],
+                        top_k: 1,
+                        max_candidates: 1,
+                    },
+                    &cancel(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.hits.len(), 1);
+            assert_eq!(
+                key(&result.hits[0].chunk.file_path),
+                key(&permitted.file_path)
+            );
+        });
+    }
+
+    #[test]
     fn authorization_overfetch_diagnostics_and_orphan_purge() {
         runtime(async {
             let dir = tempfile::tempdir().unwrap();
@@ -1929,10 +2163,14 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert!(limited.hits.is_empty());
+            assert_eq!(limited.hits.len(), 1);
+            assert_eq!(
+                key(&limited.hits[0].chunk.file_path),
+                key(&permitted.file_path)
+            );
             assert!(limited.hard_limit_reached);
             assert!(!limited.exhausted);
-            assert_eq!(limited.filtered_out, 1);
+            assert_eq!(limited.filtered_out, 0);
             let selected = store
                 .search(
                     &[1.0, 0.0],
@@ -1976,8 +2214,8 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(expanded.hits.len(), 1);
-            assert_eq!(expanded.candidate_count, 41);
-            assert_eq!(expanded.filtered_out, 40);
+            assert_eq!(expanded.candidate_count, 1);
+            assert_eq!(expanded.filtered_out, 0);
             assert!(expanded.exhausted);
             assert!(!expanded.hard_limit_reached);
             assert_eq!(

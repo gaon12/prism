@@ -1181,25 +1181,35 @@ export function ChatView({
   // A folder opened in the library (left sidebar) is the "project": like opening a folder in
   // an editor, chat then answers only from that folder. With no folder open, every content
   // folder is available and the user picks among them.
-  const project = session.scopeId
-    ? (settings.scopes.find((scope) => scope.id === session.scopeId) ?? null)
+  const projectId = session.scopeId;
+  const project = projectId
+    ? (settings.scopes.find((scope) => scope.id === projectId) ?? null)
     : null;
   const scopes = settings.scopes.filter(
-    (scope) => scope.contentEnabled && (!project || scope.id === project.id),
+    (scope) => scope.contentEnabled && (!projectId || scope.id === projectId),
   );
-  const lastProject = useRef<string | null>(null);
   const scopeKey = JSON.stringify(
     scopes.map((scope) => [scope.id, scope.path, scope.externalAllowed]),
   );
   const policyKey = JSON.stringify([
+    projectId,
     settings.revision,
     scopeKey,
     settings.generation,
     settings.mcp,
   ]);
-  const [selectedScopeIds, setSelectedScopeIds] = useState<string[] | null>(null);
+  const [scopeChoice, setScopeChoice] = useState<{
+    projectId: string | null;
+    ids: string[] | null;
+  }>({ projectId, ids: null });
+  const selectedScopeIds = scopeChoice.projectId === projectId ? scopeChoice.ids : null;
+  const setSelectedScopeIds = (ids: string[]) => setScopeChoice({ projectId, ids });
   const [query, setQuery] = useState('');
-  const [list, setList] = useState<{ query: string; items: ConversationSummary[] } | null>(null);
+  const [list, setList] = useState<{
+    query: string;
+    projectId: string | null;
+    items: ConversationSummary[];
+  } | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(initialConversationId);
   const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -1226,14 +1236,14 @@ export function ChatView({
     if (!ready) return;
     // Opening or closing a project starts from "all allowed folders" again, so a choice made
     // inside one project never silently narrows the next one.
-    const projectChanged = lastProject.current !== (project?.id ?? null);
-    lastProject.current = project?.id ?? null;
-    setSelectedScopeIds((previous) =>
-      previous === null || projectChanged
-        ? scopes.map((scope) => scope.id)
-        : previous.filter((id) => scopes.some((scope) => scope.id === id)),
-    );
-  }, [ready, scopeKey]);
+    setScopeChoice((previous) => ({
+      projectId,
+      ids:
+        previous.projectId !== projectId || previous.ids === null
+          ? scopes.map((scope) => scope.id)
+          : previous.ids.filter((id) => scopes.some((scope) => scope.id === id)),
+    }));
+  }, [ready, scopeKey, projectId]);
   useEffect(() => {
     if (!initialConversationId) return;
     // Spotlight can hand off while this view is already mounted. Treat the new
@@ -1251,14 +1261,13 @@ export function ChatView({
   }, [initialConversationId]);
   // Switching projects shows that project's conversations; the open conversation is closed
   // because it may belong to the previous project.
-  const listProject = useRef(project?.id ?? null);
+  const listProject = useRef(projectId);
   useEffect(() => {
-    if (listProject.current === (project?.id ?? null)) return;
-    listProject.current = project?.id ?? null;
+    if (listProject.current === projectId) return;
+    listProject.current = projectId;
     selectionEpoch.current++;
     setSelectedId(null);
-    setRefresh((value) => value + 1);
-  }, [project?.id]);
+  }, [projectId]);
   useEffect(() => {
     if (!native) return;
     const epoch = ++listEpoch.current;
@@ -1268,10 +1277,14 @@ export function ChatView({
     const timer = setTimeout(
       () => {
         void rag
-          .list(query, 100, project?.id ?? null)
+          .list(query, 100, projectId)
           .then((items) => {
             if (!disposed && alive.current && epoch === listEpoch.current)
-              setList({ query, items: items.filter((item) => !deleted.current.has(item.id)) });
+              setList({
+                query,
+                projectId,
+                items: items.filter((item) => !deleted.current.has(item.id)),
+              });
           })
           .catch((cause) => {
             if (!disposed && alive.current && epoch === listEpoch.current)
@@ -1287,15 +1300,15 @@ export function ChatView({
       disposed = true;
       clearTimeout(timer);
     };
-  }, [query, refresh]);
+  }, [query, refresh, projectId]);
   const create = async () => {
-    if (!native || createPending.current) return;
+    if (!native || createPending.current || (projectId && !project)) return;
     createPending.current = true;
     setCreating(true);
     setError(null);
     const selection = selectionEpoch.current;
     try {
-      const summary = await rag.create(t('newTitle'), project?.id ?? null);
+      const summary = await rag.create(t('newTitle'), projectId);
       if (alive.current) {
         if (selectionEpoch.current === selection) {
           selectionEpoch.current++;
@@ -1312,7 +1325,9 @@ export function ChatView({
   };
   const changed = () => setRefresh((value) => value + 1);
   const currentList =
-    list?.query === query ? list.items.filter((item) => !deleted.current.has(item.id)) : [];
+    list?.query === query && list.projectId === projectId
+      ? list.items.filter((item) => !deleted.current.has(item.id))
+      : [];
   return (
     <section className="feature-view chat-view">
       {/* One compact row: what this tab is, plus the two settings it depends on. */}
@@ -1332,13 +1347,15 @@ export function ChatView({
           </button>
         </div>
       </header>
-      {project ? (
+      {projectId ? (
         <div className="chat-project" role="status">
           <FolderSearch size={14} aria-hidden="true" />
           <span>
-            {chatText(language, project.contentEnabled ? 'projectScope' : 'projectNoContent', {
-              name: project.name,
-            })}
+            {project
+              ? chatText(language, project.contentEnabled ? 'projectScope' : 'projectNoContent', {
+                  name: project.name,
+                })
+              : t('projectRemoved')}
           </span>
           <button
             type="button"
@@ -1383,7 +1400,7 @@ export function ChatView({
             <button
               type="button"
               className="button"
-              disabled={creating}
+              disabled={creating || Boolean(projectId && !project)}
               onClick={() => void create()}
             >
               <Plus size={16} />
@@ -1411,7 +1428,7 @@ export function ChatView({
                   >
                     <strong>{item.title || t('searchResultsTitle')}</strong>
                     <span>{chatText(language, 'turns', { count: item.turnCount })}</span>
-                    {!project && item.project ? (
+                    {!projectId && item.project ? (
                       // In the full list, show which project a conversation belongs to.
                       <span className="chat-conversation-project">
                         {settings.scopes.find((scope) => scope.id === item.project)?.name ??

@@ -1,0 +1,12 @@
+{
+  "version": "0.2.0",
+  "notes": "Prism 0.2.0",
+  "pub_date": "2026-11-17T00:00:00.000Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "<contents of Prism_0.2.0_x64-setup.exe.sig>",
+      "url": "https://updates.example.com/prism/Prism_0.2.0_x64-setup.exe",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}

@@ -1,7 +1,21 @@
 #!/usr/bin/env node
 // Generate an update manifest only after verifying actual artifact bytes and the bound version.
+//
+// The result, latest.json, is also the data file of the PHP update server (server/update/).
+// Each platform entry carries the package `url`, its `signature` and its `sha256` hash, which
+// Prism checks before installing. `--base-url https://host/path` points the package URLs at your
+// own server; without it they point at the GitHub release of `--repo`.
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,6 +34,41 @@ export function updateFiles(version) {
     'linux-aarch64': `Prism_${version}_aarch64.AppImage`,
   };
 }
+/** SHA-256 of a file as lowercase hex, read in 1 MiB pieces so large packages stay cheap. */
+export function sha256File(path) {
+  const hash = createHash('sha256');
+  const buffer = Buffer.alloc(1024 * 1024);
+  const descriptor = openSync(path, 'r');
+  try {
+    let read;
+    while ((read = readSync(descriptor, buffer, 0, buffer.length, null)) > 0)
+      hash.update(buffer.subarray(0, read));
+  } finally {
+    closeSync(descriptor);
+  }
+  return hash.digest('hex');
+}
+
+/** Checks a `--base-url` for package downloads: plain https, no credentials/query/fragment. */
+function checkedBaseUrl(baseUrl) {
+  let url;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    throw new Error('--base-url must be an https:// address.');
+  }
+  if (
+    url.protocol !== 'https:' ||
+    !url.hostname ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  )
+    throw new Error('--base-url must be an https:// address without credentials, query or #.');
+  return url.href.replace(/\/+$/, '');
+}
+
 export function buildManifest({
   version,
   repo,
@@ -27,9 +76,12 @@ export function buildManifest({
   pubDate,
   readSignature,
   verifyArtifact,
+  hashArtifact,
+  baseUrl,
   allowPartial = false,
 }) {
   const files = updateFiles(version);
+  const downloadBase = baseUrl === undefined ? null : checkedBaseUrl(baseUrl);
   if (
     typeof repo !== 'string' ||
     !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9._-]{1,100}$/.test(repo) ||
@@ -42,6 +94,7 @@ export function buildManifest({
     throw new Error('A valid publication date is required.');
   if (typeof readSignature !== 'function' || typeof verifyArtifact !== 'function')
     throw new Error('Artifact signature verification is required.');
+  if (typeof hashArtifact !== 'function') throw new Error('Artifact hashing is required.');
   const platforms = {};
   const verified = new Map();
   for (const [platform, file] of Object.entries(files)) {
@@ -54,14 +107,20 @@ export function buildManifest({
         if (typeof signature !== 'string' || signature.length > 16384 || !signature.trim())
           throw new Error(`Invalid signature metadata: ${file}`);
         verifyArtifact(file, version);
-        verified.set(file, signature.trim());
+        const sha256 = hashArtifact(file);
+        if (typeof sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(sha256))
+          throw new Error(`Invalid SHA-256 for ${file}`);
+        verified.set(file, { signature: signature.trim(), sha256 });
       }
     }
-    const signature = verified.get(file);
-    if (!signature) continue;
+    const checked = verified.get(file);
+    if (!checked) continue;
     platforms[platform] = {
-      signature,
-      url: `https://github.com/${repo}/releases/download/${encodeURIComponent(`v${version}`)}/${encodeURIComponent(file)}`,
+      signature: checked.signature,
+      url: downloadBase
+        ? `${downloadBase}/${encodeURIComponent(file)}`
+        : `https://github.com/${repo}/releases/download/${encodeURIComponent(`v${version}`)}/${encodeURIComponent(file)}`,
+      sha256: checked.sha256,
     };
   }
   if (!Object.keys(platforms).length) throw new Error('No verified update artifacts found.');
@@ -82,7 +141,15 @@ export function writeManifest(args = process.argv.slice(2)) {
     }
     const value = args[++index];
     if (
-      !['--dir', '--version', '--repo', '--notes', '--pub-date', '--verifier'].includes(name) ||
+      ![
+        '--dir',
+        '--version',
+        '--repo',
+        '--base-url',
+        '--notes',
+        '--pub-date',
+        '--verifier',
+      ].includes(name) ||
       !value ||
       value.startsWith('--')
     )
@@ -126,6 +193,7 @@ export function writeManifest(args = process.argv.slice(2)) {
   const manifest = buildManifest({
     version,
     repo: values.get('--repo') ?? 'gaon12/prism',
+    baseUrl: values.get('--base-url'),
     notes: values.get('--notes') ?? `Prism ${version}`,
     pubDate: values.get('--pub-date') ?? new Date().toISOString(),
     allowPartial: values.has('--allow-partial'),
@@ -141,6 +209,7 @@ export function writeManifest(args = process.argv.slice(2)) {
         throw new Error(`Invalid update artifact/signature file: ${file}`);
       return readFileSync(signature, 'utf8');
     },
+    hashArtifact: (file) => sha256File(join(directory, file)),
     verifyArtifact(file, expectedVersion) {
       try {
         execFileSync(verifier, ['--version', expectedVersion, '--file', join(directory, file)], {

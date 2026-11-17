@@ -12,7 +12,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
-import { buildManifest, updateFiles } from '../../scripts/make-latest-json.mjs';
+import { createHash } from 'node:crypto';
+import { buildManifest, sha256File, updateFiles } from '../../scripts/make-latest-json.mjs';
 
 const base = {
   version: '0.2.0',
@@ -21,6 +22,7 @@ const base = {
   pubDate: '2026-11-05T00:00:00.000Z',
   readSignature: () => 'synthetic pure-model signature',
   verifyArtifact: () => {},
+  hashArtifact: () => 'a'.repeat(64),
 };
 const fixtures = resolve('tests/fixtures/updates');
 const verifier =
@@ -77,6 +79,42 @@ test('all updater platforms require verification, with one verification per univ
   assert.equal(manifest.notes, base.notes);
 });
 
+test('every platform carries the package SHA-256, hashed once per artifact', () => {
+  const hashed = [];
+  const manifest = buildManifest({
+    ...base,
+    hashArtifact: (file) => {
+      hashed.push(file);
+      return createHash('sha256').update(file).digest('hex');
+    },
+  });
+  assert.equal(hashed.length, 4);
+  for (const [platform, entry] of Object.entries(manifest.platforms))
+    assert.equal(
+      entry.sha256,
+      createHash('sha256').update(updateFiles(base.version)[platform]).digest('hex'),
+    );
+  for (const bad of ['A'.repeat(64), 'a'.repeat(63), '', null])
+    assert.throws(() => buildManifest({ ...base, hashArtifact: () => bad }), /SHA-256/);
+  assert.throws(() => buildManifest({ ...base, hashArtifact: undefined }), /hashing is required/);
+});
+
+test('a base URL points packages at your own update server', () => {
+  const manifest = buildManifest({ ...base, baseUrl: 'https://updates.example.com/prism/' });
+  assert.equal(
+    manifest.platforms['windows-x86_64'].url,
+    'https://updates.example.com/prism/Prism_0.2.0_x64-setup.exe',
+  );
+  for (const baseUrl of [
+    'http://updates.example.com/prism',
+    'https://user:pass@updates.example.com/prism',
+    'https://updates.example.com/prism?x=1',
+    'https://updates.example.com/prism#x',
+    'not a url',
+  ])
+    assert.throws(() => buildManifest({ ...base, baseUrl }), /base-url/);
+});
+
 test('partial manifests are explicit and an entirely missing release always fails', () => {
   const readSignature = (file) => (file.endsWith('.exe') ? 'synthetic' : null);
   assert.throws(() => buildManifest({ ...base, readSignature }), /Missing/);
@@ -131,6 +169,13 @@ test('actual CLI verifies real public fixtures and refuses to overwrite its mani
   assert.equal(result.status, 0, result.stderr);
   const original = readFileSync(f.output, 'utf8');
   assert.equal(Object.keys(JSON.parse(original).platforms).length, 5);
+  // The hash is the real SHA-256 of the package bytes.
+  const real = createHash('sha256')
+    .update(readFileSync(join(fixtures, 'payload.bin')))
+    .digest('hex');
+  assert.equal(sha256File(join(fixtures, 'payload.bin')), real);
+  for (const entry of Object.values(JSON.parse(original).platforms))
+    assert.equal(entry.sha256, real);
   assert.equal(JSON.parse(original).notes, base.notes);
   assert.notEqual(f.run().status, 0);
   assert.equal(readFileSync(f.output, 'utf8'), original);
@@ -164,6 +209,7 @@ test('invalid CLI options and directory-valued signatures preserve unrelated out
     ['--version'],
     ['--unknown', 'x'],
     ['--repo', 'a/b', '--repo', 'c/d'],
+    ['--base-url', 'http://insecure.example.com'],
   ]) {
     assert.notEqual(f.run(args).status, 0);
     assert.equal(readFileSync(sentinel, 'utf8'), 'preserve');

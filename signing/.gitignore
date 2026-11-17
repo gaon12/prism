@@ -5,3 +5,4 @@
 !README.md
 !new-certificate.ps1
 !sign.ps1
+!from-ci-secret.ps1

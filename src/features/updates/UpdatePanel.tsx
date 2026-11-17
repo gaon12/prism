@@ -3,7 +3,7 @@ import { Download, RefreshCw } from 'lucide-react';
 import { native } from '../../lib/bridge';
 import { useClient, showToast, errorMessage } from '../../lib/store';
 import { translate } from '../../lib/i18n';
-import { updates, useUpdates } from '../../lib/updates';
+import { checkFailureKey, updates, useUpdates } from '../../lib/updates';
 import { updateText } from './messages';
 import './updates.css';
 
@@ -204,7 +204,7 @@ export function UpdatePanel({
       </p>
       {checked === 'failed' ? (
         <p role="alert" className="inline-error">
-          {t('checkFailed')}
+          {t(checkFailureKey(view))}
         </p>
       ) : checked === 'ok' && !view?.available && !view?.checkError ? (
         <p role="status">{t('current')}</p>

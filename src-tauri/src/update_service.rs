@@ -69,6 +69,38 @@ pub struct UpdateStatus {
     /// Only install errors are shown. Check errors stay silent (often just offline).
     pub install_error: Option<String>,
     pub check_error: Option<String>,
+    /// What kind of problem `check_error` is, so the window can say what to do about it
+    /// instead of always blaming the connection.
+    pub check_error_kind: Option<CheckErrorKind>,
+}
+
+/// Why an update check failed, as far as the user can act on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CheckErrorKind {
+    /// The server could not be reached: check the connection.
+    Offline,
+    /// The server answered, but without usable update information (for example 503 while a
+    /// new version is being published, or broken data): try again later; nothing to fix here.
+    Server,
+    /// This build has no update server (development builds).
+    NotConfigured,
+}
+
+impl CheckErrorKind {
+    /// Sorts a check error by the fixed texts the update code produces. Anything else counts
+    /// as a server-side problem, which never tells the user to fix their connection.
+    pub fn of(error: &str) -> Self {
+        if error == crate::update_backend::NOT_CONFIGURED {
+            Self::NotConfigured
+        } else if error == crate::update_notice::UNREACHABLE
+            || error == crate::update_notice::READ_FAILED
+        {
+            Self::Offline
+        } else {
+            Self::Server
+        }
+    }
 }
 
 /// Hooks the service calls around installation. The app passes closures that stop the
@@ -189,6 +221,7 @@ impl UpdateService {
             }
             status.checking = true;
             status.check_error = None;
+            status.check_error_kind = None;
         }
         self.emit();
         let result = self.backend.check();
@@ -208,6 +241,7 @@ impl UpdateService {
             }
             // Offline or server trouble: keep whatever we knew and try again tomorrow.
             Err(error) => {
+                status.check_error_kind = Some(CheckErrorKind::of(&error));
                 status.check_error = Some(error);
                 false
             }
@@ -404,6 +438,52 @@ mod tests {
             Some(2),
             "retry tomorrow, not every minute"
         );
+    }
+
+    #[test]
+    fn check_errors_say_whether_the_connection_or_the_server_is_at_fault() {
+        use crate::{update_backend::NOT_CONFIGURED, update_notice};
+        assert_eq!(
+            CheckErrorKind::of(update_notice::UNREACHABLE),
+            CheckErrorKind::Offline
+        );
+        assert_eq!(
+            CheckErrorKind::of(update_notice::READ_FAILED),
+            CheckErrorKind::Offline
+        );
+        assert_eq!(
+            CheckErrorKind::of(NOT_CONFIGURED),
+            CheckErrorKind::NotConfigured
+        );
+        // A reachable server without usable information (503 before publishing, broken data)
+        // must not tell the user to check their connection.
+        for error in [
+            "The update server answered with status 503.",
+            "The update information is not in the expected format.",
+            "something new",
+        ] {
+            assert_eq!(CheckErrorKind::of(error), CheckErrorKind::Server, "{error}");
+        }
+
+        let fake = Fake::default();
+        *fake.answers.lock().unwrap() = vec![
+            Err(update_notice::UNREACHABLE.into()),
+            Err("The update server answered with status 503.".into()),
+            Ok(None),
+        ];
+        let (service, ..) = make_service(fake, true);
+        service.check_now(1);
+        assert_eq!(
+            service.status().check_error_kind,
+            Some(CheckErrorKind::Offline)
+        );
+        service.check_now(2);
+        assert_eq!(
+            service.status().check_error_kind,
+            Some(CheckErrorKind::Server)
+        );
+        service.check_now(3);
+        assert_eq!(service.status().check_error_kind, None, "cleared by success");
     }
 
     #[test]

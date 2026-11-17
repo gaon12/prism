@@ -57,6 +57,12 @@ pub trait ManifestFetcher {
     fn fetch(&self, url: &str) -> Result<Vec<u8>, String>;
 }
 
+/// The server did not answer at all (offline, firewall, DNS, timeout). The window turns this
+/// into "check your connection"; see `update_service::CheckErrorKind`.
+pub const UNREACHABLE: &str = "The update server could not be reached.";
+/// The connection broke while the update information was being received.
+pub const READ_FAILED: &str = "The update information could not be read.";
+
 /// Real HTTPS download with a timeout and a size limit.
 pub struct HttpFetcher;
 
@@ -83,7 +89,7 @@ impl ManifestFetcher for HttpFetcher {
         let response = client
             .get(url)
             .send()
-            .map_err(|_| "The update server could not be reached.".to_string())?;
+            .map_err(|_| UNREACHABLE.to_string())?;
         if !response.status().is_success() {
             return Err(format!(
                 "The update server answered with status {}.",
@@ -96,7 +102,7 @@ impl ManifestFetcher for HttpFetcher {
         response
             .take(MAX_MANIFEST_BYTES + 1)
             .read_to_end(&mut body)
-            .map_err(|_| "The update information could not be read.".to_string())?;
+            .map_err(|_| READ_FAILED.to_string())?;
         if body.len() as u64 > MAX_MANIFEST_BYTES {
             return Err("The update information is unexpectedly large.".into());
         }

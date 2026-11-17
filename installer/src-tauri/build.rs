@@ -138,6 +138,35 @@ fn main() {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("payload.bin");
     fs::write(out, packed).expect("write payload");
 
+    // 3. Publisher certificate (public part only) that setup asks this user's Windows to
+    //    trust: `PRISM_TRUSTED_CERT`, otherwise `signing/prism-publisher.cer` if it exists
+    //    (that folder is ignored by git; see signing/README.md). None = an empty file, and the
+    //    setup then never touches any certificate.
+    println!("cargo:rerun-if-env-changed=PRISM_TRUSTED_CERT");
+    let default_cert = app_dir
+        .parent()
+        .expect("repository root")
+        .join("signing")
+        .join("prism-publisher.cer");
+    println!("cargo:rerun-if-changed={}", default_cert.display());
+    let cert = match env::var_os("PRISM_TRUSTED_CERT") {
+        Some(path) => fs::read(&path).expect("read PRISM_TRUSTED_CERT"),
+        None => fs::read(&default_cert).unwrap_or_default(),
+    };
+    assert!(
+        !cert.starts_with(b"-----BEGIN"),
+        "The publisher certificate must be a binary (DER) .cer file, not PEM text."
+    );
+    assert!(
+        cert.len() <= 16 * 1024,
+        "The publisher certificate is unexpectedly large; give the public .cer, not a .pfx."
+    );
+    if !cert.is_empty() {
+        println!("cargo:warning=Setup will offer to trust the publisher certificate.");
+    }
+    let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("trusted-publisher.cer");
+    fs::write(out, cert).expect("write publisher certificate");
+
     // Our own manifest: run as the current user (no admin prompt), per-monitor DPI.
     let windows =
         tauri_build::WindowsAttributes::new().app_manifest(include_str!("setup.manifest"));

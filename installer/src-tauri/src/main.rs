@@ -31,6 +31,7 @@ mod setup_log;
 mod system;
 mod temp_cleanup;
 mod transaction;
+mod trust;
 
 use args::{SetupArgs, UiMode};
 use install::{InstallOptions, Stage, APP_EXE};
@@ -48,6 +49,35 @@ static PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/payload.bin"))
 /// Version of the packed Prism (read from the app's tauri.conf.json at build time).
 const VERSION: &str = env!("PRISM_VERSION");
 static CLEANUP_WORKER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/prism-cleanup.exe"));
+/// Prism's publisher certificate (`PRISM_TRUSTED_CERT` or `signing/prism-publisher.cer` at
+/// build time). Empty when the setup was built without one; then no certificate is touched.
+static TRUSTED_CERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/trusted-publisher.cer"));
+
+/// After a successful install, lets this user's Windows trust Prism's publisher (see
+/// [`trust`]). `ask`: Windows may show its "install this certificate?" question, which only a
+/// full window run allows. Never fails the install; the outcome goes to the log.
+fn trust_publisher(ask: bool) {
+    let result = match system::current().cert_stores() {
+        Some(stores) => trust::trust(&*stores, TRUSTED_CERT, ask),
+        None => Ok(trust::TrustResult::NotConfigured),
+    };
+    match result {
+        Ok(result) => setup_log::line(format!("publisher certificate: {result:?}")),
+        Err(error) => setup_log::line(format!("publisher certificate not trusted: {error}")),
+    }
+}
+
+/// After a successful uninstall, removes what [`trust_publisher`] added. Never fails it.
+fn untrust_publisher(ask: bool) {
+    let result = match system::current().cert_stores() {
+        Some(stores) => trust::untrust(&*stores, ask),
+        None => Ok(()),
+    };
+    match result {
+        Ok(()) => setup_log::line("publisher certificate: removed what setup had added"),
+        Err(error) => setup_log::line(format!("publisher certificate not removed: {error}")),
+    }
+}
 
 /// Everything the commands need, created once at start-up.
 struct Setup {
@@ -85,6 +115,9 @@ struct SetupInfo {
     log_path: Option<PathBuf>,
     /// The same version is already installed here, so "Repair" can rewrite its files.
     repair_available: bool,
+    /// This setup will ask Windows to trust Prism's publisher certificate after installing,
+    /// so Windows may show its own "install this certificate?" question.
+    trust_certificate: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -231,6 +264,7 @@ fn setup_info(setup: tauri::State<'_, Setup>) -> Result<SetupInfo, String> {
         relaunch: setup.args.relaunch,
         log_path: setup_log::path(),
         repair_available,
+        trust_certificate: !TRUSTED_CERT.is_empty(),
     })
 }
 
@@ -334,6 +368,7 @@ async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(
     let operation = app.state::<Setup>().gate.begin()?;
     let exe = app.state::<Setup>().exe.clone();
     let relaunch = app.state::<Setup>().args.relaunch;
+    let ask = app.state::<Setup>().args.ui == UiMode::Full;
     setup_log::line(format!(
         "install {VERSION} into {} (desktop shortcut {}, Start menu {})",
         options.install_dir.display(),
@@ -360,6 +395,7 @@ async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(
             operation.fail(restart_fallback(relaunch, &options.install_dir));
             return Err(error);
         }
+        trust_publisher(ask);
         let installed = safe_path::root(&options.install_dir).map_err(|error| error.to_string())?;
         operation.complete(Some(installed))
     })
@@ -373,6 +409,7 @@ async fn run_uninstall(app: tauri::AppHandle, remove_data: bool) -> Result<(), S
     let Some(dir) = app.state::<Setup>().args.from_temp.clone() else {
         return Err("Start the uninstaller from Apps & features.".into());
     };
+    let ask = app.state::<Setup>().args.ui == UiMode::Full;
     system::check_sandbox_destination(&dir).map_err(|error| error.to_string())?;
     setup_log::line(format!(
         "uninstall from {} (remove data: {remove_data})",
@@ -390,6 +427,7 @@ async fn run_uninstall(app: tauri::AppHandle, remove_data: bool) -> Result<(), S
                 }),
             ),
         )?;
+        untrust_publisher(ask);
         operation.complete(None)
     })
     .await
@@ -676,6 +714,10 @@ fn run_silent(args: &SetupArgs) -> ExitCode {
         }
     } else if let Some(dir) = &args.from_temp {
         let result = install::uninstall(&*system::current(), dir, false, |_, _| {});
+        if result.is_ok() {
+            // Silent: never show Windows' question; a later uninstall can still remove it.
+            untrust_publisher(false);
+        }
         match (result, delete_self_later()) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(error), _) | (_, Err(error)) => Err(error),
@@ -701,6 +743,8 @@ fn run_silent(args: &SetupArgs) -> ExitCode {
                 }
                 return Err(error);
             }
+            // Silent: an already trusted certificate passes, a new one is never asked about.
+            trust_publisher(false);
             if args.relaunch {
                 start_prism(&options.install_dir, &args.relaunch_args)?;
             }

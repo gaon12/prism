@@ -9,6 +9,9 @@ struct State {
     busy: bool,
     closing: bool,
     installed: Option<PathBuf>,
+    /// True when `installed` is the earlier version kept after a failed update (see `fail`).
+    /// Its launch must re-check the folder under the folder lock.
+    fallback: bool,
 }
 #[derive(Default)]
 pub struct Gate(Mutex<State>);
@@ -24,6 +27,7 @@ impl Gate {
         }
         state.busy = true;
         state.installed = None;
+        state.fallback = false;
         Ok(Running {
             gate: self.clone(),
             completed: false,
@@ -53,6 +57,10 @@ impl Gate {
         state.closing = true;
         Ok(target)
     }
+    /// True when the launch target is an earlier version kept after a failed update.
+    pub fn launch_is_fallback(&self) -> bool {
+        self.0.lock().map(|state| state.fallback).unwrap_or(true)
+    }
     pub fn cancel_finish(&self) {
         if let Ok(mut state) = self.0.lock() {
             state.closing = false;
@@ -67,9 +75,21 @@ impl Running {
             .lock()
             .map_err(|_| "Setup state is unavailable.")?;
         state.installed = installed;
+        state.fallback = false;
         state.busy = false;
         self.completed = true;
         Ok(())
+    }
+    /// Ends a failed request. `fallback` is the folder of an intact earlier installation that
+    /// the updater asked to restart (`/R`); it may then be launched by `finish(true)`.
+    /// `None` keeps launching refused, like any other failure.
+    pub fn fail(mut self, fallback: Option<PathBuf>) {
+        if let Ok(mut state) = self.gate.0.lock() {
+            state.fallback = fallback.is_some();
+            state.installed = fallback;
+            state.busy = false;
+        }
+        self.completed = true;
     }
 }
 impl Drop for Running {
@@ -117,5 +137,27 @@ mod tests {
         gate.begin().unwrap().complete(None).unwrap();
         assert_eq!(gate.finish(false).unwrap(), None);
         assert!(gate.finish(true).is_err());
+    }
+    #[test]
+    fn a_failed_update_launches_only_an_approved_fallback() {
+        let gate = Arc::new(Gate::default());
+        // Plain failure: still nothing to launch.
+        gate.begin().unwrap().fail(None);
+        assert!(!gate.busy());
+        assert!(gate.finish(true).is_err());
+        assert!(!gate.launch_is_fallback());
+        // Failure with an intact previous installation: that folder may be restarted,
+        // and the caller is told to re-check it under the folder lock.
+        let previous = PathBuf::from("previous-installation");
+        gate.begin().unwrap().fail(Some(previous.clone()));
+        assert!(gate.launch_is_fallback());
+        assert_eq!(gate.finish(true).unwrap(), Some(previous));
+        // A later successful install is a normal launch again.
+        gate.cancel_finish();
+        gate.begin()
+            .unwrap()
+            .complete(Some(PathBuf::from("new")))
+            .unwrap();
+        assert!(!gate.launch_is_fallback());
     }
 }

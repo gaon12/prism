@@ -307,6 +307,15 @@
       show('done');
     } catch (error) {
       showFailure(t('failed'), error, info.ui === 'passive' ? null : 'options');
+      if (info.ui === 'passive' && info.relaunch) {
+        // Started by the updater, which closed Prism. The failed update was rolled back, so
+        // the Close button starts the earlier version again (X and Esc only close).
+        // Setup refuses the restart when that version is not intact; then it simply closes.
+        $('finish').onclick = (event) => {
+          event.preventDefault();
+          backend.finish(true).catch(() => backend.finish(false));
+        };
+      }
     }
   }
 

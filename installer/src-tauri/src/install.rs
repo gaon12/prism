@@ -177,6 +177,63 @@ pub fn read_record(dir: &Path) -> InstallRecord {
     checked_record(dir).unwrap_or_default()
 }
 
+/// True when `dir` holds a complete, recorded installation that is safe to start again.
+///
+/// Used after a failed update started by Prism's updater (`/R`): the transaction has put the
+/// previous version back, and starting it keeps Prism from silently disappearing. Anything
+/// doubtful (no or damaged record, the app file missing, an unfinished recovery) returns false,
+/// so nothing is started.
+///
+/// Every recorded file must be present as a regular file (the same set a rollback restores).
+/// The record keeps no file hashes, so content corruption cannot be detected here; this is the
+/// same trust an ordinary Start-menu launch of the installed app has.
+///
+/// The check runs under the folder lock. When another setup holds it (for example after this
+/// setup failed because a second setup is installing there), the folder may be half-written,
+/// so the answer is false. Any error while checking also means false.
+pub fn intact_installation(dir: &Path) -> bool {
+    with_intact_installation(dir, || Ok(())).is_ok()
+}
+
+/// Runs `action` (normally: start the app) only when `dir` is an intact installation, keeping
+/// the folder lock for both the check and the action, so no other setup can change the folder
+/// in between. See [`intact_installation`] for what counts as intact.
+pub fn with_intact_installation<T>(
+    dir: &Path,
+    action: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let refused = || "The earlier installation is not intact; it was not started.".to_string();
+    let _lock = crate::folder_lock::FolderLock::acquire(dir).map_err(|_| refused())?;
+    let record = checked_record(dir).map_err(|_| refused())?;
+    let complete = !record.version.is_empty()
+        && record.files.iter().any(|name| name == APP_EXE)
+        && record
+            .files
+            .iter()
+            .all(|name| safe_path::file(dir, name).is_ok_and(|file| file.is_file()));
+    if !complete || !matches!(workspaces_present(dir), Ok(false)) {
+        return Err(refused());
+    }
+    action()
+}
+
+/// Like `recovery::has_workspaces`, but strict: an unreadable folder or any unreadable entry is
+/// an error instead of "no workspaces", so a doubtful folder is never called intact.
+fn workspaces_present(dir: &Path) -> io::Result<bool> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        // A name that is not valid Unicode can never be a setup workspace name.
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(crate::journal::workspace_name)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(crate) fn checked_record(dir: &Path) -> Result<InstallRecord, String> {
     use std::io::Read;
     let path = dir.join(RECORD_FILE);
@@ -875,6 +932,55 @@ pub mod tests {
             desktop_shortcut: desktop,
             start_menu_shortcut: true,
         }
+    }
+
+    #[test]
+    fn only_a_complete_recorded_installation_counts_as_intact() {
+        let root = tempfile::tempdir().unwrap();
+        let (system, setup_exe, dir) = setup(root.path());
+        // Nothing installed yet: no restart after a failed update.
+        assert!(!intact_installation(&dir));
+        let payload =
+            payload::pack(&[("prism.exe", b"app v1"), ("res/a.bin", b"resource")]).unwrap();
+        install(
+            &system,
+            &payload,
+            "0.1.0",
+            &options(&dir, true),
+            &setup_exe,
+            |_, _| {},
+        )
+        .unwrap();
+        assert!(intact_installation(&dir));
+        // A missing recorded resource also makes it doubtful.
+        fs::rename(dir.join("res/a.bin"), dir.join("res/moved.bin")).unwrap();
+        assert!(!intact_installation(&dir));
+        fs::rename(dir.join("res/moved.bin"), dir.join("res/a.bin")).unwrap();
+        assert!(intact_installation(&dir));
+        // Another setup working in the folder: it may be half-written, so not intact.
+        let busy = crate::folder_lock::FolderLock::acquire(&dir).unwrap();
+        assert!(!intact_installation(&dir));
+        drop(busy);
+        assert!(intact_installation(&dir));
+        // A recorded uninstaller that went missing also counts.
+        fs::rename(dir.join(UNINSTALLER_EXE), dir.join("gone.exe")).unwrap();
+        assert!(!intact_installation(&dir));
+        fs::rename(dir.join("gone.exe"), dir.join(UNINSTALLER_EXE)).unwrap();
+        // An unfinished setup transaction (workspace folder) needs recovery first.
+        let workspace = dir.join(".prism-setup-1-1");
+        fs::create_dir(&workspace).unwrap();
+        assert!(!intact_installation(&dir));
+        fs::remove_dir(&workspace).unwrap();
+        assert!(intact_installation(&dir));
+        // The action runs only for an intact folder, and its error is passed through.
+        assert_eq!(with_intact_installation(&dir, || Ok(7)), Ok(7));
+        assert_eq!(
+            with_intact_installation(&dir, || Err::<(), _>("spawn failed".to_string())),
+            Err("spawn failed".to_string())
+        );
+        // A missing app file makes it doubtful, so nothing would be started.
+        fs::remove_file(dir.join(APP_EXE)).unwrap();
+        assert!(!intact_installation(&dir));
     }
 
     #[test]

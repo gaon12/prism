@@ -281,8 +281,9 @@ async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(
     }
     let operation = app.state::<Setup>().gate.begin()?;
     let exe = app.state::<Setup>().exe.clone();
+    let relaunch = app.state::<Setup>().args.relaunch;
     tauri::async_runtime::spawn_blocking(move || {
-        install::install(
+        let result = install::install(
             &*system::current(),
             PAYLOAD,
             VERSION,
@@ -291,7 +292,13 @@ async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(
             |stage, fraction| {
                 let _ = app.emit("setup://progress", Progress { stage, fraction });
             },
-        )?;
+        );
+        if let Err(error) = result {
+            // The updater closed Prism and asked for a restart (`/R`). The failed update was
+            // rolled back, so allow restarting the earlier version when it is intact.
+            operation.fail(restart_fallback(relaunch, &options.install_dir));
+            return Err(error);
+        }
         let installed = safe_path::root(&options.install_dir).map_err(|error| error.to_string())?;
         operation.complete(Some(installed))
     })
@@ -349,13 +356,30 @@ fn finish(
 ) -> Result<(), String> {
     let target = setup.gate.finish(launch)?;
     if let Some(dir) = target {
-        if let Err(error) = start_prism(&dir, &setup.args.relaunch_args) {
+        let args = &setup.args.relaunch_args;
+        // An earlier version kept after a failed update is checked again, and started, while
+        // holding the folder lock, so another setup cannot be writing it at that moment.
+        let started = if setup.gate.launch_is_fallback() {
+            install::with_intact_installation(&dir, || start_prism(&dir, args))
+        } else {
+            start_prism(&dir, args)
+        };
+        if let Err(error) = started {
             setup.gate.cancel_finish();
             return Err(error);
         }
     }
     app.exit(0);
     Ok(())
+}
+
+/// After a failed update with `/R`: the folder of the earlier, intact installation to start
+/// again, or `None` (no restart requested, or the folder is not clearly intact).
+fn restart_fallback(relaunch: bool, dir: &Path) -> Option<PathBuf> {
+    if !relaunch || !install::intact_installation(dir) {
+        return None;
+    }
+    safe_path::root(dir).ok()
 }
 
 fn start_prism(dir: &Path, args: &[String]) -> Result<(), String> {
@@ -455,14 +479,24 @@ fn run_silent(args: &SetupArgs) -> ExitCode {
     } else {
         let exe = env::current_exe().map_err(|error| error.to_string());
         suggested_options(args).and_then(|(options, _)| {
-            install::install(
+            let result = install::install(
                 &*system::current(),
                 PAYLOAD,
                 VERSION,
                 &options,
                 &exe?,
                 |_, _| {},
-            )?;
+            );
+            if let Err(error) = result {
+                // Same as the window: restart the rolled-back earlier version when asked to.
+                // Check and start happen together under the folder lock.
+                if let Some(dir) = restart_fallback(args.relaunch, &options.install_dir) {
+                    let _ = install::with_intact_installation(&dir, || {
+                        start_prism(&dir, &args.relaunch_args)
+                    });
+                }
+                return Err(error);
+            }
             if args.relaunch {
                 start_prism(&options.install_dir, &args.relaunch_args)?;
             }

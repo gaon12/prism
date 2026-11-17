@@ -1,9 +1,48 @@
-# Prism Linux XDG autostart patch
+# Prism autostart patches
 
 Upstream: `auto-launch` 0.6.0, copied from the exact crates.io archive selected by
 the original app lockfile. Archive SHA-256:
 `17918dba7ecf78b9a14507ec9f984e7977d13fad87dc86d61038980a45d128cf`.
-The upstream MIT license and original platform implementations are retained.
+The upstream MIT license is retained. Platform changes are limited to the patches
+described below.
+
+## Windows registry scope
+
+Upstream `disable()` attempted to remove both machine and current-user entries,
+even for explicitly selected `CurrentUser` or `System` mode. Its status check
+also combined both roots and both StartupApproved entries. Consequently, a
+per-user disable could delete a same-named machine entry when elevated, and a
+different scope's registration or Task Manager override could affect status.
+
+Explicit `CurrentUser` now removes and reads only HKCU; explicit `System` removes
+and reads only HKLM. Each status check uses the matching root's StartupApproved
+value. Enable already follows its selected scope and is unchanged. Explicit
+`Dynamic` retains its original two-root cleanup, machine-access-denied fallback,
+registration short-circuiting and cross-root approval rules.
+
+Prism's Windows settings path explicitly constructs `CurrentUser` mode instead
+of using the Tauri plugin's Dynamic default. It preserves the plugin's application
+name and quotes the entire current executable path before adding `--background`.
+Portable/debug/packaged guards and other operating systems keep their existing
+startup routes. Application library tests check the constructed configuration
+and rejected invalid paths without accessing the registry.
+
+The Windows library regressions exercise the same routing used by the real
+adapter against an in-memory registry model. They verify preserved entry bytes,
+no access to the other hive, absent registrations, approval overrides, error
+propagation and Dynamic compatibility. No test reads or writes personal or
+machine registry keys.
+
+Run only the safe library tests with the app's existing lockfile:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --locked -p auto-launch --lib
+```
+
+On Windows this runs the scope regressions. Do not replace `--lib` with the full
+upstream integration suite: `tests/test.rs` modifies actual OS login settings.
+
+## Linux XDG configuration and command quoting
 
 The genuine release AppImage reproduced the problem with two isolated configuration
 directories: even with an absolute `XDG_CONFIG_HOME`, startup reconciliation and
@@ -17,7 +56,7 @@ user's login settings.
 `HOME/.config` itself. This existing dependency honors absolute `XDG_CONFIG_HOME`
 and falls back to `HOME/.config` for unset, empty or relative values. Enable,
 disable and status already share this helper. AppImage executable selection,
-systemd mode, Windows and macOS are unchanged. No legacy
+systemd mode and macOS are unchanged. No legacy
 entry is migrated or removed from another configuration directory.
 
 The regression runs each environment in a separate child process with a fresh

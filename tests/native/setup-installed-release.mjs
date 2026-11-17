@@ -49,6 +49,8 @@ export function verifyPristineSystem(state) {
   assert.equal(state.machine, false, 'Existing machine Prism installation');
   assert.equal(state.startup, null, 'Existing Prism startup entry');
   assert.equal(state.approved, null, 'Existing Prism startup approval');
+  assert.equal(state.machineStartup, null, 'Existing machine Prism startup entry');
+  assert.equal(state.machineApproved, null, 'Existing machine Prism startup approval');
   assert.equal(state.processes.length, 0, 'Existing Prism process');
 }
 
@@ -117,7 +119,7 @@ function powershell(script, extra = {}) {
 function systemState() {
   return JSON.parse(
     powershell(`
-    function Value($path) { if (Test-Path -LiteralPath $path) { (Get-Item -LiteralPath $path).GetValue('Prism', $null) } }
+    function Value($path) { if (Test-Path -LiteralPath $path) { ,((Get-Item -LiteralPath $path).GetValue('Prism', $null)) } else { $null } }
     $key='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Prism'
     $registration=$null
     if(Test-Path -LiteralPath $key) { $registration=Get-ItemProperty -LiteralPath $key | Select-Object DisplayName,DisplayVersion,InstallLocation,UninstallString,QuietUninstallString,EstimatedSize }
@@ -126,6 +128,8 @@ function systemState() {
       machine=(Test-Path -LiteralPath 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Prism') -or (Test-Path -LiteralPath 'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Prism')
       startup=(Value 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run')
       approved=(Value 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run')
+      machineStartup=(Value 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run')
+      machineApproved=(Value 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run')
       roaming=[Environment]::GetFolderPath('ApplicationData')
       local=[Environment]::GetFolderPath('LocalApplicationData')
       desktop=[Environment]::GetFolderPath('DesktopDirectory')
@@ -514,6 +518,38 @@ async function qualify() {
 }
 
 function selfTest() {
+  if (process.platform === 'win32') {
+    // Exercise the actual probe helper with in-memory substitutes. No registry or files.
+    const definition = systemState.toString().match(/function Value\(\$path\) \{[^\n]+\}/)?.[0];
+    assert(definition, 'Expected the actual PowerShell registry value helper');
+    const values = JSON.parse(
+      powershell(`
+      function Test-Path { param($LiteralPath) $script:present }
+      function Get-Item { param($LiteralPath) $script:item }
+      class InertRegistryValue {
+        [object] $Value
+        [object] GetValue([string] $name, [object] $default) { return $this.Value }
+      }
+      $script:item=[InertRegistryValue]::new()
+      ${definition}
+      $script:present=$true
+      $script:item.Value=[byte[]]@()
+      $binary=Value 'inert-memory-fixture'
+      $script:item.Value=''
+      $text=Value 'inert-memory-fixture'
+      $script:item.Value=$null
+      $missingValue=Value 'inert-memory-fixture'
+      $script:present=$false
+      @{ emptyBinary=$binary; emptyString=$text; missingValue=$missingValue; absent=(Value 'inert-memory-fixture') } | ConvertTo-Json -Compress
+    `),
+    );
+    assert.deepEqual(values, {
+      emptyBinary: [],
+      emptyString: '',
+      missingValue: null,
+      absent: null,
+    });
+  }
   const env = {
     GITHUB_ACTIONS: 'true',
     RUNNER_ENVIRONMENT: 'github-hosted',
@@ -558,6 +594,8 @@ function selfTest() {
     machine: false,
     startup: null,
     approved: null,
+    machineStartup: null,
+    machineApproved: null,
     processes: [],
   };
   verifyPristineSystem(pristine);
@@ -566,6 +604,8 @@ function selfTest() {
     { machine: true },
     { startup: '' },
     { approved: [] },
+    { machineStartup: '' },
+    { machineApproved: [] },
     { processes: [{ ProcessId: 123 }] },
   ])
     assert.throws(() => verifyPristineSystem({ ...pristine, ...change }));

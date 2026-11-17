@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
+#[cfg(not(windows))]
 use tauri_plugin_autostart::ManagerExt as AutostartExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 use tauri_plugin_opener::OpenerExt;
@@ -116,12 +117,80 @@ pub(crate) fn apply_autostart(
     if !location.allows_autostart() {
         return Ok(());
     }
-    if enabled {
-        app.autolaunch().enable()
-    } else {
-        app.autolaunch().disable()
+    #[cfg(windows)]
+    {
+        // The plugin's Windows builder uses Dynamic mode, which can modify HKLM
+        // when elevated. A per-user Prism installation must only change HKCU.
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let startup = windows_user_autostart(&app.package_info().name, &executable)?;
+        if enabled {
+            startup.enable()
+        } else {
+            startup.disable()
+        }
+        .map_err(|error| error.to_string())
     }
-    .map_err(|error| error.to_string())
+    #[cfg(not(windows))]
+    {
+        if enabled {
+            app.autolaunch().enable()
+        } else {
+            app.autolaunch().disable()
+        }
+        .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(windows)]
+fn windows_user_autostart(
+    app_name: &str,
+    executable: &Path,
+) -> Result<auto_launch::AutoLaunch, String> {
+    let path = executable
+        .to_str()
+        .ok_or("The startup executable path is not valid Unicode.")?;
+    if !executable.is_absolute() || path.contains('"') {
+        return Err("The startup executable path is invalid.".into());
+    }
+    Ok(auto_launch::AutoLaunch::new(
+        app_name,
+        &format!("\"{path}\""),
+        auto_launch::WindowsEnableMode::CurrentUser,
+        &["--background"],
+    ))
+}
+
+#[cfg(all(test, windows))]
+mod windows_autostart_tests {
+    use super::windows_user_autostart;
+    use auto_launch::{AutoLaunch, WindowsEnableMode};
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::Path};
+
+    // Construction only: these tests never enable, disable or query OS login entries.
+    #[test]
+    fn current_user_configuration_preserves_registry_name_quotes_and_background_argument() {
+        let path = Path::new(r"C:\Program Files\Prism 한글\prism.exe");
+        let startup = windows_user_autostart("Prism", path).unwrap();
+        assert_eq!(
+            startup,
+            AutoLaunch::new(
+                "Prism",
+                r#""C:\Program Files\Prism 한글\prism.exe""#,
+                WindowsEnableMode::CurrentUser,
+                &["--background"],
+            )
+        );
+        assert_eq!(startup.get_app_name(), "Prism");
+        assert_eq!(startup.get_args(), &["--background"]);
+    }
+
+    #[test]
+    fn invalid_startup_paths_are_rejected_without_registering_a_lossy_or_relative_command() {
+        assert!(windows_user_autostart("Prism", Path::new("prism.exe")).is_err());
+        assert!(windows_user_autostart("Prism", Path::new(r#"C:\odd"name\prism.exe"#)).is_err());
+        let invalid = OsString::from_wide(&[b'C' as u16, b':' as u16, b'\\' as u16, 0xd800]);
+        assert!(windows_user_autostart("Prism", Path::new(&invalid)).is_err());
+    }
 }
 
 #[tauri::command]

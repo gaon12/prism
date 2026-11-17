@@ -186,6 +186,10 @@ jobs:
           npm run test:msix
           cargo test --manifest-path installer/core/Cargo.toml --locked
           cargo clippy --manifest-path installer/core/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Check Windows login registration scope without OS writes
+        # Only pure library tests; upstream integration tests change login registration.
+        if: matrix.platform == 'windows'
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked -p auto-launch --lib -j1
       - name: Build Windows app without NSIS
         if: matrix.platform == 'windows'
         env:

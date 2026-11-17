@@ -112,3 +112,7 @@ jobs:
         run: |
           cargo +stable test --manifest-path installer/core/Cargo.toml --locked -- --test-threads=2
           cargo +stable clippy --manifest-path installer/core/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Check Windows login registration scope without OS writes
+        # Only the pure library tests; upstream integration tests change login registration.
+        if: runner.os == 'Windows'
+        run: cargo +stable test --manifest-path src-tauri/Cargo.toml --locked -p auto-launch --lib -j1

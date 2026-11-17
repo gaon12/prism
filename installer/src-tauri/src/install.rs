@@ -173,6 +173,57 @@ pub fn validate_install_dir(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// What a chosen folder holds, so the window can show the right state and buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FolderHealth {
+    /// Missing or empty: a fresh install.
+    Empty,
+    /// A complete Prism installation (every recorded file present).
+    Installed,
+    /// A Prism installation with missing recorded files, or an unreadable record.
+    Damaged,
+    /// An interrupted setup left a transaction to recover first.
+    Recovery,
+    /// Not usable: someone else's files, a portable copy, a file, a link or a drive root.
+    Conflict,
+}
+
+/// Classifies `dir` quickly (only names and the install record; no hashing). Size changes
+/// are found by the slower background scan, `damaged_files`.
+pub fn folder_health(dir: &Path) -> FolderHealth {
+    if validate_install_dir(dir).is_err() {
+        return FolderHealth::Conflict;
+    }
+    if crate::recovery::has_workspaces(dir) {
+        return FolderHealth::Recovery;
+    }
+    let empty = fs::read_dir(dir).map_or(true, |mut entries| entries.next().is_none());
+    if empty {
+        return FolderHealth::Empty;
+    }
+    let Ok(record) = checked_record(dir) else {
+        return FolderHealth::Damaged;
+    };
+    if record.version.is_empty() {
+        // An old installation without a record: usable if its app file is there.
+        return if dir.join(APP_EXE).is_file() {
+            FolderHealth::Installed
+        } else {
+            FolderHealth::Damaged
+        };
+    }
+    let complete = record
+        .files
+        .iter()
+        .all(|name| safe_path::file(dir, name).is_ok_and(|file| file.is_file()));
+    if complete {
+        FolderHealth::Installed
+    } else {
+        FolderHealth::Damaged
+    }
+}
+
 pub fn read_record(dir: &Path) -> InstallRecord {
     checked_record(dir).unwrap_or_default()
 }
@@ -215,6 +266,59 @@ pub fn with_intact_installation<T>(
         return Err(refused());
     }
     action()
+}
+
+/// Most damaged files reported at once; the window only needs enough to explain repair.
+pub const MAX_DAMAGED: usize = 50;
+
+/// Lists app files of an installation that are missing or whose size differs from the setup's
+/// copy, for the "Repair" offer. Cheap on purpose (names and sizes only, no decompression or
+/// hashing of the whole app); repair itself rewrites every file anyway.
+///
+/// `expected` is the setup's payload list. The uninstaller is checked for presence only,
+/// since it is a copy of whichever setup installed it.
+/// Result of [`damaged_files`].
+#[derive(Debug, PartialEq, Eq)]
+pub struct DamageScan {
+    /// Missing or resized files, at most `MAX_DAMAGED`.
+    pub damaged: Vec<String>,
+    /// How many files were actually compared (fewer than all when the scan stopped early).
+    pub checked: usize,
+    /// True when the scan stopped at `MAX_DAMAGED` before comparing every file.
+    pub truncated: bool,
+}
+
+pub fn damaged_files(dir: &Path, expected: &[payload::PayloadFile]) -> Result<DamageScan, String> {
+    let record = checked_record(dir)?;
+    if record.version.is_empty() {
+        return Err("Prism is not installed in this folder.".into());
+    }
+    let mut damaged = Vec::new();
+    let mut checked = 0;
+    let total = expected.len() + 1;
+    let checks = expected
+        .iter()
+        .map(|file| (file.name.as_str(), Some(file.size)))
+        .chain(std::iter::once((UNINSTALLER_EXE, None)));
+    for (name, size) in checks {
+        let target = safe_path::file(dir, name)
+            .map_err(|_| "A recorded file path is unsafe.".to_string())?;
+        let ok = fs::symlink_metadata(&target).is_ok_and(|metadata| {
+            metadata.is_file() && size.is_none_or(|size| metadata.len() == size)
+        });
+        checked += 1;
+        if !ok {
+            damaged.push(name.to_owned());
+            if damaged.len() == MAX_DAMAGED {
+                break;
+            }
+        }
+    }
+    Ok(DamageScan {
+        damaged,
+        checked,
+        truncated: checked < total,
+    })
 }
 
 /// Like `recovery::has_workspaces`, but strict: an unreadable folder or any unreadable entry is
@@ -382,6 +486,69 @@ pub fn install(
         true,
         progress,
     )
+}
+
+/// Repairs the installation in `options.install_dir`: the normal install of the same version,
+/// allowed only when, checked under the folder lock, that folder records exactly `version` and
+/// is the installation registered in "Apps & features". So a repair can neither upgrade or
+/// downgrade a folder nor move the registration away from another installation.
+pub fn repair(
+    system: &dyn System,
+    payload_bytes: &[u8],
+    version: &str,
+    options: &InstallOptions,
+    setup_exe: &Path,
+    progress: impl FnMut(Stage, f64),
+) -> Result<(), String> {
+    install_from_source(
+        system,
+        &RepairSource {
+            packed: PackedSource {
+                bytes: payload_bytes,
+                setup: setup_exe,
+            },
+            version,
+        },
+        version,
+        options,
+        false,
+        progress,
+    )
+}
+
+/// The setup's own files, with the repair preconditions checked under the folder lock.
+struct RepairSource<'a> {
+    packed: PackedSource<'a>,
+    version: &'a str,
+}
+impl InstallSource for RepairSource<'_> {
+    fn list(&self) -> io::Result<Vec<payload::PayloadFile>> {
+        self.packed.list()
+    }
+    fn stage(&self, destination: &Path, progress: &mut dyn FnMut(u64, u64)) -> io::Result<()> {
+        self.packed.stage(destination, progress)
+    }
+    fn setup_exe(&self) -> PathBuf {
+        self.packed.setup_exe()
+    }
+    fn verify_current(&self, system: &dyn System, root: &Path) -> Result<(), String> {
+        let record = checked_record(root)?;
+        if record.version != self.version {
+            return Err(format!(
+                "Repair needs Prism {} in this folder. Install or update it instead.",
+                self.version
+            ));
+        }
+        let registered = system
+            .existing_install()
+            .and_then(|(dir, _)| safe_path::root(&dir).ok());
+        if registered.as_deref() != Some(&safe_path::root(root).map_err(|e| e.to_string())?) {
+            return Err(
+                "This folder is not the registered Prism installation; it was not repaired.".into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Both downloaded updates and a checked previous-version archive go through the
@@ -981,6 +1148,150 @@ pub mod tests {
         // A missing app file makes it doubtful, so nothing would be started.
         fs::remove_file(dir.join(APP_EXE)).unwrap();
         assert!(!intact_installation(&dir));
+    }
+
+    #[test]
+    fn repair_only_rewrites_the_registered_installation_of_the_same_version() {
+        let root = tempfile::tempdir().unwrap();
+        let (system, setup_exe, dir) = setup(root.path());
+        let v1 = payload::pack(&[("prism.exe", b"app v1")]).unwrap();
+        let v2 = payload::pack(&[("prism.exe", b"app v2")]).unwrap();
+        let run = |payload: &[u8], version: &str, target: &Path| {
+            repair(
+                &system,
+                payload,
+                version,
+                &options(target, true),
+                &setup_exe,
+                |_, _| {},
+            )
+        };
+        // Nothing installed: nothing to repair.
+        assert!(run(&v1, "0.1.0", &dir).is_err());
+        install(
+            &system,
+            &v1,
+            "0.1.0",
+            &options(&dir, true),
+            &setup_exe,
+            |_, _| {},
+        )
+        .unwrap();
+        // A damaged app file is rewritten.
+        fs::write(dir.join(APP_EXE), b"broken").unwrap();
+        run(&v1, "0.1.0", &dir).unwrap();
+        assert_eq!(fs::read(dir.join(APP_EXE)).unwrap(), b"app v1");
+        // A different version is never installed by "repair".
+        assert!(run(&v2, "0.2.0", &dir)
+            .unwrap_err()
+            .contains("Repair needs"));
+        assert_eq!(fs::read(dir.join(APP_EXE)).unwrap(), b"app v1");
+        // A second, unregistered copy of the same version is refused, and the registration
+        // keeps pointing at the first installation.
+        // (Its shortcuts are moved away first: setup never takes over a shortcut that points
+        // at another installation.)
+        let folders = system.folders().unwrap();
+        let links = [
+            folders.desktop.join("Prism.lnk"),
+            folders.start_menu.join("Prism.lnk"),
+        ];
+        for link in &links {
+            let _ = fs::remove_file(link);
+        }
+        let other = root.path().join("Other");
+        let no_shortcuts = InstallOptions {
+            install_dir: other.clone(),
+            desktop_shortcut: false,
+            start_menu_shortcut: false,
+        };
+        install(&system, &v1, "0.1.0", &no_shortcuts, &setup_exe, |_, _| {}).unwrap();
+        install(
+            &system,
+            &v1,
+            "0.1.0",
+            &options(&dir, true),
+            &setup_exe,
+            |_, _| {},
+        )
+        .unwrap();
+        assert!(run(&v1, "0.1.0", &other)
+            .unwrap_err()
+            .contains("not the registered"));
+        assert_eq!(system.entry.borrow().clone().unwrap().install_dir, dir);
+    }
+
+    #[test]
+    fn folder_health_tells_the_window_what_a_folder_holds() {
+        let root = tempfile::tempdir().unwrap();
+        let (system, setup_exe, dir) = setup(root.path());
+        assert_eq!(folder_health(&dir), FolderHealth::Empty);
+        let payload = payload::pack(&[("prism.exe", b"app v1")]).unwrap();
+        install(
+            &system,
+            &payload,
+            "0.1.0",
+            &options(&dir, true),
+            &setup_exe,
+            |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(folder_health(&dir), FolderHealth::Installed);
+        fs::remove_file(dir.join(UNINSTALLER_EXE)).unwrap();
+        assert_eq!(folder_health(&dir), FolderHealth::Damaged);
+        fs::create_dir(dir.join(".prism-setup-1-1")).unwrap();
+        assert_eq!(folder_health(&dir), FolderHealth::Recovery);
+        // Someone else's non-empty folder.
+        let other = root.path().join("Documents");
+        fs::create_dir(&other).unwrap();
+        fs::write(other.join("report.docx"), b"user file").unwrap();
+        assert_eq!(folder_health(&other), FolderHealth::Conflict);
+    }
+
+    #[test]
+    fn missing_or_resized_files_are_reported_for_repair() {
+        let root = tempfile::tempdir().unwrap();
+        let (system, setup_exe, dir) = setup(root.path());
+        let payload =
+            payload::pack(&[("prism.exe", b"app v1"), ("notices/a.txt", b"notice")]).unwrap();
+        let expected = payload::list(&payload).unwrap();
+        // Not installed yet: nothing to repair.
+        assert!(damaged_files(&dir, &expected).is_err());
+        install(
+            &system,
+            &payload,
+            "0.1.0",
+            &options(&dir, true),
+            &setup_exe,
+            |_, _| {},
+        )
+        .unwrap();
+        assert!(damaged_files(&dir, &expected).unwrap().damaged.is_empty());
+        fs::write(dir.join("prism.exe"), b"truncated").unwrap();
+        fs::remove_file(dir.join("notices/a.txt")).unwrap();
+        fs::remove_file(dir.join(UNINSTALLER_EXE)).unwrap();
+        assert_eq!(
+            damaged_files(&dir, &expected).unwrap(),
+            DamageScan {
+                damaged: vec![
+                    "prism.exe".into(),
+                    "notices/a.txt".into(),
+                    UNINSTALLER_EXE.into()
+                ],
+                checked: 3,
+                truncated: false,
+            }
+        );
+        // Repair = installing the same version again; afterwards nothing is damaged.
+        install(
+            &system,
+            &payload,
+            "0.1.0",
+            &options(&dir, true),
+            &setup_exe,
+            |_, _| {},
+        )
+        .unwrap();
+        assert!(damaged_files(&dir, &expected).unwrap().damaged.is_empty());
     }
 
     #[test]

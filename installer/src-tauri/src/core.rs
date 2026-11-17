@@ -8,6 +8,7 @@ pub mod payload;
 pub mod previous;
 pub mod recovery;
 pub mod safe_path;
+pub mod setup_log;
 pub mod system;
 pub mod temp_cleanup;
 pub mod transaction;

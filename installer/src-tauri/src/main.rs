@@ -26,6 +26,7 @@ mod recovery;
 #[cfg(test)]
 mod recovery_tests;
 mod safe_path;
+mod setup_log;
 mod system;
 mod temp_cleanup;
 mod transaction;
@@ -79,6 +80,10 @@ struct SetupInfo {
     /// False in development builds made without the app; installing is then refused.
     payload_ready: bool,
     relaunch: bool,
+    /// This run's log file (shown in the window's log view), if one could be created.
+    log_path: Option<PathBuf>,
+    /// The same version is already installed here, so "Repair" can rewrite its files.
+    repair_available: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -86,6 +91,27 @@ struct SetupInfo {
 struct Progress {
     stage: Stage,
     fraction: f64,
+}
+
+/// Progress callback that also writes each new stage to the setup log (once per stage).
+fn logged_progress(mut report: impl FnMut(Stage, f64)) -> impl FnMut(Stage, f64) {
+    let mut last = None;
+    move |stage, fraction| {
+        if last != Some(stage) {
+            setup_log::line(format!("stage: {stage:?}"));
+            last = Some(stage);
+        }
+        report(stage, fraction);
+    }
+}
+
+/// Writes how an operation ended to the setup log and passes the result on unchanged.
+fn logged<T>(operation: &str, result: Result<T, String>) -> Result<T, String> {
+    match &result {
+        Ok(_) => setup_log::line(format!("{operation}: succeeded")),
+        Err(error) => setup_log::line(format!("{operation}: FAILED: {error}")),
+    }
+    result
 }
 
 fn friendly_path(path: PathBuf) -> PathBuf {
@@ -166,6 +192,9 @@ fn setup_info(setup: tauri::State<'_, Setup>) -> Result<SetupInfo, String> {
     )?;
     let previous = previous::available(&install_dir);
     let previous_error = previous.as_ref().err().cloned();
+    let repair_available = payload_size() > 0
+        && installed_version.as_deref() == Some(VERSION)
+        && install::read_record(&install_dir).version == VERSION;
     if let Some(expected) = &setup.args.restore_version {
         if !previous
             .as_ref()
@@ -199,6 +228,8 @@ fn setup_info(setup: tauri::State<'_, Setup>) -> Result<SetupInfo, String> {
         required_bytes,
         payload_ready: payload_size() > 0,
         relaunch: setup.args.relaunch,
+        log_path: setup_log::path(),
+        repair_available,
     })
 }
 
@@ -211,6 +242,12 @@ struct FolderCheck {
     recovery_pending: bool,
     previous_version: Option<previous::PreviousVersion>,
     previous_error: Option<String>,
+    /// What the folder holds: empty, installed, damaged, recovery or conflict.
+    health: install::FolderHealth,
+    /// Version recorded in this folder, if Prism is installed there.
+    installed_version: Option<String>,
+    /// This setup can repair the folder (same version installed, no recovery or conflict).
+    repair_available: bool,
 }
 
 /// Checks a folder the user typed or picked, so the window can warn before installing.
@@ -225,6 +262,9 @@ fn check_folder(path: String, setup: tauri::State<'_, Setup>) -> FolderCheck {
             recovery_pending: false,
             previous_version: None,
             previous_error: None,
+            health: install::FolderHealth::Conflict,
+            installed_version: None,
+            repair_available: false,
         };
     }
     let estimate = std::fs::metadata(&setup.exe)
@@ -236,8 +276,19 @@ fn check_folder(path: String, setup: tauri::State<'_, Setup>) -> FolderCheck {
     let recovery_pending = error.is_none() && recovery::has_workspaces(&dir);
     let previous = previous::available(&dir);
     let previous_error = previous.as_ref().err().cloned();
+    let health = install::folder_health(&dir);
+    let installed_version = Some(install::read_record(&dir).version).filter(|v| !v.is_empty());
+    let repair_available = payload_size() > 0
+        && installed_version.as_deref() == Some(VERSION)
+        && matches!(
+            health,
+            install::FolderHealth::Installed | install::FolderHealth::Damaged
+        );
     FolderCheck {
         error,
+        health,
+        installed_version,
+        repair_available,
         free_bytes: system::free_bytes(&dir),
         required_bytes: estimate.ok(),
         recovery_pending,
@@ -282,16 +333,25 @@ async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(
     let operation = app.state::<Setup>().gate.begin()?;
     let exe = app.state::<Setup>().exe.clone();
     let relaunch = app.state::<Setup>().args.relaunch;
+    setup_log::line(format!(
+        "install {VERSION} into {} (desktop shortcut {}, Start menu {})",
+        options.install_dir.display(),
+        options.desktop_shortcut,
+        options.start_menu_shortcut
+    ));
     tauri::async_runtime::spawn_blocking(move || {
-        let result = install::install(
-            &*system::current(),
-            PAYLOAD,
-            VERSION,
-            &options,
-            &exe,
-            |stage, fraction| {
-                let _ = app.emit("setup://progress", Progress { stage, fraction });
-            },
+        let result = logged(
+            "install",
+            install::install(
+                &*system::current(),
+                PAYLOAD,
+                VERSION,
+                &options,
+                &exe,
+                logged_progress(|stage, fraction| {
+                    let _ = app.emit("setup://progress", Progress { stage, fraction });
+                }),
+            ),
         );
         if let Err(error) = result {
             // The updater closed Prism and asked for a restart (`/R`). The failed update was
@@ -313,10 +373,22 @@ async fn run_uninstall(app: tauri::AppHandle, remove_data: bool) -> Result<(), S
         return Err("Start the uninstaller from Apps & features.".into());
     };
     system::check_sandbox_destination(&dir).map_err(|error| error.to_string())?;
+    setup_log::line(format!(
+        "uninstall from {} (remove data: {remove_data})",
+        dir.display()
+    ));
     tauri::async_runtime::spawn_blocking(move || {
-        install::uninstall(&*system::current(), &dir, remove_data, |stage, fraction| {
-            let _ = app.emit("setup://progress", Progress { stage, fraction });
-        })?;
+        logged(
+            "uninstall",
+            install::uninstall(
+                &*system::current(),
+                &dir,
+                remove_data,
+                logged_progress(|stage, fraction| {
+                    let _ = app.emit("setup://progress", Progress { stage, fraction });
+                }),
+            ),
+        )?;
         operation.complete(None)
     })
     .await
@@ -331,20 +403,148 @@ async fn run_restore(
 ) -> Result<(), String> {
     system::check_sandbox_destination(&install_dir).map_err(|e| e.to_string())?;
     let operation = app.state::<Setup>().gate.begin()?;
+    setup_log::line(format!(
+        "restore {expected_version} in {}",
+        install_dir.display()
+    ));
     tauri::async_runtime::spawn_blocking(move || {
-        previous::restore(
-            &*system::current(),
-            &install_dir,
-            &expected_version,
-            |stage, fraction| {
-                let _ = app.emit("setup://progress", Progress { stage, fraction });
-            },
+        logged(
+            "restore",
+            previous::restore(
+                &*system::current(),
+                &install_dir,
+                &expected_version,
+                logged_progress(|stage, fraction| {
+                    let _ = app.emit("setup://progress", Progress { stage, fraction });
+                }),
+            ),
         )?;
         let installed = safe_path::root(&install_dir).map_err(|e| e.to_string())?;
         operation.complete(Some(installed))
     })
     .await
     .map_err(|_| "Previous-version restoration failed.".to_string())?
+}
+
+/// Repairs the installation in `install_dir`: rewrites every app file from this setup and
+/// recreates its shortcuts and "Apps & features" entry. Settings and data are kept.
+/// `install::repair` checks, under the folder lock, that the folder records this same version
+/// and is the registered installation; otherwise nothing changes.
+#[tauri::command]
+async fn run_repair(app: tauri::AppHandle, install_dir: PathBuf) -> Result<(), String> {
+    if payload_size() == 0 {
+        return Err("This setup does not contain Prism. Download it again.".into());
+    }
+    system::check_sandbox_destination(&install_dir).map_err(|e| e.to_string())?;
+    // Keep that folder's own shortcut choices.
+    let mut args = app.state::<Setup>().args.clone();
+    args.install_dir = Some(install_dir);
+    let (options, _) = suggested_options(&args)?;
+    let operation = app.state::<Setup>().gate.begin()?;
+    let exe = app.state::<Setup>().exe.clone();
+    setup_log::line(format!(
+        "repair {VERSION} in {}",
+        options.install_dir.display()
+    ));
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = logged(
+            "repair",
+            install::repair(
+                &*system::current(),
+                PAYLOAD,
+                VERSION,
+                &options,
+                &exe,
+                logged_progress(|stage, fraction| {
+                    let _ = app.emit("setup://progress", Progress { stage, fraction });
+                }),
+            ),
+        );
+        if let Err(error) = result {
+            operation.fail(None);
+            return Err(error);
+        }
+        let installed = safe_path::root(&options.install_dir).map_err(|e| e.to_string())?;
+        operation.complete(Some(installed))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Result of checking an installation's files for the repair offer.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanResult {
+    /// Missing or resized app files (at most `install::MAX_DAMAGED`).
+    damaged: Vec<String>,
+    /// How many files were actually compared.
+    checked: usize,
+    /// How many files the installation should have.
+    total: usize,
+    /// True when the scan stopped at the damaged-file limit before comparing every file.
+    truncated: bool,
+}
+
+/// Compares the installed files in `install_dir` with this setup's copy (names and sizes).
+/// Runs in the background because reading the packed file list takes a few seconds.
+#[tauri::command]
+async fn scan_installation(install_dir: PathBuf) -> Result<ScanResult, String> {
+    system::check_sandbox_destination(&install_dir).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let expected =
+            payload::list(PAYLOAD).map_err(|_| "The setup payload is damaged.".to_string())?;
+        let scan = install::damaged_files(&install_dir, &expected)?;
+        let total = expected.len() + 1;
+        setup_log::line(format!(
+            "scan {}: {} missing or changed among {} of {} files checked",
+            install_dir.display(),
+            scan.damaged.len(),
+            scan.checked,
+            total
+        ));
+        Ok(ScanResult {
+            damaged: scan.damaged,
+            checked: scan.checked,
+            total,
+            truncated: scan.truncated,
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// This run's log for the window's log view.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogView {
+    path: Option<PathBuf>,
+    /// The last 64 KiB, starting at a whole line.
+    text: String,
+}
+
+/// Errors (no log file, unreadable file) are returned as messages for the log view.
+#[tauri::command]
+fn read_log() -> Result<LogView, String> {
+    let path = setup_log::path().ok_or("No setup log was created for this run.")?;
+    let text =
+        setup_log::tail().map_err(|error| format!("Could not read the setup log: {error}"))?;
+    Ok(LogView {
+        path: Some(path),
+        text,
+    })
+}
+
+/// Opens the log folder in File Explorer.
+#[tauri::command]
+fn open_log_folder() -> Result<(), String> {
+    let folder = setup_log::path()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .ok_or("No setup log was created.")?;
+    Command::new("explorer")
+        .arg(folder)
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "Could not open the log folder.".into())
 }
 
 /// Closes the setup, optionally starting the installed Prism first.
@@ -503,10 +703,9 @@ fn run_silent(args: &SetupArgs) -> ExitCode {
             Ok(())
         })
     };
-    if result.is_ok() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
+    match logged("silent run", result) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => ExitCode::FAILURE,
     }
 }
 
@@ -545,6 +744,20 @@ fn main() -> ExitCode {
     if system::sandbox_root().is_err() {
         return ExitCode::FAILURE;
     }
+    // One log file per run. Prism's own /ARGS values are not written, only their count.
+    setup_log::start(&*system::current());
+    setup_log::line(format!(
+        "Prism setup {VERSION} started as {exe_name}: ui {:?}, uninstall {}, update {}",
+        args.ui, args.uninstall, args.update
+    ));
+    setup_log::line(format!(
+        "relaunch {} ({} app arguments), folder {:?}, temporary copy for {:?}, restore {:?}",
+        args.relaunch,
+        args.relaunch_args.len(),
+        args.install_dir,
+        args.from_temp,
+        args.restore_version
+    ));
 
     if let Some(dir) = &args.from_temp {
         if system::check_sandbox_destination(dir).is_err() {
@@ -608,6 +821,10 @@ fn main() -> ExitCode {
             run_install,
             run_uninstall,
             run_restore,
+            run_repair,
+            scan_installation,
+            read_log,
+            open_log_folder,
             finish
         ])
         .build(tauri::generate_context!());

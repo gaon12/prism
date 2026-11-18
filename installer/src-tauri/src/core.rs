@@ -3,10 +3,12 @@ pub mod args;
 pub mod folder_lock;
 pub mod install;
 pub mod journal;
+pub mod maintenance_guard;
 pub mod native_text;
 pub mod operation;
 pub mod payload;
 pub mod previous;
+pub mod process_control;
 pub mod recovery;
 pub mod safe_path;
 pub mod setup_log;
@@ -20,3 +22,6 @@ mod install_regression;
 mod previous_tests;
 #[cfg(test)]
 mod recovery_tests;
+
+#[cfg(test)]
+mod maintenance_tests;

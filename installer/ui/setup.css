@@ -413,6 +413,28 @@ select:focus-visible,
   gap: 3px;
   margin-top: 13px;
 }
+.shutdown-consent {
+  margin-top: 15px;
+  margin-bottom: 13px;
+  flex: none;
+}
+.shutdown-consent .hint {
+  margin: 3px 0 0 25px;
+  line-height: 1.5;
+  font-size: 11px;
+}
+#technical-error {
+  margin-top: 15px;
+}
+#technical-error pre {
+  min-height: 0;
+  max-height: 130px;
+  overflow: auto;
+}
+.track:not([aria-valuenow]) .fill {
+  width: 100%;
+  opacity: 0.35;
+}
 .link,
 .terms-link {
   border: 0;

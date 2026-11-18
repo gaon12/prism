@@ -2,6 +2,55 @@
 // Order in every array: ko, en, zh-CN, zh-TW, ja (same order as the app's i18n.ts).
 // `{x}` placeholders are filled in by setup.js.
 window.SETUP_MESSAGES = {
+  closeRunningApp: [
+    '실행 중인 Prism 정상 종료 허용',
+    'Allow closing the running Prism app',
+    '允许正常关闭正在运行的 Prism',
+    '允許正常關閉執行中的 Prism',
+    '実行中の Prism の正常終了を許可',
+  ],
+  saveBeforeClosing: [
+    '미저장 작업을 먼저 저장하세요. 이 설치 폴더의 앱에만 적용합니다.',
+    'Save unsaved work first. This applies only to this installation.',
+    '请先保存未保存的工作。仅适用于此安装文件夹中的应用。',
+    '請先儲存未儲存的工作。僅適用於此安裝資料夾中的應用程式。',
+    '未保存の作業を先に保存してください。このインストール先のアプリだけが対象です。',
+  ],
+  closing: [
+    '실행 중인 Prism 정상 종료 중',
+    'Closing the running Prism app',
+    '正在正常关闭 Prism',
+    '正在正常關閉 Prism',
+    '実行中の Prism を正常終了中',
+  ],
+  appRunning: [
+    'Prism이 아직 실행 중입니다. 미저장 작업을 저장한 뒤 트레이의 Prism 메뉴에서 「종료」를 선택하고 다시 시도하세요. 창의 X는 앱을 트레이로 숨길 수 있습니다. 설치 화면에서 정상 종료를 허용할 수도 있습니다.',
+    'Prism is still running. Save unsaved work, choose Quit from the Prism tray menu, then retry. The window X may only hide the app in the tray. You can also allow normal closing in setup.',
+    'Prism 仍在运行。请保存未保存的工作，在 Prism 托盘菜单中选择“退出”，然后重试。窗口的 X 可能只是将应用隐藏到托盘。也可在安装程序中允许正常关闭。',
+    'Prism 仍在執行。請儲存未儲存的工作，在 Prism 系統匣選單中選擇「結束」，然後重試。視窗的 X 可能只是將應用程式隱藏到系統匣。也可在安裝程式中允許正常關閉。',
+    'Prism はまだ実行中です。未保存の作業を保存し、Prism のトレイメニューで「終了」を選んで再試行してください。ウィンドウの X はアプリをトレイに隠すだけの場合があります。セットアップで正常終了を許可することもできます。',
+  ],
+  appCloseFailed: [
+    'Prism이 정상 종료 요청 후에도 실행 중입니다. 미저장 작업을 저장하고 트레이의 Prism 메뉴에서 「종료」를 선택한 뒤 다시 시도하세요. 창의 X는 종료가 아닐 수 있습니다.',
+    'Prism is still running after the close request. Save unsaved work, choose Quit from the Prism tray menu, then retry. The window X may only hide the app.',
+    '发送关闭请求后 Prism 仍在运行。请保存未保存的工作，在 Prism 托盘菜单中选择“退出”，然后重试。窗口的 X 可能只是隐藏应用。',
+    '送出關閉要求後 Prism 仍在執行。請儲存未儲存的工作，在 Prism 系統匣選單中選擇「結束」，然後重試。視窗的 X 可能只是隱藏應用程式。',
+    '終了要求の後も Prism が実行中です。未保存の作業を保存し、Prism のトレイメニューで「終了」を選んで再試行してください。ウィンドウの X はアプリを隠すだけの場合があります。',
+  ],
+  foreignInstallation: [
+    '선택한 폴더가 현재 등록된 Prism 설치와 다릅니다. 등록된 설치 폴더를 선택하고 다시 시도하세요.',
+    'The selected folder differs from the registered Prism installation. Choose the registered installation folder and retry.',
+    '所选文件夹与已注册的 Prism 安装不同。请选择已注册的安装文件夹，然后重试。',
+    '選取的資料夾與已登錄的 Prism 安裝不同。請選擇已登錄的安裝資料夾，然後重試。',
+    '選択したフォルダーは登録済みの Prism のインストール先と異なります。登録済みのフォルダーを選んで再試行してください。',
+  ],
+  technicalError: [
+    '기술적 오류 정보',
+    'Technical error details',
+    '技术错误详情',
+    '技術錯誤詳細資訊',
+    '技術的なエラー情報',
+  ],
   bridgeUnavailable: [
     '설치 구성 요소에 연결하지 못했습니다. 설치 프로그램을 다시 실행하세요.',
     'Could not connect to the setup components. Run the installer again.',
@@ -204,11 +253,11 @@ window.SETUP_MESSAGES = {
     'Prism のインストールを修復しますか？',
   ],
   repairHelp: [
-    'Prism을 종료하세요. 이 설치 파일의 앱 파일로 현재 버전을 다시 설치하고 바로가기를 복구합니다. 설정·문서·색인은 유지합니다.',
-    'Close Prism first. Reinstall this version from this setup and recreate its shortcuts. Settings, documents and indexes are kept.',
-    '请先关闭 Prism。使用此安装程序重新安装当前版本并恢复快捷方式。保留设置、文档和索引。',
-    '請先關閉 Prism。使用此安裝程式重新安裝目前版本並復原捷徑。保留設定、文件及索引。',
-    '先に Prism を終了してください。このセットアップから現在のバージョンを再インストールし、ショートカットを修復します。設定・文書・インデックスは保持します。',
+    '미저장 작업을 먼저 저장하세요. 이 설치 파일의 앱 파일로 현재 버전을 다시 설치하고 바로가기를 복구합니다. 설정·문서·색인은 유지합니다.',
+    'Save unsaved work first. Reinstall this version from this setup and recreate its shortcuts. Settings, documents and indexes are kept.',
+    '请先保存未保存的工作。使用此安装程序重新安装当前版本并恢复快捷方式。保留设置、文档和索引。',
+    '請先儲存未儲存的工作。使用此安裝程式重新安裝目前版本並復原捷徑。保留設定、文件及索引。',
+    '未保存の作業を先に保存してください。このセットアップから現在のバージョンを再インストールし、ショートカットを修復します。設定・文書・インデックスは保持します。',
   ],
   repairAck: [
     '대상 폴더와 데이터 보존 내용을 확인했습니다.',

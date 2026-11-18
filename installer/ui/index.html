@@ -125,6 +125,17 @@
             ></button>
           </div>
           <p class="hint" id="scan-detail" aria-live="polite" hidden></p>
+          <div class="shutdown-consent">
+            <label class="check"
+              ><input
+                type="checkbox"
+                id="close-running-install"
+                aria-describedby="close-running-install-hint" /><span
+                data-text="closeRunningApp"
+              ></span
+            ></label>
+            <p class="hint" id="close-running-install-hint" data-text="saveBeforeClosing"></p>
+          </div>
           <div class="action-footer">
             <div class="agreement">
               <div class="agree">
@@ -157,6 +168,17 @@
             <p class="lead" data-text="uninstallLead"></p>
             <p class="hint" id="uninstall-folder"></p>
             <p class="hint" data-text="uninstallHelp"></p>
+            <div class="shutdown-consent">
+              <label class="check"
+                ><input
+                  type="checkbox"
+                  id="close-running-uninstall"
+                  aria-describedby="close-running-uninstall-hint" /><span
+                  data-text="closeRunningApp"
+                ></span
+              ></label>
+              <p class="hint" id="close-running-uninstall-hint" data-text="saveBeforeClosing"></p>
+            </div>
           </div>
           <div class="action-footer">
             <div>
@@ -179,8 +201,20 @@
         <form class="screen screen-restore" id="restore-form">
           <div class="message">
             <p class="lead" id="restore-title"></p>
+            <p class="hint" id="restore-folder"></p>
             <p class="hint" data-text="restoreData"></p>
             <p class="hint" id="restore-space"></p>
+            <div class="shutdown-consent">
+              <label class="check"
+                ><input
+                  type="checkbox"
+                  id="close-running-restore"
+                  aria-describedby="close-running-restore-hint" /><span
+                  data-text="closeRunningApp"
+                ></span
+              ></label>
+              <p class="hint" id="close-running-restore-hint" data-text="saveBeforeClosing"></p>
+            </div>
           </div>
           <div class="action-footer">
             <div>
@@ -280,6 +314,10 @@
             <dd id="log-path"></dd>
           </dl>
           <p class="hint" id="log-scope" hidden></p>
+          <div id="technical-error" hidden>
+            <p class="field-label" data-text="technicalError"></p>
+            <pre id="technical-error-text" tabindex="0"></pre>
+          </div>
           <p class="hint" id="log-notice" role="status"></p>
           <pre id="log-text" tabindex="0"></pre>
         </div>
@@ -306,6 +344,17 @@
         <div class="repair-body">
           <p data-text="repairHelp"></p>
           <p class="hint" id="repair-folder"></p>
+          <div class="shutdown-consent">
+            <label class="check"
+              ><input
+                type="checkbox"
+                id="close-running-repair"
+                aria-describedby="close-running-repair-hint" /><span
+                data-text="closeRunningApp"
+              ></span
+            ></label>
+            <p class="hint" id="close-running-repair-hint" data-text="saveBeforeClosing"></p>
+          </div>
           <label class="check"
             ><input type="checkbox" id="repair-ack" /><span data-text="repairAck"></span
           ></label>

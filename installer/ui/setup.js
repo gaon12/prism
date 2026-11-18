@@ -142,11 +142,14 @@
       info: () => invoke('setup_info'),
       checkFolder: (path) => invoke('check_folder', { path }),
       chooseFolder: (current) => invoke('choose_folder', { current }),
-      install: (options) => invoke('run_install', { options }),
-      uninstall: (removeData) => invoke('run_uninstall', { removeData }),
-      restore: (installDir, expectedVersion) =>
-        invoke('run_restore', { installDir, expectedVersion }),
-      repair: (installDir) => invoke('run_repair', { installDir }),
+      install: (options, closeRunningApp = false) =>
+        invoke('run_install', { options, closeRunningApp }),
+      uninstall: (removeData, closeRunningApp = false) =>
+        invoke('run_uninstall', { removeData, closeRunningApp }),
+      restore: (installDir, expectedVersion, closeRunningApp = false) =>
+        invoke('run_restore', { installDir, expectedVersion, closeRunningApp }),
+      repair: (installDir, closeRunningApp = false) =>
+        invoke('run_repair', { installDir, closeRunningApp }),
       scan: (installDir) => invoke('scan_installation', { installDir }),
       readLog: () => invoke('read_log'),
       openLogFolder: () => invoke('open_log_folder'),
@@ -344,7 +347,15 @@
   let previous = null;
   let previousPath = '';
   let previousFree = null;
+  let restoreSelection = null;
+  function invalidateRestoreSelection() {
+    restoreSelection = null;
+    $('restore-ack').checked = false;
+    $('close-running-restore').checked = false;
+    $('restore').disabled = true;
+  }
   function updatePrevious(value, path, free) {
+    invalidateRestoreSelection();
     previous = value;
     previousPath = path;
     previousFree = free;
@@ -352,20 +363,29 @@
     $('previous-uninstall').hidden = !value;
   }
   function showRestore() {
-    if (!previous) return;
+    if (
+      !previous ||
+      operationBusy ||
+      (!['uninstall', 'restore'].includes(info.mode) && folderPending)
+    )
+      return;
+    restoreSelection = { ...previous, path: previousPath, free: previousFree };
     $('restore-title').textContent = t('restoreTitle', {
-      from: previous.currentVersion,
-      to: previous.version,
+      from: restoreSelection.currentVersion,
+      to: restoreSelection.version,
     });
-    const enough = previousFree == null || previousFree >= previous.requiredBytes;
+    $('restore-folder').textContent = restoreSelection.path;
+    const enough =
+      restoreSelection.free == null || restoreSelection.free >= restoreSelection.requiredBytes;
     $('restore-space').textContent =
-      previousFree == null
+      restoreSelection.free == null
         ? ''
         : t(enough ? 'space' : 'spaceShort', {
-            need: formatBytes(previous.requiredBytes),
-            free: formatBytes(previousFree),
+            need: formatBytes(restoreSelection.requiredBytes),
+            free: formatBytes(restoreSelection.free),
           });
     $('restore-ack').checked = false;
+    $('close-running-restore').checked = false;
     $('restore').disabled = true;
     $('restore-ack').disabled = !enough;
     show('restore');
@@ -374,17 +394,17 @@
     if (
       backendUnavailable ||
       operationBusy ||
-      !previous ||
+      !restoreSelection ||
       !$('restore-ack').checked ||
       $('restore-ack').disabled
     )
       return;
-    operationBusy = true;
-    const target = previous.version;
-    show('progress');
-    setProgress(0);
+    const selection = restoreSelection;
+    const target = selection.version;
+    const closeRunningApp = $('close-running-restore').checked;
+    beginOperation(selection.path);
     try {
-      await backend.restore(previousPath, target);
+      await backend.restore(selection.path, target, closeRunningApp);
       setProgress(1);
       $('done-title').textContent = t('restored');
       $('version').textContent = t('version', { v: target });
@@ -417,6 +437,8 @@
     folderPending = true;
     folderOk = false;
     folderScan = null;
+    // A refresh may select another archive. Never keep consent for an old target.
+    updatePrevious(null, '', null);
     renderFolderStatus();
     updateInstallButton();
     try {
@@ -527,18 +549,33 @@
     $('scan-detail').hidden = !coverage && !partial;
   }
 
+  function beginOperation(path) {
+    operationBusy = true;
+    resultCopy = null;
+    root.classList.remove('failed');
+    $('done-detail').classList.remove('error');
+    $('technical-error').hidden = true;
+    $('technical-error-text').textContent = '';
+    currentStage = 'preparing';
+    $('stage').textContent = t('preparing');
+    for (const operation of ['install', 'uninstall', 'repair', 'restore'])
+      $('close-running-' + operation).checked = false;
+    invalidateRestoreSelection();
+    show('progress');
+    if (path) $('progress-folder').textContent = path;
+    setProgress(0);
+  }
   async function runInstall() {
     if (backendUnavailable || operationBusy) return;
-    operationBusy = true;
     const options = {
       installDir: $('folder').value.trim(),
       desktopShortcut: $('desktop').checked,
       startMenuShortcut: $('start-menu').checked,
     };
-    show('progress');
-    setProgress(0);
+    const closeRunningApp = $('close-running-install').checked;
+    beginOperation(options.installDir);
     try {
-      await backend.install(options);
+      await backend.install(options, closeRunningApp);
       setProgress(1);
       if (info.ui === 'passive') {
         // Started by the updater: close by itself and start Prism again if asked to.
@@ -577,12 +614,11 @@
 
   async function runUninstall() {
     if (backendUnavailable || operationBusy) return;
-    operationBusy = true;
     const removeData = $('remove-data').checked;
-    show('progress');
-    setProgress(0);
+    const closeRunningApp = $('close-running-uninstall').checked;
+    beginOperation(info.installDir);
     try {
-      await backend.uninstall(removeData);
+      await backend.uninstall(removeData, closeRunningApp);
       setProgress(1);
       $('done-title').textContent = t('uninstalled');
       $('done-detail').textContent = t(removeData ? 'removedData' : 'keptData');
@@ -605,8 +641,19 @@
     }
   }
 
-  /** Error screen. The message from Rust already says what to do (e.g. "Close Prism…"). */
-  function showFailure(title, error, retryScreen) {
+  const failureMessages = {
+    APP_RUNNING: 'appRunning',
+    APP_CLOSE_FAILED: 'appCloseFailed',
+    FOREIGN_INSTALLATION: 'foreignInstallation',
+  };
+  /** Translate stable backend reasons while preserving the exact technical error in details. */
+  function showFailure(title, error, retryScreen, retryAction = null) {
+    const raw = String(error);
+    const message = error instanceof Error ? error.message : raw;
+    const code = /^(APP_RUNNING|APP_CLOSE_FAILED|FOREIGN_INSTALLATION)(?=:|\s|$)/u.exec(
+      message,
+    )?.[1];
+    const detail = code ? failureMessages[code] : null;
     resultCopy = {
       title:
         title === t('restoreFailed')
@@ -614,21 +661,27 @@
           : title === t('uninstallFailed')
             ? 'uninstallFailed'
             : 'failed',
-      raw: String(error),
+      raw: detail ? undefined : raw,
+      detail,
+      technical: raw,
       finish: retryScreen ? 'tryAgain' : 'close',
     };
     root.classList.add('failed');
     $('done-symbol').textContent = '!';
     $('done-title').textContent = title;
-    $('done-detail').textContent = String(error);
+    $('done-detail').textContent = detail ? t(detail) : raw;
     $('done-detail').classList.add('error');
     $('launch-option').hidden = true;
     $('finish').textContent = t(retryScreen ? 'tryAgain' : 'close');
     $('finish').onclick = retryScreen
-      ? (event) => {
+      ? async (event) => {
           event.preventDefault();
           show(retryScreen);
-          if (retryScreen === 'options') void checkFolder();
+          if (retryScreen === 'restore') showRestore();
+          if (retryScreen === 'options') {
+            await checkFolder();
+            if (retryAction === 'repair') showRepair();
+          }
         }
       : null;
     show('done');
@@ -671,6 +724,8 @@
     detailTrigger = trigger;
     $('detail-folder').textContent = $('folder').value || info?.installDir || '';
     $('detail-version').textContent = info?.version || '';
+    $('technical-error').hidden = !resultCopy?.technical;
+    $('technical-error-text').textContent = resultCopy?.technical || '';
     $('details').hidden = false;
     updateModalInert();
     $('details-close').focus();
@@ -710,6 +765,7 @@
       return;
     }
     $('repair-ack').checked = false;
+    $('close-running-repair').checked = false;
     $('repair-confirm').disabled = true;
     $('repair-folder').textContent = $('folder').value.trim();
     $('repair-dialog').hidden = false;
@@ -718,6 +774,7 @@
   }
   function closeRepair() {
     $('repair-dialog').hidden = true;
+    $('close-running-repair').checked = false;
     updateModalInert();
     $('repair').focus();
   }
@@ -725,12 +782,11 @@
     if (!repairAvailable() || !$('repair-ack').checked || !$('agree').checked) return;
     const path = $('repair-folder').textContent;
     if (path !== $('folder').value.trim()) return;
+    const closeRunningApp = $('close-running-repair').checked;
     closeRepair();
-    operationBusy = true;
-    show('progress');
-    setProgress(0);
+    beginOperation(path);
     try {
-      await backend.repair(path);
+      await backend.repair(path, closeRunningApp);
       setProgress(1);
       resultCopy = { title: 'repaired', detail: 'installedDetail', finish: 'finish' };
       $('done-title').textContent = t('repaired');
@@ -744,13 +800,14 @@
       $('finish').onclick = null;
       show('done');
     } catch (error) {
-      showFailure(t('failed'), error, 'options');
+      showFailure(t('failed'), error, 'options', 'repair');
     } finally {
       operationBusy = false;
     }
   }
 
   const stageText = {
+    closing: 'closing',
     preparing: 'preparing',
     recovering: 'recovering',
     copying: 'copying',
@@ -781,7 +838,7 @@
     await backend.onProgress(({ stage, fraction }) => {
       currentStage = stage;
       $('stage').textContent = t(stageText[stage] || 'preparing');
-      setProgress(fraction);
+      setProgress(stage === 'closing' ? NaN : fraction);
     });
     $('stage').textContent = t('preparing');
 
@@ -833,6 +890,7 @@
   // ---------- Events ----------
   let typingTimer = 0;
   $('folder').addEventListener('input', () => {
+    $('close-running-install').checked = false;
     clearTimeout(typingTimer);
     ++folderEpoch;
     ++scanEpoch;
@@ -856,6 +914,7 @@
       const picked = await backend.chooseFolder(before);
       if (epoch !== folderEpoch || $('folder').value !== before || operationBusy) return;
       if (picked) {
+        $('close-running-install').checked = false;
         $('folder').value = picked;
         await checkFolder();
       }
@@ -884,11 +943,13 @@
   for (const id of ['previous-options', 'previous-uninstall'])
     $(id).addEventListener('click', showRestore);
   $('restore-back').addEventListener('click', () => {
+    invalidateRestoreSelection();
     if (info.mode === 'restore') backend.finish(false);
     else show(info.mode === 'uninstall' ? 'uninstall' : 'options');
   });
   $('restore-ack').addEventListener('change', () => {
-    $('restore').disabled = !$('restore-ack').checked || $('restore-ack').disabled;
+    $('restore').disabled =
+      !restoreSelection || !$('restore-ack').checked || $('restore-ack').disabled;
   });
   $('restore-form').addEventListener('submit', (event) => {
     event.preventDefault();
@@ -915,10 +976,10 @@
       $('done-detail').textContent = resultCopy.raw ?? t(resultCopy.detail, resultCopy.values);
       $('finish').textContent = t(resultCopy.finish);
     }
-    if (previous)
+    if (restoreSelection)
       $('restore-title').textContent = t('restoreTitle', {
-        from: previous.currentVersion,
-        to: previous.version,
+        from: restoreSelection.currentVersion,
+        to: restoreSelection.version,
       });
     renderFolderStatus();
     if (info && root.dataset.screen === 'options') void checkFolder();

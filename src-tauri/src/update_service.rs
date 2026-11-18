@@ -483,7 +483,11 @@ mod tests {
             Some(CheckErrorKind::Server)
         );
         service.check_now(3);
-        assert_eq!(service.status().check_error_kind, None, "cleared by success");
+        assert_eq!(
+            service.status().check_error_kind,
+            None,
+            "cleared by success"
+        );
     }
 
     #[test]

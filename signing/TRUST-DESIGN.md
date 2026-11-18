@@ -14,7 +14,7 @@ The user decided that setup should make Windows trust Prism's own self-made cert
 
 What this does **not** fix: the SmartScreen warning on the very first run of a downloaded
 setup. That warning is based on download reputation, and setup cannot act before it runs.
-Copying setup from a company share usually avoids it.
+IT may distribute setup through managed company channels; Windows execution and reputation policies still apply.
 
 ## Identity: which certificate
 
@@ -34,8 +34,11 @@ Copying setup from a company share usually avoids it.
 
 ## Ownership: who holds the key
 
-- `prism-publisher.pfx` (the private key) stays on the build PC in the git-ignored `signing/`
-  folder, with a backup kept offline. CI gets it only through repository secrets.
+- `prism-publisher.pfx` stays in a fresh ACL-restricted private output directory (the helper
+  defaults to `signing/private-publisher`, or a private folder outside the checkout). Back up
+  the encrypted PFX and retain its password securely. A DPAPI-protected password backup is
+  tied to its Windows user profile and is not a substitute for an independent password backup.
+  CI receives the key only through repository secrets.
 - Only the public DER `.cer` is inside setup. CI exports it from the validated PFX and confirms
   it contains no private key and matches the signer exactly. The PFX is never an embed input.
 - On disposable hosted CI, the optional PFX/password secrets are materialized only in a fresh
@@ -55,12 +58,12 @@ Copying setup from a company share usually avoids it.
 | Run                                                                   | Adds trust?                                                          |
 | --------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | Full window, user did not opt in                                      | No                                                                   |
-| Full window, user opted in (`run_install(..., trustPublisher: true)`) | Yes, then Windows asks again; "No" adds nothing                      |
+| Full window, user opted in (`run_install(..., trustPublisher: true)`) | Only after the explicit choice; Windows may ask again                |
 | Passive `/P` (the updater)                                            | Never                                                                |
 | Silent `/S`, `/S /UPDATE`                                             | Never, not even the publisher entry for a root that is already there |
 
-- There are two separate "no"s. Not opting in, or answering "No" to Windows, both still install
-  Prism normally.
+- Not opting in or declining an additional Windows prompt does not fail Prism installation.
+  Certificate operations are best effort and their actual result is recorded in the setup log.
 - The window must show the identity and a real choice. Opting in must be a deliberate action.
   The window must never tell users to just click "Yes".
 - Only the current user's lists change (`CurrentUser\Root`, `CurrentUser\TrustedPublisher`). No
@@ -72,9 +75,29 @@ Copying setup from a company share usually avoids it.
   name is the thumbprint and the data lists the stores.
 - Uninstall removes exactly those entries, the publisher entry first. A root that IT or the user
   had added before is never removed.
-- A full-window uninstall may remove the root, and Windows asks first. A silent uninstall
-  removes only the publisher entry, keeps the root and remembers it, so a later uninstall can
-  remove it.
+- A full-window uninstall may remove the root and Windows may request confirmation. A silent
+  uninstall preserves the root and its ownership record. A subsequent full uninstall of a
+  verified registered installation can clean up an owned root; orphan or unverified installs
+  do not receive authority to remove certificates.
+
+## Failure and concurrency boundaries
+
+Certificate completion hooks run while the same per-user maintenance guard remains held.
+The installed registration is checked again before adding trust; removal requires a typed
+receipt proving the uninstalled folder owned registration and that no new registration has
+appeared. Registry read errors do not authorize certificate mutation.
+
+Only an atomic newly-created certificate is marked owned. An entry that IT or another process
+added first is not claimed. Durable `Adding`/`Removing` intents are flushed under
+`HKCU\Software\Prism Setup\CertificateOperations` before changing a store. File-sandbox state
+uses an atomic flushed replacement. If store/ownership-record completion becomes uncertain,
+`PENDING_REVIEW` is logged and automatic claim/redeletion is refused. This protects an IT
+certificate re-added after an interrupted removal; certificate uncertainty is not advertised
+as automatic certificate recovery. It does not roll back a successfully installed app.
+
+Build input must be a single bounded public X.509 DER certificate envelope. PFX, private-key
+containers, PEM, extra appended data and malformed DER lengths are rejected before embedding.
+Certificate EKU/publisher policy and cryptographic signatures are validated separately.
 
 ## UI contract (for the setup window owner)
 
@@ -82,8 +105,7 @@ Copying setup from a company share usually avoids it.
 - `run_install({ options, trustPublisher })`: `trustPublisher` is optional. `true` only after
   the user opted in. Leaving it out, or passing `false`, adds nothing.
 - Suggested UI: an unchecked option such as "Trust this publisher on this PC", with the subject,
-  fingerprint and expiry next to it. Explain that Windows will ask once more and that "No" is
-  fine.
+  fingerprint and expiry next to it. Explain that Windows may ask once more and that declining does not block app installation.
 
 ## Evidence
 
@@ -95,4 +117,6 @@ Copying setup from a company share usually avoids it.
   - Add and remove only setup's own entries.
 - `tests/native/setup-trust.mjs` runs the real setup in its sandbox. It covers no opt-in,
   opt-in with window uninstall, decline, and silent install, update and uninstall. It checks that
-  the real certificate lists are unchanged.
+  the real Root, TrustedPublisher and My lists are unchanged. Opt-in and decline use the
+  actual identity/choice controls; decline is explicitly a file-store sandbox simulation,
+  not evidence of a real Windows confirmation dialog.

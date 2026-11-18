@@ -39,7 +39,7 @@ Nothing is added to the Windows certificate lists of the PC that creates it.
 Add two repository secrets once:
 
 - `WINDOWS_SIGNING_PFX`: the .pfx as Base64. Make it with
-  `[Convert]::ToBase64String([IO.File]::ReadAllBytes('signing/prism-publisher.pfx')) | Set-Clipboard`
+  `[Convert]::ToBase64String([IO.File]::ReadAllBytes((Resolve-Path 'signing/prism-publisher.pfx'))) | Set-Clipboard`
 - `PRISM_SIGNING_PASSWORD`: its password.
 
 Without the secrets the build runs unsigned exactly as before. The Windows job then needs these

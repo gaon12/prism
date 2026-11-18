@@ -11,7 +11,7 @@ file. Prints "configured=true|false" for the workflow; without the secret nothin
 the build continues unsigned.
 
 Make the secret on the PC that holds the certificate:
-  [Convert]::ToBase64String([IO.File]::ReadAllBytes('signing/prism-publisher.pfx')) | Set-Clipboard
+  [Convert]::ToBase64String([IO.File]::ReadAllBytes((Resolve-Path 'signing/prism-publisher.pfx'))) | Set-Clipboard
 #>
 $ErrorActionPreference = 'Stop'
 if (-not $env:WINDOWS_SIGNING_PFX) {

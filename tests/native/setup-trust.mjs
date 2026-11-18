@@ -95,18 +95,62 @@ const exists = (path) =>
     () => false,
   );
 
-// Thumbprints in the real per-user lists. Read only; must be identical before and after.
+// Read-only .NET stores avoid PowerShell provider/module-path dependencies. Return
+// only a digest of sorted thumbprints, so assertion failures never print an inventory.
 function realLists() {
-  return execFileSync(
+  const fingerprint = execFileSync(
     'powershell.exe',
     [
       '-NoProfile',
       '-NonInteractive',
       '-Command',
-      "$ErrorActionPreference='Stop'; 'Root','TrustedPublisher','My' | ForEach-Object { $_ + ':' + ((Get-ChildItem -LiteralPath ('Cert:\\CurrentUser\\' + $_) | ForEach-Object Thumbprint | Sort-Object) -join ',') }",
+      `
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+function Read-StoreThumbprints([string] $storeName) {
+  $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+    $storeName, [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+  try {
+    try {
+      $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly -bor
+        [System.Security.Cryptography.X509Certificates.OpenFlags]::OpenExistingOnly)
+    } catch {
+      $failure = $_.Exception
+      while ($failure.InnerException) { $failure = $failure.InnerException }
+      $code = '{0:X8}' -f $failure.HResult
+      # Only explicit CRYPT_E_NOT_FOUND / ERROR_FILE_NOT_FOUND mean an empty known store.
+      if (($failure -is [System.Security.Cryptography.CryptographicException]) -and
+          ($code -in @('80092004', '80070002'))) { return }
+      throw "CurrentUser/$storeName could not be read (HRESULT=$code)."
+    }
+    $certificates = $store.Certificates
+    try {
+      $thumbprints = [string[]] @($certificates | ForEach-Object { $_.Thumbprint.ToUpperInvariant() })
+      [Array]::Sort($thumbprints, [StringComparer]::Ordinal)
+      return $thumbprints
+    } finally {
+      foreach ($certificate in $certificates) { $certificate.Dispose() }
+    }
+  } finally {
+    $store.Close()
+    $store.Dispose()
+  }
+}
+$entries = foreach ($storeName in @('Root', 'TrustedPublisher', 'My')) {
+  $thumbprints = @(Read-StoreThumbprints $storeName)
+  $storeName + ':' + ($thumbprints -join ',')
+}
+$digest = [System.Security.Cryptography.SHA256]::Create()
+try {
+  $bytes = [Text.Encoding]::UTF8.GetBytes(($entries -join ([char]10)))
+  [BitConverter]::ToString($digest.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant()
+} finally { $digest.Dispose() }
+`,
     ],
     { encoding: 'utf8', windowsHide: true },
   ).trim();
+  assert(/^[0-9a-f]{64}$/u.test(fingerprint), 'Read-only certificate snapshot must yield SHA-256.');
+  return fingerprint;
 }
 const listsBefore = realLists();
 

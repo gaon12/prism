@@ -15,6 +15,7 @@ pub mod setup_log;
 pub mod system;
 pub mod temp_cleanup;
 pub mod transaction;
+pub mod trust;
 
 #[cfg(test)]
 mod install_regression;

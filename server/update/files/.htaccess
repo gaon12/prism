@@ -1,0 +1,30 @@
+# Prism update server, Apache 2.4: put this file in files/ next to update.php
+# (https://api.rasca99.dev/prism/files/), where the installers are uploaded.
+#
+# Only Prism's own package names can be downloaded; nothing here is ever run as a script.
+
+Options -Indexes -ExecCGI
+
+# Refuse everything by default ...
+Require all denied
+
+# ... except packages named exactly as scripts/make-latest-json.mjs expects.
+<FilesMatch "^Prism_[0-9A-Za-z.+-]+_(x64-setup\.exe|amd64\.AppImage|aarch64\.AppImage|universal\.app\.tar\.gz)$">
+    Require all granted
+</FilesMatch>
+
+# Even an uploaded script is only a file here: never hand it to PHP or CGI.
+<FilesMatch "\.(php[0-9]?|phtml|phar|cgi|pl|py|sh)$">
+    Require all denied
+    SetHandler none
+</FilesMatch>
+
+# Packages are plain downloads.
+ForceType application/octet-stream
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header set Content-Disposition "attachment"
+    # Short cache: a re-uploaded file with the same name must not stay stale for long,
+    # otherwise its SHA-256 would no longer match latest.json and the update would be refused.
+    Header set Cache-Control "public, max-age=3600"
+</IfModule>

@@ -85,6 +85,9 @@ impl System for MaintenanceSystem {
     fn remove_login_startup(&self) -> io::Result<()> {
         self.inner.remove_login_startup()
     }
+    fn cert_stores(&self) -> Option<Box<dyn crate::trust::CertStores>> {
+        self.inner.cert_stores()
+    }
 }
 
 /// Test mode for trying the real setup program without touching the computer's real state:
@@ -245,6 +248,16 @@ impl System for SandboxSystem {
         }
     }
 
+    /// A JSON file inside the sandbox stands in for the certificate lists, so tests never
+    /// change the real ones. `PRISM_SETUP_SANDBOX_TRUST=decline` answers Windows' question "No".
+    fn cert_stores(&self) -> Option<Box<dyn crate::trust::CertStores>> {
+        let root = self.checked_root().ok()?;
+        Some(Box::new(crate::trust::FileStores {
+            file: root.join("trust.json"),
+            decline_root: std::env::var("PRISM_SETUP_SANDBOX_TRUST").as_deref() == Ok("decline"),
+        }))
+    }
+
     fn existing_install(&self) -> Option<(PathBuf, Option<String>)> {
         let bytes = std::fs::read(self.entry_file().ok()?).ok()?;
         let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
@@ -313,6 +326,11 @@ mod imp {
         fn verify_app_stopped(&self, app: &Path) -> io::Result<()> {
             crate::process_control::ensure_closed(app, false)
         }
+        /// This user's real certificate lists.
+        fn cert_stores(&self) -> Option<Box<dyn crate::trust::CertStores>> {
+            Some(Box::new(crate::trust::windows_store::WindowsStores))
+        }
+
         fn shortcut_points_to(&self, link: &Path, target: &Path) -> io::Result<bool> {
             use windows::Win32::System::Com::STGM_READ;
             use windows::Win32::UI::Shell::SLGP_RAWPATH;

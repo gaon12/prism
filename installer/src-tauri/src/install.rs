@@ -81,6 +81,11 @@ pub trait System {
     fn remove_login_startup(&self) -> io::Result<()> {
         Ok(())
     }
+    /// The certificate lists setup may add Prism's publisher certificate to (see
+    /// [`crate::trust`]). The default `None`, used by test systems, never touches any.
+    fn cert_stores(&self) -> Option<Box<dyn crate::trust::CertStores>> {
+        None
+    }
 }
 
 /// Name of Prism's value under `HKCU\...\CurrentVersion\Run` (and `StartupApproved\Run`).

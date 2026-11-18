@@ -55,31 +55,90 @@ static CLEANUP_WORKER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/prism-c
 /// build time). Empty when the setup was built without one; then no certificate is touched.
 static TRUSTED_CERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/trusted-publisher.cer"));
 
-/// After a successful install, lets this user's Windows trust Prism's publisher (see
-/// [`trust`]) - only with `consented`: the user opted in inside the visible setup window after
-/// seeing the certificate's identity. Without it, nothing is added; the state is only logged.
-/// Never fails the install.
-fn apply_publisher_trust(consented: bool) {
-    let result = match system::current().cert_stores() {
-        Some(stores) => trust::trust(&*stores, TRUSTED_CERT, consented),
-        None => Ok(trust::TrustResult::NotConfigured),
+/// Runs one certificate step while holding the per-user maintenance lock (the same lock every
+/// install, repair, restore and uninstall holds), and only if `still_ours` confirms - under that
+/// lock - that the installation is still in the state the step was meant for.
+///
+/// Why: the install or uninstall itself has already released the lock when its trust step
+/// runs. In between, another setup may have uninstalled the folder (then trusting would serve
+/// nothing) or installed again (then removing would take trust from a live installation). The
+/// lock also serializes the read-modify-write of setup's ownership markers. Waits up to about
+/// 30 seconds for another setup; if it is still busy, the step is skipped and logged. Never
+/// fails the install or uninstall.
+fn guarded_trust_step(
+    what: &str,
+    still_ours: impl FnOnce(&dyn install::System) -> Result<bool, String>,
+    step: impl FnOnce(&dyn install::System),
+) {
+    let system = system::current();
+    let mut guard = None;
+    for attempt in 0..60 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        if let Ok(acquired) = maintenance_guard::acquire(&*system) {
+            guard = Some(acquired);
+            break;
+        }
+    }
+    let Some(_guard) = guard else {
+        setup_log::line(format!(
+            "publisher certificate: {what} skipped, another setup is busy"
+        ));
+        return;
     };
-    match result {
-        Ok(result) => setup_log::line(format!("publisher certificate: {result:?}")),
-        Err(error) => setup_log::line(format!("publisher certificate not trusted: {error}")),
+    match still_ours(&*system) {
+        Ok(true) => step(&*system),
+        Ok(false) => setup_log::line(format!(
+            "publisher certificate: {what} skipped, the installation changed meanwhile"
+        )),
+        Err(error) => setup_log::line(format!("publisher certificate: {what} skipped: {error}")),
     }
 }
 
-/// After a successful uninstall, removes what [`apply_publisher_trust`] added. Never fails it.
+/// After a successful install into `dir`, lets this user's Windows trust Prism's publisher (see
+/// [`trust`]) - only with `consented`: the user opted in inside the visible setup window after
+/// seeing the certificate's identity. Without it, nothing is added; the state is only logged.
+/// Skipped when `dir` is no longer the registered installation. Never fails the install.
+fn apply_publisher_trust(consented: bool, dir: &Path) {
+    guarded_trust_step(
+        "trust",
+        |system| maintenance_guard::registered_owner(system, dir),
+        |system| {
+            let result = match system.cert_stores() {
+                Some(stores) => trust::trust(&*stores, TRUSTED_CERT, consented),
+                None => Ok(trust::TrustResult::NotConfigured),
+            };
+            match result {
+                Ok(result) => setup_log::line(format!("publisher certificate: {result:?}")),
+                Err(error) => {
+                    setup_log::line(format!("publisher certificate not trusted: {error}"))
+                }
+            }
+        },
+    );
+}
+
+/// After a successful uninstall, removes what [`apply_publisher_trust`] added - only while no
+/// Prism installation is registered any more (another setup may have installed meanwhile).
+/// Never fails the uninstall.
 fn untrust_publisher(ask: bool) {
-    let result = match system::current().cert_stores() {
-        Some(stores) => trust::untrust(&*stores, ask),
-        None => Ok(()),
-    };
-    match result {
-        Ok(()) => setup_log::line("publisher certificate: removed what setup had added"),
-        Err(error) => setup_log::line(format!("publisher certificate not removed: {error}")),
-    }
+    guarded_trust_step(
+        "removal",
+        |system| Ok(system.existing_install().is_none()),
+        |system| {
+            let result = match system.cert_stores() {
+                Some(stores) => trust::untrust(&*stores, ask),
+                None => Ok(()),
+            };
+            match result {
+                Ok(()) => setup_log::line("publisher certificate: removed what setup had added"),
+                Err(error) => {
+                    setup_log::line(format!("publisher certificate not removed: {error}"))
+                }
+            }
+        },
+    );
 }
 
 /// Everything the commands need, created once at start-up.
@@ -410,7 +469,7 @@ async fn run_install(
             operation.fail(restart_fallback(relaunch, &options.install_dir));
             return Err(error);
         }
-        apply_publisher_trust(consented);
+        apply_publisher_trust(consented, &options.install_dir);
         let installed = safe_path::root(&options.install_dir).map_err(|error| error.to_string())?;
         operation.complete(Some(installed))
     })
@@ -767,7 +826,7 @@ fn run_silent(args: &SetupArgs) -> ExitCode {
                 return Err(error);
             }
             // Silent: never adds trust; the state is only logged.
-            apply_publisher_trust(false);
+            apply_publisher_trust(false, &options.install_dir);
             if args.relaunch {
                 install::with_intact_installation(&options.install_dir, || {
                     start_prism(&options.install_dir, &args.relaunch_args)

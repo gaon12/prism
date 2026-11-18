@@ -53,6 +53,24 @@ Copying setup from a company share usually avoids it.
 - Only the current user's lists change (`CurrentUser\Root`, `CurrentUser\TrustedPublisher`). No
   administrator rights are needed and other users are not affected.
 
+## Ownership records and races
+
+- Every trust step runs while setup holds this user's maintenance lock. This is the same lock
+  that install, repair, restore and uninstall hold. Inside the lock the step first checks that
+  the installation is still the one it was meant for:
+  - trusting needs the install folder to still be the registered one;
+  - removing needs no Prism to be registered any more.
+  If another setup is still busy after about 30 seconds, the step is skipped and logged.
+- Setup only claims an entry that its own add created. The Windows add uses `ADD_NEW`. If the
+  certificate is already there, for example because IT added it after setup's check, the entry
+  is not claimed and is never removed by setup.
+- Setup writes the record before it adds (`pending:<list>`) and confirms it afterwards. So an
+  entry setup added is never left without a record, even if saving the confirmation fails or
+  the process stops in between.
+  - The next run keeps a pending entry when the certificate is really in that list, and forgets
+    it otherwise.
+  - An uninstall treats a pending entry as setup's own.
+
 ## Removal
 
 - Setup records what it added under `HKCU\Software\Prism Setup\TrustedCertificates`. The value

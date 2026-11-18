@@ -49,18 +49,33 @@ pub enum TrustResult {
     Declined,
 }
 
+/// What [`CertStores::add`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Added {
+    /// This call put the certificate into the list: setup owns that entry.
+    Created,
+    /// It was already there (IT or another program added it in the meantime): not ours.
+    AlreadyPresent,
+    /// The user answered "No" to Windows' question.
+    Declined,
+}
+
+/// Marker prefix for a list setup is about to add to (written before adding, see [`trust`]).
+const PENDING: &str = "pending:";
+
 /// Certificate lists as the trust steps need them.
 pub trait CertStores {
     /// A stable identifier of the certificate (its thumbprint).
     fn id(&self, certificate: &[u8]) -> io::Result<String>;
     fn contains(&self, store: &str, certificate: &[u8]) -> io::Result<bool>;
-    /// Adds the certificate. `Ok(false)` when the user declined Windows' question.
-    fn add(&self, store: &str, certificate: &[u8]) -> io::Result<bool>;
+    /// Adds the certificate only if the list does not have it yet, and says which happened.
+    fn add(&self, store: &str, certificate: &[u8]) -> io::Result<Added>;
     /// Removes the certificate with this id. `Ok(false)` when the user declined.
     fn remove(&self, store: &str, id: &str) -> io::Result<bool>;
     /// Certificates setup added earlier, with the lists it added each one to.
     fn added(&self) -> io::Result<BTreeMap<String, Vec<String>>>;
-    /// Remembers (or, with an empty list, forgets) which lists setup added `id` to.
+    /// Remembers (or, with an empty list, forgets) which lists setup added `id` to. Entries
+    /// are list names, or `pending:<list>` while an add is in progress.
     fn set_added(&self, id: &str, stores: &[String]) -> io::Result<()>;
 }
 
@@ -77,6 +92,21 @@ pub fn trust(
     check_code_signing_only(certificate)?;
     let id = stores.id(certificate)?;
     let mut ours = stores.added()?.remove(&id).unwrap_or_default();
+    // An earlier run stopped between adding and confirming: keep the lists that really have the
+    // certificate now (setup added them), forget the others.
+    if ours.iter().any(|name| name.starts_with(PENDING)) {
+        let mut settled = Vec::new();
+        for name in &ours {
+            let store = name.strip_prefix(PENDING).unwrap_or(name);
+            if (!name.starts_with(PENDING) || stores.contains(store, certificate)?)
+                && !settled.iter().any(|known| known == store)
+            {
+                settled.push(store.to_owned());
+            }
+        }
+        ours = settled;
+        stores.set_added(&id, &ours)?;
+    }
     let mut result = TrustResult::AlreadyTrusted;
     for store in STORES {
         if stores.contains(store, certificate)? {
@@ -86,15 +116,32 @@ pub fn trust(
         if !consented {
             return Ok(TrustResult::NeedsConsent);
         }
-        if !stores.add(store, certificate)? {
-            return Ok(TrustResult::Declined);
-        }
-        // Remember right away, so an uninstall can undo it even if a later step fails.
-        if !ours.iter().any(|name| name == store) {
-            ours.push(store.to_owned());
-        }
+        // Write-ahead: record the intent first, so a certificate setup added is never left
+        // untracked - not even if saving the final marker fails or the process stops here.
+        let pending = format!("{PENDING}{store}");
+        ours.push(pending.clone());
         stores.set_added(&id, &ours)?;
-        result = TrustResult::Added;
+        let outcome = stores.add(store, certificate);
+        ours.retain(|name| *name != pending);
+        match outcome {
+            Ok(Added::Created) => {
+                ours.push(store.to_owned());
+                stores.set_added(&id, &ours)?;
+                result = TrustResult::Added;
+            }
+            // Someone else added it between the check and the add: never claim it.
+            Ok(Added::AlreadyPresent) => stores.set_added(&id, &ours)?,
+            Ok(Added::Declined) => {
+                stores.set_added(&id, &ours)?;
+                return Ok(TrustResult::Declined);
+            }
+            Err(error) => {
+                // Nothing was added; if even this fails, the pending entry stays and the
+                // next run settles it as above.
+                let _ = stores.set_added(&id, &ours);
+                return Err(error);
+            }
+        }
     }
     Ok(result)
 }
@@ -151,7 +198,10 @@ pub fn untrust(stores: &dyn CertStores, ask: bool) -> io::Result<()> {
         let mut kept = Vec::new();
         // Reverse of STORES: the publisher entry goes before its root.
         for store in STORES.iter().rev() {
-            if !added.iter().any(|name| name == store) {
+            // A pending entry means setup may have added it but could not confirm (see
+            // [`trust`]); it counts as setup's own.
+            let pending = format!("{PENDING}{store}");
+            if !added.iter().any(|name| name == store || *name == pending) {
                 continue;
             }
             let removed = if *store == "Root" && !ask {
@@ -229,18 +279,19 @@ impl CertStores for FileStores {
             .get(store)
             .is_some_and(|ids| ids.contains(&id)))
     }
-    fn add(&self, store: &str, certificate: &[u8]) -> io::Result<bool> {
+    fn add(&self, store: &str, certificate: &[u8]) -> io::Result<Added> {
         if store == "Root" && self.decline_root {
-            return Ok(false);
+            return Ok(Added::Declined);
         }
         let id = self.id(certificate)?;
         let mut state = self.load()?;
         let ids = state.stores.entry(store.to_owned()).or_default();
-        if !ids.contains(&id) {
-            ids.push(id);
+        if ids.contains(&id) {
+            return Ok(Added::AlreadyPresent);
         }
+        ids.push(id);
         self.save(&state)?;
-        Ok(true)
+        Ok(Added::Created)
     }
     fn remove(&self, store: &str, id: &str) -> io::Result<bool> {
         if store == "Root" && self.decline_root {
@@ -280,6 +331,10 @@ pub mod windows_store {
 
     /// The "Operation canceled by the user" error, returned when the user answers "No".
     const CANCELLED: windows::core::HRESULT = windows::core::HRESULT(0x8007_04C7_u32 as i32);
+    /// CRYPT_E_NOT_FOUND: the searched list does not have the certificate.
+    const NOT_FOUND: windows::core::HRESULT = windows::core::HRESULT(0x8009_2004_u32 as i32);
+    /// CRYPT_E_EXISTS: the list already has this certificate.
+    const EXISTS: windows::core::HRESULT = windows::core::HRESULT(0x8009_2005_u32 as i32);
 
     const ENCODING: CERT_QUERY_ENCODING_TYPE = X509_ASN_ENCODING;
 
@@ -418,7 +473,10 @@ pub mod windows_store {
         Ok(hash[..size as usize].to_vec())
     }
 
-    fn find_by_hash(store: &Store, hash: &[u8]) -> Option<Cert> {
+    /// The certificate with this SHA-1 hash, `None` only when the list really lacks it. Any
+    /// other failure is an error, so a list that could not be searched is never taken as
+    /// "not there" (which would make setup forget or skip its own entry).
+    fn find_by_hash(store: &Store, hash: &[u8]) -> io::Result<Option<Cert>> {
         let blob = CRYPT_INTEGER_BLOB {
             cbData: hash.len() as u32,
             pbData: hash.as_ptr() as *mut u8,
@@ -434,7 +492,18 @@ pub mod windows_store {
                 None,
             )
         };
-        (!found.is_null()).then_some(Cert(found))
+        if !found.is_null() {
+            return Ok(Some(Cert(found)));
+        }
+        // SAFETY: reads this thread's last error, set by the call above.
+        let error = unsafe { windows::Win32::Foundation::GetLastError() };
+        if error.0 == NOT_FOUND.0 as u32 {
+            Ok(None)
+        } else {
+            Err(io::Error::other(
+                windows::core::Error::from(error.to_hresult()).message(),
+            ))
+        }
     }
 
     fn hex(bytes: &[u8]) -> String {
@@ -460,9 +529,9 @@ pub mod windows_store {
         }
         fn contains(&self, store: &str, certificate: &[u8]) -> io::Result<bool> {
             let hash = sha1(&parse(certificate)?)?;
-            Ok(find_by_hash(&open(store)?, &hash).is_some())
+            Ok(find_by_hash(&open(store)?, &hash)?.is_some())
         }
-        fn add(&self, store: &str, certificate: &[u8]) -> io::Result<bool> {
+        fn add(&self, store: &str, certificate: &[u8]) -> io::Result<super::Added> {
             let cert = parse(certificate)?;
             let list = open(store)?;
             // SAFETY: both handles are valid; Windows copies the certificate into the store.
@@ -470,18 +539,20 @@ pub mod windows_store {
                 CertAddCertificateContextToStore(
                     Some(list.0),
                     cert.0,
-                    CERT_STORE_ADD_USE_EXISTING,
+                    // Fails with CRYPT_E_EXISTS instead of reusing an entry someone else added.
+                    CERT_STORE_ADD_NEW,
                     None,
                 )
             } {
-                Ok(()) => Ok(true),
-                Err(error) if error.code() == CANCELLED => Ok(false),
+                Ok(()) => Ok(super::Added::Created),
+                Err(error) if error.code() == EXISTS => Ok(super::Added::AlreadyPresent),
+                Err(error) if error.code() == CANCELLED => Ok(super::Added::Declined),
                 Err(error) => Err(io::Error::other(error.message())),
             }
         }
         fn remove(&self, store: &str, id: &str) -> io::Result<bool> {
             let list = open(store)?;
-            let Some(found) = find_by_hash(&list, &unhex(id)?) else {
+            let Some(found) = find_by_hash(&list, &unhex(id)?)? else {
                 return Ok(true);
             };
             // CertDeleteCertificateFromStore frees the context itself, even on failure.
@@ -637,8 +708,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let lists = stores(&dir);
         let cert = bytes(CODE_ONLY);
-        lists.add("Root", &cert).unwrap(); // added by IT, not by setup
-                                           // A silent run (update) never expands trust, not even the publisher entry.
+        // Added by IT, not by setup.
+        assert_eq!(lists.add("Root", &cert).unwrap(), Added::Created);
+        // A silent run (update) never expands trust, not even the publisher entry.
         assert_eq!(
             trust(&lists, &cert, false).unwrap(),
             TrustResult::NeedsConsent
@@ -666,6 +738,122 @@ mod tests {
         let cert = bytes(CODE_ONLY);
         assert_eq!(trust(&lists, &cert, true).unwrap(), TrustResult::Declined);
         assert!(!lists.contains("TrustedPublisher", &cert).unwrap());
+        assert!(lists.added().unwrap().is_empty());
+    }
+
+    /// Wraps the sandbox lists to replay races and failures that real Windows lists can show.
+    struct Unlucky<'a> {
+        inner: &'a FileStores,
+        /// `contains` misses this list once more, as if another program added it right after.
+        added_meanwhile: Option<&'static str>,
+        /// The marker write with this number (1-based) fails.
+        failing_write: Option<usize>,
+        writes: std::cell::Cell<usize>,
+    }
+
+    impl CertStores for Unlucky<'_> {
+        fn id(&self, certificate: &[u8]) -> io::Result<String> {
+            self.inner.id(certificate)
+        }
+        fn contains(&self, store: &str, certificate: &[u8]) -> io::Result<bool> {
+            if self.added_meanwhile == Some(store) {
+                return Ok(false);
+            }
+            self.inner.contains(store, certificate)
+        }
+        fn add(&self, store: &str, certificate: &[u8]) -> io::Result<Added> {
+            self.inner.add(store, certificate)
+        }
+        fn remove(&self, store: &str, id: &str) -> io::Result<bool> {
+            self.inner.remove(store, id)
+        }
+        fn added(&self) -> io::Result<BTreeMap<String, Vec<String>>> {
+            self.inner.added()
+        }
+        fn set_added(&self, id: &str, stores: &[String]) -> io::Result<()> {
+            self.writes.set(self.writes.get() + 1);
+            if self.failing_write == Some(self.writes.get()) {
+                return Err(io::Error::other("disk full"));
+            }
+            self.inner.set_added(id, stores)
+        }
+    }
+
+    #[test]
+    fn a_certificate_someone_else_adds_meanwhile_is_never_claimed() {
+        let dir = tempfile::tempdir().unwrap();
+        let lists = stores(&dir);
+        let cert = bytes(CODE_ONLY);
+        // IT adds the publisher entry between setup's check and setup's add.
+        lists.add("TrustedPublisher", &cert).unwrap();
+        let racy = Unlucky {
+            inner: &lists,
+            added_meanwhile: Some("TrustedPublisher"),
+            failing_write: None,
+            writes: Default::default(),
+        };
+        assert_eq!(trust(&racy, &cert, true).unwrap(), TrustResult::Added);
+        assert_eq!(
+            lists.added().unwrap().into_values().collect::<Vec<_>>(),
+            [vec!["Root".to_owned()]],
+            "only the list setup itself added is setup's"
+        );
+        untrust(&lists, true).unwrap();
+        assert!(!lists.contains("Root", &cert).unwrap());
+        assert!(
+            lists.contains("TrustedPublisher", &cert).unwrap(),
+            "IT's entry stays"
+        );
+    }
+
+    #[test]
+    fn an_added_certificate_is_never_left_untracked() {
+        let dir = tempfile::tempdir().unwrap();
+        let lists = stores(&dir);
+        let cert = bytes(CODE_ONLY);
+        // Write 1 records the intent, the add succeeds, write 2 (the confirmation) fails.
+        let failing = Unlucky {
+            inner: &lists,
+            added_meanwhile: None,
+            failing_write: Some(2),
+            writes: Default::default(),
+        };
+        assert!(trust(&failing, &cert, true).is_err());
+        assert!(lists.contains("Root", &cert).unwrap());
+        assert_eq!(
+            lists.added().unwrap().into_values().collect::<Vec<_>>(),
+            [vec!["pending:Root".to_owned()]]
+        );
+        // The next run settles it: the root is really there, so it is setup's.
+        assert_eq!(
+            trust(&lists, &cert, false).unwrap(),
+            TrustResult::NeedsConsent
+        );
+        assert_eq!(
+            lists.added().unwrap().into_values().collect::<Vec<_>>(),
+            [vec!["Root".to_owned()]]
+        );
+        // Even unsettled, an uninstall removes it.
+        lists
+            .set_added(&lists.id(&cert).unwrap(), &["pending:Root".to_owned()])
+            .unwrap();
+        untrust(&lists, true).unwrap();
+        assert!(!lists.contains("Root", &cert).unwrap());
+        assert!(lists.added().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_pending_entry_without_the_certificate_is_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let lists = stores(&dir);
+        let cert = bytes(CODE_ONLY);
+        let id = lists.id(&cert).unwrap();
+        // Stopped after recording the intent, before Windows added anything.
+        lists.set_added(&id, &["pending:Root".to_owned()]).unwrap();
+        assert_eq!(
+            trust(&lists, &cert, false).unwrap(),
+            TrustResult::NeedsConsent
+        );
         assert!(lists.added().unwrap().is_empty());
     }
 }

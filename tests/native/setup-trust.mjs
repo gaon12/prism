@@ -187,13 +187,20 @@ async function exited(child) {
   assert.equal(child.exitCode, 0);
   active.delete(child);
 }
+// Waits until nothing listens on the WebView debug port any more.
+// CI gives every setup window the same fixed port. After a setup window closes, its WebView
+// helper process can keep that port for a few seconds, so a single check would fail at random.
+// Any other listen error is a real problem and is reported straight away.
 async function freePort(port) {
-  const reservation = createServer();
-  await new Promise((done, reject) => {
-    reservation.once('error', reject);
-    reservation.listen(port, '127.0.0.1', done);
-  });
-  await new Promise((done) => reservation.close(done));
+  const isFree = () =>
+    new Promise((done, reject) => {
+      const reservation = createServer();
+      reservation.once('error', (error) =>
+        error.code === 'EADDRINUSE' ? done(false) : reject(error),
+      );
+      reservation.listen(port, '127.0.0.1', () => reservation.close(() => done(true)));
+    });
+  await until(isFree, `debug port ${port} released by the previous setup window`, 60_000);
 }
 
 // Opens the setup window of `child` (started with a debug port) and returns its page.

@@ -95,6 +95,25 @@ uses an atomic flushed replacement. If store/ownership-record completion becomes
 certificate re-added after an interrupted removal; certificate uncertainty is not advertised
 as automatic certificate recovery. It does not roll back a successfully installed app.
 
+### Manual review
+
+The setup log's `PENDING_REVIEW` message lists certificate thumbprints, affected stores and
+`Adding`/`Removing` intents. These describe an interrupted operation, not proof of ownership
+or proof that a certificate remains installed. Inspect the Current User stores with
+`certmgr.msc`: Trusted Root Certification Authorities > Certificates (`Root`) and
+Trusted Publishers > Certificates (`TrustedPublisher`). Open each candidate and compare its
+full thumbprint, subject and validity with the log and the company's published identity.
+
+IT must decide whether that certificate is still needed by another installation or program
+signed by the same publisher. Remove only the exact certificate from a reviewed store when
+IT confirms removal is appropriate; do not delete a store or unrelated certificates. Keep
+the setup log and export the specific registry values under `CertificateOperations` and
+`TrustedCertificates` above before changing them. After reviewing both the actual stores
+and ownership history, IT can remove only the reviewed thumbprint's values from these two
+keys. Clearing an intent is an explicit administrative decision, not automatic recovery.
+Do not clear records before inspection: that loses the evidence needed to distinguish
+setup's entries from IT-provisioned or subsequently re-added entries.
+
 Build input must be a single bounded public X.509 DER certificate envelope. PFX, private-key
 containers, PEM, extra appended data and malformed DER lengths are rejected before embedding.
 Certificate EKU/publisher policy and cryptographic signatures are validated separately.

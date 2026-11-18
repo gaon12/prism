@@ -66,8 +66,10 @@ pub enum Intent {
 }
 pub type Pending = BTreeMap<String, BTreeMap<String, Intent>>;
 
-fn pending_review() -> io::Error {
-    io::Error::other("PENDING_REVIEW: A pending certificate operation needs review; no uncertain ownership or deletion was replayed.")
+fn pending_review(pending: &Pending) -> io::Error {
+    io::Error::other(format!(
+        "PENDING_REVIEW: Certificate operations need manual review: {pending:?}. No uncertain ownership or deletion was replayed. See signing/TRUST-DESIGN.md, Manual review; inspect Current User Root and TrustedPublisher with certmgr.msc."
+    ))
 }
 
 /// Certificate lists as the trust steps need them.
@@ -100,12 +102,9 @@ pub fn trust(
     }
     check_code_signing_only(certificate)?;
     let id = stores.id(certificate)?;
-    if stores
-        .pending()?
-        .get(&id)
-        .is_some_and(|entries| !entries.is_empty())
-    {
-        return Err(pending_review());
+    let pending = stores.pending()?;
+    if pending.get(&id).is_some_and(|entries| !entries.is_empty()) {
+        return Err(pending_review(&pending));
     }
     let mut ours = stores.added()?.remove(&id).unwrap_or_default();
     let mut result = TrustResult::AlreadyTrusted;
@@ -191,12 +190,9 @@ pub fn colon_hex(bytes: &[u8]) -> String {
 /// Removes what [`trust`] added, and nothing else. Lists that would make Windows ask are kept
 /// (and remembered) when `ask` is false or the user declines, so a later uninstall can retry.
 pub fn untrust(stores: &dyn CertStores, ask: bool) -> io::Result<()> {
-    if stores
-        .pending()?
-        .values()
-        .any(|entries| !entries.is_empty())
-    {
-        return Err(pending_review());
+    let pending = stores.pending()?;
+    if pending.values().any(|entries| !entries.is_empty()) {
+        return Err(pending_review(&pending));
     }
     for (id, added) in stores.added()? {
         let mut kept = added;

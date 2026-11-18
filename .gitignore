@@ -26,3 +26,9 @@
 *.tsbuildinfo
 .DS_Store
 Thumbs.db
+
+# Signing keys and certificates never go into git (see signing/README.md).
+*.pfx
+*.p12
+*.pvk
+*.cer

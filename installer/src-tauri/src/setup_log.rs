@@ -178,7 +178,7 @@ fn now_secs() -> u64 {
 }
 
 /// `YYYY-MM-DDTHH:MM:SSZ` for seconds since 1970 (UTC), without a date library.
-fn timestamp(secs: u64) -> String {
+pub(crate) fn timestamp(secs: u64) -> String {
     let days = (secs / 86_400) as i64;
     let rest = secs % 86_400;
     // Days since 1970-01-01 to a calendar date (Howard Hinnant's civil_from_days).

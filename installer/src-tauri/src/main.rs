@@ -17,12 +17,14 @@ mod install;
 #[cfg(test)]
 mod install_regression;
 mod journal;
+mod maintenance_guard;
 mod native_text;
 mod operation;
 mod payload;
 mod previous;
 #[cfg(test)]
 mod previous_tests;
+mod process_control;
 mod recovery;
 #[cfg(test)]
 mod recovery_tests;
@@ -31,6 +33,7 @@ mod setup_log;
 mod system;
 mod temp_cleanup;
 mod transaction;
+mod trust;
 
 use args::{SetupArgs, UiMode};
 use install::{InstallOptions, Stage, APP_EXE};
@@ -48,6 +51,36 @@ static PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/payload.bin"))
 /// Version of the packed Prism (read from the app's tauri.conf.json at build time).
 const VERSION: &str = env!("PRISM_VERSION");
 static CLEANUP_WORKER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/prism-cleanup.exe"));
+/// Prism's publisher certificate (`PRISM_TRUSTED_CERT` or `signing/prism-publisher.cer` at
+/// build time). Empty when the setup was built without one; then no certificate is touched.
+static TRUSTED_CERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/trusted-publisher.cer"));
+
+/// After a successful install, lets this user's Windows trust Prism's publisher (see
+/// [`trust`]) - only with `consented`: the user opted in inside the visible setup window after
+/// seeing the certificate's identity. Without it, nothing is added; the state is only logged.
+/// Never fails the install.
+fn apply_publisher_trust(consented: bool) {
+    let result = match system::current().cert_stores() {
+        Some(stores) => trust::trust(&*stores, TRUSTED_CERT, consented),
+        None => Ok(trust::TrustResult::NotConfigured),
+    };
+    match result {
+        Ok(result) => setup_log::line(format!("publisher certificate: {result:?}")),
+        Err(error) => setup_log::line(format!("publisher certificate not trusted: {error}")),
+    }
+}
+
+/// After a successful uninstall, removes what [`apply_publisher_trust`] added. Never fails it.
+fn untrust_publisher(ask: bool) {
+    let result = match system::current().cert_stores() {
+        Some(stores) => trust::untrust(&*stores, ask),
+        None => Ok(()),
+    };
+    match result {
+        Ok(()) => setup_log::line("publisher certificate: removed what setup had added"),
+        Err(error) => setup_log::line(format!("publisher certificate not removed: {error}")),
+    }
+}
 
 /// Everything the commands need, created once at start-up.
 struct Setup {
@@ -85,6 +118,10 @@ struct SetupInfo {
     log_path: Option<PathBuf>,
     /// The same version is already installed here, so "Repair" can rewrite its files.
     repair_available: bool,
+    /// The publisher certificate this setup can offer to trust (name, fingerprints, expiry),
+    /// to show before the user decides; `null` when there is none. Passing
+    /// `trustPublisher: true` to `run_install` is the user's opt-in.
+    trust_certificate: Option<trust::CertIdentity>,
 }
 
 #[derive(Clone, Serialize)]
@@ -231,6 +268,9 @@ fn setup_info(setup: tauri::State<'_, Setup>) -> Result<SetupInfo, String> {
         relaunch: setup.args.relaunch,
         log_path: setup_log::path(),
         repair_available,
+        trust_certificate: (!TRUSTED_CERT.is_empty())
+            .then(|| trust::identity(TRUSTED_CERT).ok())
+            .flatten(),
     })
 }
 
@@ -326,7 +366,15 @@ async fn choose_folder(app: tauri::AppHandle, current: String) -> Option<PathBuf
 
 /// Installs in a background thread and reports progress as `setup://progress` events.
 #[tauri::command]
-async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(), String> {
+/// `close_running_app`: the user agreed to close the running Prism in this folder.
+/// `trust_publisher`: the user ticked "trust this publisher" after seeing its identity.
+/// Missing or false: no certificate is added.
+async fn run_install(
+    app: tauri::AppHandle,
+    options: InstallOptions,
+    close_running_app: Option<bool>,
+    trust_publisher: Option<bool>,
+) -> Result<(), String> {
     system::check_sandbox_destination(&options.install_dir).map_err(|error| error.to_string())?;
     if payload_size() == 0 {
         return Err("This setup does not contain Prism. Download it again.".into());
@@ -334,6 +382,8 @@ async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(
     let operation = app.state::<Setup>().gate.begin()?;
     let exe = app.state::<Setup>().exe.clone();
     let relaunch = app.state::<Setup>().args.relaunch;
+    // Only a full window can carry the opt-in; passive runs (updates) never add trust.
+    let consented = app.state::<Setup>().args.ui == UiMode::Full && trust_publisher == Some(true);
     setup_log::line(format!(
         "install {VERSION} into {} (desktop shortcut {}, Start menu {})",
         options.install_dir.display(),
@@ -344,7 +394,7 @@ async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(
         let result = logged(
             "install",
             install::install(
-                &*system::current(),
+                &*system::current_with_app_close(close_running_app.unwrap_or(false)),
                 PAYLOAD,
                 VERSION,
                 &options,
@@ -360,6 +410,7 @@ async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(
             operation.fail(restart_fallback(relaunch, &options.install_dir));
             return Err(error);
         }
+        apply_publisher_trust(consented);
         let installed = safe_path::root(&options.install_dir).map_err(|error| error.to_string())?;
         operation.complete(Some(installed))
     })
@@ -368,11 +419,16 @@ async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(
 }
 
 #[tauri::command]
-async fn run_uninstall(app: tauri::AppHandle, remove_data: bool) -> Result<(), String> {
+async fn run_uninstall(
+    app: tauri::AppHandle,
+    remove_data: bool,
+    close_running_app: Option<bool>,
+) -> Result<(), String> {
     let operation = app.state::<Setup>().gate.begin()?;
     let Some(dir) = app.state::<Setup>().args.from_temp.clone() else {
         return Err("Start the uninstaller from Apps & features.".into());
     };
+    let ask = app.state::<Setup>().args.ui == UiMode::Full;
     system::check_sandbox_destination(&dir).map_err(|error| error.to_string())?;
     setup_log::line(format!(
         "uninstall from {} (remove data: {remove_data})",
@@ -382,7 +438,7 @@ async fn run_uninstall(app: tauri::AppHandle, remove_data: bool) -> Result<(), S
         logged(
             "uninstall",
             install::uninstall(
-                &*system::current(),
+                &*system::current_with_app_close(close_running_app.unwrap_or(false)),
                 &dir,
                 remove_data,
                 logged_progress(|stage, fraction| {
@@ -390,6 +446,7 @@ async fn run_uninstall(app: tauri::AppHandle, remove_data: bool) -> Result<(), S
                 }),
             ),
         )?;
+        untrust_publisher(ask);
         operation.complete(None)
     })
     .await
@@ -401,6 +458,7 @@ async fn run_restore(
     app: tauri::AppHandle,
     install_dir: PathBuf,
     expected_version: String,
+    close_running_app: Option<bool>,
 ) -> Result<(), String> {
     system::check_sandbox_destination(&install_dir).map_err(|e| e.to_string())?;
     let operation = app.state::<Setup>().gate.begin()?;
@@ -412,7 +470,7 @@ async fn run_restore(
         logged(
             "restore",
             previous::restore(
-                &*system::current(),
+                &*system::current_with_app_close(close_running_app.unwrap_or(false)),
                 &install_dir,
                 &expected_version,
                 logged_progress(|stage, fraction| {
@@ -432,7 +490,11 @@ async fn run_restore(
 /// `install::repair` checks, under the folder lock, that the folder records this same version
 /// and is the registered installation; otherwise nothing changes.
 #[tauri::command]
-async fn run_repair(app: tauri::AppHandle, install_dir: PathBuf) -> Result<(), String> {
+async fn run_repair(
+    app: tauri::AppHandle,
+    install_dir: PathBuf,
+    close_running_app: Option<bool>,
+) -> Result<(), String> {
     if payload_size() == 0 {
         return Err("This setup does not contain Prism. Download it again.".into());
     }
@@ -451,7 +513,7 @@ async fn run_repair(app: tauri::AppHandle, install_dir: PathBuf) -> Result<(), S
         let result = logged(
             "repair",
             install::repair(
-                &*system::current(),
+                &*system::current_with_app_close(close_running_app.unwrap_or(false)),
                 PAYLOAD,
                 VERSION,
                 &options,
@@ -561,13 +623,12 @@ fn finish(
     let target = setup.gate.finish(launch)?;
     if let Some(dir) = target {
         let args = &setup.args.relaunch_args;
-        // An earlier version kept after a failed update is checked again, and started, while
-        // holding the folder lock, so another setup cannot be writing it at that moment.
-        let started = if setup.gate.launch_is_fallback() {
-            install::with_intact_installation(&dir, || start_prism(&dir, args))
-        } else {
-            start_prism(&dir, args)
-        };
+        if setup.gate.launch_is_fallback() {
+            setup_log::line("Restarting the intact earlier Prism version after a failed update.");
+        }
+        // Recheck and start every launch while holding the folder lock, including a normal
+        // successful installation: another setup may have begun since this one finished.
+        let started = install::with_intact_installation(&dir, || start_prism(&dir, args));
         if let Err(error) = started {
             setup.gate.cancel_finish();
             return Err(error);
@@ -676,6 +737,10 @@ fn run_silent(args: &SetupArgs) -> ExitCode {
         }
     } else if let Some(dir) = &args.from_temp {
         let result = install::uninstall(&*system::current(), dir, false, |_, _| {});
+        if result.is_ok() {
+            // Silent: never show Windows' question; a later uninstall can still remove it.
+            untrust_publisher(false);
+        }
         match (result, delete_self_later()) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(error), _) | (_, Err(error)) => Err(error),
@@ -701,8 +766,12 @@ fn run_silent(args: &SetupArgs) -> ExitCode {
                 }
                 return Err(error);
             }
+            // Silent: never adds trust; the state is only logged.
+            apply_publisher_trust(false);
             if args.relaunch {
-                start_prism(&options.install_dir, &args.relaunch_args)?;
+                install::with_intact_installation(&options.install_dir, || {
+                    start_prism(&options.install_dir, &args.relaunch_args)
+                })?;
             }
             Ok(())
         })

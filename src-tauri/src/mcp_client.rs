@@ -19,6 +19,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     io::{BufRead, BufReader, Read, Write},
@@ -47,6 +48,8 @@ const WRITE_QUEUE: usize = 4;
 const MAX_RESULT_CHARS: usize = 64 * 1024;
 /// Tools kept from one server (a misbehaving server cannot flood the settings UI).
 const MAX_TOOLS: usize = 256;
+/// Empty or malformed pages must not bypass the tool-count bound.
+const MAX_TOOL_PAGES: usize = 256;
 /// How often waits look at the cancel flag.
 const TICK: Duration = Duration::from_millis(50);
 /// How long Drop waits for the IO threads after killing the server.
@@ -357,7 +360,9 @@ pub struct Client<T: Transport> {
     server: String,
     allowed: HashSet<String>,
     next_id: u64,
-    timeout: Duration,
+    /// One budget for the complete handshake, discovery and optional search.
+    /// A server cannot extend it with more pages or unsolicited messages.
+    deadline: Instant,
     tools: Vec<Tool>,
     /// Set by the caller to stop waiting; checked at least every `TICK`.
     cancel: Arc<AtomicBool>,
@@ -391,7 +396,7 @@ impl<T: Transport> Client<T> {
             server: config.name.clone(),
             allowed: config.allowed_tools.iter().cloned().collect(),
             next_id: 1,
-            timeout,
+            deadline: Instant::now() + timeout,
             tools: Vec::new(),
         };
         let result = client.request(
@@ -412,9 +417,18 @@ impl<T: Transport> Client<T> {
 
     /// Lists the server's tools (following pagination) and remembers them for `call`.
     pub fn list_tools(&mut self) -> Result<Vec<Tool>, McpError> {
+        // A failed refresh must not leave tools from an earlier discovery usable.
+        self.tools.clear();
         let mut tools = Vec::new();
         let mut cursor: Option<String> = None;
+        // Hash cursors rather than retaining up to a message-sized string per page.
+        let mut seen_cursors: HashSet<[u8; 32]> = HashSet::new();
+        let mut pages = 0;
         loop {
+            if pages >= MAX_TOOL_PAGES {
+                return Err(McpError::Protocol);
+            }
+            pages += 1;
             let params = match &cursor {
                 Some(cursor) => json!({ "cursor": cursor }),
                 None => json!({}),
@@ -438,6 +452,11 @@ impl<T: Transport> Client<T> {
                 .map(str::to_string);
             if cursor.is_none() || tools.len() >= MAX_TOOLS {
                 break;
+            }
+            if let Some(cursor) = &cursor {
+                if !seen_cursors.insert(Sha256::digest(cursor.as_bytes()).into()) {
+                    return Err(McpError::Protocol);
+                }
             }
         }
         self.tools = tools.clone();
@@ -514,13 +533,22 @@ impl<T: Transport> Client<T> {
 
     fn notify(&mut self, method: &str) -> Result<(), McpError> {
         let message = json!({ "jsonrpc": "2.0", "method": method });
-        let deadline = Instant::now() + self.timeout;
-        self.transport.send(&message.to_string(), deadline)
+        self.check_deadline()?;
+        self.transport.send(&message.to_string(), self.deadline)
     }
 
     fn cancelled(&self) -> Result<(), McpError> {
         if self.cancel.load(Ordering::Acquire) {
             Err(McpError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn check_deadline(&self) -> Result<(), McpError> {
+        self.cancelled()?;
+        if Instant::now() >= self.deadline {
+            Err(McpError::TimedOut)
         } else {
             Ok(())
         }
@@ -532,16 +560,17 @@ impl<T: Transport> Client<T> {
         let id = self.next_id;
         self.next_id += 1;
         let message = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
-        let deadline = Instant::now() + self.timeout;
-        self.cancelled()?;
+        let deadline = self.deadline;
+        self.check_deadline()?;
         self.transport.send(&message.to_string(), deadline)?;
         loop {
-            self.cancelled()?;
+            self.check_deadline()?;
             // Wait in short slices so a cancel is noticed quickly.
             let line = match self.transport.recv(deadline.min(Instant::now() + TICK)) {
                 Err(McpError::TimedOut) if Instant::now() < deadline => continue,
                 other => other?,
             };
+            self.check_deadline()?;
             let line = line.trim();
             if line.is_empty() {
                 continue;
@@ -758,6 +787,115 @@ mod tests {
             ("wiki", "search")
         );
         assert!(!text.truncated && !text.is_error);
+    }
+
+    #[test]
+    fn repeated_discovery_cursor_fails_and_revokes_previous_tools() {
+        fn repeating(message: &Value) -> Vec<Value> {
+            if message["method"] == "tools/list" {
+                vec![reply(
+                    message,
+                    json!({ "tools": [], "nextCursor": "again" }),
+                )]
+            } else {
+                server(message)
+            }
+        }
+        let mut client = connect(&[]);
+        client.list_tools().unwrap();
+        client.transport.answer = repeating;
+        assert!(matches!(client.list_tools(), Err(McpError::Protocol)));
+        let requests = client.transport.sent.len();
+        assert_eq!(
+            client
+                .call("search", json!({ "query": "budget" }))
+                .unwrap_err(),
+            McpError::NotAllowed
+        );
+        assert_eq!(client.transport.sent.len(), requests);
+    }
+
+    #[test]
+    fn empty_pages_with_distinct_cursors_have_a_fixed_bound() {
+        fn empty_pages(message: &Value) -> Vec<Value> {
+            if message["method"] == "tools/list" {
+                vec![reply(
+                    message,
+                    json!({ "tools": [], "nextCursor": message["id"].to_string() }),
+                )]
+            } else {
+                server(message)
+            }
+        }
+        let mut client = connect(&[]);
+        client.transport.answer = empty_pages;
+        assert!(matches!(client.list_tools(), Err(McpError::Protocol)));
+        assert_eq!(
+            client
+                .transport
+                .sent
+                .iter()
+                .filter(|message| message["method"] == "tools/list")
+                .count(),
+            MAX_TOOL_PAGES
+        );
+    }
+
+    #[test]
+    fn discovery_and_search_do_not_renew_the_connection_budget() {
+        let mut client = connect(&[]);
+        client.list_tools().unwrap();
+        client.deadline = Instant::now();
+        let requests = client.transport.sent.len();
+        assert_eq!(
+            client
+                .call("search", json!({ "query": "budget" }))
+                .unwrap_err(),
+            McpError::TimedOut
+        );
+        assert!(matches!(client.list_tools(), Err(McpError::TimedOut)));
+        assert_eq!(client.transport.sent.len(), requests);
+    }
+
+    #[test]
+    fn continuous_notifications_cannot_keep_a_request_alive() {
+        struct Notifications(Fake);
+        impl Transport for Notifications {
+            fn send(&mut self, line: &str, deadline: Instant) -> Result<(), McpError> {
+                self.0.send(line, deadline)
+            }
+            fn recv(&mut self, deadline: Instant) -> Result<String, McpError> {
+                match self.0.recv(deadline) {
+                    Err(McpError::TimedOut) => Ok(
+                        json!({ "jsonrpc": "2.0", "method": "notifications/message" }).to_string(),
+                    ),
+                    result => result,
+                }
+            }
+        }
+        fn no_tools_reply(message: &Value) -> Vec<Value> {
+            if message["method"] == "tools/list" {
+                vec![]
+            } else {
+                server(message)
+            }
+        }
+        let fake = Fake {
+            sent: vec![],
+            queue: VecDeque::new(),
+            answer: no_tools_reply,
+        };
+        let mut client = Client::initialize(
+            Notifications(fake),
+            &config(&[]),
+            Duration::from_secs(1),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        client.deadline = Instant::now() + Duration::from_millis(20);
+        let started = Instant::now();
+        assert!(matches!(client.list_tools(), Err(McpError::TimedOut)));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

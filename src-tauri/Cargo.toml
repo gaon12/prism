@@ -117,7 +117,7 @@ opt-level = 3
 opt-level = 3
 
 [patch.crates-io]
-# Honor the desktop session's XDG_CONFIG_HOME for Linux login startup.
+# Respect Linux XDG login configuration and explicitly scoped Windows startup entries.
 auto-launch = { path = "../vendor/auto-launch" }
 # Windows long-path handling for Lance's atomic local transaction persistence.
 tempfile = { path = "../vendor/tempfile" }
@@ -126,6 +126,7 @@ pdf-extract = { path = "../vendor/pdf-extract" }
 lopdf = { path = "../vendor/lopdf" }
 
 [target."cfg(windows)".dependencies]
+auto-launch = "=0.6.0"
 prism-ntfs-windows = { path = "../indexer/windows" }
 windows = { version = "0.62", features = ["ApplicationModel", "Win32_System_WinRT", "Globalization", "Media_Ocr", "Graphics_Imaging", "Storage_Streams", "Data_Pdf"] }
 windows-future = "0.3"

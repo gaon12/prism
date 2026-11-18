@@ -120,11 +120,16 @@ impl Files {
     pub fn restore(&mut self) -> io::Result<()> {
         self.validate_backups()?;
         let mut failure = None;
+        let mut execution_guards = Vec::new();
         for entry in self.entries.iter().rev() {
             let result = (|| {
                 let target = safe_path::file(&entry.root, &entry.name)?;
                 if let Some(backup) = &entry.backup {
-                    self.publish(backup, &entry.root, &entry.name)?;
+                    if let Some(guard) =
+                        self.publish_inner(backup, &entry.root, &entry.name, true)?
+                    {
+                        execution_guards.push(guard);
+                    }
                 } else {
                     match fs::remove_file(&target) {
                         Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
@@ -155,6 +160,15 @@ impl Files {
     /// Publish complete bytes on the destination's own volume. Never truncate a live
     /// shortcut or follow an existing hard link while saving COM output.
     pub fn publish(&self, source: &Path, root: &Path, name: &str) -> io::Result<()> {
+        self.publish_inner(source, root, name, false).map(|_| ())
+    }
+    fn publish_inner(
+        &self,
+        source: &Path,
+        root: &Path,
+        name: &str,
+        protect_execution: bool,
+    ) -> io::Result<Option<fs::File>> {
         safe_path::no_links(source)?;
         let target = safe_path::create_parent(root, name)?;
         let token = self
@@ -184,7 +198,16 @@ impl Files {
             return Err(error);
         }
         safe_path::file(root, name)?;
-        payload::replace_file(&temporary, &target)
+        let guard = if protect_execution
+            && name == crate::install::APP_EXE
+            && safe_path::root(root)? == self.root
+        {
+            crate::install::block_execution(&temporary)?
+        } else {
+            None
+        };
+        payload::replace_file(&temporary, &target)?;
+        Ok(guard)
     }
 
     pub fn check_shortcut_ownership(&self, system: &dyn crate::install::System) -> io::Result<()> {

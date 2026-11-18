@@ -54,6 +54,12 @@ pub struct UninstallEntry {
 /// Operating-system actions. Implementations must not log personal paths.
 pub trait System {
     fn folders(&self) -> io::Result<Folders>;
+    fn prepare_app_for_maintenance(&self, _app: &Path) -> io::Result<()> {
+        Ok(())
+    }
+    fn verify_app_stopped(&self, _app: &Path) -> io::Result<()> {
+        Ok(())
+    }
     /// Opaque snapshot of the registration, captured before any installation mutation.
     fn capture_registration(&self) -> io::Result<Vec<u8>>;
     fn restore_registration(&self, snapshot: &[u8]) -> io::Result<()>;
@@ -74,6 +80,11 @@ pub trait System {
     /// entry belongs to the installation being removed.
     fn remove_login_startup(&self) -> io::Result<()> {
         Ok(())
+    }
+    /// The certificate lists setup may add Prism's publisher certificate to (see
+    /// [`crate::trust`]). The default `None`, used by test systems, never touches any.
+    fn cert_stores(&self) -> Option<Box<dyn crate::trust::CertStores>> {
+        None
     }
 }
 
@@ -129,6 +140,7 @@ pub struct InstallRecord {
 #[serde(rename_all = "camelCase")]
 pub enum Stage {
     Preparing,
+    Closing,
     Recovering,
     Copying,
     Shortcuts,
@@ -573,6 +585,27 @@ impl InstallSource for RepairSource<'_> {
     }
 }
 
+/// A retained file handle follows the staged image across rename and denies new
+/// read/execute opens until all installation writes have completed.
+pub(crate) fn block_execution(path: &Path) -> io::Result<Option<fs::File>> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let mut options = fs::OpenOptions::new();
+        options.access_mode(0x0001_0000).share_mode(0x4);
+        match options.open(path) {
+            Ok(file) => Ok(Some(file)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+
 /// Both downloaded updates and a checked previous-version archive go through the
 /// same path validation, folder lock, recovery journal and failure rollback.
 pub(crate) trait InstallSource {
@@ -604,6 +637,18 @@ pub(crate) fn install_from_source(
     version: &str,
     options: &InstallOptions,
     retain_previous: bool,
+    progress: impl FnMut(Stage, f64),
+) -> Result<(), String> {
+    let _maintenance = crate::maintenance_guard::acquire(system)?;
+    install_from_source_locked(system, source, version, options, retain_previous, progress)
+}
+
+pub(crate) fn install_from_source_locked(
+    system: &dyn System,
+    source: &dyn InstallSource,
+    version: &str,
+    options: &InstallOptions,
+    retain_previous: bool,
     mut progress: impl FnMut(Stage, f64),
 ) -> Result<(), String> {
     let dir = &options.install_dir;
@@ -611,6 +656,11 @@ pub(crate) fn install_from_source(
     validate_install_dir(dir)?;
     fs::create_dir_all(dir).map_err(|error| format!("Could not create the folder: {error}"))?;
     let _lock = crate::folder_lock::FolderLock::acquire(dir).map_err(|error| error.to_string())?;
+    crate::maintenance_guard::registered_owner(system, dir)?;
+    progress(Stage::Closing, 0.0);
+    system
+        .prepare_app_for_maintenance(&dir.join(APP_EXE))
+        .map_err(|e| e.to_string())?;
     if crate::recovery::has_workspaces(dir) {
         progress(Stage::Recovering, 0.0);
         crate::recovery::recover(system, dir)?;
@@ -706,7 +756,17 @@ pub(crate) fn install_from_source(
     };
     let mut published_previous = None;
     let mut registration_changed = false;
+    let mut execution_guards = Vec::new();
     let result = (|| -> Result<(), String> {
+        // A new launch after the original consent is not covered by that consent.
+        system
+            .verify_app_stopped(&dir.join(APP_EXE))
+            .map_err(|e| e.to_string())?;
+        if let Some(guard) = block_execution(&dir.join(APP_EXE)).map_err(|e| {
+            format!("APP_CLOSE_FAILED: Could not reserve Prism for maintenance: {e}")
+        })? {
+            execution_guards.push(guard);
+        }
         // Extract everything into private staging before replacing the first installed file.
         progress(Stage::Copying, 0.05);
         let staged = transaction.stage();
@@ -727,6 +787,14 @@ pub(crate) fn install_from_source(
             .open(staged.join(UNINSTALLER_EXE))
             .and_then(|file| file.sync_all())
             .map_err(|_| "Could not flush the staged uninstaller.".to_string())?;
+        let app_digest =
+            crate::journal::digest(&staged.join(APP_EXE)).map_err(|e| e.to_string())?;
+        if let Some(guard) = block_execution(&staged.join(APP_EXE)).map_err(|e| e.to_string())? {
+            execution_guards.push(guard);
+        }
+        system
+            .verify_app_stopped(&dir.join(APP_EXE))
+            .map_err(|e| e.to_string())?;
         transaction
             .begin_changes()
             .map_err(|_| "Could not save the file recovery map.".to_string())?;
@@ -826,7 +894,7 @@ pub(crate) fn install_from_source(
         if let Some(backup) = previous_backup {
             published_previous = Some(
                 backup
-                    .publish(&record)
+                    .publish_with_app_digest(&record, Some(app_digest))
                     .map_err(|_| "Could not commit the previous-version backup.".to_string())?,
             );
         }
@@ -836,6 +904,12 @@ pub(crate) fn install_from_source(
         Ok(())
     })();
     if let Err(message) = result {
+        if !transaction.needs_restore() {
+            transaction
+                .finished()
+                .map_err(|e| format!("{message} Could not finalize unused staging: {e}"))?;
+            return Err(message);
+        }
         if registration_changed
             && crate::recovery::check_registration_owner(system, dir, &registration).is_err()
         {
@@ -875,13 +949,30 @@ pub fn uninstall(
     remove_data: bool,
     mut progress: impl FnMut(Stage, f64),
 ) -> Result<(), String> {
+    let _maintenance = crate::maintenance_guard::acquire(system)?;
     progress(Stage::Removing, 0.0);
     let dir = safe_path::root(dir).map_err(|_| "The installation folder is unsafe.".to_string())?;
     let dir = dir.as_path();
     let _lock = crate::folder_lock::FolderLock::acquire(dir).map_err(|error| error.to_string())?;
+    let owner = crate::maintenance_guard::registered_owner(system, dir)?;
+    if remove_data && !owner {
+        return Err(
+            "FOREIGN_INSTALLATION: Shared data requires its registered installation.".into(),
+        );
+    }
+    progress(Stage::Closing, 0.0);
+    system
+        .prepare_app_for_maintenance(&dir.join(APP_EXE))
+        .map_err(|e| e.to_string())?;
     if crate::recovery::has_workspaces(dir) {
         progress(Stage::Recovering, 0.0);
         crate::recovery::recover(system, dir)?;
+    }
+    let owner = crate::maintenance_guard::registered_owner(system, dir)?;
+    if remove_data && !owner {
+        return Err(
+            "FOREIGN_INSTALLATION: Shared data requires its registered installation.".into(),
+        );
     }
     let record = checked_record(dir)?;
     let folders = system
@@ -910,9 +1001,59 @@ pub fn uninstall(
     for name in &files {
         safe_path::file(dir, name).map_err(|_| "A recorded file path is unsafe.".to_string())?;
     }
-    let app = dir.join(APP_EXE);
-    if app.exists() && fs::OpenOptions::new().write(true).open(&app).is_err() {
-        return Err("Prism is still running. Close Prism and try again.".into());
+    // Check all owned files before the first deletion. Retain delete-capable handles
+    // so an unrelated resource lock cannot turn an uninstall into a partial removal.
+    let mut removal_handles = Vec::new();
+    for name in &files {
+        let path = safe_path::file(dir, name).map_err(|e| e.to_string())?;
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(value) => value,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("Could not inspect {name}: {error}")),
+        };
+        if !metadata.is_file() {
+            return Err(format!("A recorded file is not a regular file: {name}"));
+        }
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.access_mode(0x0001_0000).share_mode(0x2 | 0x4);
+        }
+        removal_handles.push(options.open(&path).map_err(|error| {
+            format!("Could not prepare {name} for removal; no app files were removed: {error}")
+        })?);
+    }
+    // Validate shared-profile roots before removing the app, too. A redirected or
+    // inaccessible profile must fail while the installation is still intact.
+    let mut data_folders = Vec::new();
+    if remove_data {
+        for data in [
+            folders.app_data.join(APP_IDENTIFIER),
+            folders.local_app_data.join(APP_IDENTIFIER),
+        ] {
+            match fs::symlink_metadata(&data) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(format!("Could not inspect Prism's data: {error}")),
+                Ok(metadata) if !metadata.is_dir() => {
+                    return Err("The application data folder is unsafe.".into())
+                }
+                Ok(_) => {}
+            }
+            safe_path::no_links(&data)
+                .map_err(|_| "The application data folder is unsafe.".to_string())?;
+            let resolved = safe_path::root(&data).map_err(|e| e.to_string())?;
+            let parent = safe_path::root(
+                data.parent()
+                    .ok_or("The application data folder is unsafe.")?,
+            )
+            .map_err(|e| e.to_string())?;
+            if resolved.parent() != Some(parent.as_path()) {
+                return Err("The application data folder is unsafe.".into());
+            }
+            data_folders.push(data);
+        }
     }
     let total = files.len().max(1) as f64;
     for (index, name) in files.iter().enumerate() {
@@ -931,6 +1072,20 @@ pub fn uninstall(
         }
         progress(Stage::Removing, 0.8 * (index + 1) as f64 / total);
     }
+    drop(removal_handles);
+    // Windows can postpone the final unlink until retained preflight handles close.
+    // Retry only known empty ancestors; preserve every unknown file and directory.
+    for name in &files {
+        let path = safe_path::file(dir, name).map_err(|e| e.to_string())?;
+        let mut parent = path.parent();
+        while let Some(folder) = parent.filter(|folder| *folder != dir) {
+            match fs::remove_dir(folder) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => break,
+                _ => {}
+            }
+            parent = folder.parent();
+        }
+    }
     for link in &shortcuts {
         checked_shortcuts(&record, &folders)?;
         let _ = fs::remove_file(link);
@@ -946,32 +1101,26 @@ pub fn uninstall(
     }
     crate::previous::prune(dir, None);
     // Deletes the folder only if nothing of the user's is left in it.
-    let _ = fs::remove_dir(dir);
     if remove_data {
-        if let Ok(folders) = system.folders() {
-            for data in [
-                folders.app_data.join(APP_IDENTIFIER),
-                folders.local_app_data.join(APP_IDENTIFIER),
-            ] {
-                if data.exists() {
-                    safe_path::no_links(&data)
-                        .map_err(|_| "The application data folder is unsafe.".to_string())?;
-                    let base = fs::canonicalize(data.parent().unwrap())
-                        .map_err(|error| error.to_string())?;
-                    let resolved = fs::canonicalize(&data).map_err(|error| error.to_string())?;
-                    if resolved.parent() != Some(base.as_path()) {
-                        return Err("The application data folder is unsafe.".into());
-                    }
-                    fs::remove_dir_all(&resolved)
-                        .map_err(|error| format!("Could not remove Prism's data: {error}"))?;
-                }
-            }
+        if !crate::maintenance_guard::registered_owner(system, dir)? {
+            return Err(
+                "FOREIGN_INSTALLATION: The registration changed; shared data was preserved.".into(),
+            );
+        }
+        for data in data_folders {
+            safe_path::no_links(&data)
+                .map_err(|_| "The application data folder is unsafe.".to_string())?;
+            fs::remove_dir_all(&data)
+                .map_err(|error| format!("Could not remove Prism's data: {error}"))?;
         }
     }
     progress(Stage::Registering, 0.95);
-    system
-        .remove_uninstall_entry()
-        .map_err(|error| format!("Could not unregister Prism: {error}"))?;
+    if owner && crate::maintenance_guard::registered_owner(system, dir)? {
+        system
+            .remove_uninstall_entry()
+            .map_err(|error| format!("Could not unregister Prism: {error}"))?;
+    }
+    let _ = fs::remove_dir(dir);
     progress(Stage::Done, 1.0);
     Ok(())
 }
@@ -1226,7 +1375,18 @@ pub mod tests {
             desktop_shortcut: false,
             start_menu_shortcut: false,
         };
-        install(&system, &v1, "0.1.0", &no_shortcuts, &setup_exe, |_, _| {}).unwrap();
+        // Build the other inert copy with an independent fake user's registration and
+        // known folders. A real install may not take over this user's registered copy.
+        let other_system = FakeSystem::new(&root.path().join("other-system"));
+        install(
+            &other_system,
+            &v1,
+            "0.1.0",
+            &no_shortcuts,
+            &setup_exe,
+            |_, _| {},
+        )
+        .unwrap();
         install(
             &system,
             &v1,

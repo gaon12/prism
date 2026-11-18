@@ -7412,6 +7412,7 @@ dependencies = [
  "arboard",
  "arrow-array",
  "arrow-schema",
+ "auto-launch",
  "base64 0.22.1",
  "block2",
  "cfb 0.14.0",

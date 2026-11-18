@@ -147,12 +147,31 @@ impl Prepared {
     }
     /// Publish before the install transaction commits. A crash before that commit
     /// is recovered first, so the archive cannot authorize restoring an unfinished update.
+    #[allow(dead_code)]
     pub fn publish(self, current: &InstallRecord) -> io::Result<PathBuf> {
+        self.publish_with_app_digest(current, None)
+    }
+
+    /// The engine hashes the staged executable before taking its read-denying launch
+    /// guard. That guard must keep protecting the same bytes until publication ends.
+    pub(crate) fn publish_with_app_digest(
+        self,
+        current: &InstallRecord,
+        app_digest: Option<FileDigest>,
+    ) -> io::Result<PathBuf> {
         let mut current_files = Vec::new();
         for name in &current.files {
+            let path = safe_path::file(&self.root, name)?;
+            let digest = match app_digest
+                .as_ref()
+                .filter(|_| name.eq_ignore_ascii_case(install::APP_EXE))
+            {
+                Some(digest) => digest.clone(),
+                None => journal::digest(&path)?,
+            };
             current_files.push(Stamp {
                 name: name.clone(),
-                digest: journal::digest(&safe_path::file(&self.root, name)?)?,
+                digest,
             });
         }
         check_names(&current_files)?;
@@ -466,10 +485,16 @@ pub fn restore(
     if expected_version.is_empty() || expected_version.len() > 128 {
         return Err("Select a valid previous version before restoring.".into());
     }
+    let _maintenance = crate::maintenance_guard::acquire(system)?;
     // Recovery can change the live record. Finish it under the same folder lock
     // before selecting an archive, then recheck the source under the install lock.
     {
         let _lock = crate::folder_lock::FolderLock::acquire(root).map_err(|e| e.to_string())?;
+        crate::maintenance_guard::registered_owner(system, root)?;
+        progress(install::Stage::Closing, 0.0);
+        system
+            .prepare_app_for_maintenance(&root.join(install::APP_EXE))
+            .map_err(|e| e.to_string())?;
         if crate::recovery::has_workspaces(root) {
             progress(install::Stage::Recovering, 0.0);
             crate::recovery::recover(system, root)?;
@@ -506,7 +531,7 @@ pub fn restore(
             .iter()
             .any(|p| safe_path::shortcut(p, &folders.start_menu).is_ok()),
     };
-    install::install_from_source(
+    install::install_from_source_locked(
         system,
         &archive,
         &archive.manifest.previous.version,

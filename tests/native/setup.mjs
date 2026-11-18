@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium } from '@playwright/test';
 import { until } from './harness.mjs';
+import { removeTestSandbox } from './test-sandbox.mjs';
 
 const executable = resolve(
   process.env.PRISM_SETUP_EXE ?? 'installer/src-tauri/target/debug/prism-setup.exe',
@@ -390,10 +391,12 @@ try {
   );
   assert.equal(registration(), realRegistration, 'real HKCU registration must remain identical');
   assert.deepEqual(errors, []);
+  const sandboxRemoved = await removeTestSandbox(directory);
   console.log(
     JSON.stringify({
       passed: true,
       directory,
+      sandboxRemoved,
       installedHash: expectedHash,
       registry: 'sandbox JSON; real key unchanged',
       cleanup: 'native worker; no shell',

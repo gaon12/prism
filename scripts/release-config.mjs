@@ -8,6 +8,22 @@ import { updateFiles } from './make-latest-json.mjs';
 import { msixVersion } from './package-msix.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+function publicHttpsUrl(value, name) {
+  if (typeof value !== 'string' || value.length > 2048 || /[\x00-\x1f\x7f]/.test(value))
+    throw new Error(`Invalid ${name}.`);
+  if (!value.trim()) return '';
+  let url;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    throw new Error(`Invalid ${name}.`);
+  }
+  if (url.protocol !== 'https:' || !url.hostname || url.username || url.password || url.hash)
+    throw new Error(`${name} requires HTTPS without credentials or a fragment.`);
+  return url.href;
+}
+
 export function releasePlan({
   platform,
   version,
@@ -15,12 +31,16 @@ export function releasePlan({
   publicKey = '',
   privateKeySet = false,
   msixPackageVersion,
+  updateUrl = '',
+  downloadPage = '',
 }) {
   updateFiles(version); // canonical bounded SemVer, before constructing paths or tag names
   if (!['windows', 'macos', 'linux'].includes(platform))
     throw new Error('Unknown release platform.');
   if (ref.startsWith('refs/tags/') && ref !== `refs/tags/v${version}`)
     throw new Error('Release tag and checked-out application version do not match.');
+  updateUrl = publicHttpsUrl(updateUrl, 'PRISM_UPDATE_URL');
+  downloadPage = publicHttpsUrl(downloadPage, 'PRISM_DOWNLOAD_PAGE');
   if (typeof publicKey !== 'string' || publicKey.length > 8192)
     throw new Error('Invalid updater public key.');
   if (publicKey.length && !publicKey.trim()) throw new Error('Updater public key is blank.');
@@ -47,10 +67,18 @@ export function releasePlan({
   return {
     version,
     signed,
+    updateUrl,
+    downloadPage,
     msixPackageVersion: platform === 'windows' ? msixVersion(version, msixPackageVersion) : '',
     config: {
       bundle: { targets, createUpdaterArtifacts: signed && platform !== 'windows' },
-      plugins: { updater: { pubkey: publicKey, requireSignedVersion: true } },
+      plugins: {
+        updater: {
+          pubkey: publicKey,
+          requireSignedVersion: true,
+          ...(updateUrl ? { endpoints: [updateUrl] } : {}),
+        },
+      },
     },
   };
 }
@@ -85,6 +113,8 @@ export function writeReleaseConfig(args = process.argv.slice(2)) {
     publicKey: process.env.PRISM_UPDATER_PUBLIC_KEY ?? '',
     privateKeySet: Boolean(process.env.TAURI_SIGNING_PRIVATE_KEY),
     msixPackageVersion: process.env.PRISM_MSIX_PACKAGE_VERSION || undefined,
+    updateUrl: process.env.PRISM_UPDATE_URL ?? '',
+    downloadPage: process.env.PRISM_DOWNLOAD_PAGE ?? '',
   });
   writeFileSync(output, JSON.stringify(plan.config, null, 2) + '\n', { flag: 'wx' });
   if (process.env.GITHUB_OUTPUT)

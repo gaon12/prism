@@ -12,12 +12,32 @@ export interface UpdateView {
   canInstall: boolean;
   lastCheckMs: number | null;
   checkError: string | null;
+  /** Why the last check failed (absent from older backends). */
+  checkErrorKind?: 'offline' | 'server' | 'notConfigured' | null;
   installError: string | null;
   currentVersion: string;
   downloadPage: string;
   installDisabledReason: string | null;
   stateError: boolean;
 }
+/**
+ * Message for a failed check. Only an unreachable server is blamed on the connection: a
+ * server that answered without usable information (e.g. 503 while a version is published)
+ * or a build without an update server needs different advice.
+ */
+export function checkFailureKey(
+  view: Pick<UpdateView, 'checkErrorKind'> | null | undefined,
+): 'checkFailed' | 'checkServer' | 'checkUnconfigured' {
+  switch (view?.checkErrorKind) {
+    case 'server':
+      return 'checkServer';
+    case 'notConfigured':
+      return 'checkUnconfigured';
+    default:
+      return 'checkFailed';
+  }
+}
+
 let state: { view: UpdateView | null; error: boolean } = { view: null, error: false };
 const listeners = new Set<() => void>();
 const update = (next: typeof state) => {

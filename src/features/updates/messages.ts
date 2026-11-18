@@ -67,6 +67,20 @@ const messages = {
     '無法檢查更新。請檢查網路連線後重試。',
     '更新を確認できませんでした。接続を確認して再試行してください。',
   ],
+  checkServer: [
+    '업데이트 서버에서 지금은 새 버전 정보를 받을 수 없습니다. 연결 문제는 아니니 잠시 후 다시 확인하세요. Prism은 그대로 사용할 수 있습니다.',
+    'The update server has no usable version information right now. This is not a connection problem; check again later. Prism keeps working as usual.',
+    '更新服务器暂时无法提供版本信息。这不是网络连接问题，请稍后再检查。Prism 可照常使用。',
+    '更新伺服器暫時無法提供版本資訊。這不是網路連線問題，請稍後再檢查。Prism 可照常使用。',
+    '更新サーバーから現在バージョン情報を取得できません。接続の問題ではないので、しばらくしてから再確認してください。Prism はそのまま使えます。',
+  ],
+  checkUnconfigured: [
+    '이 빌드에는 업데이트 서버가 설정되어 있지 않습니다. 새 버전은 Prism을 받은 곳에서 직접 받으세요.',
+    'This build has no update server set. Get new versions from wherever you got Prism.',
+    '此版本未设置更新服务器。请从获取 Prism 的地方下载新版本。',
+    '此版本未設定更新伺服器。請從取得 Prism 的地方下載新版本。',
+    'このビルドには更新サーバーが設定されていません。新しいバージョンは Prism の入手元から取得してください。',
+  ],
   stateFailed: [
     '업데이트 확인 기록을 읽거나 저장하지 못했습니다. 다른 기능은 계속 사용할 수 있습니다.',
     'Update check history could not be read or saved. Other features remain available.',

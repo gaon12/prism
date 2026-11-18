@@ -35,7 +35,7 @@ is used to delete temporary uninstall copies.
 | `/S`                         | no window                                                    |
 | `/UPDATE`, `/R`, `/ARGS ...` | update, restart Prism afterwards, Prism's arguments          |
 | `/D=C:\path`                 | install folder                                               |
-| `--restore-version x.y.z`     | restore the explicitly selected retained app version          |
+| `--restore-version x.y.z`    | restore the explicitly selected retained app version         |
 | `uninstall.exe [/S]`         | remove Prism (settings are kept unless chosen in the window) |
 
 Everything after `/ARGS` belongs to Prism. Do not append `/D=` through Tauri's
@@ -43,6 +43,33 @@ extra installer arguments when restart is enabled: Tauri places those after `/AR
 The installed directory is normally read from the per-user installation entry.
 The bootstrap uninstaller starts an owned temporary copy and exits; silent callers
 must observe removal completion rather than treating bootstrap exit as completion.
+
+## Running Prism during maintenance
+
+The full window offers a separate, initially unchecked permission to close Prism
+for installation, repair, removal and previous-version restoration. Save unfinished
+work first. Closing the main window can leave Prism running in the tray; use the
+tray's Quit action when closing it manually. Setup never promises to save open edits.
+
+Without permission, a running target returns `APP_RUNNING:` before recovery or app
+file changes. With permission, Windows Restart Manager requests a graceful exit
+only from verified processes for that exact executable, user and session. Setup
+does not force termination. A refused or unsuccessful close returns
+`APP_CLOSE_FAILED:` and keeps maintenance from proceeding. Windows controls the
+synchronous shutdown interval; the subsequent exit wait is bounded separately.
+Silent and passive invocations never acquire close permission automatically.
+
+A per-user maintenance lock serializes shared registration changes across install
+folders. A stale uninstaller cannot remove another installation's registration or
+shared data. Uninstall checks all owned files for removal access before deleting
+the first one. Executable handles prevent launches during staging and file writes;
+rollback protects the restored executable until its file restoration completes.
+
+`node tests/native/setup-running.mjs` requires explicit `PRISM_SETUP_EXE` and
+`PRISM_SETUP_EXPECTED_EXE`. It launches genuine app processes in its own portable
+OS-temp fixtures, tests hidden tray processes during repair/removal, and checks
+that a same-named app in another folder survives. This is separate from normal
+installed-profile qualification and never uses personal app data.
 
 ## Testing without touching your PC
 

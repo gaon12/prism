@@ -1,0 +1,11 @@
+Prism 업데이트 서버
+
+확정 API: https://api.rasca99.dev/prism/update.php
+
+server/update/index.php의 내용을 서버에서 update.php로 사용합니다.
+PHP 7.4 이상이 필요하며 추가 프레임워크나 데이터베이스는 없습니다.
+다운로드 페이지는 별도로 관리합니다.
+
+정식 latest.json과 설치 패키지가 준비되기 전의 HTTP 503 응답은 정상입니다.
+검증이 끝나면 서명된 설치 파일과 실제 latest.json을 추가로 전달합니다.
+latest.json은 update.php와 같은 폴더에 두고 마지막으로 올립니다.

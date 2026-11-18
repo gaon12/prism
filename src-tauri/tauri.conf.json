@@ -17,7 +17,7 @@
     }
   },
   "plugins": {
-    "updater": { "pubkey": "", "requireSignedVersion": true, "endpoints": ["https://github.com/gaon12/prism/releases/latest/download/latest.json"], "windows": { "installMode": "passive" } }
+    "updater": { "pubkey": "", "requireSignedVersion": true, "endpoints": ["https://api.rasca99.dev/prism/update.php"], "windows": { "installMode": "passive" } }
   },
   "bundle": {
     "active": true,

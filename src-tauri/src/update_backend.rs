@@ -53,7 +53,7 @@ impl UpdateBackend for NativeBackend {
         let url = MANIFEST_URL
             .map(str::trim)
             .filter(|url| !url.is_empty())
-            .ok_or("This build has no update server configured.")?;
+            .ok_or(NOT_CONFIGURED)?;
         // The fetcher itself refuses anything but plain HTTPS addresses.
         let bytes = update_notice::HttpFetcher.fetch(url)?;
         let Some(notice) =
@@ -164,6 +164,9 @@ impl UpdateBackend for NativeBackend {
 ///
 /// The entry is found by its download address (the one the updater picked for this PC), so the
 /// hash always belongs to exactly this file. A missing or malformed hash refuses the update.
+/// Check error of a build made without `PRISM_UPDATE_URL` (development builds).
+pub const NOT_CONFIGURED: &str = "This build has no update server configured.";
+
 pub fn check_package_hash(
     manifest: &serde_json::Value,
     download_url: &reqwest::Url,

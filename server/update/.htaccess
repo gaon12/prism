@@ -1,0 +1,35 @@
+# Prism update server, Apache 2.4: put this file in the folder that holds update.php
+# (https://api.rasca99.dev/prism/). The installers go in files/, which has its own .htaccess.
+#
+# Only the update check itself is reachable from outside. latest.json is read by update.php
+# from the disk and does not need to be downloadable; everything else here is refused.
+# Needs "AllowOverride AuthConfig FileInfo Indexes Limit" (or All) for this folder.
+
+# No folder listings.
+Options -Indexes
+
+# HTTPS only: Prism refuses plain HTTP anyway; this sends browsers to the right address.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{HTTPS} !=on
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+</IfModule>
+
+# 1. Refuse everything in this folder by default ...
+Require all denied
+
+# 2. ... except the update check (index.php is the name used in the repository).
+<FilesMatch "^(update|index)\.php$">
+    Require all granted
+</FilesMatch>
+
+# 3. Never serve these, even if one is copied here by mistake: hidden files, data and notes,
+#    signing keys and certificates, backups and editor leftovers.
+<FilesMatch "(^\.|\.(json|md|txt|log|ini|bak|old|orig|swp|sig|key|pem|pfx|p12|pvk|cer|zip|ps1|sh)$|~$)">
+    Require all denied
+</FilesMatch>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "no-referrer"
+</IfModule>

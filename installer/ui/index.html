@@ -7,197 +7,367 @@
     <link rel="stylesheet" href="setup.css" />
   </head>
   <body>
-    <!-- The whole window (760 x 480, no title bar). `data-screen` picks which screen is shown
-         (see setup.js). Layout, the same on every screen, like a game launcher installer:
-         - the art fills the window (it is also the drag area),
-         - one large action button sits in the lower middle,
-         - small things live in the corners: status and checkboxes bottom-left,
-           secondary links bottom-right, window buttons top-right. -->
     <main class="setup" data-screen="loading">
-      <section class="hero" data-tauri-drag-region>
-        <!-- A thin beam enters a glass prism and leaves as one narrow, continuous spectrum.
-             Drawn like a technical illustration: ink lines on a flat light ground. While
-             installing, the spectrum grows stronger with the progress (CSS variable --done). -->
-        <svg
-          class="art"
-          viewBox="0 0 760 480"
-          preserveAspectRatio="xMidYMid slice"
-          aria-hidden="true"
-          data-tauri-drag-region
-        >
-          <defs>
-            <!-- colours across the band, top (long wavelength) to bottom -->
-            <linearGradient
-              id="spectrum"
-              gradientUnits="userSpaceOnUse"
-              x1="0"
-              y1="118"
-              x2="0"
-              y2="262"
-            >
-              <stop offset="0" stop-color="#e2735c" />
-              <stop offset=".22" stop-color="#e9b85c" />
-              <stop offset=".44" stop-color="#8fbf86" />
-              <stop offset=".68" stop-color="#5f9ccb" />
-              <stop offset="1" stop-color="#8d7cc4" />
-            </linearGradient>
-            <!-- the band is faint as it leaves the glass and full where it meets the edge -->
-            <linearGradient id="spread" x1="0" x2="1">
-              <stop offset="0" stop-color="#fff" stop-opacity=".25" />
-              <stop offset=".55" stop-color="#fff" stop-opacity="1" />
-            </linearGradient>
-            <mask id="spread-mask">
-              <rect x="422" y="0" width="338" height="480" fill="url(#spread)" />
-            </mask>
-          </defs>
-          <path class="beam" d="M0 236 L341 167" />
-          <g class="rays" mask="url(#spread-mask)">
-            <path d="M422 174 L760 118 L760 262 Z" fill="url(#spectrum)" />
-          </g>
-          <g class="prism-shape">
-            <path class="face" d="M380 92 450 228 310 228Z" />
-            <path class="edge" d="M380 92v91l70 45M380 183l-70 45" />
-            <path class="beam inner" d="M341 167 L422 174" />
-          </g>
-        </svg>
-
-        <div class="title" data-tauri-drag-region>
-          <h1>Prism</h1>
-          <p class="version" id="version"></p>
+      <header class="titlebar" data-tauri-drag-region>
+        <div class="wordmark" data-tauri-drag-region>
+          <svg viewBox="0 0 30 28" aria-hidden="true">
+            <path d="M14 3 27 25H1Z" />
+            <path class="logo-ray" d="m20 14 9 2m-8 1 8 3m-7 0 7 4" /></svg
+          ><span>Prism</span><span class="version" id="version"></span>
         </div>
-
+        <div class="appearance-controls">
+          <select id="language" data-label="language">
+            <option value="ko">한국어</option>
+            <option value="en">English</option>
+            <option value="zh-CN">简体中文</option>
+            <option value="zh-TW">繁體中文</option>
+            <option value="ja">日本語</option></select
+          ><select id="theme" data-label="theme">
+            <option value="system" data-text="themeSystem"></option>
+            <option value="light" data-text="themeLight"></option>
+            <option value="dark" data-text="themeDark"></option>
+          </select>
+        </div>
         <div class="window-buttons">
           <button class="window-button" id="minimize" type="button" data-label="minimize">
-            <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M1 5h8" /></svg>
-          </button>
-          <button class="window-button" id="close" type="button" data-label="close">
-            <svg viewBox="0 0 10 10" aria-hidden="true"><path d="m1.5 1.5 7 7m0-7-7 7" /></svg>
+            <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1 6h10" /></svg></button
+          ><button class="window-button" id="close" type="button" data-label="close">
+            <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m2 2 8 8m0-8-8 8" /></svg>
           </button>
         </div>
-      </section>
-
-      <!-- Install: one button. Folder and shortcuts are folded into "Custom settings". -->
-      <form class="screen screen-options" id="options-form">
-        <div class="sheet" id="options-sheet" role="group" aria-labelledby="folder-label">
-          <label class="field-label" id="folder-label" for="folder" data-text="folderLabel"></label>
-          <div class="folder-row">
-            <input id="folder" spellcheck="false" autocomplete="off" />
-            <button type="button" class="secondary" id="browse" data-text="browse"></button>
+      </header>
+      <aside class="hero" data-tauri-drag-region>
+        <div class="title" data-tauri-drag-region>
+          <h1>Prism</h1>
+          <p data-text="brandLine"></p>
+        </div>
+        <svg class="art" viewBox="0 0 300 360" aria-hidden="true" data-tauri-drag-region>
+          <defs>
+            <linearGradient id="glass" x1="0" x2="1">
+              <stop stop-color="#eaf7ff" stop-opacity=".03" />
+              <stop offset=".5" stop-color="#c7e7f6" stop-opacity=".2" />
+              <stop offset="1" stop-color="#fff" stop-opacity=".04" />
+            </linearGradient>
+            <filter id="light"><feGaussianBlur stdDeviation="3" /></filter>
+          </defs>
+          <g class="optics">
+            <circle cx="146" cy="177" r="111" />
+            <path d="M146 45v16m0 232v16M13 177h16m234 0h16M51 82l11 11m168 168 11 11" />
+          </g>
+          <g class="spectrum glow" filter="url(#light)">
+            <path d="m181 172 135-43" stroke="#f65b55" />
+            <path d="m181 172 135-22" stroke="#ffcc53" />
+            <path d="m181 172 135 0" stroke="#a4db69" />
+            <path d="m181 172 135 22" stroke="#58d8eb" />
+            <path d="m181 172 135 44" stroke="#6488f6" />
+          </g>
+          <g class="spectrum">
+            <path d="m181 172 135-43" stroke="#f65b55" />
+            <path d="m181 172 135-22" stroke="#ffcc53" />
+            <path d="m181 172 135 0" stroke="#a4db69" />
+            <path d="m181 172 135 22" stroke="#58d8eb" />
+            <path d="m181 172 135 44" stroke="#6488f6" />
+          </g>
+          <path class="face" d="m146 82 73 165H72Z" />
+          <path class="edge" d="m146 82-9 145 82 20m-82-20-65 20" />
+          <path class="beam glow" filter="url(#light)" d="m-15 190 127-15 69-3" />
+          <path class="beam" d="m-15 190 127-15 69-3" />
+        </svg>
+        <div class="brand-bottom">
+          <strong data-text="brandDescription"></strong>
+          <p data-text="brandTools"></p>
+        </div>
+      </aside>
+      <div class="workspace">
+        <div class="workspace-heading">
+          <h2 id="setup-heading" data-text="setupTitle"></h2>
+          <p id="setup-subtitle" data-text="setupSubtitle"></p>
+        </div>
+        <div class="screen screen-loading"><p class="loading-line" data-text="preparing"></p></div>
+        <form class="screen screen-options" id="options-form">
+          <div class="location-state" id="location-state" role="status">
+            <span class="state-dot"></span
+            ><span id="location-state-text" data-text="checkingFolder"></span>
           </div>
-          <div class="sheet-checks">
-            <label class="check"
-              ><input type="checkbox" id="start-menu" /><span data-text="startMenu"></span
+          <div class="sheet" id="options-sheet" role="group" aria-labelledby="folder-label">
+            <label
+              class="field-label"
+              id="folder-label"
+              for="folder"
+              data-text="folderLabel"
             ></label>
+            <div class="folder-row">
+              <input id="folder" spellcheck="false" autocomplete="off" /><button
+                type="button"
+                class="secondary"
+                id="browse"
+                data-text="browse"
+              ></button>
+            </div>
+            <p class="hint" id="folder-hint" aria-live="polite"></p>
+            <div class="sheet-checks">
+              <label class="check"
+                ><input type="checkbox" id="start-menu" /><span data-text="startMenu"></span></label
+              ><label class="check"
+                ><input type="checkbox" id="desktop" /><span data-text="desktop"></span
+              ></label>
+            </div>
+          </div>
+          <div class="maintenance-actions">
+            <button type="button" class="link" id="scan" data-text="scan" hidden></button
+            ><button type="button" class="link" id="repair" data-text="repair" hidden></button
+            ><button
+              type="button"
+              class="link"
+              id="previous-options"
+              data-text="previous"
+              hidden
+            ></button>
+          </div>
+          <p class="hint" id="scan-detail" aria-live="polite" hidden></p>
+          <div class="shutdown-consent">
             <label class="check"
-              ><input type="checkbox" id="desktop" /><span data-text="desktop"></span
+              ><input
+                type="checkbox"
+                id="close-running-install"
+                aria-describedby="close-running-install-hint" /><span
+                data-text="closeRunningApp"
+              ></span
             ></label>
+            <p class="hint" id="close-running-install-hint" data-text="saveBeforeClosing"></p>
+          </div>
+          <div class="action-footer">
+            <div class="agreement">
+              <div class="agree">
+                <label class="check"
+                  ><input type="checkbox" id="agree" /><span data-text="agreeLabel"></span></label
+                ><button
+                  type="button"
+                  class="terms-link"
+                  id="open-terms"
+                  data-text="termsLink"
+                ></button>
+              </div>
+              <div class="footer-links">
+                <button
+                  type="button"
+                  class="link"
+                  id="customize"
+                  aria-expanded="true"
+                  aria-controls="options-sheet"
+                  data-text="customize"
+                ></button
+                ><button type="button" class="link detail-trigger" data-text="details"></button>
+              </div>
+            </div>
+            <button type="submit" class="primary" id="install"></button>
+          </div>
+        </form>
+        <form class="screen screen-uninstall" id="uninstall-form">
+          <div class="message">
+            <p class="lead" data-text="uninstallLead"></p>
+            <p class="hint" id="uninstall-folder"></p>
+            <p class="hint" data-text="uninstallHelp"></p>
+            <div class="shutdown-consent">
+              <label class="check"
+                ><input
+                  type="checkbox"
+                  id="close-running-uninstall"
+                  aria-describedby="close-running-uninstall-hint" /><span
+                  data-text="closeRunningApp"
+                ></span
+              ></label>
+              <p class="hint" id="close-running-uninstall-hint" data-text="saveBeforeClosing"></p>
+            </div>
+          </div>
+          <div class="action-footer">
+            <div>
+              <label class="check"
+                ><input type="checkbox" id="remove-data" /><span
+                  data-text="removeData"
+                ></span></label
+              ><button
+                type="button"
+                class="link"
+                id="previous-uninstall"
+                data-text="previous"
+                hidden
+              ></button
+              ><button type="button" class="link detail-trigger" data-text="details"></button>
+            </div>
+            <button type="submit" class="danger" data-text="uninstall"></button>
+          </div>
+        </form>
+        <form class="screen screen-restore" id="restore-form">
+          <div class="message">
+            <p class="lead" id="restore-title"></p>
+            <p class="hint" id="restore-folder"></p>
+            <p class="hint" data-text="restoreData"></p>
+            <p class="hint" id="restore-space"></p>
+            <div class="shutdown-consent">
+              <label class="check"
+                ><input
+                  type="checkbox"
+                  id="close-running-restore"
+                  aria-describedby="close-running-restore-hint" /><span
+                  data-text="closeRunningApp"
+                ></span
+              ></label>
+              <p class="hint" id="close-running-restore-hint" data-text="saveBeforeClosing"></p>
+            </div>
+          </div>
+          <div class="action-footer">
+            <div>
+              <label class="check"
+                ><input type="checkbox" id="restore-ack" /><span
+                  data-text="restoreAck"
+                ></span></label
+              ><button type="button" class="link" id="restore-back" data-text="back"></button>
+            </div>
+            <button type="submit" class="danger" id="restore" data-text="restore" disabled></button>
+          </div>
+        </form>
+        <div class="screen screen-progress">
+          <div class="progress-symbol" aria-hidden="true">
+            <svg viewBox="0 0 48 48">
+              <path d="M24 5 44 40H4Z" />
+              <path d="m16 25 9 9 18-20" />
+            </svg>
+          </div>
+          <div class="progress">
+            <div class="progress-text">
+              <span id="stage" aria-live="polite"></span><span id="percent"></span>
+            </div>
+            <div
+              class="track"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              data-label="progress"
+              id="track"
+            >
+              <div class="fill" id="fill"></div>
+            </div>
+            <p class="hint" data-text="progressHelp"></p>
+          </div>
+          <div class="operation-summary">
+            <span data-text="folderLabel"></span>
+            <p id="progress-folder"></p>
+          </div>
+          <div class="action-footer">
+            <p class="hint" data-text="dataKept"></p>
+            <button type="button" class="secondary detail-trigger" data-text="details"></button>
           </div>
         </div>
-        <button type="submit" class="primary" id="install"></button>
-        <p class="hint below-cta" id="folder-hint" aria-live="polite"></p>
-        <!-- Agreement, like a launcher: a round checkbox and a link that opens the terms. -->
-        <div class="agree foot-left">
-          <label class="check"
-            ><input type="checkbox" id="agree" /><span data-text="agreeLabel"></span
-          ></label>
-          <button type="button" class="terms-link" id="open-terms" data-text="termsLink"></button>
-        </div>
-        <div class="foot-right">
-          <button
-            type="button"
-            class="link"
-            id="previous-options"
-            data-text="previous"
-            hidden
-          ></button>
-          <button
-            type="button"
-            class="link"
-            id="customize"
-            aria-expanded="false"
-            aria-controls="options-sheet"
-          >
-            <svg viewBox="0 0 10 10" aria-hidden="true"><path d="m2 3.5 3 3 3-3" /></svg>
-            <span data-text="customize"></span>
-          </button>
-        </div>
-      </form>
-
-      <!-- Uninstall question -->
-      <form class="screen screen-uninstall" id="uninstall-form">
-        <div class="message">
-          <p class="lead" data-text="uninstallLead"></p>
-          <p class="hint" id="uninstall-folder"></p>
-        </div>
-        <button type="submit" class="danger" data-text="uninstall"></button>
-        <label class="check foot-left"
-          ><input type="checkbox" id="remove-data" /><span data-text="removeData"></span
-        ></label>
-        <div class="foot-right">
-          <button
-            type="button"
-            class="link"
-            id="previous-uninstall"
-            data-text="previous"
-            hidden
-          ></button>
-        </div>
-      </form>
-
-      <!-- Go back to the previous version -->
-      <form class="screen screen-restore" id="restore-form">
-        <div class="message">
-          <p class="lead" id="restore-title"></p>
-          <p class="hint" data-text="restoreData"></p>
-          <p class="hint" id="restore-space"></p>
-        </div>
-        <button type="submit" class="danger" id="restore" data-text="restore" disabled></button>
-        <label class="check foot-left"
-          ><input type="checkbox" id="restore-ack" /><span data-text="restoreAck"></span
-        ></label>
-        <div class="foot-right">
-          <button type="button" class="link" id="restore-back" data-text="back"></button>
-        </div>
-      </form>
-
-      <!-- Progress: a thin spectrum bar along the bottom, like a launcher download. -->
-      <div class="screen screen-progress">
-        <div class="progress">
-          <div class="progress-text">
-            <span id="stage" aria-live="polite"></span>
-            <span id="percent"></span>
+        <form class="screen screen-done" id="done-form">
+          <div class="done-symbol" aria-hidden="true" id="done-symbol">✓</div>
+          <div class="message">
+            <p class="lead" id="done-title"></p>
+            <p class="hint" id="done-detail"></p>
           </div>
-          <div class="track" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="track">
-            <div class="fill" id="fill"></div>
+          <div class="action-footer">
+            <div>
+              <label class="check" id="launch-option"
+                ><input type="checkbox" id="launch" checked /><span
+                  data-text="launch"
+                ></span></label
+              ><button type="button" class="link detail-trigger" data-text="viewLog"></button>
+            </div>
+            <button type="submit" class="primary" id="finish" data-text="finish"></button>
           </div>
-        </div>
+        </form>
       </div>
-
-      <!-- Finished (or failed) -->
-      <form class="screen screen-done" id="done-form">
-        <div class="message">
-          <p class="lead" id="done-title"></p>
-          <p class="hint" id="done-detail"></p>
-        </div>
-        <button type="submit" class="primary" id="finish" data-text="finish"></button>
-        <label class="check foot-left" id="launch-option"
-          ><input type="checkbox" id="launch" checked /><span data-text="launch"></span
-        ></label>
-      </form>
-      <!-- Terms of use. Opened from the agreement link; "Agree" ticks the checkbox for you. -->
       <section
-        class="terms"
+        class="modal terms"
         id="terms"
         role="dialog"
         aria-modal="true"
         aria-labelledby="terms-title"
         hidden
       >
-        <h2 id="terms-title"></h2>
+        <div class="modal-heading"><h2 id="terms-title"></h2></div>
         <div class="terms-body" id="terms-body" tabindex="0"></div>
         <div class="terms-actions">
-          <button type="button" class="link" id="terms-close" data-text="close"></button>
-          <button type="button" class="solid" id="terms-agree" data-text="agree"></button>
+          <button type="button" class="link" id="terms-close" data-text="close"></button
+          ><button type="button" class="solid" id="terms-agree" data-text="agree"></button>
+        </div>
+      </section>
+      <section
+        class="modal"
+        id="details"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="details-title"
+        hidden
+      >
+        <div class="modal-heading">
+          <h2 id="details-title" data-text="detailsTitle"></h2>
+          <button type="button" class="link" id="details-close" data-text="close"></button>
+        </div>
+        <div class="details-body">
+          <dl class="detail-facts">
+            <dt data-text="folderLabel"></dt>
+            <dd id="detail-folder"></dd>
+            <dt data-text="versionLabel"></dt>
+            <dd id="detail-version"></dd>
+            <dt data-text="logLocation"></dt>
+            <dd id="log-path"></dd>
+          </dl>
+          <p class="hint" id="log-scope" hidden></p>
+          <div id="technical-error" hidden>
+            <p class="field-label" data-text="technicalError"></p>
+            <pre id="technical-error-text" tabindex="0"></pre>
+          </div>
+          <p class="hint" id="log-notice" role="status"></p>
+          <pre id="log-text" tabindex="0"></pre>
+        </div>
+        <div class="terms-actions">
+          <button
+            type="button"
+            class="secondary"
+            id="open-log-folder"
+            data-text="openLogFolder"
+          ></button
+          ><button type="button" class="secondary" id="refresh-log" data-text="refreshLog"></button
+          ><button type="button" class="solid" id="copy-log" data-text="copyLog"></button>
+        </div>
+      </section>
+      <section
+        class="modal repair-confirm"
+        id="repair-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="repair-title"
+        hidden
+      >
+        <div class="modal-heading"><h2 id="repair-title" data-text="repairTitle"></h2></div>
+        <div class="repair-body">
+          <p data-text="repairHelp"></p>
+          <p class="hint" id="repair-folder"></p>
+          <div class="shutdown-consent">
+            <label class="check"
+              ><input
+                type="checkbox"
+                id="close-running-repair"
+                aria-describedby="close-running-repair-hint" /><span
+                data-text="closeRunningApp"
+              ></span
+            ></label>
+            <p class="hint" id="close-running-repair-hint" data-text="saveBeforeClosing"></p>
+          </div>
+          <label class="check"
+            ><input type="checkbox" id="repair-ack" /><span data-text="repairAck"></span
+          ></label>
+        </div>
+        <div class="terms-actions">
+          <button type="button" class="link" id="repair-cancel" data-text="back"></button
+          ><button
+            type="button"
+            class="solid"
+            id="repair-confirm"
+            data-text="repair"
+            disabled
+          ></button>
         </div>
       </section>
     </main>

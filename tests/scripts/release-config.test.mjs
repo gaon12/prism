@@ -50,6 +50,28 @@ test('platform bundles, signed updater artifacts and tags agree with the release
   );
 });
 
+test('custom update endpoints stay HTTPS and preserve signature verification', () => {
+  const base = { platform: 'windows', version: '0.1.0' };
+  const updateUrl = 'https://api.rasca99.dev/prism/update.php';
+  const plan = releasePlan({ ...base, updateUrl });
+  assert.equal(plan.updateUrl, updateUrl);
+  assert.deepEqual(plan.config.plugins.updater.endpoints, [updateUrl]);
+  assert.equal(plan.config.plugins.updater.requireSignedVersion, true);
+  assert.equal(plan.signed, false, 'An endpoint cannot authorize unsigned self-install updates');
+  for (const field of ['updateUrl', 'downloadPage']) {
+    for (const value of [
+      'http://example.com/update',
+      'https://name:password@example.com/update',
+      'https://example.com/update#fragment',
+      'https://example.com/\nupdate',
+      'file:///C:/update.json',
+      'invalid',
+      12,
+    ])
+      assert.throws(() => releasePlan({ ...base, [field]: value }));
+  }
+});
+
 test('actual config preflight preserves existing outputs and refuses mismatched tags', (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'prism-release-config-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -62,6 +84,8 @@ test('actual config preflight preserves existing outputs and refuses mismatched 
     PRISM_UPDATER_PUBLIC_KEY: '',
     TAURI_SIGNING_PRIVATE_KEY: '',
     PRISM_MSIX_PACKAGE_VERSION: '',
+    PRISM_UPDATE_URL: '',
+    PRISM_DOWNLOAD_PAGE: '',
   };
   const run = (patch = {}) =>
     spawnSync(
@@ -71,6 +95,9 @@ test('actual config preflight preserves existing outputs and refuses mismatched 
     );
   assert.notEqual(run({ GITHUB_REF: 'refs/tags/v999.0.0' }).status, 0);
   assert.equal(existsSync(output), false);
+  assert.notEqual(run({ PRISM_UPDATE_URL: 'http://example.com/update' }).status, 0);
+  assert.equal(existsSync(output), false);
+  assert.equal(existsSync(githubOutput), false);
   assert.equal(run().status, 0);
   const original = readFileSync(output, 'utf8');
   assert.equal(JSON.parse(original).bundle.createUpdaterArtifacts, false);

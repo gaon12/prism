@@ -5,13 +5,42 @@
 # the release gate, which still runs every check below on the real app build.
 name: Client
 on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'tests/e2e/**'
+      - 'installer/ui/**'
+      - 'tests/native/setup-ui.mjs'
+      - 'scripts/test-e2e-bundle.mjs'
+      - 'package*.json'
+      - 'tsconfig*.json'
+      - '*config.*'
+      - '.prettier*'
+      - 'index.html'
+      - '.github/workflows/client.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'tests/e2e/**'
+      - 'installer/ui/**'
+      - 'tests/native/setup-ui.mjs'
+      - 'scripts/test-e2e-bundle.mjs'
+      - 'package*.json'
+      - 'tsconfig*.json'
+      - '*config.*'
+      - '.prettier*'
+      - 'index.html'
+      - '.github/workflows/client.yml'
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  # One run per commit; a newer dispatch for the same ref waits for the last.
-  group: client-${{ github.ref }}
-  cancel-in-progress: false
+  # A newer commit replaces an obsolete check; release publication is separate.
+  group: client-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -43,6 +72,7 @@ jobs:
           PRISM_UI_EVIDENCE: ${{ runner.temp }}/prism-ui-evidence
         run: |
           npx playwright install --with-deps chromium
+          npm run test:setup-ui
           npm run test:e2e:bundle -- --reporter=line,json
       - name: Keep the browser test evidence
         # Also on failure: traces of failed cases are what explains them.

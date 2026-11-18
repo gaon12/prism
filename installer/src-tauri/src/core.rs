@@ -27,3 +27,5 @@ mod recovery_tests;
 
 #[cfg(test)]
 mod maintenance_tests;
+#[cfg(test)]
+mod trust_regression;

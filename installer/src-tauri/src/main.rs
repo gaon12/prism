@@ -59,8 +59,8 @@ static TRUSTED_CERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/trusted-p
 /// [`trust`]) - only with `consented`: the user opted in inside the visible setup window after
 /// seeing the certificate's identity. Without it, nothing is added; the state is only logged.
 /// Never fails the install.
-fn apply_publisher_trust(consented: bool) {
-    let result = match system::current().cert_stores() {
+fn apply_publisher_trust(system: &dyn install::System, consented: bool) {
+    let result = match system.cert_stores() {
         Some(stores) => trust::trust(&*stores, TRUSTED_CERT, consented),
         None => Ok(trust::TrustResult::NotConfigured),
     };
@@ -71,13 +71,17 @@ fn apply_publisher_trust(consented: bool) {
 }
 
 /// After a successful uninstall, removes what [`apply_publisher_trust`] added. Never fails it.
-fn untrust_publisher(ask: bool) {
-    let result = match system::current().cert_stores() {
+fn untrust_publisher(system: &dyn install::System, receipt: install::UninstallReceipt, ask: bool) {
+    if !receipt.may_untrust() {
+        setup_log::line("publisher certificate: orphan or changed registration; shared certificate state preserved");
+        return;
+    }
+    let result = match system.cert_stores() {
         Some(stores) => trust::untrust(&*stores, ask),
         None => Ok(()),
     };
     match result {
-        Ok(()) => setup_log::line("publisher certificate: removed what setup had added"),
+        Ok(()) => setup_log::line("publisher certificate: permitted cleanup completed; retained certificates were preserved"),
         Err(error) => setup_log::line(format!("publisher certificate not removed: {error}")),
     }
 }
@@ -393,7 +397,7 @@ async fn run_install(
     tauri::async_runtime::spawn_blocking(move || {
         let result = logged(
             "install",
-            install::install(
+            install::install_with_completion(
                 &*system::current_with_app_close(close_running_app.unwrap_or(false)),
                 PAYLOAD,
                 VERSION,
@@ -402,6 +406,7 @@ async fn run_install(
                 logged_progress(|stage, fraction| {
                     let _ = app.emit("setup://progress", Progress { stage, fraction });
                 }),
+                |system| apply_publisher_trust(system, consented),
             ),
         );
         if let Err(error) = result {
@@ -410,7 +415,6 @@ async fn run_install(
             operation.fail(restart_fallback(relaunch, &options.install_dir));
             return Err(error);
         }
-        apply_publisher_trust(consented);
         let installed = safe_path::root(&options.install_dir).map_err(|error| error.to_string())?;
         operation.complete(Some(installed))
     })
@@ -437,16 +441,16 @@ async fn run_uninstall(
     tauri::async_runtime::spawn_blocking(move || {
         logged(
             "uninstall",
-            install::uninstall(
+            install::uninstall_with_completion(
                 &*system::current_with_app_close(close_running_app.unwrap_or(false)),
                 &dir,
                 remove_data,
                 logged_progress(|stage, fraction| {
                     let _ = app.emit("setup://progress", Progress { stage, fraction });
                 }),
+                |system, receipt| untrust_publisher(system, receipt, ask),
             ),
         )?;
-        untrust_publisher(ask);
         operation.complete(None)
     })
     .await
@@ -736,11 +740,13 @@ fn run_silent(args: &SetupArgs) -> ExitCode {
             result
         }
     } else if let Some(dir) = &args.from_temp {
-        let result = install::uninstall(&*system::current(), dir, false, |_, _| {});
-        if result.is_ok() {
-            // Silent: never show Windows' question; a later uninstall can still remove it.
-            untrust_publisher(false);
-        }
+        let result = install::uninstall_with_completion(
+            &*system::current(),
+            dir,
+            false,
+            |_, _| {},
+            |system, receipt| untrust_publisher(system, receipt, false),
+        );
         match (result, delete_self_later()) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(error), _) | (_, Err(error)) => Err(error),
@@ -748,13 +754,14 @@ fn run_silent(args: &SetupArgs) -> ExitCode {
     } else {
         let exe = env::current_exe().map_err(|error| error.to_string());
         suggested_options(args).and_then(|(options, _)| {
-            let result = install::install(
+            let result = install::install_with_completion(
                 &*system::current(),
                 PAYLOAD,
                 VERSION,
                 &options,
                 &exe?,
                 |_, _| {},
+                |system| apply_publisher_trust(system, false),
             );
             if let Err(error) = result {
                 // Same as the window: restart the rolled-back earlier version when asked to.
@@ -766,8 +773,6 @@ fn run_silent(args: &SetupArgs) -> ExitCode {
                 }
                 return Err(error);
             }
-            // Silent: never adds trust; the state is only logged.
-            apply_publisher_trust(false);
             if args.relaunch {
                 install::with_intact_installation(&options.install_dir, || {
                     start_prism(&options.install_dir, &args.relaunch_args)

@@ -79,6 +79,9 @@ impl System for MaintenanceSystem {
     fn existing_install(&self) -> Option<(PathBuf, Option<String>)> {
         self.inner.existing_install()
     }
+    fn checked_existing_install(&self) -> io::Result<Option<(PathBuf, Option<String>)>> {
+        self.inner.checked_existing_install()
+    }
     fn login_startup(&self) -> io::Result<Option<String>> {
         self.inner.login_startup()
     }
@@ -264,6 +267,23 @@ impl System for SandboxSystem {
         let dir = PathBuf::from(json["installLocation"].as_str()?);
         let version = json["displayVersion"].as_str().map(str::to_owned);
         Some((dir, version))
+    }
+    fn checked_existing_install(&self) -> io::Result<Option<(PathBuf, Option<String>)>> {
+        let bytes = match std::fs::read(self.entry_file()?) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        let dir = value["installLocation"]
+            .as_str()
+            .ok_or_else(|| io::Error::other("Invalid uninstall installation folder."))?;
+        let version = match value.get("displayVersion") {
+            Some(serde_json::Value::String(version)) => Some(version.clone()),
+            None | Some(serde_json::Value::Null) => None,
+            _ => return Err(io::Error::other("Invalid uninstall version.")),
+        };
+        Ok(Some((PathBuf::from(dir), version)))
     }
 }
 
@@ -533,6 +553,20 @@ mod imp {
             let dir = PathBuf::from(dir.trim_matches('"'));
             let version = key.get_value("DisplayVersion").ok();
             Some((dir, version))
+        }
+        fn checked_existing_install(&self) -> io::Result<Option<(PathBuf, Option<String>)>> {
+            let key = match RegKey::predef(HKEY_CURRENT_USER).open_subkey(UNINSTALL_KEY) {
+                Ok(key) => key,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            let dir: String = key.get_value("InstallLocation")?;
+            let version = match key.get_value("DisplayVersion") {
+                Ok(value) => Some(value),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error),
+            };
+            Ok(Some((PathBuf::from(dir.trim_matches('"')), version)))
         }
     }
 

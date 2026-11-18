@@ -49,19 +49,43 @@ pub enum TrustResult {
     Declined,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddResult {
+    Created,
+    AlreadyPresent,
+    Declined,
+}
+
+/// Persisted before changing a store. An interrupted operation is never replayed:
+/// another actor may have added the same certificate since that operation stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Intent {
+    Adding,
+    Removing,
+}
+pub type Pending = BTreeMap<String, BTreeMap<String, Intent>>;
+
+fn pending_review() -> io::Error {
+    io::Error::other("PENDING_REVIEW: A pending certificate operation needs review; no uncertain ownership or deletion was replayed.")
+}
+
 /// Certificate lists as the trust steps need them.
 pub trait CertStores {
     /// A stable identifier of the certificate (its thumbprint).
     fn id(&self, certificate: &[u8]) -> io::Result<String>;
     fn contains(&self, store: &str, certificate: &[u8]) -> io::Result<bool>;
-    /// Adds the certificate. `Ok(false)` when the user declined Windows' question.
-    fn add(&self, store: &str, certificate: &[u8]) -> io::Result<bool>;
+    /// Atomically distinguishes a newly created entry from an existing IT/user entry.
+    fn add(&self, store: &str, certificate: &[u8]) -> io::Result<AddResult>;
     /// Removes the certificate with this id. `Ok(false)` when the user declined.
     fn remove(&self, store: &str, id: &str) -> io::Result<bool>;
     /// Certificates setup added earlier, with the lists it added each one to.
     fn added(&self) -> io::Result<BTreeMap<String, Vec<String>>>;
     /// Remembers (or, with an empty list, forgets) which lists setup added `id` to.
     fn set_added(&self, id: &str, stores: &[String]) -> io::Result<()>;
+    fn pending(&self) -> io::Result<Pending>;
+    /// Commit and flush this intent before calling a mutating certificate-store API.
+    fn set_pending(&self, id: &str, store: &str, intent: Option<Intent>) -> io::Result<()>;
 }
 
 /// Adds `certificate` to this user's trusted lists. `consented`: the user opted in inside the
@@ -76,6 +100,13 @@ pub fn trust(
     }
     check_code_signing_only(certificate)?;
     let id = stores.id(certificate)?;
+    if stores
+        .pending()?
+        .get(&id)
+        .is_some_and(|entries| !entries.is_empty())
+    {
+        return Err(pending_review());
+    }
     let mut ours = stores.added()?.remove(&id).unwrap_or_default();
     let mut result = TrustResult::AlreadyTrusted;
     for store in STORES {
@@ -86,15 +117,28 @@ pub fn trust(
         if !consented {
             return Ok(TrustResult::NeedsConsent);
         }
-        if !stores.add(store, certificate)? {
-            return Ok(TrustResult::Declined);
+        stores.set_pending(&id, store, Some(Intent::Adding))?;
+        // A known-absent entry ends any earlier ownership. If persisting that change
+        // fails, the already durable intent prevents a future unsafe deletion.
+        if ours.iter().any(|name| name == store) {
+            ours.retain(|name| name != store);
+            stores.set_added(&id, &ours)?;
         }
-        // Remember right away, so an uninstall can undo it even if a later step fails.
-        if !ours.iter().any(|name| name == store) {
-            ours.push(store.to_owned());
+        match stores.add(store, certificate)? {
+            AddResult::Created => {
+                ours.push(store.to_owned());
+                // On failure leave the Adding receipt; never claim or delete an
+                // uncertain entry automatically, including one later re-added by IT.
+                stores.set_added(&id, &ours)?;
+                result = TrustResult::Added;
+            }
+            AddResult::AlreadyPresent => {} // The contains/add race belongs to IT/user.
+            AddResult::Declined => {
+                stores.set_pending(&id, store, None)?;
+                return Ok(TrustResult::Declined);
+            }
         }
-        stores.set_added(&id, &ours)?;
-        result = TrustResult::Added;
+        stores.set_pending(&id, store, None)?;
     }
     Ok(result)
 }
@@ -147,23 +191,34 @@ pub fn colon_hex(bytes: &[u8]) -> String {
 /// Removes what [`trust`] added, and nothing else. Lists that would make Windows ask are kept
 /// (and remembered) when `ask` is false or the user declines, so a later uninstall can retry.
 pub fn untrust(stores: &dyn CertStores, ask: bool) -> io::Result<()> {
+    if stores
+        .pending()?
+        .values()
+        .any(|entries| !entries.is_empty())
+    {
+        return Err(pending_review());
+    }
     for (id, added) in stores.added()? {
-        let mut kept = Vec::new();
+        let mut kept = added;
         // Reverse of STORES: the publisher entry goes before its root.
         for store in STORES.iter().rev() {
-            if !added.iter().any(|name| name == store) {
+            if !kept.iter().any(|name| name == store) || (*store == "Root" && !ask) {
                 continue;
             }
-            let removed = if *store == "Root" && !ask {
-                false
+            stores.set_pending(&id, store, Some(Intent::Removing))?;
+            if stores.remove(store, &id)? {
+                kept.retain(|name| name != store);
+                // Keep the tombstone if the ownership commit fails. A subsequent
+                // uninstall must not delete an IT entry re-added after this removal.
+                stores.set_added(&id, &kept)?;
             } else {
-                stores.remove(store, &id)?
-            };
-            if !removed {
-                kept.push((*store).to_owned());
+                stores.set_pending(&id, store, None)?;
+                return Err(io::Error::other(
+                    "Certificate removal was declined; remaining owned stores were preserved.",
+                ));
             }
+            stores.set_pending(&id, store, None)?;
         }
-        stores.set_added(&id, &kept)?;
     }
     Ok(())
 }
@@ -199,6 +254,8 @@ pub struct FileStores {
 struct FileState {
     stores: BTreeMap<String, Vec<String>>,
     added: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pending: Pending,
 }
 
 impl FileStores {
@@ -211,8 +268,36 @@ impl FileStores {
         }
     }
     fn save(&self, state: &FileState) -> io::Result<()> {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         crate::safe_path::no_links(&self.file)?;
-        std::fs::write(&self.file, serde_json::to_vec_pretty(state)?)
+        let parent = self
+            .file
+            .parent()
+            .ok_or_else(|| io::Error::other("Missing trust-state parent."))?;
+        crate::safe_path::root(parent)?;
+        let temporary = parent.join(format!(
+            ".prism-trust-{}-{}.tmp",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        crate::safe_path::no_links(&temporary)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        let result = (|| {
+            file.write_all(&serde_json::to_vec_pretty(state)?)?;
+            file.sync_all()?;
+            crate::safe_path::no_links(&self.file)?;
+            std::fs::rename(&temporary, &self.file)
+        })();
+        drop(file);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result
     }
 }
 
@@ -229,18 +314,19 @@ impl CertStores for FileStores {
             .get(store)
             .is_some_and(|ids| ids.contains(&id)))
     }
-    fn add(&self, store: &str, certificate: &[u8]) -> io::Result<bool> {
+    fn add(&self, store: &str, certificate: &[u8]) -> io::Result<AddResult> {
         if store == "Root" && self.decline_root {
-            return Ok(false);
+            return Ok(AddResult::Declined);
         }
         let id = self.id(certificate)?;
         let mut state = self.load()?;
         let ids = state.stores.entry(store.to_owned()).or_default();
-        if !ids.contains(&id) {
-            ids.push(id);
+        if ids.contains(&id) {
+            return Ok(AddResult::AlreadyPresent);
         }
+        ids.push(id);
         self.save(&state)?;
-        Ok(true)
+        Ok(AddResult::Created)
     }
     fn remove(&self, store: &str, id: &str) -> io::Result<bool> {
         if store == "Root" && self.decline_root {
@@ -265,18 +351,56 @@ impl CertStores for FileStores {
         }
         self.save(&state)
     }
+    fn pending(&self) -> io::Result<Pending> {
+        Ok(self.load()?.pending)
+    }
+    fn set_pending(&self, id: &str, store: &str, intent: Option<Intent>) -> io::Result<()> {
+        let mut state = self.load()?;
+        if let Some(intent) = intent {
+            state
+                .pending
+                .entry(id.into())
+                .or_default()
+                .insert(store.into(), intent);
+        } else if let Some(entries) = state.pending.get_mut(id) {
+            entries.remove(store);
+            if entries.is_empty() {
+                state.pending.remove(id);
+            }
+        }
+        self.save(&state)
+    }
 }
 
 /// The real per-user certificate lists of Windows.
 #[cfg(windows)]
 pub mod windows_store {
     use super::*;
-    use windows::{core::HSTRING, Win32::Security::Cryptography::*};
+    use windows::{
+        core::HSTRING,
+        Win32::{
+            Foundation::{CRYPT_E_EXISTS, CRYPT_E_NOT_FOUND},
+            Security::Cryptography::*,
+        },
+    };
     use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn RegFlushKey(key: *mut core::ffi::c_void) -> u32;
+    }
+    fn flush(key: &RegKey) -> io::Result<()> {
+        // SAFETY: RegKey retains its non-pseudo open key for the entire flush call.
+        match unsafe { RegFlushKey(key.raw_handle()) } {
+            0 => Ok(()),
+            error => Err(io::Error::from_raw_os_error(error as i32)),
+        }
+    }
 
     /// Where setup remembers which certificates it added: value name = thumbprint,
     /// data = the lists, comma separated.
     pub const MARKER_KEY: &str = r"Software\Prism Setup\TrustedCertificates";
+    const OPERATIONS_KEY: &str = r"Software\Prism Setup\CertificateOperations";
 
     /// The "Operation canceled by the user" error, returned when the user answers "No".
     const CANCELLED: windows::core::HRESULT = windows::core::HRESULT(0x8007_04C7_u32 as i32);
@@ -418,7 +542,14 @@ pub mod windows_store {
         Ok(hash[..size as usize].to_vec())
     }
 
-    fn find_by_hash(store: &Store, hash: &[u8]) -> Option<Cert> {
+    pub(crate) fn check_find_error(code: u32) -> io::Result<()> {
+        if code == CRYPT_E_NOT_FOUND.0 as u32 {
+            Ok(())
+        } else {
+            Err(io::Error::from_raw_os_error(code as i32))
+        }
+    }
+    fn find_by_hash(store: &Store, hash: &[u8]) -> io::Result<Option<Cert>> {
         let blob = CRYPT_INTEGER_BLOB {
             cbData: hash.len() as u32,
             pbData: hash.as_ptr() as *mut u8,
@@ -434,7 +565,12 @@ pub mod windows_store {
                 None,
             )
         };
-        (!found.is_null()).then_some(Cert(found))
+        if found.is_null() {
+            check_find_error(unsafe { windows::Win32::Foundation::GetLastError() }.0)?;
+            Ok(None)
+        } else {
+            Ok(Some(Cert(found)))
+        }
     }
 
     fn hex(bytes: &[u8]) -> String {
@@ -460,28 +596,30 @@ pub mod windows_store {
         }
         fn contains(&self, store: &str, certificate: &[u8]) -> io::Result<bool> {
             let hash = sha1(&parse(certificate)?)?;
-            Ok(find_by_hash(&open(store)?, &hash).is_some())
+            Ok(find_by_hash(&open(store)?, &hash)?.is_some())
         }
-        fn add(&self, store: &str, certificate: &[u8]) -> io::Result<bool> {
+        fn add(&self, store: &str, certificate: &[u8]) -> io::Result<AddResult> {
             let cert = parse(certificate)?;
             let list = open(store)?;
             // SAFETY: both handles are valid; Windows copies the certificate into the store.
             match unsafe {
-                CertAddCertificateContextToStore(
-                    Some(list.0),
-                    cert.0,
-                    CERT_STORE_ADD_USE_EXISTING,
-                    None,
-                )
+                CertAddCertificateContextToStore(Some(list.0), cert.0, CERT_STORE_ADD_NEW, None)
             } {
-                Ok(()) => Ok(true),
-                Err(error) if error.code() == CANCELLED => Ok(false),
+                Ok(()) => Ok(AddResult::Created),
+                Err(error) if error.code() == CRYPT_E_EXISTS => Ok(AddResult::AlreadyPresent),
+                Err(error) if error.code() == CANCELLED => Ok(AddResult::Declined),
                 Err(error) => Err(io::Error::other(error.message())),
             }
         }
         fn remove(&self, store: &str, id: &str) -> io::Result<bool> {
             let list = open(store)?;
-            let Some(found) = find_by_hash(&list, &unhex(id)?) else {
+            let hash = unhex(id)?;
+            if hash.len() != 20 {
+                return Err(io::Error::other(
+                    "Invalid certificate ownership thumbprint.",
+                ));
+            }
+            let Some(found) = find_by_hash(&list, &hash)? else {
                 return Ok(true);
             };
             // CertDeleteCertificateFromStore frees the context itself, even on failure.
@@ -516,12 +654,14 @@ pub mod windows_store {
         fn set_added(&self, id: &str, stores: &[String]) -> io::Result<()> {
             let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(MARKER_KEY)?;
             if !stores.is_empty() {
-                return key.set_value(id, &stores.join(","));
+                key.set_value(id, &stores.join(","))?;
+                return flush(&key);
             }
             match key.delete_value(id) {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
                 _ => {}
             }
+            flush(&key)?;
             // Leave no empty key behind once nothing is remembered.
             if key.enum_values().next().is_none() {
                 drop(key);
@@ -529,12 +669,51 @@ pub mod windows_store {
             }
             Ok(())
         }
+        fn pending(&self) -> io::Result<Pending> {
+            let key = match RegKey::predef(HKEY_CURRENT_USER).open_subkey(OPERATIONS_KEY) {
+                Ok(key) => key,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Pending::new()),
+                Err(error) => return Err(error),
+            };
+            let mut pending = Pending::new();
+            for item in key.enum_values() {
+                let (id, _) = item?;
+                let json: String = key.get_value(&id)?;
+                let entries: BTreeMap<String, Intent> = serde_json::from_str(&json)?;
+                if entries
+                    .keys()
+                    .any(|store| !STORES.contains(&store.as_str()))
+                {
+                    return Err(io::Error::other("Unrecognized pending certificate store."));
+                }
+                pending.insert(id.to_ascii_lowercase(), entries);
+            }
+            Ok(pending)
+        }
+        fn set_pending(&self, id: &str, store: &str, intent: Option<Intent>) -> io::Result<()> {
+            let mut entries = self.pending()?.remove(id).unwrap_or_default();
+            if let Some(intent) = intent {
+                entries.insert(store.into(), intent);
+            } else {
+                entries.remove(store);
+            }
+            let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(OPERATIONS_KEY)?;
+            if entries.is_empty() {
+                match key.delete_value(id) {
+                    Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                    _ => {}
+                }
+            } else {
+                key.set_value(id, &serde_json::to_string(&entries)?)?;
+            }
+            flush(&key)
+        }
     }
 }
 
 // Every test needs Windows' own certificate functions.
 #[cfg(all(test, windows))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     // Throwaway self-made test certificates (public parts only; their keys were discarded):
@@ -548,6 +727,9 @@ mod tests {
             .step_by(2)
             .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
             .collect()
+    }
+    pub(crate) fn public_code_certificate() -> Vec<u8> {
+        bytes(CODE_ONLY)
     }
 
     fn stores(dir: &tempfile::TempDir) -> FileStores {

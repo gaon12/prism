@@ -228,6 +228,8 @@ try {
       choosePath: null,
       suppressRepairProgress: false,
       mode: sessionStorage.getItem('prism.fixture.mode') || 'install',
+      ui: sessionStorage.getItem('prism.fixture.ui') || 'full',
+      trustCertificate: JSON.parse(sessionStorage.getItem('prism.fixture.certificate') || 'null'),
       repairError: null,
       installError: null,
       uninstallError: null,
@@ -255,7 +257,8 @@ try {
             case 'setup_info':
               return {
                 mode: f.mode,
-                ui: 'full',
+                ui: f.ui,
+                trustCertificate: f.trustCertificate,
                 version: '0.1.0',
                 installedVersion: '0.1.0',
                 installDir: dir,
@@ -731,6 +734,207 @@ try {
   checks.push(
     'restore retry renews snapshot and mandatory acknowledgement without reusing close consent',
   );
+  const certificate = {
+    subject: 'CN=Prism UI fixture publisher, O=Fixture only',
+    sha256: Array(32).fill('AB').join(':'),
+    thumbprint: 'CD'.repeat(20),
+    validUntil: '2036-11-17',
+  };
+  async function trustFixture(value, mode = 'install', ui = 'full') {
+    await page.evaluate(
+      ({ value, mode, ui }) => {
+        sessionStorage.setItem('prism.fixture.certificate', JSON.stringify(value));
+        sessionStorage.setItem('prism.fixture.mode', mode);
+        sessionStorage.setItem('prism.fixture.ui', ui);
+      },
+      { value, mode, ui },
+    );
+    await page.reload();
+    await page.selectOption('#language', 'en');
+    await expect(page.locator('.setup')).toHaveAttribute(
+      'data-screen',
+      ui === 'passive' ? 'done' : ['install', 'update'].includes(mode) ? 'options' : mode,
+    );
+  }
+  for (const width of [960, 760]) {
+    await page.setViewportSize({ width, height: width === 960 ? 640 : 520 });
+    for (const language of ['ko', 'en', 'zh-CN', 'zh-TW', 'ja'])
+      for (const theme of ['light', 'dark']) {
+        await trustFixture(certificate);
+        await page.selectOption('#language', language);
+        await page.selectOption('#theme', theme);
+        await expect(page.locator('#trust-options')).toBeVisible();
+        await checkBounds(page, `trust-options-${width}-${language}-${theme}`);
+        await page.click('#trust-options');
+        await expect(page.locator('#trust-form')).toBeVisible();
+        await expect(page.locator('#trust-publisher')).not.toBeChecked();
+        await expect(page.locator('#trust-subject')).toHaveText(certificate.subject);
+        await expect(page.locator('#trust-sha256')).toHaveText(certificate.sha256);
+        await expect(page.locator('#trust-thumbprint')).toHaveText(certificate.thumbprint);
+        await expect(page.locator('#trust-valid-until')).toHaveText(certificate.validUntil);
+        await expect(page.locator('#trust-form')).toContainText('Root');
+        await expect(page.locator('#trust-form')).toContainText('TrustedPublisher');
+        await expect(page.locator('#trust-form')).toContainText('SmartScreen');
+        await checkBounds(page, `trust-dialog-${width}-${language}-${theme}`);
+        if (language === 'ko' && width === 760)
+          await page.screenshot({ path: join(evidence, `trust-identity-${theme}-760.png`) });
+        await page.check('#trust-publisher');
+        await expect(page.locator('#trust-publisher')).toBeFocused();
+        if (language === 'ko' && width === 760)
+          await page.screenshot({ path: join(evidence, `trust-choice-${theme}-760.png`) });
+        await page.keyboard.press('Escape');
+        await expect(page.locator('#trust-form')).toBeHidden();
+        await expect(page.locator('#trust-publisher')).not.toBeChecked();
+        await expect(page.locator('#trust-options')).toBeFocused();
+      }
+  }
+  // Applying a choice only authorizes this install attempt and is separate from closing Prism.
+  await trustFixture(certificate, 'update');
+  await page.check('#agree');
+  await page.click('#trust-options');
+  await page.check('#trust-publisher');
+  await page.click('#trust-confirm');
+  await expect(page.locator('#trust-options')).toContainText('selected');
+  await page.selectOption('#language', 'ko');
+  await expect(page.locator('#trust-options')).toContainText('선택됨');
+  await page.selectOption('#language', 'en');
+  await page.click('#install');
+  await expect(page.locator('.setup')).toHaveAttribute('data-screen', 'done');
+  assert.equal((await lastArgs('run_install')).trustPublisher, true);
+  assert.equal((await lastArgs('run_install')).closeRunningApp, false);
+  assert.equal('trustPublisher' in (await lastArgs('run_install')).options, false);
+  await expect(page.locator('#trust-publisher')).not.toBeChecked();
+  await page.click('#finish');
+  await expect(page.locator('#trust-options')).toHaveText('Publisher trust (optional)');
+  await page.click('#install');
+  await expect(page.locator('.setup')).toHaveAttribute('data-screen', 'done');
+  assert.equal((await lastArgs('run_install')).trustPublisher, false);
+  checks.push(
+    'full update trust opt-in is separate IPC; failure/retry consumes it without persistence',
+  );
+
+  await trustFixture(certificate);
+  await page.check('#agree');
+  async function applyTrust() {
+    await page.click('#trust-options');
+    await expect(page.locator('#trust-publisher')).not.toBeChecked();
+    await page.check('#trust-publisher');
+    await page.click('#trust-confirm');
+  }
+  await applyTrust();
+  await page.fill('#folder', 'C:\\prism-ui-contract\\other');
+  await expect(page.locator('#trust-options')).toHaveText('Publisher trust (optional)');
+  await expect(page.locator('#install')).toBeEnabled();
+  await applyTrust();
+  await page.evaluate(() => {
+    window.__fixture.choosePath = 'C:\\prism-ui-contract';
+  });
+  await page.click('#browse');
+  await expect(page.locator('#trust-options')).toHaveText('Publisher trust (optional)');
+  await page.click('#install');
+  await expect(page.locator('.setup')).toHaveAttribute('data-screen', 'done');
+  assert.equal((await lastArgs('run_install')).trustPublisher, false);
+  checks.push('typed and browsed target changes invalidate publisher trust consent');
+
+  await trustFixture(certificate);
+  await page.check('#agree');
+  await applyTrust();
+  await page.click('#trust-options');
+  await page.check('#trust-publisher');
+  await page.click('#trust-cancel');
+  await page.click('#install');
+  await expect(page.locator('.setup')).toHaveAttribute('data-screen', 'done');
+  assert.equal((await lastArgs('run_install')).trustPublisher, false);
+  checks.push('cancel discards publisher trust choice and installation remains available');
+
+  await trustFixture(certificate);
+  await applyTrust();
+  await page.reload();
+  await expect(page.locator('#trust-options')).toHaveText('Publisher trust (optional)');
+  await page.click('#trust-options');
+  await expect(page.locator('#trust-publisher')).not.toBeChecked();
+  await page.click('#trust-confirm');
+  await expect(page.locator('#trust-options')).toHaveText('Publisher trust (optional)');
+  await page.check('#agree');
+  await page.evaluate(() => {
+    window.__fixture.skipInstallFailure = true;
+  });
+  await page.click('#install');
+  await expect(page.locator('.setup')).toHaveAttribute('data-screen', 'done');
+  await expect(page.locator('#done-detail')).not.toHaveClass(/error/);
+  assert.equal((await lastArgs('run_install')).trustPublisher, false);
+  checks.push(
+    'publisher consent is not persisted; applying an unchecked choice still installs normally',
+  );
+
+  await trustFixture(certificate);
+  await page.check('#agree');
+  await page.check('#close-running-install');
+  await applyTrust();
+  await checkBounds(page, 'trust-selected-options-760');
+  await page.screenshot({ path: join(evidence, 'trust-selected-options-760.png') });
+  await page.evaluate(() => {
+    window.__fixture.skipInstallFailure = true;
+  });
+  await page.click('#install');
+  await expect(page.locator('.setup')).toHaveAttribute('data-screen', 'done');
+  await expect(page.locator('#done-detail')).not.toHaveClass(/error/);
+  assert.equal((await lastArgs('run_install')).trustPublisher, true);
+  assert.equal((await lastArgs('run_install')).closeRunningApp, true);
+  checks.push('successful install carries independent explicit publisher and close consents');
+
+  const malicious = {
+    ...certificate,
+    subject: '<img src=x onerror="window.fixtureInjected=true"> & <script>injected</script>',
+  };
+  await trustFixture(malicious);
+  await page.click('#trust-options');
+  await expect(page.locator('#trust-subject')).toHaveText(malicious.subject);
+  assert.equal(await page.locator('#trust-subject *').count(), 0);
+  assert.equal(await page.evaluate(() => window.fixtureInjected), undefined);
+  await page.click('#trust-cancel');
+  checks.push('certificate subject is rendered verbatim as text with no injected markup');
+
+  for (const value of [
+    null,
+    {},
+    { ...certificate, subject: '' },
+    { ...certificate, sha256: 'not a fingerprint' },
+    { ...certificate, thumbprint: '<script>' },
+    { ...certificate, validUntil: '2036-02-30' },
+  ]) {
+    await trustFixture(value);
+    await expect(page.locator('#trust-options')).toBeHidden();
+    await page.check('#agree');
+    // Even stale/tampered checkbox state cannot authorize a missing or malformed descriptor.
+    await page.evaluate(() => {
+      document.querySelector('#trust-publisher').checked = true;
+    });
+    await page.click('#install');
+    await expect(page.locator('.setup')).toHaveAttribute('data-screen', 'done');
+    assert.equal((await lastArgs('run_install')).trustPublisher, false);
+  }
+  checks.push(
+    'null/malformed identities hide trust controls and force false without blocking install',
+  );
+  await trustFixture(certificate, 'install', 'passive');
+  await expect(page.locator('#trust-options')).toBeHidden();
+  assert.equal((await lastArgs('run_install')).trustPublisher, false);
+  for (const mode of ['restore', 'uninstall']) {
+    await trustFixture(certificate, mode);
+    await expect(page.locator('#trust-options')).toBeHidden();
+  }
+  await trustFixture(certificate);
+  await page.check('#agree');
+  await applyTrust();
+  await page.click('#repair');
+  await page.check('#repair-ack');
+  await page.click('#repair-confirm');
+  await expect(page.locator('.setup')).toHaveAttribute('data-screen', 'progress');
+  assert.equal('trustPublisher' in (await lastArgs('run_repair')), false);
+  await page.evaluate(() => window.__fixture.completeRepair());
+  await expect(page.locator('.setup')).toHaveAttribute('data-screen', 'done');
+  checks.push('passive/restore/uninstall hide trust option; repair never sends publisher consent');
   assert.deepEqual(errors, []);
   await writeFile(join(evidence, 'result.json'), JSON.stringify({ checks, errors }, null, 2));
   console.log(JSON.stringify({ passed: checks.length, errors, evidence }));

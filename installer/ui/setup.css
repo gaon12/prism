@@ -426,6 +426,44 @@ select:focus-visible,
 #technical-error {
   margin-top: 15px;
 }
+.trust-body {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  padding: 0 26px 20px;
+}
+.trust-identity {
+  margin: 18px 0;
+  font-size: 12px;
+  user-select: text;
+}
+.trust-identity dt {
+  color: var(--muted);
+  margin-top: 10px;
+}
+.trust-identity dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+#trust-sha256,
+#trust-thumbprint {
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.trust-choice {
+  margin-top: 18px;
+}
+.install-consent-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.install-consent-row .link {
+  padding: 0;
+}
 #technical-error pre {
   min-height: 0;
   max-height: 130px;

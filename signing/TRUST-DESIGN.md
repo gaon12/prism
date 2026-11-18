@@ -1,7 +1,10 @@
 # Publisher-certificate trust: design
 
-Status: implemented on branch `claude/setup-trust` and tested in the sandbox only. Not part of the
-qualified 0.1.0 release. It needs review and the user's go-ahead before it is merged.
+Status: integrated into the Windows 0.1.0 release candidate, including optional Authenticode
+workflow wiring and sandbox trust qualification. This is not a claim that the new candidate has
+passed release CI: prior successful artifacts predate these changes. A fresh run must qualify
+the exact integrated source and final signed bytes. Development and CI trust tests do not write
+to real certificate stores; real user-store consent remains a separate installed-product flow.
 
 ## Why
 
@@ -22,8 +25,8 @@ Copying setup from a company share usually avoids it.
   `new-certificate.ps1` also marks it critical, makes it not a CA and limits key usage to
   digital signature. Setup checks the key usage before showing or adding the certificate, and
   `from-ci-secret.ps1` checks it before a CI build. A certificate without a key-usage list (valid
-  for every purpose) or with HTTPS usage is refused. So a leaked key can sign programs but can
-  never vouch for a website.
+  for every purpose) or with HTTPS usage is refused. The private key must still be protected;
+  disclosure requires replacement and removal of the compromised publisher trust.
 - Before the user decides, the window gets the certificate's identity from `setup_info`:
   `trustCertificate = { subject, sha256, thumbprint, validUntil }`. The SHA-256 is shown in
   `AB:CD:…` form and the thumbprint as Windows shows it. The company can publish these values,
@@ -33,18 +36,28 @@ Copying setup from a company share usually avoids it.
 
 - `prism-publisher.pfx` (the private key) stays on the build PC in the git-ignored `signing/`
   folder, with a backup kept offline. CI gets it only through repository secrets.
-- Only the public `.cer` is inside setup.
+- Only the public DER `.cer` is inside setup. CI exports it from the validated PFX and confirms
+  it contains no private key and matches the signer exactly. The PFX is never an embed input.
+- On disposable hosted CI, the optional PFX/password secrets are materialized only in a fresh
+  ACL-restricted nonce directory under `RUNNER_TEMP`, with exclusive file creation. The helper
+  immediately cleans failed preparation; an always-running final step deletes only its known
+  owned files. Nothing from this directory is cached or uploaded. No signing helper adds trust.
+- App Authenticode signing precedes setup payload creation; setup Authenticode signing precedes
+  native tests, packaging, the independent version-bound Minisign updater signature and hashes.
+  RFC3161 timestamps, publisher pins and PE content digests are verified without trusting the
+  publisher on the runner. A self-signed untrusted-root error is narrowly distinguished from
+  corrupt/missing signatures and other trust failures. See `signing/README.md`.
 - If the key leaks, make a new certificate, release a new setup and tell IT. The old one can then
   be removed or distrusted. Setup also removes what it added when Prism is uninstalled.
 
 ## Consent: when trust is added
 
-| Run | Adds trust? |
-|---|---|
-| Full window, user did not opt in | No |
-| Full window, user opted in (`run_install(..., trustPublisher: true)`) | Yes, then Windows asks again; "No" adds nothing |
-| Passive `/P` (the updater) | Never |
-| Silent `/S`, `/S /UPDATE` | Never, not even the publisher entry for a root that is already there |
+| Run                                                                   | Adds trust?                                                          |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Full window, user did not opt in                                      | No                                                                   |
+| Full window, user opted in (`run_install(..., trustPublisher: true)`) | Yes, then Windows asks again; "No" adds nothing                      |
+| Passive `/P` (the updater)                                            | Never                                                                |
+| Silent `/S`, `/S /UPDATE`                                             | Never, not even the publisher entry for a root that is already there |
 
 - There are two separate "no"s. Not opting in, or answering "No" to Windows, both still install
   Prism normally.

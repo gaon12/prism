@@ -152,7 +152,10 @@ fn main() {
         .join("prism-publisher.cer");
     println!("cargo:rerun-if-changed={}", default_cert.display());
     let cert = match env::var_os("PRISM_TRUSTED_CERT") {
-        Some(path) => fs::read(&path).expect("read PRISM_TRUSTED_CERT"),
+        Some(path) => {
+            println!("cargo:rerun-if-changed={}", Path::new(&path).display());
+            fs::read(&path).expect("read PRISM_TRUSTED_CERT")
+        }
         None => fs::read(&default_cert).unwrap_or_default(),
     };
     if !cert.is_empty() {

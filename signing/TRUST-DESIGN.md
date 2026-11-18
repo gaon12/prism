@@ -70,6 +70,13 @@ Copying setup from a company share usually avoids it.
   - The next run keeps a pending entry when the certificate is really in that list, and forgets
     it otherwise.
   - An uninstall treats a pending entry as setup's own.
+- Removal works the same way in reverse. Before it removes an entry, setup records
+  `removing:<list>`. If Windows removed the entry but saving the result failed, that record
+  stays behind. Later runs drop such a record and never remove from that list again, so a copy
+  that IT added back is never deleted. If the removal itself fails or is declined, the entry
+  stays setup's own, so a later uninstall can finish it.
+- A failed search of a list is an error, never "not there". Only Windows' "not found" counts as
+  absent.
 
 ## Removal
 

@@ -62,6 +62,10 @@ pub enum Added {
 
 /// Marker prefix for a list setup is about to add to (written before adding, see [`trust`]).
 const PENDING: &str = "pending:";
+/// Marker prefix for a list setup is about to remove from (written before removing, see
+/// [`untrust`]). Such an entry is never removed again automatically: setup cannot know whether
+/// the certificate there now is still its own or was added again by someone else.
+const REMOVING: &str = "removing:";
 
 /// Certificate lists as the trust steps need them.
 pub trait CertStores {
@@ -93,10 +97,17 @@ pub fn trust(
     let id = stores.id(certificate)?;
     let mut ours = stores.added()?.remove(&id).unwrap_or_default();
     // An earlier run stopped between adding and confirming: keep the lists that really have the
-    // certificate now (setup added them), forget the others.
-    if ours.iter().any(|name| name.starts_with(PENDING)) {
+    // certificate now (setup added them), forget the others. An unfinished removal is
+    // forgotten (see [`REMOVING`]).
+    if ours
+        .iter()
+        .any(|name| name.starts_with(PENDING) || name.starts_with(REMOVING))
+    {
         let mut settled = Vec::new();
         for name in &ours {
+            if name.starts_with(REMOVING) {
+                continue;
+            }
             let store = name.strip_prefix(PENDING).unwrap_or(name);
             if (!name.starts_with(PENDING) || stores.contains(store, certificate)?)
                 && !settled.iter().any(|known| known == store)
@@ -195,25 +206,47 @@ pub fn colon_hex(bytes: &[u8]) -> String {
 /// (and remembered) when `ask` is false or the user declines, so a later uninstall can retry.
 pub fn untrust(stores: &dyn CertStores, ask: bool) -> io::Result<()> {
     for (id, added) in stores.added()? {
-        let mut kept = Vec::new();
-        // Reverse of STORES: the publisher entry goes before its root.
-        for store in STORES.iter().rev() {
-            // A pending entry means setup may have added it but could not confirm (see
-            // [`trust`]); it counts as setup's own.
-            let pending = format!("{PENDING}{store}");
-            if !added.iter().any(|name| name == store || *name == pending) {
+        // What setup still owns. A pending entry means setup may have added it but could not
+        // confirm (see [`trust`]); it counts as setup's own. An unfinished removal does not:
+        // it is dropped and never retried (see [`REMOVING`]).
+        let mut ours: Vec<String> = Vec::new();
+        for name in &added {
+            if name.starts_with(REMOVING) {
                 continue;
             }
-            let removed = if *store == "Root" && !ask {
-                false
-            } else {
-                stores.remove(store, &id)?
-            };
-            if !removed {
-                kept.push((*store).to_owned());
+            let store = name.strip_prefix(PENDING).unwrap_or(name);
+            if !ours.iter().any(|known| known == store) {
+                ours.push(store.to_owned());
             }
         }
-        stores.set_added(&id, &kept)?;
+        if ours != added {
+            stores.set_added(&id, &ours)?;
+        }
+        // Reverse of STORES: the publisher entry goes before its root.
+        for store in STORES.iter().rev() {
+            if !ours.iter().any(|name| name == store) || (*store == "Root" && !ask) {
+                continue;
+            }
+            // Write-ahead: if saving the result fails after Windows removed it, the marker
+            // says "removing", so a later run never deletes a copy someone added again.
+            let removing = format!("{REMOVING}{store}");
+            for name in ours.iter_mut().filter(|name| *name == store) {
+                *name = removing.clone();
+            }
+            stores.set_added(&id, &ours)?;
+            let outcome = stores.remove(store, &id);
+            if matches!(outcome, Ok(true)) {
+                ours.retain(|name| *name != removing);
+                stores.set_added(&id, &ours)?;
+                continue;
+            }
+            // Declined, or Windows reported that it did not remove it: still setup's own.
+            for name in ours.iter_mut().filter(|name| **name == removing) {
+                *name = (*store).to_owned();
+            }
+            stores.set_added(&id, &ours)?;
+            outcome?;
+        }
     }
     Ok(())
 }
@@ -748,6 +781,8 @@ mod tests {
         added_meanwhile: Option<&'static str>,
         /// The marker write with this number (1-based) fails.
         failing_write: Option<usize>,
+        /// Removing fails (e.g. the list could not be searched).
+        failing_remove: bool,
         writes: std::cell::Cell<usize>,
     }
 
@@ -765,6 +800,9 @@ mod tests {
             self.inner.add(store, certificate)
         }
         fn remove(&self, store: &str, id: &str) -> io::Result<bool> {
+            if self.failing_remove {
+                return Err(io::Error::other("the list could not be searched"));
+            }
             self.inner.remove(store, id)
         }
         fn added(&self) -> io::Result<BTreeMap<String, Vec<String>>> {
@@ -790,6 +828,7 @@ mod tests {
             inner: &lists,
             added_meanwhile: Some("TrustedPublisher"),
             failing_write: None,
+            failing_remove: false,
             writes: Default::default(),
         };
         assert_eq!(trust(&racy, &cert, true).unwrap(), TrustResult::Added);
@@ -816,6 +855,7 @@ mod tests {
             inner: &lists,
             added_meanwhile: None,
             failing_write: Some(2),
+            failing_remove: false,
             writes: Default::default(),
         };
         assert!(trust(&failing, &cert, true).is_err());
@@ -854,6 +894,64 @@ mod tests {
             trust(&lists, &cert, false).unwrap(),
             TrustResult::NeedsConsent
         );
+        assert!(lists.added().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_unconfirmed_removal_never_deletes_a_copy_added_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let lists = stores(&dir);
+        let cert = bytes(CODE_ONLY);
+        let id = lists.id(&cert).unwrap();
+        assert_eq!(trust(&lists, &cert, true).unwrap(), TrustResult::Added);
+        // Write 1 records "removing", Windows removes it, write 2 (the result) fails.
+        let failing = Unlucky {
+            inner: &lists,
+            added_meanwhile: None,
+            failing_write: Some(2),
+            failing_remove: false,
+            writes: Default::default(),
+        };
+        assert!(untrust(&failing, true).is_err());
+        assert!(!lists.contains("TrustedPublisher", &cert).unwrap());
+        assert_eq!(
+            lists.added().unwrap()[&id],
+            ["Root", "removing:TrustedPublisher"]
+        );
+        // IT adds the publisher entry again; the next uninstall must leave it alone.
+        lists.add("TrustedPublisher", &cert).unwrap();
+        untrust(&lists, true).unwrap();
+        assert!(
+            lists.contains("TrustedPublisher", &cert).unwrap(),
+            "IT's copy stays"
+        );
+        assert!(
+            !lists.contains("Root", &cert).unwrap(),
+            "setup's root is removed"
+        );
+        assert!(lists.added().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_failed_removal_keeps_ownership() {
+        let dir = tempfile::tempdir().unwrap();
+        let lists = stores(&dir);
+        let cert = bytes(CODE_ONLY);
+        let id = lists.id(&cert).unwrap();
+        assert_eq!(trust(&lists, &cert, true).unwrap(), TrustResult::Added);
+        let failing = Unlucky {
+            inner: &lists,
+            added_meanwhile: None,
+            failing_write: None,
+            failing_remove: true,
+            writes: Default::default(),
+        };
+        assert!(untrust(&failing, true).is_err());
+        // Nothing was removed and setup still owns both, so a later uninstall can finish.
+        assert_eq!(lists.added().unwrap()[&id], ["Root", "TrustedPublisher"]);
+        untrust(&lists, true).unwrap();
+        assert!(!lists.contains("Root", &cert).unwrap());
+        assert!(!lists.contains("TrustedPublisher", &cert).unwrap());
         assert!(lists.added().unwrap().is_empty());
     }
 }

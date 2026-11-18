@@ -86,7 +86,7 @@ tables and unsupported noncontiguous PE layouts rather than weakening digest val
 Configure both repository secrets, or neither:
 
 - `WINDOWS_SIGNING_PFX`: Base64 of the PFX. On the machine holding the private key, prepare it with
-  `[Convert]::ToBase64String([IO.File]::ReadAllBytes('signing/private-publisher/prism-publisher.pfx')) | Set-Clipboard`.
+  `[Convert]::ToBase64String([IO.File]::ReadAllBytes((Resolve-Path -LiteralPath 'signing/private-publisher/prism-publisher.pfx').Path)) | Set-Clipboard`.
 - `PRISM_SIGNING_PASSWORD`: the PFX password.
 
 Both absent preserves the unsigned build. A partially configured pair fails before app build.

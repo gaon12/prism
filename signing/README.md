@@ -20,19 +20,44 @@ setup can still show a warning. A compromised private key remains a serious secu
 pwsh signing/new-certificate.ps1
 ```
 
-This requests a password and creates the two files in `signing/`. It uses an in-memory RSA key;
-it does not install a certificate. The certificate has code-signing EKU only, is explicitly not
+This requests a password twice and creates `signing/private-publisher/` with a private ACL,
+then exclusively creates its PFX and public CER. That directory must not already exist; the
+helper refuses even an existing empty directory. It never overwrites an old publisher or
+changes an existing folder's ACL. Its parent must already exist and contain no aliases.
+The folder and its certificates are ignored by git. It uses an in-memory RSA key and does not
+install a certificate. The certificate has code-signing EKU only, is explicitly not
 a CA, and permits only digital signatures. The signing helpers also require current validity,
 an RSA key of at least 2048 bits, and a matching private key. Keep the same identity across
 releases; changing it requires users to assess a new publisher fingerprint.
 
+Automation calls the script in the same PowerShell process with an existing `SecureString`:
+
+```powershell
+& ./signing/new-certificate.ps1 -Password $securePassword -OutputDirectory $newPrivateFolder
+```
+
+`$newPrivateFolder` must be a new path inside a protected, ignored location. Never pass a
+plaintext password through process arguments, shell history or logs. The helper copies and
+disposes its own password/key objects; the caller remains responsible for its original
+`SecureString` and backups. The helper does not register GitHub secrets or create backups.
+Keep a protected offline copy of both the encrypted PFX and a separately protected recovery
+password. A DPAPI-protected local password backup is tied to its Windows user/machine and is
+not a portable disaster-recovery backup. Test recovery without changing the production key.
+
+The default validity is five years (`-Years 1..10`), starting five minutes before generation
+in UTC to tolerate minor clock skew. Rotate before expiry: an expired certificate cannot sign
+new releases. A valid RFC3161 timestamp can preserve Windows verification of a signature made
+within validity, but does not renew the certificate, guarantee future Windows policy behavior,
+or bypass Prism's validity checks before offering publisher trust.
+
 ## Local release order
 
 1. Build `prism.exe`, then run
-   `pwsh signing/sign.ps1 src-tauri/target/release/prism.exe`.
-2. Build setup with `PRISM_TRUSTED_CERT` pointing to the public `.cer`, or leave it unset to use
-   `signing/prism-publisher.cer`. The already-signed app bytes become setup's payload.
-3. Run `pwsh signing/sign.ps1 installer/src-tauri/target/release/prism-setup.exe`.
+   `pwsh signing/sign.ps1 src-tauri/target/release/prism.exe -Pfx signing/private-publisher/prism-publisher.pfx`.
+2. Build setup with `PRISM_TRUSTED_CERT` pointing to the generated public `.cer`, for example
+   `signing/private-publisher/prism-publisher.cer`. The already-signed app bytes become setup's
+   payload. An unset variable retains the legacy fallback `signing/prism-publisher.cer`.
+3. Run `pwsh signing/sign.ps1 installer/src-tauri/target/release/prism-setup.exe -Pfx signing/private-publisher/prism-publisher.pfx`.
 4. Run the native release gates, then copy the setup and package the signed portable app.
 5. Apply the **separate Minisign updater signature**, including `--app-version` matching the
    release version (currently `0.1.0`), to the final setup. Verify it against the app's updater
@@ -61,7 +86,7 @@ tables and unsupported noncontiguous PE layouts rather than weakening digest val
 Configure both repository secrets, or neither:
 
 - `WINDOWS_SIGNING_PFX`: Base64 of the PFX. On the machine holding the private key, prepare it with
-  `[Convert]::ToBase64String([IO.File]::ReadAllBytes('signing/prism-publisher.pfx')) | Set-Clipboard`.
+  `[Convert]::ToBase64String([IO.File]::ReadAllBytes('signing/private-publisher/prism-publisher.pfx')) | Set-Clipboard`.
 - `PRISM_SIGNING_PASSWORD`: the PFX password.
 
 Both absent preserves the unsigned build. A partially configured pair fails before app build.

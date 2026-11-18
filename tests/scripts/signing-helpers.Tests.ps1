@@ -12,6 +12,8 @@ $certificates = [Collections.Generic.List[Security.Cryptography.X509Certificates
 $keys = [Collections.Generic.List[Security.Cryptography.RSA]]::new()
 $preparedDirectory = $null
 $preparedToken = $null
+$generatorDirectories = [Collections.Generic.List[string]]::new()
+$generationSecret = $null
 function Assert-Fixture([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 function Assert-Rejected([scriptblock]$Operation, [string]$Message) {
     $rejected = $false
@@ -121,14 +123,59 @@ try {
     Remove-Item -LiteralPath $extra
     $cleanup = Invoke-FixtureChild $prepare @('-Cleanup', '-Directory', $outputs['directory'], '-OwnershipToken', $outputs['ownership-token']) '' ''
     Assert-Fixture ($cleanup.ExitCode -eq 0 -and -not (Test-Path -LiteralPath $outputs['directory'])) 'Explicit owned cleanup failed.'
-    Write-Host ('PASS: certificate policy, public DER, unsigned/partial/wrong-password configuration, private PFX ACL, unknown-entry-safe cleanup, PE signature/pin/digest and timestamp rejection; online RFC3161=' + [bool]$OnlineTimestamp)
+    $generator = Join-Path $repo 'signing/new-certificate.ps1'
+    $generationSecret = ConvertTo-SecureString ([Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))) -AsPlainText -Force
+    $generated = Join-Path $root 'new-publisher'; $generatorDirectories.Add($generated)
+    foreach ($leaf in 'prism-publisher.pfx', 'prism-publisher.cer') { $ownedFiles.Add((Join-Path $generated $leaf)) }
+    & $generator -Name 'Prism disposable generator fixture' -Years 1 -Password $generationSecret -OutputDirectory $generated
+    Assert-Fixture ($generationSecret.Length -gt 8) 'Generator disposed caller-owned SecureString.'
+    $generatedPfx = Join-Path $generated 'prism-publisher.pfx'; $generatedCer = Join-Path $generated 'prism-publisher.cer'
+    Assert-Fixture ((Test-Path -LiteralPath $generatedPfx -PathType Leaf) -and (Test-Path -LiteralPath $generatedCer -PathType Leaf)) 'Generator omitted PFX or CER.'
+    $generatedCert = [Security.Cryptography.X509Certificates.X509Certificate2]::new([IO.File]::ReadAllBytes($generatedPfx), $generationSecret, [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet); $certificates.Add($generatedCert)
+    Assert-PrismCertificate $generatedCert
+    $publicGenerated = [Security.Cryptography.X509Certificates.X509Certificate2]::new([IO.File]::ReadAllBytes($generatedCer)); $certificates.Add($publicGenerated)
+    Assert-Fixture (-not $publicGenerated.HasPrivateKey -and [Linq.Enumerable]::SequenceEqual[byte]($publicGenerated.RawData, $generatedCert.RawData)) 'Generator CER is not matching public DER.'
+    $rsaGenerated = [Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPublicKey($generatedCert)
+    try { Assert-Fixture ($rsaGenerated.KeySize -eq 3072) 'Generator did not use RSA3072.' } finally { $rsaGenerated.Dispose() }
+    Assert-Fixture ([Math]::Abs(($generatedCert.NotAfter.ToUniversalTime() - [DateTime]::UtcNow.AddYears(1)).TotalMinutes) -lt 2) 'Generator expiry is not the requested UTC duration.'
+    foreach ($file in $generated, $generatedPfx, $generatedCer) {
+        $access = Get-Acl -LiteralPath $file
+        Assert-Fixture (@($access.Access | Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]) -ne [Security.Principal.WindowsIdentity]::GetCurrent().User }).Count -eq 0) 'Generated output ACL grants another principal access.'
+    }
+    $beforePfx = (Get-FileHash -LiteralPath $generatedPfx -Algorithm SHA256).Hash
+    $beforeCer = (Get-FileHash -LiteralPath $generatedCer -Algorithm SHA256).Hash
+    Assert-Rejected { & $generator -Password $generationSecret -OutputDirectory $generated } 'Generator overwrote an existing publisher.'
+    Assert-Fixture ((Get-FileHash -LiteralPath $generatedPfx -Algorithm SHA256).Hash -eq $beforePfx -and (Get-FileHash -LiteralPath $generatedCer -Algorithm SHA256).Hash -eq $beforeCer) 'Refused overwrite changed existing certificate bytes.'
+    $emptyExisting = Join-Path $root 'existing-empty'; $generatorDirectories.Add($emptyExisting); $null = New-Item -ItemType Directory -Path $emptyExisting
+    Assert-Rejected { & $generator -Password $generationSecret -OutputDirectory $emptyExisting } 'Generator accepted an existing empty directory.'
+    $weak = [Security.SecureString]::new(); $weak.AppendChar('x')
+    try { Assert-Rejected { & $generator -Password $weak -OutputDirectory (Join-Path $root 'weak-password') } 'Generator accepted a weak password.' } finally { $weak.Dispose() }
+    Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $root 'weak-password'))) 'Weak password created an output directory.'
+    Assert-Rejected { & $generator -Password $null -OutputDirectory (Join-Path $root 'null-password') } 'Generator accepted a null automation password.'
+    Assert-Rejected { & $generator -Password $generationSecret -OutputDirectory (Join-Path $root 'missing-parent/child') } 'Generator created a missing parent implicitly.'
+    Assert-Rejected { & $generator -Name 'Prism,CN=Injected' -Password $generationSecret -OutputDirectory (Join-Path $root 'invalid-name') } 'Generator accepted a distinguished-name injection.'
+    $aclFailure = Join-Path $root 'acl-failure'
+    function Set-Acl { throw 'Disposable fixture: ACL denied.' }
+    try { Assert-Rejected { & $generator -Password $generationSecret -OutputDirectory $aclFailure } 'Generator ignored ACL failure.' } finally { Remove-Item Function:Set-Acl }
+    Assert-Fixture (-not (Test-Path -LiteralPath $aclFailure)) 'Failed private ACL preparation left an output directory.'
+    $interactive = Join-Path $root 'interactive'; $generatorDirectories.Add($interactive)
+    foreach ($leaf in 'prism-publisher.pfx', 'prism-publisher.cer') { $ownedFiles.Add((Join-Path $interactive $leaf)) }
+    $fixturePromptState = @{ Count = 0 }
+    function Read-Host { param([string]$Prompt, [switch]$AsSecureString); $fixturePromptState.Count++; return $generationSecret.Copy() }
+    try { & $generator -OutputDirectory $interactive } finally { Remove-Item Function:Read-Host }
+    Assert-Fixture ($fixturePromptState.Count -eq 2 -and (Test-Path -LiteralPath (Join-Path $interactive 'prism-publisher.pfx'))) 'Interactive password/confirmation flow was not preserved.'
+    Write-Host ('PASS: certificate policy, public DER, unsigned/partial/wrong-password configuration, private PFX ACL, unknown-entry-safe cleanup, PE signature/pin/digest and timestamp rejection, generator RSA3072/UTC/privateACL/exclusive-output/SecureString/interactive; online RFC3161=' + [bool]$OnlineTimestamp)
 } finally {
+    if ($generationSecret) { $generationSecret.Dispose() }
     foreach ($cert in $certificates) { $cert.Dispose() }; foreach ($key in $keys) { $key.Dispose() }
     foreach ($file in $ownedFiles) { if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force } }
     if ($preparedDirectory -and (Test-Path -LiteralPath $preparedDirectory)) {
         $finalCleanup = Invoke-FixtureChild (Join-Path $repo 'signing/from-ci-secret.ps1') @('-Cleanup', '-Directory', $preparedDirectory, '-OwnershipToken', $preparedToken) '' ''
         if ($finalCleanup.ExitCode -ne 0) { Write-Warning 'Fixture signing directory retained for inspection after safe cleanup refused.' }
         foreach ($name in 'output.txt', 'environment.txt') { $file = Join-Path $root $name; if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file } }
+    }
+    foreach ($directory in $generatorDirectories) {
+        if ((Test-Path -LiteralPath $directory) -and @(Get-ChildItem -LiteralPath $directory -Force).Count -eq 0) { Remove-Item -LiteralPath $directory }
     }
     # Keep unknown files/directories for inspection; never recursively remove a computed path.
     if ((Test-Path -LiteralPath $root) -and @(Get-ChildItem -LiteralPath $root -Force).Count -eq 0) { Remove-Item -LiteralPath $root }

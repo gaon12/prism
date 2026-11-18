@@ -11,6 +11,8 @@
 //! - otherwise an empty payload. This keeps `cargo test` and UI work possible without building
 //!   the app first; the setup then refuses to install and says the payload is missing.
 
+#[path = "src/certificate_der.rs"]
+mod certificate_der;
 #[path = "src/payload.rs"]
 #[allow(dead_code)]
 mod payload;
@@ -153,15 +155,9 @@ fn main() {
         Some(path) => fs::read(&path).expect("read PRISM_TRUSTED_CERT"),
         None => fs::read(&default_cert).unwrap_or_default(),
     };
-    assert!(
-        !cert.starts_with(b"-----BEGIN"),
-        "The publisher certificate must be a binary (DER) .cer file, not PEM text."
-    );
-    assert!(
-        cert.len() <= 16 * 1024,
-        "The publisher certificate is unexpectedly large; give the public .cer, not a .pfx."
-    );
     if !cert.is_empty() {
+        certificate_der::validate_certificate_der(&cert)
+            .expect("PRISM_TRUSTED_CERT must contain only one public DER X.509 .cer certificate; never provide a private key, .pfx or .p12");
         println!("cargo:warning=Setup will offer to trust the publisher certificate.");
     }
     let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("trusted-publisher.cer");

@@ -1,5 +1,6 @@
 //! Test the production setup modules with fake system integration and temporary files.
 pub mod args;
+pub mod certificate_der;
 pub mod folder_lock;
 pub mod install;
 pub mod journal;

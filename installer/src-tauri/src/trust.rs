@@ -754,7 +754,7 @@ pub(crate) mod tests {
     #[test]
     fn the_window_can_show_who_and_which_certificate() {
         use sha2::{Digest, Sha256};
-        let cert = bytes(CODE_ONLY);
+        let cert = public_code_certificate();
         let shown = identity(&cert).unwrap();
         assert_eq!(shown.subject, "Prism test code");
         assert_eq!(shown.sha256, colon_hex(&Sha256::digest(&cert)));

@@ -205,6 +205,20 @@ jobs:
         # Writes a private, nonce-owned RUNNER_TEMP directory, not the checkout/cache.
         # Only public DER enters PRISM_TRUSTED_CERT. Both secrets absent means unsigned.
         run: ./signing/from-ci-secret.ps1
+      - name: Verify selected Windows qualification publisher
+        if: inputs.windows_only && matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          SIGNING_CONFIGURED: ${{ steps.authenticode.outputs.configured }}
+          SIGNING_CER: ${{ steps.authenticode.outputs.cer }}
+        run: |
+          if ($env:SIGNING_CONFIGURED -ne 'true') { throw 'Windows qualification requires the selected publisher certificate.' }
+          $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new([IO.File]::ReadAllBytes($env:SIGNING_CER))
+          try {
+            if ($certificate.Thumbprint -ne 'F4D9D03AA545EE04A6E23DADC4DB409CC66FA9FA') { throw 'Unexpected Windows publisher thumbprint.' }
+            if ((Get-FileHash -LiteralPath $env:SIGNING_CER -Algorithm SHA256).Hash -ne '324C2348BEE029D3799534FAF9362DF8600162BB4CA9E0FCF815CCC8888ACFE6') { throw 'Unexpected embedded publisher certificate hash.' }
+            Write-Host "Qualified publisher: $($certificate.Subject), $($certificate.Thumbprint)"
+          } finally { $certificate.Dispose() }
       - name: Build Windows app without NSIS
         if: matrix.platform == 'windows'
         env:

@@ -2,7 +2,7 @@
 # it is built after the app, and `build.rs` packs the built app into this setup's .exe.
 [package]
 name = "prism-setup"
-version = "0.1.0"
+version = "0.1.1"
 description = "Prism setup"
 edition = "2021"
 publish = false

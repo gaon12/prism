@@ -532,7 +532,8 @@ pub mod windows_store {
     }
 }
 
-#[cfg(test)]
+// Every test needs Windows' own certificate functions.
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
@@ -556,7 +557,6 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
     #[test]
     fn only_a_code_signing_certificate_is_accepted() {
         assert_eq!(
@@ -569,7 +569,6 @@ mod tests {
         assert!(check_code_signing_only(b"not a certificate").is_err());
     }
 
-    #[cfg(windows)]
     #[test]
     fn the_window_can_show_who_and_which_certificate() {
         use sha2::{Digest, Sha256};
@@ -593,7 +592,6 @@ mod tests {
         assert!(identity(&bytes(HTTPS_ONLY)).is_err());
     }
 
-    #[cfg(windows)]
     #[test]
     fn a_wrong_certificate_never_reaches_the_lists() {
         let dir = tempfile::tempdir().unwrap();
@@ -606,7 +604,6 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
     #[test]
     fn setup_adds_once_and_removes_only_what_it_added() {
         let dir = tempfile::tempdir().unwrap();
@@ -635,7 +632,6 @@ mod tests {
         assert!(lists.added().unwrap().is_empty());
     }
 
-    #[cfg(windows)]
     #[test]
     fn a_root_the_user_already_had_is_left_alone() {
         let dir = tempfile::tempdir().unwrap();
@@ -660,7 +656,6 @@ mod tests {
         assert!(!lists.contains("TrustedPublisher", &cert).unwrap());
     }
 
-    #[cfg(windows)]
     #[test]
     fn declining_windows_question_changes_nothing() {
         let dir = tempfile::tempdir().unwrap();

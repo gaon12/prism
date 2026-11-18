@@ -17,12 +17,14 @@ mod install;
 #[cfg(test)]
 mod install_regression;
 mod journal;
+mod maintenance_guard;
 mod native_text;
 mod operation;
 mod payload;
 mod previous;
 #[cfg(test)]
 mod previous_tests;
+mod process_control;
 mod recovery;
 #[cfg(test)]
 mod recovery_tests;
@@ -326,7 +328,11 @@ async fn choose_folder(app: tauri::AppHandle, current: String) -> Option<PathBuf
 
 /// Installs in a background thread and reports progress as `setup://progress` events.
 #[tauri::command]
-async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(), String> {
+async fn run_install(
+    app: tauri::AppHandle,
+    options: InstallOptions,
+    close_running_app: Option<bool>,
+) -> Result<(), String> {
     system::check_sandbox_destination(&options.install_dir).map_err(|error| error.to_string())?;
     if payload_size() == 0 {
         return Err("This setup does not contain Prism. Download it again.".into());
@@ -344,7 +350,7 @@ async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(
         let result = logged(
             "install",
             install::install(
-                &*system::current(),
+                &*system::current_with_app_close(close_running_app.unwrap_or(false)),
                 PAYLOAD,
                 VERSION,
                 &options,
@@ -368,7 +374,11 @@ async fn run_install(app: tauri::AppHandle, options: InstallOptions) -> Result<(
 }
 
 #[tauri::command]
-async fn run_uninstall(app: tauri::AppHandle, remove_data: bool) -> Result<(), String> {
+async fn run_uninstall(
+    app: tauri::AppHandle,
+    remove_data: bool,
+    close_running_app: Option<bool>,
+) -> Result<(), String> {
     let operation = app.state::<Setup>().gate.begin()?;
     let Some(dir) = app.state::<Setup>().args.from_temp.clone() else {
         return Err("Start the uninstaller from Apps & features.".into());
@@ -382,7 +392,7 @@ async fn run_uninstall(app: tauri::AppHandle, remove_data: bool) -> Result<(), S
         logged(
             "uninstall",
             install::uninstall(
-                &*system::current(),
+                &*system::current_with_app_close(close_running_app.unwrap_or(false)),
                 &dir,
                 remove_data,
                 logged_progress(|stage, fraction| {
@@ -401,6 +411,7 @@ async fn run_restore(
     app: tauri::AppHandle,
     install_dir: PathBuf,
     expected_version: String,
+    close_running_app: Option<bool>,
 ) -> Result<(), String> {
     system::check_sandbox_destination(&install_dir).map_err(|e| e.to_string())?;
     let operation = app.state::<Setup>().gate.begin()?;
@@ -412,7 +423,7 @@ async fn run_restore(
         logged(
             "restore",
             previous::restore(
-                &*system::current(),
+                &*system::current_with_app_close(close_running_app.unwrap_or(false)),
                 &install_dir,
                 &expected_version,
                 logged_progress(|stage, fraction| {
@@ -432,7 +443,11 @@ async fn run_restore(
 /// `install::repair` checks, under the folder lock, that the folder records this same version
 /// and is the registered installation; otherwise nothing changes.
 #[tauri::command]
-async fn run_repair(app: tauri::AppHandle, install_dir: PathBuf) -> Result<(), String> {
+async fn run_repair(
+    app: tauri::AppHandle,
+    install_dir: PathBuf,
+    close_running_app: Option<bool>,
+) -> Result<(), String> {
     if payload_size() == 0 {
         return Err("This setup does not contain Prism. Download it again.".into());
     }
@@ -451,7 +466,7 @@ async fn run_repair(app: tauri::AppHandle, install_dir: PathBuf) -> Result<(), S
         let result = logged(
             "repair",
             install::repair(
-                &*system::current(),
+                &*system::current_with_app_close(close_running_app.unwrap_or(false)),
                 PAYLOAD,
                 VERSION,
                 &options,
@@ -561,13 +576,12 @@ fn finish(
     let target = setup.gate.finish(launch)?;
     if let Some(dir) = target {
         let args = &setup.args.relaunch_args;
-        // An earlier version kept after a failed update is checked again, and started, while
-        // holding the folder lock, so another setup cannot be writing it at that moment.
-        let started = if setup.gate.launch_is_fallback() {
-            install::with_intact_installation(&dir, || start_prism(&dir, args))
-        } else {
-            start_prism(&dir, args)
-        };
+        if setup.gate.launch_is_fallback() {
+            setup_log::line("Restarting the intact earlier Prism version after a failed update.");
+        }
+        // Recheck and start every launch while holding the folder lock, including a normal
+        // successful installation: another setup may have begun since this one finished.
+        let started = install::with_intact_installation(&dir, || start_prism(&dir, args));
         if let Err(error) = started {
             setup.gate.cancel_finish();
             return Err(error);
@@ -702,7 +716,9 @@ fn run_silent(args: &SetupArgs) -> ExitCode {
                 return Err(error);
             }
             if args.relaunch {
-                start_prism(&options.install_dir, &args.relaunch_args)?;
+                install::with_intact_installation(&options.install_dir, || {
+                    start_prism(&options.install_dir, &args.relaunch_args)
+                })?;
             }
             Ok(())
         })

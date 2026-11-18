@@ -353,7 +353,7 @@ async function qualify() {
     active.add(child);
     return child;
   }
-  async function exit(child) {
+  async function exit(child, expectedCode = 0) {
     await until(
       () => {
         if (child.spawnError) throw child.spawnError;
@@ -363,7 +363,7 @@ async function qualify() {
       180_000,
     );
     active.delete(child);
-    assert.equal(child.exitCode, 0);
+    assert.equal(child.exitCode, expectedCode);
   }
   function ownedAppProcesses() {
     return systemState().processes.filter(
@@ -432,8 +432,11 @@ ${wideShortcutReader}
       'installed release main window',
       90_000,
     );
-    const invoke = (command) =>
-      page.evaluate((name) => window.__TAURI_INTERNALS__.invoke(name), command);
+    const invoke = (command, args = {}) =>
+      page.evaluate(({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), {
+        command,
+        args,
+      });
     // Only identity reads until the expected nonce and installed release mode both match.
     const runtime = await invoke('runtime_info');
     const settings = await invoke('get_settings');
@@ -491,7 +494,7 @@ ${wideShortcutReader}
         startOnLogin: false,
         shortcut: 'Ctrl+Alt+Shift+F9',
         automaticSemantic: false,
-        closeToTray: false,
+        closeToTray: true,
         clipboard: { enabled: false, onboarded: true },
         updates: { autoCheck: false },
         ocr: { enabled: false },
@@ -519,6 +522,21 @@ ${wideShortcutReader}
     await freePort(port);
     const child = start(join(installed, 'prism.exe'), [token]);
     await attach(child);
+    await instance.invoke('window_action', { action: 'close' });
+    assert(
+      ownedAppProcesses().length > 0,
+      'Closing the window must leave the tray process running',
+    );
+    const recordWhileRunning = await readFile(join(installed, 'install.json'));
+    await exit(start(setup, ['/S', '/UPDATE', `/D=${installed}`]), 1);
+    assert(
+      ownedAppProcesses().length > 0,
+      'Silent setup must not close a running app without consent',
+    );
+    assert.deepEqual(await readFile(join(installed, 'install.json')), recordWhileRunning);
+    assert.equal(await hash(join(installed, 'prism.exe')), appHash);
+    await checkInstallation();
+    report.checks.push('running-tray-app-refuses-silent-update-without-consent');
     await stopApp();
     await exit(child);
     report.checks.push('installed-release-launch-and-nonce-identity');

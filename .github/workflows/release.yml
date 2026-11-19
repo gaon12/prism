@@ -190,11 +190,47 @@ jobs:
         # Only pure library tests; upstream integration tests change login registration.
         if: matrix.platform == 'windows'
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked -p auto-launch --lib -j1
+      - name: Test Windows signing helpers without certificate-store changes
+        # Fresh ephemeral certificates and inert PE copies only; no repository secrets.
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: ./tests/scripts/signing-helpers.Tests.ps1
+      - name: Prepare optional Windows Authenticode certificate
+        id: authenticode
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+          PRISM_SIGNING_PASSWORD: ${{ secrets.PRISM_SIGNING_PASSWORD }}
+        # Writes a private, nonce-owned RUNNER_TEMP directory, not the checkout/cache.
+        # Only public DER enters PRISM_TRUSTED_CERT. Both secrets absent means unsigned.
+        run: ./signing/from-ci-secret.ps1
+      - name: Verify selected Windows qualification publisher
+        if: inputs.windows_only && matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          SIGNING_CONFIGURED: ${{ steps.authenticode.outputs.configured }}
+          SIGNING_CER: ${{ steps.authenticode.outputs.cer }}
+        run: |
+          if ($env:SIGNING_CONFIGURED -ne 'true') { throw 'Windows qualification requires the selected publisher certificate.' }
+          $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new([IO.File]::ReadAllBytes($env:SIGNING_CER))
+          try {
+            if ($certificate.Thumbprint -ne 'F4D9D03AA545EE04A6E23DADC4DB409CC66FA9FA') { throw 'Unexpected Windows publisher thumbprint.' }
+            if ((Get-FileHash -LiteralPath $env:SIGNING_CER -Algorithm SHA256).Hash -ne '324C2348BEE029D3799534FAF9362DF8600162BB4CA9E0FCF815CCC8888ACFE6') { throw 'Unexpected embedded publisher certificate hash.' }
+            Write-Host "Qualified publisher: $($certificate.Subject), $($certificate.Thumbprint)"
+          } finally { $certificate.Dispose() }
       - name: Build Windows app without NSIS
         if: matrix.platform == 'windows'
         env:
           BUILD_CONFIG: ${{ steps.plan.outputs.config }}
         run: npm run tauri -- build --no-bundle --config "$BUILD_CONFIG" -- --locked
+      - name: Sign and verify the Windows app before setup embeds it
+        if: matrix.platform == 'windows' && steps.authenticode.outputs.configured == 'true'
+        shell: pwsh
+        env:
+          PRISM_SIGNING_PASSWORD: ${{ secrets.PRISM_SIGNING_PASSWORD }}
+          SIGNING_PFX: ${{ steps.authenticode.outputs.pfx }}
+        run: ./signing/sign.ps1 -Path src-tauri/target/release/prism.exe -Pfx $env:SIGNING_PFX
       - name: Keep the built Windows app for low-end memory measurement
         # The 1 CPU / 512 MB job measurement (tests/native/harsh-profile.mjs)
         # only needs prism.exe. Upload it right after the build so a later
@@ -225,6 +261,13 @@ jobs:
       - name: Build the Windows setup with the release payload
         if: matrix.platform == 'windows'
         run: cargo build --manifest-path installer/src-tauri/Cargo.toml --release --locked
+      - name: Sign and verify the Windows setup before native tests or packaging
+        if: matrix.platform == 'windows' && steps.authenticode.outputs.configured == 'true'
+        shell: pwsh
+        env:
+          PRISM_SIGNING_PASSWORD: ${{ secrets.PRISM_SIGNING_PASSWORD }}
+          SIGNING_PFX: ${{ steps.authenticode.outputs.pfx }}
+        run: ./signing/sign.ps1 -Path installer/src-tauri/target/release/prism-setup.exe -Pfx $env:SIGNING_PFX
       - name: Ensure WebView2 exists on the disposable CI runner
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -247,15 +290,17 @@ jobs:
         # The setup tests drive the real setup window over the WebView debug port. WebView2 150+
         # ignores --remote-debugging-port from WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS when the app
         # runs elevated, and GitHub runners run as admin (MicrosoftEdge/WebView2Feedback#5645).
-        # A machine policy is still honoured, so set one for prism-setup.exe only, on this
+        # A machine policy is still honoured, so set one for the setup and its uninstall copy on this
         # disposable runner. The tests read the same fixed port from PRISM_SETUP_CDP_PORT.
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
           $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
           New-Item -Path $key -Force | Out-Null
-          New-ItemProperty -Path $key -Name 'prism-setup.exe' -PropertyType String -Force `
-            -Value '--remote-debugging-port=9339 --remote-debugging-address=127.0.0.1' | Out-Null
+          foreach ($executable in @('prism-setup.exe', 'uninstall.exe')) {
+            New-ItemProperty -Path $key -Name $executable -PropertyType String -Force `
+              -Value '--remote-debugging-port=9339 --remote-debugging-address=127.0.0.1' | Out-Null
+          }
       - name: Verify release setup repair, recovery and previous-version restoration
         # Native recovery uses inert crash fixtures and never starts the embedded app.
         if: matrix.platform == 'windows'
@@ -268,6 +313,17 @@ jobs:
           node tests/native/setup-features.mjs
           npm run test:setup-recovery
           npm run test:setup-previous
+      - name: Verify publisher opt-in and removal in the setup sandbox
+        # The harness compares real certificate stores before/after; all trust writes
+        # go to nonce-owned sandbox JSON. Never install the publisher on the runner.
+        if: matrix.platform == 'windows' && steps.authenticode.outputs.configured == 'true'
+        timeout-minutes: 8
+        env:
+          PRISM_SETUP_EXE: ${{ github.workspace }}/installer/src-tauri/target/release/prism-setup.exe
+          PRISM_SETUP_EXPECTED_EXE: ${{ github.workspace }}/src-tauri/target/release/prism.exe
+          PRISM_SETUP_TRUSTED_CERT: ${{ steps.authenticode.outputs.cer }}
+          PRISM_SETUP_CDP_PORT: '9339'
+        run: node tests/native/setup-trust.mjs
       - name: Let native model tests reach their owned app WebView
         # Match the setup test policy on this disposable hosted runner only.
         # Both native gates first verify their unique portable profile nonce.
@@ -378,6 +434,8 @@ jobs:
             ${{ runner.temp }}/prism-installed-release-*/result.json
             ${{ runner.temp }}/prism-installed-release-*/*.png
             ${{ runner.temp }}/prism-setup-features-*/evidence/**
+            ${{ runner.temp }}/prism-setup-trust-*/evidence/**
+            ${{ runner.temp }}/prism-setup-trust-*/result.json
             ${{ runner.temp }}/prism-document-source-pdf-*/*.pdf
             ${{ runner.temp }}/prism-document-source-pdf-*/*.hwpx
             ${{ runner.temp }}/prism-native-file-policy-*/result.json
@@ -477,6 +535,16 @@ jobs:
           path: inspection/*
           if-no-files-found: error
           compression-level: 0
+
+      - name: Delete only this job's temporary Windows signing files
+        # Run even when preparation, signing, a native gate or packaging fails.
+        # The helper validates the nonce marker and all leaf files; never recurses.
+        if: always() && matrix.platform == 'windows' && steps.authenticode.outputs.directory != ''
+        shell: pwsh
+        env:
+          SIGNING_DIRECTORY: ${{ steps.authenticode.outputs.directory }}
+          SIGNING_OWNERSHIP_TOKEN: ${{ steps.authenticode.outputs.ownership-token }}
+        run: ./signing/from-ci-secret.ps1 -Cleanup -Directory $env:SIGNING_DIRECTORY -OwnershipToken $env:SIGNING_OWNERSHIP_TOKEN
 
   # The universal macOS app used to be compiled for both processors one after
   # the other in a single job (35 + 28 minutes, then 28 more for the tests).
@@ -690,7 +758,7 @@ jobs:
           printf '%s\n' "Prism $VERSION" "" \
             'Windows: custom setup and portable ZIP. macOS: universal DMG. Linux: x86_64 and ARM64 AppImage and Flatpak.' \
             'MSIX is a separate unsigned CI inspection artifact, pending a signing/distribution choice.' \
-            'Windows Authenticode and Apple notarization are not configured for this build.' \
+            'Windows Authenticode is optional; review its Windows CI signing gates. Apple notarization is not configured.' \
             'Review platform smoke tests, prerequisites and checksums before publishing.' > "$RUNNER_TEMP/release-notes.md"
           extra=()
           if [[ "$VERSION" == *-* ]]; then extra+=(--prerelease); fi

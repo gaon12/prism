@@ -126,14 +126,23 @@
           </div>
           <p class="hint" id="scan-detail" aria-live="polite" hidden></p>
           <div class="shutdown-consent">
-            <label class="check"
-              ><input
-                type="checkbox"
-                id="close-running-install"
-                aria-describedby="close-running-install-hint" /><span
-                data-text="closeRunningApp"
-              ></span
-            ></label>
+            <div class="install-consent-row">
+              <label class="check"
+                ><input
+                  type="checkbox"
+                  id="close-running-install"
+                  aria-describedby="close-running-install-hint" /><span
+                  data-text="closeRunningApp"
+                ></span
+              ></label>
+              <button
+                type="button"
+                class="link"
+                id="trust-options"
+                data-text="trustOptions"
+                hidden
+              ></button>
+            </div>
             <p class="hint" id="close-running-install-hint" data-text="saveBeforeClosing"></p>
           </div>
           <div class="action-footer">
@@ -368,6 +377,43 @@
             data-text="repair"
             disabled
           ></button>
+        </div>
+      </section>
+      <section
+        class="modal"
+        id="trust-form"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="trust-title"
+        hidden
+      >
+        <div class="modal-heading"><h2 id="trust-title" data-text="trustTitle"></h2></div>
+        <div class="trust-body">
+          <p class="hint" data-text="trustIdentityHelp"></p>
+          <dl class="trust-identity">
+            <dt data-text="trustSubject"></dt>
+            <dd id="trust-subject" tabindex="0"></dd>
+            <dt data-text="trustSha256"></dt>
+            <dd id="trust-sha256"></dd>
+            <dt data-text="trustThumbprint"></dt>
+            <dd id="trust-thumbprint"></dd>
+            <dt data-text="trustValidUntil"></dt>
+            <dd id="trust-valid-until"></dd>
+          </dl>
+          <p class="hint" data-text="trustScope"></p>
+          <p class="hint" data-text="trustWindowsPrompt"></p>
+          <p class="hint" data-text="trustSmartScreen"></p>
+          <label class="check trust-choice"
+            ><input
+              type="checkbox"
+              id="trust-publisher"
+              aria-describedby="trust-choice-hint" /><span data-text="trustPublisher"></span
+          ></label>
+          <p class="hint" id="trust-choice-hint" data-text="trustOptional"></p>
+        </div>
+        <div class="terms-actions">
+          <button type="button" class="link" id="trust-cancel" data-text="cancel"></button>
+          <button type="button" class="solid" id="trust-confirm" data-text="trustApply"></button>
         </div>
       </section>
     </main>

@@ -1,5 +1,6 @@
 //! Test the production setup modules with fake system integration and temporary files.
 pub mod args;
+pub mod certificate_der;
 pub mod folder_lock;
 pub mod install;
 pub mod journal;
@@ -26,3 +27,5 @@ mod recovery_tests;
 
 #[cfg(test)]
 mod maintenance_tests;
+#[cfg(test)]
+mod trust_regression;

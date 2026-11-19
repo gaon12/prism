@@ -142,8 +142,8 @@
       info: () => invoke('setup_info'),
       checkFolder: (path) => invoke('check_folder', { path }),
       chooseFolder: (current) => invoke('choose_folder', { current }),
-      install: (options, closeRunningApp = false) =>
-        invoke('run_install', { options, closeRunningApp }),
+      install: (options, closeRunningApp = false, trustPublisher = false) =>
+        invoke('run_install', { options, closeRunningApp, trustPublisher }),
       uninstall: (removeData, closeRunningApp = false) =>
         invoke('run_uninstall', { removeData, closeRunningApp }),
       restore: (installDir, expectedVersion, closeRunningApp = false) =>
@@ -348,6 +348,70 @@
   let previousPath = '';
   let previousFree = null;
   let restoreSelection = null;
+  let trustCertificate = null;
+  let trustSelection = null;
+  let trustDialogPath = '';
+  function certificateIdentity(value) {
+    if (
+      !value ||
+      typeof value.subject !== 'string' ||
+      !value.subject.trim() ||
+      value.subject.length > 4096 ||
+      typeof value.sha256 !== 'string' ||
+      !/^[0-9A-F]{2}(?::[0-9A-F]{2}){31}$/u.test(value.sha256) ||
+      typeof value.thumbprint !== 'string' ||
+      !/^[0-9A-F]{40}$/u.test(value.thumbprint) ||
+      typeof value.validUntil !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}$/u.test(value.validUntil)
+    )
+      return null;
+    const date = new Date(value.validUntil + 'T00:00:00Z');
+    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== value.validUntil)
+      return null;
+    return {
+      subject: value.subject,
+      sha256: value.sha256,
+      thumbprint: value.thumbprint,
+      validUntil: value.validUntil,
+    };
+  }
+  function canOfferTrust() {
+    return !!trustCertificate && info?.ui === 'full' && ['install', 'update'].includes(info.mode);
+  }
+  function renderTrustOption() {
+    $('trust-options').hidden = !canOfferTrust();
+    $('trust-options').textContent = t(trustSelection ? 'trustSelected' : 'trustOptions');
+  }
+  function resetTrust() {
+    trustSelection = null;
+    $('trust-publisher').checked = false;
+    renderTrustOption();
+  }
+  function openTrust() {
+    if (!canOfferTrust() || operationBusy || root.dataset.screen !== 'options') return;
+    resetTrust();
+    trustDialogPath = $('folder').value.trim();
+    for (const [field, key] of [
+      ['subject', 'subject'],
+      ['sha256', 'sha256'],
+      ['thumbprint', 'thumbprint'],
+      ['valid-until', 'validUntil'],
+    ])
+      $('trust-' + field).textContent = trustCertificate[key];
+    $('trust-form').hidden = false;
+    updateModalInert();
+    $('trust-subject').focus();
+  }
+  function closeTrust(apply) {
+    const checked = $('trust-publisher').checked;
+    resetTrust();
+    if (apply && checked && canOfferTrust() && trustDialogPath === $('folder').value.trim())
+      trustSelection = { sha256: trustCertificate.sha256, path: trustDialogPath };
+    $('trust-form').hidden = true;
+    updateModalInert();
+    renderTrustOption();
+    $('trust-options').focus();
+  }
   function invalidateRestoreSelection() {
     restoreSelection = null;
     $('restore-ack').checked = false;
@@ -551,6 +615,7 @@
 
   function beginOperation(path) {
     operationBusy = true;
+    resetTrust();
     resultCopy = null;
     root.classList.remove('failed');
     $('done-detail').classList.remove('error');
@@ -573,9 +638,13 @@
       startMenuShortcut: $('start-menu').checked,
     };
     const closeRunningApp = $('close-running-install').checked;
+    const trustPublisher =
+      canOfferTrust() &&
+      trustSelection?.sha256 === trustCertificate.sha256 &&
+      trustSelection?.path === options.installDir;
     beginOperation(options.installDir);
     try {
-      await backend.install(options, closeRunningApp);
+      await backend.install(options, closeRunningApp, !!trustPublisher);
       setProgress(1);
       if (info.ui === 'passive') {
         // Started by the updater: close by itself and start Prism again if asked to.
@@ -835,6 +904,8 @@
   async function start() {
     renderTerms();
     info = await backend.info();
+    trustCertificate = certificateIdentity(info.trustCertificate);
+    resetTrust();
     await backend.onProgress(({ stage, fraction }) => {
       currentStage = stage;
       $('stage').textContent = t(stageText[stage] || 'preparing');
@@ -890,6 +961,7 @@
   // ---------- Events ----------
   let typingTimer = 0;
   $('folder').addEventListener('input', () => {
+    resetTrust();
     $('close-running-install').checked = false;
     clearTimeout(typingTimer);
     ++folderEpoch;
@@ -914,6 +986,7 @@
       const picked = await backend.chooseFolder(before);
       if (epoch !== folderEpoch || $('folder').value !== before || operationBusy) return;
       if (picked) {
+        resetTrust();
         $('close-running-install').checked = false;
         $('folder').value = picked;
         await checkFolder();
@@ -968,6 +1041,7 @@
     index = languages.indexOf(language);
     savePreference('language', language);
     renderLabels();
+    renderTrustOption();
     renderTerms();
     renderVersion();
     $('stage').textContent = t(stageText[currentStage] || 'preparing');
@@ -989,6 +1063,9 @@
     savePreference('theme', theme);
     applyTheme();
   });
+  $('trust-options').addEventListener('click', openTrust);
+  $('trust-confirm').addEventListener('click', () => closeTrust(true));
+  $('trust-cancel').addEventListener('click', () => closeTrust(false));
   for (const trigger of document.querySelectorAll('.detail-trigger'))
     trigger.addEventListener('click', () => openDetails(trigger));
   $('details-close').addEventListener('click', closeDetails);
@@ -1051,7 +1128,8 @@
       }
     }
     if (event.key !== 'Escape') return;
-    if (!$('details').hidden) closeDetails();
+    if (!$('trust-form').hidden) closeTrust(false);
+    else if (!$('details').hidden) closeDetails();
     else if (!$('repair-dialog').hidden) closeRepair();
     else if (!$('terms').hidden) {
       closeTerms();

@@ -70,6 +70,11 @@ pub trait System {
     fn remove_uninstall_entry(&self) -> io::Result<()>;
     /// Install folder and version of an existing installation, if any.
     fn existing_install(&self) -> Option<(PathBuf, Option<String>)>;
+    /// Certificate authorization must distinguish an absent registration from I/O failure.
+    fn checked_existing_install(&self) -> io::Result<Option<(PathBuf, Option<String>)>> {
+        self.capture_registration()?;
+        Ok(self.existing_install())
+    }
     /// The command Windows runs for Prism at sign-in ("Start on login" in Prism's settings),
     /// if one is registered. The app writes it itself; see [`LOGIN_STARTUP_NAME`].
     /// Defaults to "none" so test systems that do not care need no code.
@@ -501,6 +506,7 @@ pub fn required_free_bytes(
 ///
 /// `setup_exe` is the running setup file; it is copied as `uninstall.exe`.
 /// `progress(stage, fraction)` is called with a fraction between 0.0 and 1.0.
+#[allow(dead_code)] // Compatibility entry point for callers without optional completion.
 pub fn install(
     system: &dyn System,
     payload_bytes: &[u8],
@@ -509,7 +515,29 @@ pub fn install(
     setup_exe: &Path,
     progress: impl FnMut(Stage, f64),
 ) -> Result<(), String> {
-    install_from_source(
+    install_with_completion(
+        system,
+        payload_bytes,
+        version,
+        options,
+        setup_exe,
+        progress,
+        |_| {},
+    )
+}
+
+/// Complete optional OS integration under the same per-user maintenance guard.
+pub fn install_with_completion(
+    system: &dyn System,
+    payload_bytes: &[u8],
+    version: &str,
+    options: &InstallOptions,
+    setup_exe: &Path,
+    progress: impl FnMut(Stage, f64),
+    complete: impl FnOnce(&dyn System),
+) -> Result<(), String> {
+    let _maintenance = crate::maintenance_guard::acquire(system)?;
+    install_from_source_locked(
         system,
         &PackedSource {
             bytes: payload_bytes,
@@ -519,7 +547,17 @@ pub fn install(
         options,
         true,
         progress,
-    )
+    )?;
+    if system
+        .checked_existing_install()
+        .map_err(|e| e.to_string())?
+        .is_none()
+        || !crate::maintenance_guard::registered_owner(system, &options.install_dir)?
+    {
+        return Err(crate::maintenance_guard::FOREIGN_INSTALLATION.into());
+    }
+    complete(system);
+    Ok(())
 }
 
 /// Repairs the installation in `options.install_dir`: the normal install of the same version,
@@ -943,13 +981,61 @@ pub(crate) fn install_from_source_locked(
 ///
 /// The running uninstaller cannot delete itself; the caller runs this from a temporary copy
 /// (see `--from-temp` in `args.rs`).
+#[allow(dead_code)] // Compatibility entry point for callers without optional completion.
 pub fn uninstall(
+    system: &dyn System,
+    dir: &Path,
+    remove_data: bool,
+    progress: impl FnMut(Stage, f64),
+) -> Result<(), String> {
+    uninstall_with_completion(system, dir, remove_data, progress, |_, _| {})
+}
+
+/// Constructed only by a successful, checked maintenance operation while its guard is held.
+pub struct UninstallReceipt {
+    registered_owner: bool,
+}
+impl UninstallReceipt {
+    pub fn may_untrust(&self) -> bool {
+        self.registered_owner
+    }
+}
+
+pub fn uninstall_with_completion(
+    system: &dyn System,
+    dir: &Path,
+    remove_data: bool,
+    progress: impl FnMut(Stage, f64),
+    complete: impl FnOnce(&dyn System, UninstallReceipt),
+) -> Result<(), String> {
+    let _maintenance = crate::maintenance_guard::acquire(system)?;
+    let owner = system
+        .checked_existing_install()
+        .map_err(|e| e.to_string())?
+        .is_some()
+        && crate::maintenance_guard::registered_owner(system, dir)?;
+    uninstall_locked(system, dir, remove_data, progress)?;
+    // No registration is expected after removal. An orphan has no authority to
+    // remove shared publisher state, even if its files were removed successfully.
+    let absent = system
+        .checked_existing_install()
+        .map_err(|e| e.to_string())?
+        .is_none();
+    complete(
+        system,
+        UninstallReceipt {
+            registered_owner: owner && absent,
+        },
+    );
+    Ok(())
+}
+
+fn uninstall_locked(
     system: &dyn System,
     dir: &Path,
     remove_data: bool,
     mut progress: impl FnMut(Stage, f64),
 ) -> Result<(), String> {
-    let _maintenance = crate::maintenance_guard::acquire(system)?;
     progress(Stage::Removing, 0.0);
     let dir = safe_path::root(dir).map_err(|_| "The installation folder is unsafe.".to_string())?;
     let dir = dir.as_path();
